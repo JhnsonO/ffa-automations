@@ -1,0 +1,48 @@
+name: Upload GoPro Sessions to YouTube
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'How many days back to check for new videos'
+        required: false
+        default: '2'
+        type: string
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests google-auth google-auth-oauthlib google-api-python-client
+
+      - name: Write GoPro cookies
+        run: echo '${{ secrets.GOPRO_COOKIES }}' > gopro_cookies.json
+
+      - name: Write YouTube credentials
+        run: echo '${{ secrets.YOUTUBE_CREDENTIALS }}' > youtube_credentials.json
+
+      - name: Write YouTube token
+        run: echo '${{ secrets.YOUTUBE_TOKEN }}' > youtube_token.json
+
+      - name: Run uploader
+        env:
+          LOOKBACK_DAYS: ${{ github.event.inputs.days }}
+        run: python3 gopro_uploader.py
+
+      - name: Save updated YouTube token
+        if: always()
+        run: |
+          if [ -f youtube_token.json ]; then
+            echo "YOUTUBE_TOKEN_UPDATED=$(cat youtube_token.json | base64 -w 0)" >> $GITHUB_ENV
+          fi
