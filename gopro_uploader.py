@@ -230,7 +230,7 @@ def upload_to_youtube(service, video_path: Path, title: str, description: str) -
             "categoryId": "17",  # Sports
         },
         "status": {
-            "privacyStatus": "public",   # change to "private" if you want manual review first
+            "privacyStatus": "unlisted",   # change to "private" if you want manual review first
             "selfDeclaredMadeForKids": False,
         },
     }
