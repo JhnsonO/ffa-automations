@@ -33,6 +33,7 @@ TOKEN_PATH    = BASE_DIR / "youtube_token.json"         # saved access/refresh t
 COOKIE_PATH   = BASE_DIR / "gopro_cookies.json"        # GoPro session cookies
 DOWNLOAD_DIR  = BASE_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
+LOG_PATH.parent.mkdir(exist_ok=True)
 
 GOPRO_API     = "https://api.gopro.com"
 GOPRO_HEADERS = {"Accept": "application/vnd.gopro.jk.media+json; version=2.0.0"}
