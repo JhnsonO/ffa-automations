@@ -2,7 +2,7 @@ name: Upload GoPro Sessions to YouTube
 
 on:
   schedule:
-    - cron: '0 9 * * *'  # Every day at 9am UTC (10am UK time)
+    - cron: '0 9,21 * * *'  # Every day at 9am and 9pm UTC (10am and 10pm UK time)
   workflow_dispatch:
     inputs:
       days:
