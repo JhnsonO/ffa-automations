@@ -376,9 +376,6 @@ def run():
 
     yt = get_youtube_service()
 
-    # Group by date so we can label Camera A, B, C...
-    from collections import defaultdict
-    day_counts = defaultdict(int)
     camera_labels = "ABCDEFGH"
 
     for item in new_items:
@@ -387,10 +384,11 @@ def run():
         captured_at = item["captured_at"]
         date_key    = captured_at[:10]
 
-        # Assign camera label based on order within the day
-        cam_index = day_counts[date_key]
-        camera_label = camera_labels[cam_index] if cam_index < len(camera_labels) else str(cam_index + 1)
-        day_counts[date_key] += 1
+        # Count how many videos already uploaded for this date (including previous runs)
+        existing = con.execute(
+            "SELECT COUNT(*) FROM uploads WHERE captured_at LIKE ?", (f"{date_key}%",)
+        ).fetchone()[0]
+        camera_label = camera_labels[existing] if existing < len(camera_labels) else str(existing + 1)
 
         log.info(f"Processing: {filename} ({date_key}) Camera {camera_label} — {item.get('file_size', 0)/1e9:.1f} GB — est. {int(item.get('file_size', 0)/1e9 * 2)} mins")
 
