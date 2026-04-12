@@ -173,29 +173,40 @@ def get_concat_download_url(session: requests.Session, media_id: str) -> str | N
         return None
 
 
-def download_video(url: str, dest_path: Path) -> bool:
-    """Stream download a video file, showing progress."""
-    log.info(f"Downloading to {dest_path.name} ...")
-    try:
-        with requests.get(url, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            total = int(r.headers.get("content-length", 0))
-            downloaded = 0
-            with open(dest_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        pct = downloaded / total * 100
-                        print(f"\r  {pct:.1f}% ({downloaded/1e9:.2f} GB)", end="", flush=True)
-            print()
-        log.info(f"Download complete: {dest_path.stat().st_size / 1e9:.2f} GB")
-        return True
-    except Exception as e:
-        log.error(f"Download failed: {e}")
-        if dest_path.exists():
-            dest_path.unlink()
-        return False
+def download_video(url: str, dest_path: Path, max_retries: int = 3) -> bool:
+    """Stream download a video file with retry logic."""
+    for attempt in range(1, max_retries + 1):
+        if attempt > 1:
+            wait = 30 * attempt
+            log.info(f"Download retry {attempt}/{max_retries} in {wait}s...")
+            time.sleep(wait)
+            if dest_path.exists():
+                dest_path.unlink()
+
+        log.info(f"Downloading to {dest_path.name} (attempt {attempt})...")
+        try:
+            with requests.get(url, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                total = int(r.headers.get("content-length", 0))
+                downloaded = 0
+                with open(dest_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            pct = downloaded / total * 100
+                            print(f"\r  {pct:.1f}% ({downloaded/1e9:.2f} GB)", end="", flush=True)
+                print()
+            log.info(f"Download complete: {dest_path.stat().st_size / 1e9:.2f} GB")
+            return True
+        except Exception as e:
+            log.error(f"Download error (attempt {attempt}/{max_retries}): {e}")
+            if attempt == max_retries:
+                if dest_path.exists():
+                    dest_path.unlink()
+                return False
+
+    return False
 
 
 # ── YouTube ───────────────────────────────────────────────────────────────────
@@ -219,8 +230,8 @@ def get_youtube_service():
     return build("youtube", "v3", credentials=creds)
 
 
-def upload_to_youtube(service, video_path: Path, title: str, description: str) -> str | None:
-    """Upload a video file to YouTube, return video ID."""
+def upload_to_youtube(service, video_path: Path, title: str, description: str, max_retries: int = 3) -> str | None:
+    """Upload a video file to YouTube with retry logic, return video ID."""
     log.info(f"Uploading to YouTube: {title}")
     body = {
         "snippet": {
@@ -230,28 +241,40 @@ def upload_to_youtube(service, video_path: Path, title: str, description: str) -
             "categoryId": "17",  # Sports
         },
         "status": {
-            "privacyStatus": "unlisted",   # change to "private" if you want manual review first
+            "privacyStatus": "unlisted",
             "selfDeclaredMadeForKids": False,
         },
     }
-    media = MediaFileUpload(str(video_path), chunksize=50 * 1024 * 1024, resumable=True)
-    request = service.videos().insert(part="snippet,status", body=body, media_body=media)
 
-    response = None
-    while response is None:
+    for attempt in range(1, max_retries + 1):
+        if attempt > 1:
+            wait = 30 * attempt
+            log.info(f"Retry {attempt}/{max_retries} in {wait}s...")
+            time.sleep(wait)
+
         try:
-            status, response = request.next_chunk()
-            if status:
-                pct = int(status.progress() * 100)
-                print(f"\r  YouTube upload: {pct}%", end="", flush=True)
-        except Exception as e:
-            log.error(f"YouTube upload error: {e}")
-            return None
-    print()
+            media = MediaFileUpload(str(video_path), chunksize=50 * 1024 * 1024, resumable=True)
+            request = service.videos().insert(part="snippet,status", body=body, media_body=media)
 
-    vid_id = response.get("id")
-    log.info(f"YouTube upload complete: https://youtu.be/{vid_id}")
-    return vid_id
+            response = None
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                    pct = int(status.progress() * 100)
+                    print(f"\r  YouTube upload: {pct}%", end="", flush=True)
+            print()
+
+            vid_id = response.get("id")
+            log.info(f"YouTube upload complete: https://youtu.be/{vid_id}")
+            return vid_id
+
+        except Exception as e:
+            log.error(f"YouTube upload error (attempt {attempt}/{max_retries}): {e}")
+            if attempt == max_retries:
+                log.error("All retry attempts exhausted.")
+                return None
+
+    return None
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
