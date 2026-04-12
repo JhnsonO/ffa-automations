@@ -295,21 +295,22 @@ def upload_to_youtube(service, video_path: Path, title: str, description: str, m
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
-def make_title(filename: str, captured_at: str) -> str:
+
+def make_title(filename: str, captured_at: str, camera_label: str = "") -> str:
     try:
         dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
         day_name = dt.strftime("%A")
-        # Format date as "6th April 2026" style
         day = int(dt.strftime("%d"))
         suffix = "th" if 11 <= day <= 13 else {1:"st", 2:"nd", 3:"rd"}.get(day % 10, "th")
         date_str = f"{day}{suffix} {dt.strftime('%B %Y')}"
     except Exception:
         day_name = "Session"
         date_str = captured_at[:10]
-    return f"{day_name} Session | {date_str} | FFA Leicester"
+    cam = f" | Camera {camera_label}" if camera_label else ""
+    return f"{day_name} Session | {date_str} | FFA Leicester{cam}"
 
 
-def make_description(filename: str, captured_at: str) -> str:
+def make_description(filename: str, captured_at: str, camera_label: str = "") -> str:
     try:
         dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
         day_name = dt.strftime("%A")
@@ -322,6 +323,8 @@ def make_description(filename: str, captured_at: str) -> str:
         date_str = captured_at[:10]
         is_monday = False
 
+    cam_line = f"Camera {camera_label} footage.\n" if camera_label else ""
+
     monday_section = ""
     if is_monday:
         monday_section = (
@@ -330,8 +333,9 @@ def make_description(filename: str, captured_at: str) -> str:
         )
 
     return (
-        f"FFA Leicester | {day_name} Session | {date_str}\n\n"
-        f"Competitive kickabouts in Leicester, running weekly. All levels welcome.\n"
+        f"FFA Leicester | {day_name} Session | {date_str}\n"
+        f"{cam_line}"
+        f"\nCompetitive kickabouts in Leicester, running weekly. All levels welcome.\n"
         f"{monday_section}\n"
         f"Want to play? Book your spot:\n"
         f"https://www.officialffa.co.uk\n\n"
@@ -359,8 +363,7 @@ def run():
     log.info(f"Found {len(media_items)} video(s) in window")
 
     new_items = [m for m in media_items if not already_uploaded(con, m["id"])]
-    # Skip very short videos (under 60 seconds) — likely test clips
-    new_items = [m for m in new_items if int(m.get("file_size", 0)) > 100_000_000]  # skip files under ~100MB
+    new_items = [m for m in new_items if int(m.get("file_size", 0)) > 100_000_000]
     log.info(f"{len(new_items)} new video(s) to upload")
 
     if not new_items:
@@ -369,14 +372,24 @@ def run():
 
     yt = get_youtube_service()
 
+    # Group by date so we can label Camera A, B, C...
+    from collections import defaultdict
+    day_counts = defaultdict(int)
+    camera_labels = "ABCDEFGH"
+
     for item in new_items:
-        media_id   = item["id"]
-        filename   = item["filename"]
+        media_id    = item["id"]
+        filename    = item["filename"]
         captured_at = item["captured_at"]
+        date_key    = captured_at[:10]
 
-        log.info(f"Processing: {filename} ({captured_at[:10]}) — {item.get('file_size', 0)/1e9:.1f} GB — est. {int(item.get('file_size', 0)/1e9 * 2)} mins")
+        # Assign camera label based on order within the day
+        cam_index = day_counts[date_key]
+        camera_label = camera_labels[cam_index] if cam_index < len(camera_labels) else str(cam_index + 1)
+        day_counts[date_key] += 1
 
-        # Get fresh pre-signed download URL
+        log.info(f"Processing: {filename} ({date_key}) Camera {camera_label} — {item.get('file_size', 0)/1e9:.1f} GB — est. {int(item.get('file_size', 0)/1e9 * 2)} mins")
+
         dl_url = get_concat_download_url(session, media_id)
         if not dl_url:
             log.warning(f"Skipping {filename} — no download URL")
@@ -384,20 +397,17 @@ def run():
 
         dest = DOWNLOAD_DIR / filename
 
-        # Download
         if not download_video(dl_url, dest):
             continue
 
-        # Upload to YouTube
-        title       = make_title(filename, captured_at)
-        description = make_description(filename, captured_at)
+        title       = make_title(filename, captured_at, camera_label)
+        description = make_description(filename, captured_at, camera_label)
         yt_id       = upload_to_youtube(yt, dest, title, description)
 
         if yt_id:
             mark_uploaded(con, media_id, filename, captured_at, yt_id)
-            # Delete local file after successful upload to save disk space
             dest.unlink()
-            log.info(f"Done: {filename} -> https://youtu.be/{yt_id}")
+            log.info(f"Done: {filename} Camera {camera_label} -> https://youtu.be/{yt_id}")
         else:
             log.error(f"Upload failed for {filename}, keeping local file")
 
