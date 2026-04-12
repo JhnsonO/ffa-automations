@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>FFA Cookie Refresher</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; padding: 24px 16px; }
+  .card { max-width: 600px; margin: 0 auto; background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 28px; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+  .sub { color: #8b949e; font-size: 14px; margin-bottom: 28px; }
+  .step { margin-bottom: 24px; }
+  .step-label { font-size: 13px; font-weight: 600; color: #58a6ff; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .step p { font-size: 14px; color: #8b949e; margin-bottom: 10px; line-height: 1.6; }
+  code { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 10px 14px; font-size: 12px; font-family: monospace; display: block; word-break: break-all; color: #79c0ff; cursor: pointer; user-select: all; }
+  code:hover { border-color: #58a6ff; }
+  textarea { width: 100%; height: 120px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 12px; color: #e6edf3; resize: vertical; outline: none; }
+  textarea:focus { border-color: #58a6ff; }
+  button { width: 100%; padding: 14px; background: #238636; border: none; border-radius: 8px; color: white; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 16px; border-radius: 8px; }
+  button:hover { background: #2ea043; }
+  button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+  .status { margin-top: 16px; padding: 14px; border-radius: 8px; font-size: 14px; display: none; }
+  .status.success { background: #0f2c18; border: 1px solid #238636; color: #3fb950; display: block; }
+  .status.error { background: #2d1117; border: 1px solid #da3633; color: #f85149; display: block; }
+  .status.info { background: #0c1e35; border: 1px solid #1f6feb; color: #58a6ff; display: block; }
+  .copy-hint { font-size: 11px; color: #484f58; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>⚽ FFA Cookie Refresher</h1>
+  <p class="sub">Update GoPro cookies from any device — no installs needed</p>
+
+  <div class="step">
+    <div class="step-label">Step 1 — Open GoPro Cloud</div>
+    <p>Go to <a href="https://gopro.com/media-library/" target="_blank" style="color:#58a6ff">gopro.com/media-library</a> and make sure you're logged in.</p>
+  </div>
+
+  <div class="step">
+    <div class="step-label">Step 2 — Open DevTools Console</div>
+    <p>Press <strong>F12</strong> (or right-click → Inspect) → click the <strong>Console</strong> tab, then paste and run this:</p>
+    <code id="copyCode">fetch('https://api.gopro.com/media/search?fields=id,filename&per_page=1&page=1',{credentials:'include',headers:{'Accept':'application/vnd.gopro.jk.media+json; version=2.0.0'}}).then(r=>r.json()).then(d=>{const c={};document.cookie.split(';').forEach(x=>{const[k,...v]=x.trim().split('=');if(k)c[k]=v.join('=')});window.__ffa_cookies=JSON.stringify(c);console.log('COOKIES READY — paste into the refresher page now:');console.log(JSON.stringify(c))})</code>
+    <p class="copy-hint">Click the code above to select it, then Ctrl+C to copy</p>
+  </div>
+
+  <div class="step">
+    <div class="step-label">Step 3 — Paste the output here</div>
+    <p>Copy the JSON that appears in the console (starts with <code style="display:inline;padding:2px 6px;font-size:11px">{</code>) and paste it below:</p>
+    <textarea id="cookieInput" placeholder='{"gp_access_token":"...","gp_user_id":"...","sessionId":"...",...}'></textarea>
+  </div>
+
+  <button id="updateBtn" onclick="updateCookies()">Update GitHub Secret</button>
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+const GITHUB_TOKEN = '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';
+const REPO = 'JhnsonO/ffa-automations';
+
+document.getElementById('copyCode').addEventListener('click', function() {
+  navigator.clipboard.writeText(this.textContent).then(() => {
+    document.querySelector('.copy-hint').textContent = 'Copied!';
+    setTimeout(() => document.querySelector('.copy-hint').textContent = 'Click the code above to select it, then Ctrl+C to copy', 2000);
+  });
+});
+
+async function updateCookies() {
+  const btn = document.getElementById('updateBtn');
+  const status = document.getElementById('status');
+  const raw = document.getElementById('cookieInput').value.trim();
+
+  status.className = 'status';
+  status.style.display = 'none';
+
+  if (!raw) {
+    status.className = 'status error';
+    status.textContent = 'Please paste your cookies first.';
+    return;
+  }
+
+  let cookies;
+  try {
+    cookies = JSON.parse(raw);
+  } catch(e) {
+    status.className = 'status error';
+    status.textContent = 'Invalid JSON — make sure you copied the full output from the console.';
+    return;
+  }
+
+  if (!cookies.gp_access_token && !cookies.sessionId && !cookies.INGRESSCOOKIE) {
+    status.className = 'status error';
+    status.textContent = 'These don\'t look like GoPro cookies. Make sure you ran the console script on gopro.com.';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Verifying cookies...';
+  status.className = 'status info';
+  status.textContent = 'Checking cookies against GoPro API...';
+
+  try {
+    // Verify cookies work
+    const verifyRes = await fetch('https://api.gopro.com/media/search?fields=id,filename&per_page=1&page=1', {
+      headers: { 'Accept': 'application/vnd.gopro.jk.media+json; version=2.0.0' },
+      credentials: 'include'
+    });
+
+    if (verifyRes.status !== 200) {
+      status.className = 'status error';
+      status.textContent = `Cookie verification failed (HTTP ${verifyRes.status}). Make sure you're logged into GoPro Cloud.`;
+      btn.disabled = false;
+      btn.textContent = 'Update GitHub Secret';
+      return;
+    }
+
+    btn.textContent = 'Updating GitHub secret...';
+    status.textContent = 'Cookies verified! Updating GitHub secret...';
+
+    // Get GitHub public key for encryption
+    const keyRes = await fetch(`https://api.github.com/repos/${REPO}/actions/secrets/public-key`, {
+      headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' }
+    });
+    const keyData = await keyRes.json();
+
+    // Encrypt using libsodium
+    await loadSodium();
+    const encoder = new TextEncoder();
+    const keyBytes = sodium.from_base64(keyData.key, sodium.base64_variants.ORIGINAL);
+    const secretBytes = encoder.encode(JSON.stringify(cookies));
+    const encrypted = sodium.crypto_box_seal(secretBytes, keyBytes);
+    const encryptedB64 = sodium.to_base64(encrypted, sodium.base64_variants.ORIGINAL);
+
+    // Update GitHub secret
+    const updateRes = await fetch(`https://api.github.com/repos/${REPO}/actions/secrets/GOPRO_COOKIES`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `token ${GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ encrypted_value: encryptedB64, key_id: keyData.key_id })
+    });
+
+    if (updateRes.status === 204 || updateRes.status === 201) {
+      // Close any open cookie expiry issues
+      const issuesRes = await fetch(`https://api.github.com/repos/${REPO}/issues?labels=cookies-expired&state=open`, {
+        headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' }
+      });
+      const issues = await issuesRes.json();
+      for (const issue of issues) {
+        await fetch(`https://api.github.com/repos/${REPO}/issues/${issue.number}`, {
+          method: 'PATCH',
+          headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state: 'closed' })
+        });
+      }
+
+      status.className = 'status success';
+      status.textContent = '✅ Done! GitHub secret updated. Uploads will resume on the next run.';
+      btn.textContent = 'Updated!';
+    } else {
+      throw new Error(`GitHub API returned ${updateRes.status}`);
+    }
+  } catch(e) {
+    status.className = 'status error';
+    status.textContent = `Error: ${e.message}`;
+    btn.disabled = false;
+    btn.textContent = 'Update GitHub Secret';
+  }
+}
+
+async function loadSodium() {
+  if (window.sodium) return;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/libsodium-wrappers/0.7.11/sodium.js';
+    s.onload = async () => { await window.sodium.ready; resolve(); };
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+</script>
+</body>
+</html>
