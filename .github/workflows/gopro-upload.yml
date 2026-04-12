@@ -36,6 +36,13 @@ jobs:
       - name: Install dependencies
         run: pip install requests google-auth google-auth-oauthlib google-api-python-client
 
+      - name: Restore upload database
+        uses: actions/cache@v4
+        with:
+          path: uploaded.db
+          key: uploaded-db
+          restore-keys: uploaded-db
+
       - name: Write GoPro cookies
         run: echo '${{ secrets.GOPRO_COOKIES }}' > gopro_cookies.json
 
@@ -49,6 +56,13 @@ jobs:
         env:
           LOOKBACK_DAYS: ${{ github.event.inputs.days }}
         run: python3 gopro_uploader.py
+
+      - name: Save upload database
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: uploaded.db
+          key: uploaded-db-${{ github.run_id }}
 
       - name: Save updated YouTube token
         if: always()
