@@ -1,0 +1,58 @@
+name: Download YouTube Clip
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'YouTube clip URL'
+        required: true
+        type: string
+      quality:
+        description: 'Video quality'
+        required: false
+        default: 'best'
+        type: choice
+        options:
+          - best
+          - 1080p
+          - 720p
+          - 480p
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install yt-dlp and ffmpeg
+        run: |
+          sudo apt-get install -y ffmpeg
+          pip install yt-dlp
+
+      - name: Set quality format
+        id: fmt
+        run: |
+          case "${{ github.event.inputs.quality }}" in
+            best)   echo "format=bestvideo+bestaudio/best" >> $GITHUB_OUTPUT ;;
+            1080p)  echo "format=bestvideo[height<=1080]+bestaudio/best[height<=1080]" >> $GITHUB_OUTPUT ;;
+            720p)   echo "format=bestvideo[height<=720]+bestaudio/best[height<=720]" >> $GITHUB_OUTPUT ;;
+            480p)   echo "format=bestvideo[height<=480]+bestaudio/best[height<=480]" >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Download clip
+        run: |
+          yt-dlp \
+            --format "${{ steps.fmt.outputs.format }}" \
+            --merge-output-format mp4 \
+            --output "clip.mp4" \
+            "${{ github.event.inputs.url }}"
+
+      - name: Upload clip as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloaded-clip
+          path: clip.mp4
+          retention-days: 3
