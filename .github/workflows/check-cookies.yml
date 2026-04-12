@@ -1,0 +1,68 @@
+name: Refresh GoPro Cookies
+
+on:
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests PyNaCl browser-cookie3
+
+      - name: Extract and verify existing cookies
+        id: check
+        run: |
+          python3 << 'EOF'
+          import json, requests, os
+
+          cookies = json.loads(os.environ["GOPRO_COOKIES"])
+          session = requests.Session()
+          session.cookies.update(cookies)
+
+          r = session.get(
+              "https://api.gopro.com/media/search",
+              headers={"Accept": "application/vnd.gopro.jk.media+json; version=2.0.0"},
+              params={"fields": "id,filename", "per_page": 1, "page": 1},
+              timeout=15,
+          )
+          print(f"Cookie status: HTTP {r.status_code}")
+          if r.status_code == 200:
+              data = r.json()
+              total = data.get("_pages", {}).get("total_items", 0)
+              print(f"Cookies VALID — {total} videos accessible")
+              print("No refresh needed.")
+          else:
+              print("Cookies EXPIRED or INVALID")
+              print("To refresh: close Chrome on your laptop, run: python3 refresh_cookies.py")
+              print("Or extract cookies manually from Chrome DevTools and update the GOPRO_COOKIES secret in GitHub Settings.")
+              exit(1)
+          EOF
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+
+      - name: Report cookie expiry info
+        if: success()
+        run: |
+          python3 << 'EOF'
+          import json, os
+          from datetime import datetime
+
+          cookies = json.loads(os.environ["GOPRO_COOKIES"])
+          token = cookies.get("gp_access_token", "")
+          print("Cookies are working fine.")
+          print("Reminder: GoPro cookies typically last 2-4 weeks.")
+          print("When uploads start failing with 401 errors, run refresh_cookies.py on your laptop.")
+          EOF
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
