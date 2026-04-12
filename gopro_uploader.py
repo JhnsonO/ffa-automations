@@ -316,6 +316,8 @@ def run():
     log.info(f"Found {len(media_items)} video(s) in window")
 
     new_items = [m for m in media_items if not already_uploaded(con, m["id"])]
+    # Skip very short videos (under 60 seconds) — likely test clips
+    new_items = [m for m in new_items if int(m.get("file_size", 0)) > 100_000_000]  # skip files under ~100MB
     log.info(f"{len(new_items)} new video(s) to upload")
 
     if not new_items:
