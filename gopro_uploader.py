@@ -151,19 +151,23 @@ def get_concat_download_url(session: requests.Session, media_id: str) -> str | N
     Fetch the pre-signed download URL for the pre-joined 4K 'concat' variation.
     Falls back to first 'source' variation if concat isn't available.
     """
+    QUALITY_PREFERENCE = ["2160p", "3000p", "1440p"]
+
     try:
         data = gopro_get(session, f"/media/{media_id}/download")
         variations = data.get("_embedded", {}).get("variations", [])
 
-        # Prefer the pre-joined concat file (already one file, 4K)
-        for v in variations:
-            if v.get("label") == "concat" and v.get("quality") == "2160p" and v.get("available"):
-                return v["url"]
+        # Prefer concat (pre-joined) over source, highest quality first
+        for quality in QUALITY_PREFERENCE:
+            for v in variations:
+                if v.get("label") == "concat" and v.get("quality") == quality and v.get("available"):
+                    return v["url"]
 
-        # Fallback: first source file at 4K
-        for v in variations:
-            if v.get("label") == "source" and v.get("quality") == "2160p" and v.get("available"):
-                return v["url"]
+        # Fallback to first available source at any high quality
+        for quality in QUALITY_PREFERENCE:
+            for v in variations:
+                if v.get("label") == "source" and v.get("quality") == quality and v.get("available"):
+                    return v["url"]
 
         log.warning(f"No 4K variant found for {media_id}")
         return None
