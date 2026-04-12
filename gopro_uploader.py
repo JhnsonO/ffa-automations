@@ -174,7 +174,7 @@ def get_concat_download_url(session: requests.Session, media_id: str) -> str | N
 
 
 def download_video(url: str, dest_path: Path, max_retries: int = 3) -> bool:
-    """Stream download a video file with retry logic."""
+    """Stream download a video file with retry logic and ETA."""
     for attempt in range(1, max_retries + 1):
         if attempt > 1:
             wait = 30 * attempt
@@ -189,13 +189,19 @@ def download_video(url: str, dest_path: Path, max_retries: int = 3) -> bool:
                 r.raise_for_status()
                 total = int(r.headers.get("content-length", 0))
                 downloaded = 0
+                start_time = time.time()
                 with open(dest_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=1024 * 1024):
                         f.write(chunk)
                         downloaded += len(chunk)
-                        if total:
+                        elapsed = time.time() - start_time
+                        speed = downloaded / elapsed if elapsed > 0 else 0
+                        if total and speed > 0:
+                            remaining = (total - downloaded) / speed
+                            mins, secs = divmod(int(remaining), 60)
+                            eta = f"{mins}m {secs}s remaining"
                             pct = downloaded / total * 100
-                            print(f"\r  {pct:.1f}% ({downloaded/1e9:.2f} GB)", end="", flush=True)
+                            print(f"\r  {pct:.1f}% ({downloaded/1e9:.2f}/{total/1e9:.2f} GB) — {speed/1e6:.1f} MB/s — ETA: {eta}    ", end="", flush=True)
                 print()
             log.info(f"Download complete: {dest_path.stat().st_size / 1e9:.2f} GB")
             return True
@@ -257,11 +263,22 @@ def upload_to_youtube(service, video_path: Path, title: str, description: str, m
             request = service.videos().insert(part="snippet,status", body=body, media_body=media)
 
             response = None
+            upload_start = time.time()
+            last_progress = 0.0
             while response is None:
                 status, response = request.next_chunk()
                 if status:
-                    pct = int(status.progress() * 100)
-                    print(f"\r  YouTube upload: {pct}%", end="", flush=True)
+                    progress = status.progress()
+                    elapsed = time.time() - upload_start
+                    speed = progress / elapsed if elapsed > 0 else 0
+                    if speed > 0:
+                        remaining = (1 - progress) / speed
+                        mins, secs = divmod(int(remaining), 60)
+                        eta = f"{mins}m {secs}s remaining"
+                    else:
+                        eta = "calculating..."
+                    pct = int(progress * 100)
+                    print(f"\r  YouTube upload: {pct}% — ETA: {eta}    ", end="", flush=True)
             print()
 
             vid_id = response.get("id")
@@ -331,7 +348,7 @@ def run():
         filename   = item["filename"]
         captured_at = item["captured_at"]
 
-        log.info(f"Processing: {filename} ({captured_at[:10]})")
+        log.info(f"Processing: {filename} ({captured_at[:10]}) — {item.get('file_size', 0)/1e9:.1f} GB — est. {int(item.get('file_size', 0)/1e9 * 2)} mins")
 
         # Get fresh pre-signed download URL
         dl_url = get_concat_download_url(session, media_id)
