@@ -240,9 +240,10 @@ def get_youtube_service():
     return build("youtube", "v3", credentials=creds)
 
 
-def upload_to_youtube(service, video_path: Path, title: str, description: str, max_retries: int = 3) -> str | None:
+def upload_to_youtube(service, video_path: Path, title: str, description: str, gopro_filename: str = "", max_retries: int = 3) -> str | None:
     """Upload a video file to YouTube with retry logic, return video ID."""
-    log.info(f"Uploading to YouTube: {title}")
+    gopro_label = f" ({gopro_filename})" if gopro_filename else ""
+    log.info(f"Uploading to YouTube: {title}{gopro_label}")
     body = {
         "snippet": {
             "title": title,
@@ -282,7 +283,8 @@ def upload_to_youtube(service, video_path: Path, title: str, description: str, m
                     else:
                         eta = "calculating..."
                     pct = int(progress * 100)
-                    print(f"\r  YouTube upload: {pct}% — ETA: {eta}    ", end="", flush=True)
+                    label = f"{title} ({gopro_filename})" if gopro_filename else title
+                    print(f"\r  [{label}] {pct}% — ETA: {eta}    ", end="", flush=True)
             print()
 
             vid_id = response.get("id")
@@ -404,7 +406,7 @@ def run():
 
         title       = make_title(filename, captured_at, camera_label)
         description = make_description(filename, captured_at, camera_label)
-        yt_id       = upload_to_youtube(yt, dest, title, description)
+        yt_id       = upload_to_youtube(yt, dest, title, description, gopro_filename=filename)
 
         if yt_id:
             mark_uploaded(con, media_id, filename, captured_at, yt_id)
