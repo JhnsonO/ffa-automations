@@ -298,23 +298,49 @@ def upload_to_youtube(service, video_path: Path, title: str, description: str, m
 def make_title(filename: str, captured_at: str) -> str:
     try:
         dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
-        date_str = dt.strftime("%d %b %Y")
+        day_name = dt.strftime("%A")
+        # Format date as "6th April 2026" style
+        day = int(dt.strftime("%d"))
+        suffix = "th" if 11 <= day <= 13 else {1:"st", 2:"nd", 3:"rd"}.get(day % 10, "th")
+        date_str = f"{day}{suffix} {dt.strftime('%B %Y')}"
     except Exception:
+        day_name = "Session"
         date_str = captured_at[:10]
-    return f"FFA Session – {date_str}"
+    return f"{day_name} Session | {date_str} | FFA Leicester"
 
 
 def make_description(filename: str, captured_at: str) -> str:
     try:
         dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
-        date_str = dt.strftime("%A %d %B %Y")
+        day_name = dt.strftime("%A")
+        day = int(dt.strftime("%d"))
+        suffix = "th" if 11 <= day <= 13 else {1:"st", 2:"nd", 3:"rd"}.get(day % 10, "th")
+        date_str = f"{day}{suffix} {dt.strftime('%B %Y')}"
+        is_monday = dt.weekday() == 0
     except Exception:
+        day_name = "Session"
         date_str = captured_at[:10]
+        is_monday = False
+
+    monday_section = ""
+    if is_monday:
+        monday_section = (
+            "\n\nThis is part of the FFA Monday League — our weekly competitive kickabout with individual player standings.\n"
+            "Check the league table: https://www.officialffa.co.uk/mnl\n"
+        )
+
     return (
-        f"Football For All – Leicester\n"
-        f"Session recorded: {date_str}\n\n"
-        f"Join us at footballforall.co.uk\n"
-        f"#FFA #FootballForAll #Leicester #GrassrootsFootball"
+        f"FFA Leicester | {day_name} Session | {date_str}\n\n"
+        f"Competitive kickabouts in Leicester, running weekly. All levels welcome.\n"
+        f"{monday_section}\n"
+        f"Want to play? Book your spot:\n"
+        f"https://www.officialffa.co.uk\n\n"
+        f"Interested in tournaments or events? Get in touch via our website or socials.\n\n"
+        f"Shop FFA merch: https://www.officialffa.co.uk/store\n\n"
+        f"Follow us:\n"
+        f"Instagram: https://www.instagram.com/_official_ffa\n"
+        f"TikTok: https://www.tiktok.com/@official_ffa\n\n"
+        f"#FFA #FFALeicester #FootballForAll #Leicester #GrassrootsFootball #5aside #MondayLeague"
     )
 
 
