@@ -40,8 +40,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: uploaded.db
-          key: uploaded-db
-          restore-keys: uploaded-db
+          key: uploaded-db-v2
+          restore-keys: |
+            uploaded-db-v2
+            uploaded-db
 
       - name: Write GoPro cookies
         run: echo '${{ secrets.GOPRO_COOKIES }}' > gopro_cookies.json
@@ -62,7 +64,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: uploaded.db
-          key: uploaded-db-${{ github.run_id }}
+          key: uploaded-db-v2
 
       - name: Save updated YouTube token
         if: always()
