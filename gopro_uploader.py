@@ -2,13 +2,16 @@
 """
 FFA GoPro Cloud → YouTube Uploader
 -----------------------------------
-Fetches new videos from GoPro Cloud and uploads them to YouTube.
-
-Scheduling logic (for auto-runs after 6pm):
-- Phase 1: Poll every 30 mins until 2 videos are found and uploaded for today
-- Phase 2: Once 2 found, continue for another 2 hours (power league / extra footage)
-- Phase 3: Stop. State is persisted to upload_state.json between runs.
-- Resets each day at midnight.
+Scheduling logic:
+- Before 6pm BST (17:00 UTC): polls every 4 hours as catch-up
+  - If a video is found during catch-up, immediately switches to 30-min mode
+    until 2 videos found, then 2-hour extended window, then DONE for the day
+- From 6pm BST onward: polls every 30 mins
+  - Waits until 2 videos found (phase 1)
+  - Then runs 2-hour extended window (phase 2, for power league etc.)
+  - Then DONE for the day
+- "Done for the day" resets at 6pm BST (17:00 UTC) the next day
+  State is stored in upload_state.json, persisted via GitHub Actions cache.
 """
 
 import os
@@ -21,7 +24,6 @@ import requests
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-# ── YouTube API ──────────────────────────────────────────────────────────────
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -44,13 +46,10 @@ GOPRO_API     = "https://api.gopro.com"
 GOPRO_HEADERS = {"Accept": "application/vnd.gopro.jk.media+json; version=2.0.0"}
 YT_SCOPES     = ["https://www.googleapis.com/auth/youtube.upload"]
 
-LOOKBACK_DAYS = int(os.environ.get("LOOKBACK_DAYS") or 2)
-
-# ── Scheduling constants ──────────────────────────────────────────────────────
-# How many videos must be found before the 2-hour extended window starts
-PHASE1_TARGET = 2
-# How long (seconds) to keep running after hitting the target (2 hours)
-PHASE2_DURATION = 2 * 60 * 60
+LOOKBACK_DAYS  = int(os.environ.get("LOOKBACK_DAYS") or 2)
+PHASE1_TARGET  = 2               # videos needed before extended window kicks in
+PHASE2_SECS    = 2 * 60 * 60    # 2 hours in seconds
+RESET_HOUR_UTC = 17              # 6pm BST = 17:00 UTC
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -67,20 +66,40 @@ if sys.platform == "win32":
 log = logging.getLogger(__name__)
 
 
-# ── State management ──────────────────────────────────────────────────────────
+# ── State ─────────────────────────────────────────────────────────────────────
+def current_day_key() -> str:
+    """
+    The 'day' resets at 6pm BST (17:00 UTC).
+    So runs between 00:00–16:59 UTC belong to the previous evening's session key.
+    """
+    now = datetime.now(timezone.utc)
+    # If we're before 17:00 UTC, we're still in yesterday's session window
+    if now.hour < RESET_HOUR_UTC:
+        session_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        session_date = now.strftime("%Y-%m-%d")
+    return session_date
+
+
 def load_state() -> dict:
-    """Load persistent scheduling state. Resets if it's a new day (UTC)."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    """Load state. If the day key has changed (new session window), reset."""
+    today_key = current_day_key()
     if STATE_PATH.exists():
         try:
             with open(STATE_PATH) as f:
                 state = json.load(f)
-            if state.get("date") == today:
+            if state.get("day_key") == today_key:
                 return state
         except Exception:
             pass
-    # Fresh state for today
-    return {"date": today, "phase": 1, "uploaded_today": 0, "phase2_started_at": None, "done": False}
+    return {
+        "day_key": today_key,
+        "phase": 1,
+        "uploaded_today": 0,
+        "phase2_started_at": None,
+        "done": False,
+        "first_video_found": False,
+    }
 
 
 def save_state(state: dict):
@@ -90,26 +109,35 @@ def save_state(state: dict):
 
 def should_run(state: dict) -> tuple[bool, str]:
     """
-    Returns (should_run, reason).
-    - Phase 1: run until we've uploaded PHASE1_TARGET videos today
-    - Phase 2: run for PHASE2_DURATION seconds after hitting the target
-    - Done: skip until tomorrow
+    Decide whether to do upload work this run.
+    
+    Phase 1: hunt for videos (every 4h catch-up OR every 30min evening window)
+             Once a video is found during catch-up, the next run will be 30-min
+             cadence anyway since the cron fires more frequently after 6pm.
+    Phase 2: 2-hour extended window after hitting PHASE1_TARGET
+    Done:    skip everything until the day key resets at 6pm
     """
     if state.get("done"):
-        return False, "Done for today — stopping until tomorrow."
+        return False, "Done for today — will reset at 6pm BST."
+
+    now_utc = datetime.now(timezone.utc)
+    in_evening = now_utc.hour >= RESET_HOUR_UTC  # 17:00+ UTC = 6pm+ BST
 
     if state["phase"] == 1:
-        return True, f"Phase 1 — looking for session footage ({state['uploaded_today']}/{PHASE1_TARGET} found so far)"
+        return True, (
+            f"Phase 1 — {'evening 30-min window' if in_evening else 'daytime catch-up (4h)'}, "
+            f"{state['uploaded_today']}/{PHASE1_TARGET} found so far"
+        )
 
     if state["phase"] == 2:
         started = state.get("phase2_started_at")
         if started:
             elapsed = time.time() - started
-            remaining_mins = int((PHASE2_DURATION - elapsed) / 60)
-            if elapsed < PHASE2_DURATION:
+            remaining_mins = int((PHASE2_SECS - elapsed) / 60)
+            if elapsed < PHASE2_SECS:
                 return True, f"Phase 2 — extended window, {remaining_mins} mins remaining"
             else:
-                return False, "Phase 2 complete — 2-hour extended window finished."
+                return False, "Phase 2 complete — stopping for the day."
 
     return True, "Running"
 
@@ -131,8 +159,7 @@ def init_db():
 
 
 def already_uploaded(con, media_id: str) -> bool:
-    row = con.execute("SELECT 1 FROM uploads WHERE media_id=?", (media_id,)).fetchone()
-    return row is not None
+    return con.execute("SELECT 1 FROM uploads WHERE media_id=?", (media_id,)).fetchone() is not None
 
 
 def mark_uploaded(con, media_id: str, filename: str, captured_at: str, youtube_id: str):
@@ -164,18 +191,14 @@ def fetch_recent_media(session: requests.Session, days: int = LOOKBACK_DAYS) -> 
     all_media = []
     page = 1
     while True:
-        data = gopro_get(
-            session,
-            "/media/search",
-            params={
-                "fields": "id,captured_at,filename,file_size,type",
-                "order_by": "captured_at",
-                "order": "desc",
-                "per_page": 50,
-                "page": page,
-                "type": "Video",
-            },
-        )
+        data = gopro_get(session, "/media/search", params={
+            "fields": "id,captured_at,filename,file_size,type",
+            "order_by": "captured_at",
+            "order": "desc",
+            "per_page": 50,
+            "page": page,
+            "type": "Video",
+        })
         items = data.get("_embedded", {}).get("media", [])
         if not items:
             break
@@ -235,9 +258,8 @@ def download_video(url: str, dest_path: Path, max_retries: int = 3) -> bool:
                         if total and speed > 0:
                             remaining = (total - downloaded) / speed
                             mins, secs = divmod(int(remaining), 60)
-                            eta = f"{mins}m {secs}s remaining"
                             pct = downloaded / total * 100
-                            print(f"\r  {pct:.1f}% ({downloaded/1e9:.2f}/{total/1e9:.2f} GB) — {speed/1e6:.1f} MB/s — ETA: {eta}    ", end="", flush=True)
+                            print(f"\r  {pct:.1f}% ({downloaded/1e9:.2f}/{total/1e9:.2f} GB) — {speed/1e6:.1f} MB/s — ETA: {mins}m {secs}s    ", end="", flush=True)
                 print()
             log.info(f"Download complete: {dest_path.stat().st_size / 1e9:.2f} GB")
             return True
@@ -260,7 +282,6 @@ def get_youtube_service():
             log.info("Refreshing YouTube token...")
             creds.refresh(Request())
         else:
-            log.info("Starting YouTube OAuth flow (opens browser)...")
             flow = InstalledAppFlow.from_client_secrets_file(str(CREDS_PATH), YT_SCOPES)
             creds = flow.run_local_server(port=8080)
         with open(TOKEN_PATH, "w") as f:
@@ -269,8 +290,7 @@ def get_youtube_service():
 
 
 def upload_to_youtube(service, video_path: Path, title: str, description: str, gopro_filename: str = "", max_retries: int = 3) -> str | None:
-    gopro_label = f" ({gopro_filename})" if gopro_filename else ""
-    log.info(f"Uploading to YouTube: {title}{gopro_label}")
+    log.info(f"Uploading to YouTube: {title} ({gopro_filename})")
     body = {
         "snippet": {
             "title": title,
@@ -278,10 +298,7 @@ def upload_to_youtube(service, video_path: Path, title: str, description: str, g
             "tags": ["FFA", "Football For All", "Leicester", "grassroots football"],
             "categoryId": "17",
         },
-        "status": {
-            "privacyStatus": "unlisted",
-            "selfDeclaredMadeForKids": False,
-        },
+        "status": {"privacyStatus": "unlisted", "selfDeclaredMadeForKids": False},
     }
     for attempt in range(1, max_retries + 1):
         if attempt > 1:
@@ -299,15 +316,8 @@ def upload_to_youtube(service, video_path: Path, title: str, description: str, g
                     progress = status.progress()
                     elapsed = time.time() - upload_start
                     speed = progress / elapsed if elapsed > 0 else 0
-                    if speed > 0:
-                        remaining = (1 - progress) / speed
-                        mins, secs = divmod(int(remaining), 60)
-                        eta = f"{mins}m {secs}s remaining"
-                    else:
-                        eta = "calculating..."
-                    pct = int(progress * 100)
-                    label = f"{title} ({gopro_filename})" if gopro_filename else title
-                    print(f"\r  [{label}] {pct}% — ETA: {eta}    ", end="", flush=True)
+                    eta = f"{int((1-progress)/speed/60)}m {int((1-progress)/speed%60)}s" if speed > 0 else "calculating..."
+                    print(f"\r  [{gopro_filename}] {int(progress*100)}% — ETA: {eta}    ", end="", flush=True)
             print()
             vid_id = response.get("id")
             log.info(f"YouTube upload complete: https://youtu.be/{vid_id}")
@@ -315,7 +325,6 @@ def upload_to_youtube(service, video_path: Path, title: str, description: str, g
         except Exception as e:
             log.error(f"YouTube upload error (attempt {attempt}/{max_retries}): {e}")
             if attempt == max_retries:
-                log.error("All retry attempts exhausted.")
                 return None
     return None
 
@@ -329,8 +338,7 @@ def make_title(filename: str, captured_at: str, camera_label: str = "") -> str:
         suffix = "th" if 11 <= day <= 13 else {1:"st", 2:"nd", 3:"rd"}.get(day % 10, "th")
         date_str = f"{day}{suffix} {dt.strftime('%B %Y')}"
     except Exception:
-        day_name = "Session"
-        date_str = captured_at[:10]
+        day_name, date_str = "Session", captured_at[:10]
     cam = f" | Camera {camera_label}" if camera_label else ""
     return f"{day_name} Session | {date_str} | FFA Leicester{cam}"
 
@@ -344,24 +352,20 @@ def make_description(filename: str, captured_at: str, camera_label: str = "") ->
         date_str = f"{day}{suffix} {dt.strftime('%B %Y')}"
         is_monday = dt.weekday() == 0
     except Exception:
-        day_name = "Session"
-        date_str = captured_at[:10]
-        is_monday = False
+        day_name, date_str, is_monday = "Session", captured_at[:10], False
 
     cam_line = f"Camera {camera_label} footage.\n" if camera_label else ""
-    monday_section = ""
-    if is_monday:
-        monday_section = (
-            "\n\nThis is part of the FFA Monday League — our weekly competitive kickabout with individual player standings.\n"
-            "Check the league table: https://www.officialffa.co.uk/mnl\n"
-        )
+    monday_section = (
+        "\n\nThis is part of the FFA Monday League — our weekly competitive kickabout with individual player standings.\n"
+        "Check the league table: https://www.officialffa.co.uk/mnl\n"
+    ) if is_monday else ""
+
     return (
         f"FFA Leicester | {day_name} Session | {date_str}\n"
         f"{cam_line}"
         f"\nCompetitive kickabouts in Leicester, running weekly. All levels welcome.\n"
         f"{monday_section}\n"
-        f"Want to play? Book your spot:\n"
-        f"https://www.officialffa.co.uk\n\n"
+        f"Want to play? Book your spot:\nhttps://www.officialffa.co.uk\n\n"
         f"Interested in tournaments or events? Get in touch via our website or socials.\n\n"
         f"Shop FFA merch: https://www.officialffa.co.uk/store\n\n"
         f"Follow us:\n"
@@ -371,12 +375,11 @@ def make_description(filename: str, captured_at: str, camera_label: str = "") ->
     )
 
 
-# ── Main pipeline ─────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 def run():
     log.info("=" * 60)
     log.info("FFA GoPro -> YouTube uploader starting")
 
-    # ── Check scheduling state ────────────────────────────────────────────────
     state = load_state()
     ok, reason = should_run(state)
     log.info(f"Schedule check: {reason}")
@@ -386,10 +389,9 @@ def run():
         if state["phase"] == 2 and not state.get("done"):
             state["done"] = True
             save_state(state)
-        log.info("Exiting early — nothing to do this run.")
+        log.info("Exiting — nothing to do this run.")
         return
 
-    # ── Main upload logic ─────────────────────────────────────────────────────
     con = init_db()
     cookies = load_gopro_cookies()
     session = requests.Session()
@@ -405,18 +407,16 @@ def run():
 
     if not new_items:
         log.info("Nothing new to upload this run.")
-        # If still in phase 1 and we've already hit the target from previous runs, transition
+        # If we've already hit target from previous runs, enter phase 2
         if state["phase"] == 1 and state["uploaded_today"] >= PHASE1_TARGET:
-            log.info(f"Phase 1 target already met from previous runs — entering Phase 2 extended window.")
+            log.info("Phase 1 target already met — entering Phase 2 extended window.")
             state["phase"] = 2
             state["phase2_started_at"] = time.time()
-            save_state(state)
         save_state(state)
         return
 
     yt = get_youtube_service()
     camera_labels = "ABCDEFGH"
-    uploaded_this_run = 0
 
     for item in new_items:
         media_id    = item["id"]
@@ -429,7 +429,7 @@ def run():
         ).fetchone()[0]
         camera_label = camera_labels[existing] if existing < len(camera_labels) else str(existing + 1)
 
-        log.info(f"Processing: {filename} ({date_key}) Camera {camera_label} — {item.get('file_size', 0)/1e9:.1f} GB")
+        log.info(f"Processing: {filename} ({date_key}) Camera {camera_label} — {item.get('file_size',0)/1e9:.1f} GB")
 
         dl_url = get_concat_download_url(session, media_id)
         if not dl_url:
@@ -447,28 +447,28 @@ def run():
         if yt_id:
             mark_uploaded(con, media_id, filename, captured_at, yt_id)
             dest.unlink()
-            uploaded_this_run += 1
             state["uploaded_today"] += 1
+            state["first_video_found"] = True
             log.info(f"Done: {filename} Camera {camera_label} -> https://youtu.be/{yt_id}")
 
-            # Check if we've just hit phase 1 target
+            # Transition to phase 2 once target is hit
             if state["phase"] == 1 and state["uploaded_today"] >= PHASE1_TARGET:
-                log.info(f"Phase 1 target reached ({PHASE1_TARGET} videos) — entering Phase 2 extended window (2 hours).")
+                log.info(f"Phase 1 target reached ({PHASE1_TARGET} videos) — entering Phase 2 (2-hour extended window).")
                 state["phase"] = 2
                 state["phase2_started_at"] = time.time()
                 save_state(state)
         else:
-            log.error(f"Upload failed for {filename}, keeping local file")
+            log.error(f"Upload failed for {filename}")
 
-    # Check if phase 2 window has expired at end of run
+    # Check if phase 2 window has now elapsed
     if state["phase"] == 2 and state.get("phase2_started_at"):
         elapsed = time.time() - state["phase2_started_at"]
-        if elapsed >= PHASE2_DURATION:
-            log.info("Phase 2 window has elapsed — marking done for today.")
+        if elapsed >= PHASE2_SECS:
+            log.info("Phase 2 window elapsed — done for today. Resets at 6pm BST.")
             state["done"] = True
 
     save_state(state)
-    log.info(f"Run complete. Uploaded {uploaded_this_run} video(s) this run, {state['uploaded_today']} total today.")
+    log.info(f"Run complete. {state['uploaded_today']} video(s) uploaded today total.")
 
 
 if __name__ == "__main__":
