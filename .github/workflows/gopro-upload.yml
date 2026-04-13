@@ -2,7 +2,9 @@ name: Upload GoPro Sessions to YouTube
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Every hour
+    # Run every 30 mins from 6pm–midnight UTC (adjust if you're on BST: BST = UTC+1, so 6pm BST = 17:00 UTC)
+    # These cover 17:00–23:30 UTC = 6pm–12:30am BST
+    - cron: '0,30 17,18,19,20,21,22,23 * * *'
   workflow_dispatch:
     inputs:
       days:
@@ -45,6 +47,14 @@ jobs:
             uploaded-db-v2
             uploaded-db
 
+      - name: Restore upload state
+        uses: actions/cache@v4
+        with:
+          path: upload_state.json
+          key: upload-state-v1
+          restore-keys: |
+            upload-state-v1
+
       - name: Write GoPro cookies
         run: echo '${{ secrets.GOPRO_COOKIES }}' > gopro_cookies.json
 
@@ -56,7 +66,7 @@ jobs:
 
       - name: Run uploader
         env:
-          LOOKBACK_DAYS: ${{ github.event.inputs.days }}
+          LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
         run: python3 gopro_uploader.py
 
       - name: Save upload database
@@ -65,6 +75,13 @@ jobs:
         with:
           path: uploaded.db
           key: uploaded-db-v2
+
+      - name: Save upload state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: upload_state.json
+          key: upload-state-v1
 
       - name: Save updated YouTube token
         if: always()
