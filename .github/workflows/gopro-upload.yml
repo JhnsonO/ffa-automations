@@ -2,9 +2,10 @@ name: Upload GoPro Sessions to YouTube
 
 on:
   schedule:
-    # Run every 30 mins from 6pm–midnight UTC (adjust if you're on BST: BST = UTC+1, so 6pm BST = 17:00 UTC)
-    # These cover 17:00–23:30 UTC = 6pm–12:30am BST
+    # Every 30 mins from 5pm–midnight UTC (6pm–1am BST) — main evening window
     - cron: '0,30 17,18,19,20,21,22,23 * * *'
+    # Every 4 hours overnight/daytime UTC — catch-up in case videos uploaded late
+    - cron: '0 0,4,8,12,16 * * *'
   workflow_dispatch:
     inputs:
       days:
