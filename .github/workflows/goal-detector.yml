@@ -1,0 +1,69 @@
+name: Goal Detector
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: 'YouTube URL of the match video'
+        required: true
+        type: string
+      match_date:
+        description: 'Match date (YYYY-MM-DD) for real-world clock times'
+        required: false
+        type: string
+      match_start_time:
+        description: 'Match start time (HH:MM, 24hr) for real-world clock times'
+        required: false
+        type: string
+
+jobs:
+  detect-goals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements_goal_detector.txt
+          pip install yt-dlp
+
+      - name: Download match video
+        run: |
+          # Build filename with date/time if provided for clock time detection
+          if [ -n "${{ github.event.inputs.match_date }}" ] && [ -n "${{ github.event.inputs.match_start_time }}" ]; then
+            TIME=$(echo "${{ github.event.inputs.match_start_time }}" | tr ':' '-')
+            FILENAME="match_${{ github.event.inputs.match_date }}_${TIME}.mp4"
+          else
+            FILENAME="match.mp4"
+          fi
+
+          yt-dlp \
+            --cookies-from-browser chrome \
+            -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]" \
+            -o "$FILENAME" \
+            "${{ github.event.inputs.youtube_url }}"
+
+          echo "VIDEO_FILE=$FILENAME" >> $GITHUB_ENV
+
+      - name: Run goal detector
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          # Patch VIDEO_PATH in script to use the downloaded filename
+          sed -i "s|VIDEO_PATH = \"match.mp4\"|VIDEO_PATH = \"$VIDEO_FILE\"|" goal_detector.py
+          python goal_detector.py
+
+      - name: Upload goal clips
+        uses: actions/upload-artifact@v4
+        with:
+          name: goal-clips-${{ github.event.inputs.match_date || 'unknown-date' }}
+          path: goals_output/
+          retention-days: 7
