@@ -6,6 +6,7 @@ Runs every 30 minutes via GitHub Actions.
 - Polls GoPro Cloud for videos from the last N days
 - Skips anything already in the DB or under 100MB
 - Downloads, uploads to YouTube as unlisted, marks done in DB
+- Sends WhatsApp notification via Twilio to Johnson + PA with YouTube link
 - Quick exit if nothing new
 """
 
@@ -41,6 +42,12 @@ YT_SCOPES     = ["https://www.googleapis.com/auth/youtube.upload"]
 
 LOOKBACK_DAYS = int(os.environ.get("LOOKBACK_DAYS") or 2)
 
+# ── Twilio WhatsApp config (set these as GitHub Secrets) ─────────────────────
+TWILIO_ACCOUNT_SID  = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN   = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM_NUMBER  = os.environ.get("TWILIO_FROM_NUMBER", "")   # e.g. whatsapp:+14155238886
+NOTIFY_NUMBERS      = os.environ.get("NOTIFY_NUMBERS", "")       # comma-separated e.g. whatsapp:+447700000001,whatsapp:+447700000002
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -53,6 +60,45 @@ if sys.platform == "win32":
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 log = logging.getLogger(__name__)
+
+
+# ── WhatsApp Notification ─────────────────────────────────────────────────────
+def send_whatsapp_notification(title, youtube_id):
+    """Send a WhatsApp message to all configured numbers via Twilio."""
+    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, NOTIFY_NUMBERS]):
+        log.warning("Twilio not configured — skipping WhatsApp notification. "
+                    "Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, "
+                    "and NOTIFY_NUMBERS to GitHub Secrets.")
+        return
+
+    numbers = [n.strip() for n in NOTIFY_NUMBERS.split(",") if n.strip()]
+    if not numbers:
+        log.warning("NOTIFY_NUMBERS is empty — no WhatsApp notifications sent.")
+        return
+
+    message = (
+        f"\U0001f3a5 *New FFA video uploaded!*\n\n"
+        f"{title}\n\n"
+        f"https://youtu.be/{youtube_id}\n\n"
+        f"_Forward this link to the GC_"
+    )
+
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+    auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+    for number in numbers:
+        try:
+            resp = requests.post(url, auth=auth, data={
+                "From": TWILIO_FROM_NUMBER,
+                "To":   number,
+                "Body": message,
+            }, timeout=15)
+            if resp.status_code == 201:
+                log.info(f"WhatsApp notification sent to {number}")
+            else:
+                log.error(f"Twilio error for {number}: {resp.status_code} — {resp.text}")
+        except Exception as e:
+            log.error(f"WhatsApp send failed for {number}: {e}")
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -339,6 +385,7 @@ def run():
             mark_uploaded(con, media_id, filename, captured_at, yt_id)
             dest.unlink()
             log.info(f"Done: {filename} Camera {camera_label} -> https://youtu.be/{yt_id}")
+            send_whatsapp_notification(title, yt_id)
         else:
             log.error(f"Upload failed for {filename}")
 
