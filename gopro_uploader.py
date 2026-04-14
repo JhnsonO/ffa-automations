@@ -134,7 +134,7 @@ def refresh_cookies_via_playwright():
     log.info("Refreshing GoPro cookies via Playwright...")
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
             context = browser.new_context(
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -480,3 +480,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
