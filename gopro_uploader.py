@@ -3,10 +3,12 @@
 FFA GoPro Cloud → YouTube Uploader
 -----------------------------------
 Runs every 30 minutes via GitHub Actions.
-- Polls GoPro Cloud for videos from the last N days
-- Exits immediately (no noise) if nothing new
-- Skips videos that failed in the last 24 hours
-- Downloads, uploads to YouTube as unlisted, marks done in DB
+
+Flow:
+1. Try existing cookies → quick check for new videos
+2. If cookies expired (401) → refresh via Playwright → retry check
+3. If no new videos → exit silently (no logs, no noise)
+4. If new videos → download and upload to YouTube
 """
 
 import os
@@ -84,7 +86,6 @@ def already_uploaded(con, media_id):
     ).fetchone() is not None
 
 def recently_failed(con, media_id):
-    """Returns True if this media_id failed within the last 24 hours."""
     row = con.execute(
         "SELECT failed_at FROM failed_uploads WHERE media_id=?", (media_id,)
     ).fetchone()
@@ -94,7 +95,6 @@ def recently_failed(con, media_id):
     return (datetime.now(timezone.utc) - failed_at) < timedelta(hours=24)
 
 def mark_uploaded(con, media_id, filename, captured_at, youtube_id):
-    # Clear any previous failure record on success
     con.execute("DELETE FROM failed_uploads WHERE media_id=?", (media_id,))
     con.execute(
         "INSERT OR REPLACE INTO uploads VALUES (?,?,?,?,?)",
@@ -110,13 +110,91 @@ def mark_failed(con, media_id, reason):
     con.commit()
 
 
-# ── GoPro Cloud ───────────────────────────────────────────────────────────────
-def load_gopro_cookies():
+# ── GoPro Cookies ─────────────────────────────────────────────────────────────
+def load_cookies_from_file():
     if not COOKIE_PATH.exists():
-        log.error("gopro_cookies.json not found.")
-        sys.exit(1)
+        return {}
     with open(COOKIE_PATH) as f:
         return json.load(f)
+
+def refresh_cookies_via_playwright():
+    email    = os.environ.get("GOPRO_EMAIL")
+    password = os.environ.get("GOPRO_PASSWORD")
+
+    if not email or not password:
+        log.error("GOPRO_EMAIL / GOPRO_PASSWORD env vars not set — cannot refresh cookies")
+        return False
+
+    try:
+        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+    except ImportError:
+        log.error("Playwright not installed — run: pip install playwright && playwright install chromium")
+        return False
+
+    log.info("Refreshing GoPro cookies via Playwright...")
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                )
+            )
+            page = context.new_page()
+
+            page.goto("https://login.gopro.com", wait_until="networkidle", timeout=30000)
+            page.fill('input[type="email"], input[name="email"], input[id*="email"]', email)
+
+            try:
+                next_btn = page.locator('button:has-text("Next"), button:has-text("Continue")')
+                if next_btn.count() > 0:
+                    next_btn.first.click()
+                    page.wait_for_timeout(1500)
+            except Exception:
+                pass
+
+            page.fill('input[type="password"]', password)
+            page.click('button[type="submit"], button:has-text("Sign In"), button:has-text("Log In")')
+
+            try:
+                page.wait_for_url("**/plus.gopro.com/**", timeout=15000)
+            except PlaywrightTimeout:
+                try:
+                    page.wait_for_url(lambda url: "login.gopro.com" not in url, timeout=10000)
+                except PlaywrightTimeout:
+                    log.error(f"Playwright login failed — still on: {page.url}")
+                    browser.close()
+                    return False
+
+            if "plus.gopro.com" not in page.url:
+                page.goto("https://plus.gopro.com", wait_until="networkidle", timeout=20000)
+
+            cookies = context.cookies()
+            browser.close()
+
+        if not cookies:
+            log.error("No cookies extracted after Playwright login")
+            return False
+
+        cookie_dict = {c["name"]: c["value"] for c in cookies}
+        with open(COOKIE_PATH, "w") as f:
+            json.dump(cookie_dict, f, indent=2)
+
+        log.info(f"Cookie refresh successful — {len(cookie_dict)} cookies saved")
+        return True
+
+    except Exception as e:
+        log.error(f"Playwright cookie refresh failed: {e}")
+        return False
+
+
+# ── GoPro API ─────────────────────────────────────────────────────────────────
+def make_session(cookies):
+    session = requests.Session()
+    session.cookies.update(cookies)
+    return session
 
 def gopro_get(session, path, params=None):
     r = session.get(f"{GOPRO_API}{path}", headers=GOPRO_HEADERS, params=params, timeout=30)
@@ -151,6 +229,36 @@ def fetch_recent_media(session):
             break
         page += 1
     return all_media
+
+def get_new_items(con):
+    """
+    Try existing cookies first. On 401, refresh via Playwright and retry once.
+    Returns (session, new_items).
+    """
+    cookies = load_cookies_from_file()
+    session = make_session(cookies)
+
+    try:
+        media_items = fetch_recent_media(session)
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 401:
+            if not refresh_cookies_via_playwright():
+                log.error("Cookie refresh failed — giving up")
+                sys.exit(1)
+            cookies = load_cookies_from_file()
+            session = make_session(cookies)
+            media_items = fetch_recent_media(session)
+        else:
+            raise
+
+    new_items = [
+        m for m in media_items
+        if not already_uploaded(con, m["id"])
+        and not recently_failed(con, m["id"])
+        and int(m.get("file_size", 0)) > 100_000_000
+    ]
+
+    return session, new_items
 
 def get_concat_download_url(session, media_id):
     QUALITY_PREFERENCE = ["2160p", "3000p", "1440p"]
@@ -256,7 +364,7 @@ def upload_to_youtube(service, video_path, title, description, gopro_filename=""
                     progress = status.progress()
                     elapsed = time.time() - upload_start
                     speed = progress / elapsed if elapsed > 0 else 0
-                    eta = f"{int((1 - progress) / speed // 60)}m {int((1 - progress) / speed % 60)}s" if speed > 0 else "calculating..."
+                    eta = f"{int((1-progress)/speed//60)}m {int((1-progress)/speed%60)}s" if speed > 0 else "calculating..."
                     print(f"\r  [{gopro_filename}] {int(progress*100)}% — ETA: {eta}    ", end="", flush=True)
             print()
             vid_id = response.get("id")
@@ -317,31 +425,20 @@ def make_description(filename, captured_at, camera_label=""):
 # ── Main ──────────────────────────────────────────────────────────────────────
 def run():
     con = init_db()
-    cookies = load_gopro_cookies()
-    session = requests.Session()
-    session.cookies.update(cookies)
 
-    # Fetch and filter down to genuinely new videos
-    media_items = fetch_recent_media(session)
-    new_items = [
-        m for m in media_items
-        if not already_uploaded(con, m["id"])
-        and not recently_failed(con, m["id"])
-        and int(m.get("file_size", 0)) > 100_000_000
-    ]
+    # Step 1: Check GoPro for new videos (Playwright only fires if cookies are stale)
+    session, new_items = get_new_items(con)
 
-    # ── Early exit — nothing to do, no noise ─────────────────────────────────
+    # Step 2: Nothing new — exit completely silently
     if not new_items:
         return
 
-    # Only log / initialise YouTube if there's actual work to do
+    # Step 3: Work to do — initialise logging and YouTube
     log.info("=" * 60)
     log.info(f"FFA GoPro -> YouTube uploader starting — {len(new_items)} new video(s)")
 
     yt = get_youtube_service()
     camera_labels = "ABCDEFGH"
-
-    # Assign camera labels in-memory per date, independent of DB state
     day_counters = defaultdict(int)
 
     for item in new_items:
