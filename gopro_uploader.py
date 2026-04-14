@@ -4,9 +4,9 @@ FFA GoPro Cloud → YouTube Uploader
 -----------------------------------
 Runs every 30 minutes via GitHub Actions.
 - Polls GoPro Cloud for videos from the last N days
-- Skips anything already in the DB or under 100MB
+- Exits immediately (no noise) if nothing new
+- Skips videos that failed in the last 24 hours
 - Downloads, uploads to YouTube as unlisted, marks done in DB
-- Quick exit if nothing new
 """
 
 import os
@@ -16,6 +16,7 @@ import time
 import logging
 import sqlite3
 import requests
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -67,16 +68,44 @@ def init_db():
             uploaded_at TEXT
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS failed_uploads (
+            media_id  TEXT PRIMARY KEY,
+            failed_at TEXT,
+            reason    TEXT
+        )
+    """)
     con.commit()
     return con
 
 def already_uploaded(con, media_id):
-    return con.execute("SELECT 1 FROM uploads WHERE media_id=?", (media_id,)).fetchone() is not None
+    return con.execute(
+        "SELECT 1 FROM uploads WHERE media_id=?", (media_id,)
+    ).fetchone() is not None
+
+def recently_failed(con, media_id):
+    """Returns True if this media_id failed within the last 24 hours."""
+    row = con.execute(
+        "SELECT failed_at FROM failed_uploads WHERE media_id=?", (media_id,)
+    ).fetchone()
+    if not row:
+        return False
+    failed_at = datetime.fromisoformat(row[0])
+    return (datetime.now(timezone.utc) - failed_at) < timedelta(hours=24)
 
 def mark_uploaded(con, media_id, filename, captured_at, youtube_id):
+    # Clear any previous failure record on success
+    con.execute("DELETE FROM failed_uploads WHERE media_id=?", (media_id,))
     con.execute(
         "INSERT OR REPLACE INTO uploads VALUES (?,?,?,?,?)",
         (media_id, filename, captured_at, youtube_id, datetime.now(timezone.utc).isoformat()),
+    )
+    con.commit()
+
+def mark_failed(con, media_id, reason):
+    con.execute(
+        "INSERT OR REPLACE INTO failed_uploads VALUES (?,?,?)",
+        (media_id, datetime.now(timezone.utc).isoformat(), reason),
     )
     con.commit()
 
@@ -95,7 +124,9 @@ def gopro_get(session, path, params=None):
     return r.json()
 
 def fetch_recent_media(session):
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)).strftime(
+        "%Y-%m-%dT%H:%M:%S.000Z"
+    )
     all_media = []
     page = 1
     while True:
@@ -165,7 +196,11 @@ def download_video(url, dest_path, max_retries=3):
                             remaining = (total - downloaded) / speed
                             mins, secs = divmod(int(remaining), 60)
                             pct = downloaded / total * 100
-                            print(f"\r  {pct:.1f}% ({downloaded/1e9:.2f}/{total/1e9:.2f} GB) — {speed/1e6:.1f} MB/s — ETA: {mins}m {secs}s    ", end="", flush=True)
+                            print(
+                                f"\r  {pct:.1f}% ({downloaded/1e9:.2f}/{total/1e9:.2f} GB)"
+                                f" — {speed/1e6:.1f} MB/s — ETA: {mins}m {secs}s    ",
+                                end="", flush=True,
+                            )
                 print()
             log.info(f"Download complete: {dest_path.stat().st_size / 1e9:.2f} GB")
             return True
@@ -221,12 +256,7 @@ def upload_to_youtube(service, video_path, title, description, gopro_filename=""
                     progress = status.progress()
                     elapsed = time.time() - upload_start
                     speed = progress / elapsed if elapsed > 0 else 0
-                    if speed > 0:
-                        remaining = (1 - progress) / speed
-                        mins, secs = divmod(int(remaining), 60)
-                        eta = f"{mins}m {secs}s"
-                    else:
-                        eta = "calculating..."
+                    eta = f"{int((1 - progress) / speed // 60)}m {int((1 - progress) / speed % 60)}s" if speed > 0 else "calculating..."
                     print(f"\r  [{gopro_filename}] {int(progress*100)}% — ETA: {eta}    ", end="", flush=True)
             print()
             vid_id = response.get("id")
@@ -245,7 +275,7 @@ def make_title(filename, captured_at, camera_label=""):
         dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
         day_name = dt.strftime("%A")
         day = int(dt.strftime("%d"))
-        suffix = "th" if 11 <= day <= 13 else {1:"st", 2:"nd", 3:"rd"}.get(day % 10, "th")
+        suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
         date_str = f"{day}{suffix} {dt.strftime('%B %Y')}"
     except Exception:
         day_name, date_str = "Session", captured_at[:10]
@@ -257,7 +287,7 @@ def make_description(filename, captured_at, camera_label=""):
         dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
         day_name = dt.strftime("%A")
         day = int(dt.strftime("%d"))
-        suffix = "th" if 11 <= day <= 13 else {1:"st", 2:"nd", 3:"rd"}.get(day % 10, "th")
+        suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
         date_str = f"{day}{suffix} {dt.strftime('%B %Y')}"
         is_monday = dt.weekday() == 0
     except Exception:
@@ -286,28 +316,33 @@ def make_description(filename, captured_at, camera_label=""):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def run():
-    log.info("=" * 60)
-    log.info("FFA GoPro -> YouTube uploader starting")
-
     con = init_db()
     cookies = load_gopro_cookies()
     session = requests.Session()
     session.cookies.update(cookies)
 
-    log.info(f"Fetching media from last {LOOKBACK_DAYS} day(s)...")
+    # Fetch and filter down to genuinely new videos
     media_items = fetch_recent_media(session)
-    log.info(f"Found {len(media_items)} video(s) in window")
+    new_items = [
+        m for m in media_items
+        if not already_uploaded(con, m["id"])
+        and not recently_failed(con, m["id"])
+        and int(m.get("file_size", 0)) > 100_000_000
+    ]
 
-    new_items = [m for m in media_items if not already_uploaded(con, m["id"])]
-    new_items = [m for m in new_items if int(m.get("file_size", 0)) > 100_000_000]
-    log.info(f"{len(new_items)} new video(s) to upload")
-
+    # ── Early exit — nothing to do, no noise ─────────────────────────────────
     if not new_items:
-        log.info("Nothing to do. Exiting.")
         return
+
+    # Only log / initialise YouTube if there's actual work to do
+    log.info("=" * 60)
+    log.info(f"FFA GoPro -> YouTube uploader starting — {len(new_items)} new video(s)")
 
     yt = get_youtube_service()
     camera_labels = "ABCDEFGH"
+
+    # Assign camera labels in-memory per date, independent of DB state
+    day_counters = defaultdict(int)
 
     for item in new_items:
         media_id    = item["id"]
@@ -315,20 +350,21 @@ def run():
         captured_at = item["captured_at"]
         date_key    = captured_at[:10]
 
-        existing = con.execute(
-            "SELECT COUNT(*) FROM uploads WHERE captured_at LIKE ?", (f"{date_key}%",)
-        ).fetchone()[0]
-        camera_label = camera_labels[existing] if existing < len(camera_labels) else str(existing + 1)
+        cam_index    = day_counters[date_key]
+        camera_label = camera_labels[cam_index] if cam_index < len(camera_labels) else str(cam_index + 1)
+        day_counters[date_key] += 1
 
-        log.info(f"Processing: {filename} ({date_key}) Camera {camera_label} — {item.get('file_size',0)/1e9:.1f} GB")
+        log.info(f"Processing: {filename} ({date_key}) Camera {camera_label} — {item.get('file_size', 0)/1e9:.1f} GB")
 
         dl_url = get_concat_download_url(session, media_id)
         if not dl_url:
             log.warning(f"Skipping {filename} — no download URL")
+            mark_failed(con, media_id, "no download URL")
             continue
 
         dest = DOWNLOAD_DIR / filename
         if not download_video(dl_url, dest):
+            mark_failed(con, media_id, "download failed")
             continue
 
         title       = make_title(filename, captured_at, camera_label)
@@ -340,7 +376,8 @@ def run():
             dest.unlink()
             log.info(f"Done: {filename} Camera {camera_label} -> https://youtu.be/{yt_id}")
         else:
-            log.error(f"Upload failed for {filename}")
+            mark_failed(con, media_id, "youtube upload failed")
+            log.error(f"Upload failed for {filename} — will retry after 24h")
 
     log.info("All done.")
 
