@@ -1,187 +1,97 @@
 #!/usr/bin/env python3
 """
-refresh_cookies.py
-------------------
-Run this when GoPro cookies expire (~every few weeks).
-
-OPTION A — Your own laptop (Chrome must be closed first):
-    python3 refresh_cookies.py
-
-OPTION B — Someone else's laptop / any computer:
-    python3 refresh_cookies.py --manual
-
-It will verify the cookies and automatically update the GitHub secret.
+GoPro Cookie Refresher
+-----------------------
+Logs into GoPro using email/password via Playwright headless browser,
+extracts session cookies, and saves them to gopro_cookies.json.
+Run before the uploader to ensure cookies are always fresh.
 """
 
-import json, sys, urllib.request, base64, argparse
+import json
+import os
+import sys
 from pathlib import Path
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-GITHUB_TOKEN = "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"
-GITHUB_REPO  = "JhnsonO/ffa-automations"
+EMAIL    = os.environ["GOPRO_EMAIL"]
+PASSWORD = os.environ["GOPRO_PASSWORD"]
+OUT_PATH = Path(__file__).parent / "gopro_cookies.json"
 
-
-def extract_from_browser() -> dict:
-    try:
-        import browser_cookie3
-    except ImportError:
-        import subprocess
-        subprocess.run([sys.executable, "-m", "pip", "install", "browser-cookie3"], check=True)
-        import browser_cookie3
-
-    for name, loader in [("Chrome", browser_cookie3.chrome), ("Firefox", browser_cookie3.firefox)]:
-        try:
-            jar = loader(domain_name="gopro.com")
-            cookies = {c.name: c.value for c in jar}
-            if cookies:
-                print(f"Found {len(cookies)} GoPro cookies in {name}")
-                return cookies
-        except Exception as e:
-            print(f"{name}: {e}")
-
-    print("\nCould not auto-extract. Make sure Chrome is fully closed and try again.")
-    print("Or run: python3 refresh_cookies.py --manual")
-    sys.exit(1)
+GOPRO_LOGIN_URL = "https://login.gopro.com"
+GOPRO_APP_URL   = "https://plus.gopro.com"
 
 
-def extract_manual() -> dict:
-    print("""
-=== Manual Cookie Extraction ===
-
-1. Open Chrome and go to: https://gopro.com/media-library/
-2. Make sure you're logged in
-3. Press F12 to open DevTools
-4. Click the Console tab
-5. Paste this and press Enter:
-
-   copy(JSON.stringify(Object.fromEntries(document.cookie.split(';').map(c=>[c.trim().split('=')[0],c.trim().split('=').slice(1).join('=')]))))
-
-   (This copies cookies to your clipboard)
-
-6. If that gives an empty object {}, use this instead:
-   - Click Application tab in DevTools
-   - Click Cookies → https://gopro.com in the left panel
-   - You'll see a table of cookies
-   - Press F12 on the page below to open a fresh console and run:
-   
-   const cookies = {}; document.cookie.split(';').forEach(c => { const [k,...v] = c.trim().split('='); cookies[k]=v.join('='); }); copy(JSON.stringify(cookies));
-
-7. Once copied, paste it below and press Enter twice:
-""")
-    lines = []
-    while True:
-        line = input()
-        if line == "" and lines:
-            break
-        lines.append(line)
-    
-    raw = "\n".join(lines).strip()
-    try:
-        cookies = json.loads(raw)
-        print(f"Parsed {len(cookies)} cookies.")
-        return cookies
-    except Exception as e:
-        print(f"Could not parse cookies: {e}")
-        print("Make sure you pasted valid JSON like: {\"cookie_name\": \"value\", ...}")
-        sys.exit(1)
-
-
-def verify_cookies(cookies: dict) -> bool:
-    try:
-        import requests
-    except ImportError:
-        import subprocess
-        subprocess.run([sys.executable, "-m", "pip", "install", "requests"], check=True)
-        import requests
-
-    session = requests.Session()
-    session.cookies.update(cookies)
-    r = session.get(
-        "https://api.gopro.com/media/search",
-        headers={"Accept": "application/vnd.gopro.jk.media+json; version=2.0.0"},
-        params={"fields": "id,filename", "per_page": 1, "page": 1},
-        timeout=15,
-    )
-    print(f"GoPro API check: HTTP {r.status_code}")
-    if r.status_code == 200:
-        total = r.json().get("_pages", {}).get("total_items", 0)
-        print(f"Cookies valid — {total} videos accessible")
-        return True
-    print("Cookies invalid or expired.")
-    return False
-
-
-def update_github_secret(cookies: dict):
-    try:
-        from nacl import encoding, public
-    except ImportError:
-        import subprocess
-        subprocess.run([sys.executable, "-m", "pip", "install", "PyNaCl"], check=True)
-        from nacl import encoding, public
-
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json",
-        "Content-Type": "application/json"
-    }
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{GITHUB_REPO}/actions/secrets/public-key",
-        headers=headers
-    )
-    with urllib.request.urlopen(req) as r:
-        key_data = json.load(r)
-
-    pk = public.PublicKey(key_data["key"].encode(), encoding.Base64Encoder())
-    encrypted = base64.b64encode(public.SealedBox(pk).encrypt(json.dumps(cookies).encode())).decode()
-    payload = json.dumps({"encrypted_value": encrypted, "key_id": key_data["key_id"]}).encode()
-
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{GITHUB_REPO}/actions/secrets/GOPRO_COOKIES",
-        data=payload, method="PUT", headers=headers
-    )
-    with urllib.request.urlopen(req) as r:
-        print(f"GitHub secret updated: HTTP {r.status}")
-
-    # Also close the expired cookies issue if open
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{GITHUB_REPO}/issues?labels=cookies-expired&state=open",
-        headers=headers
-    )
-    with urllib.request.urlopen(req) as r:
-        issues = json.load(r)
-    for issue in issues:
-        close_req = urllib.request.Request(
-            f"https://api.github.com/repos/{GITHUB_REPO}/issues/{issue['number']}",
-            data=json.dumps({"state": "closed"}).encode(),
-            method="PATCH", headers=headers
+def refresh():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
         )
-        with urllib.request.urlopen(close_req) as r:
-            print(f"Closed GitHub issue #{issue['number']}: {issue['title']}")
+        page = context.new_page()
 
+        print("Navigating to GoPro login...")
+        page.goto(GOPRO_LOGIN_URL, wait_until="networkidle", timeout=30000)
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--manual", action="store_true", help="Manual cookie extraction (any computer)")
-    args = parser.parse_args()
+        # Fill email
+        print("Entering email...")
+        page.fill('input[type="email"], input[name="email"], input[id*="email"]', EMAIL)
 
-    print("=== FFA GoPro Cookie Refresher ===\n")
+        # Some flows have a separate "Next" button before password
+        try:
+            next_btn = page.locator('button:has-text("Next"), button:has-text("Continue")')
+            if next_btn.count() > 0:
+                next_btn.first.click()
+                page.wait_for_timeout(1500)
+        except Exception:
+            pass
 
-    if args.manual:
-        cookies = extract_manual()
-    else:
-        print("Extracting cookies from browser (Chrome must be closed)...")
-        cookies = extract_from_browser()
+        # Fill password
+        print("Entering password...")
+        page.fill('input[type="password"]', PASSWORD)
 
-    print("\nVerifying cookies...")
-    if not verify_cookies(cookies):
-        print("\nTry logging into GoPro Cloud in Chrome first, then run again.")
-        sys.exit(1)
+        # Submit
+        print("Submitting...")
+        page.click('button[type="submit"], button:has-text("Sign In"), button:has-text("Log In")')
 
-    print("\nUpdating GitHub secret...")
-    update_github_secret(cookies)
+        # Wait for redirect to GoPro app
+        try:
+            page.wait_for_url("**/plus.gopro.com/**", timeout=15000)
+        except PlaywrightTimeout:
+            # Try waiting for any navigation away from login
+            try:
+                page.wait_for_url(lambda url: "login.gopro.com" not in url, timeout=10000)
+            except PlaywrightTimeout:
+                print("ERROR: Login may have failed — still on login page")
+                print(f"Current URL: {page.url}")
+                browser.close()
+                sys.exit(1)
 
-    Path("gopro_cookies.json").write_text(json.dumps(cookies, indent=2))
-    print("\nAll done! Uploads will resume on the next GitHub Actions run.")
+        print(f"Logged in. Current URL: {page.url}")
+
+        # Navigate to the app to ensure cloud session cookies are set
+        if "plus.gopro.com" not in page.url:
+            page.goto(GOPRO_APP_URL, wait_until="networkidle", timeout=20000)
+
+        # Extract all cookies
+        cookies = context.cookies()
+        browser.close()
+
+        if not cookies:
+            print("ERROR: No cookies extracted after login")
+            sys.exit(1)
+
+        # Save as a simple dict keyed by name for easy loading
+        cookie_dict = {c["name"]: c["value"] for c in cookies}
+
+        with open(OUT_PATH, "w") as f:
+            json.dump(cookie_dict, f, indent=2)
+
+        print(f"Saved {len(cookie_dict)} cookies to {OUT_PATH.name}")
 
 
 if __name__ == "__main__":
-    main()
+    refresh()
