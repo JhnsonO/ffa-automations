@@ -144,7 +144,7 @@ def refresh_cookies_via_playwright():
             )
             page = context.new_page()
 
-            page.goto("https://gopro.com/login", wait_until="networkidle", timeout=30000)
+            page.goto("https://gopro.com/login", wait_until="domcontentloaded", timeout=30000)
             page.fill('input[type="email"], input[name="email"], input[id*="email"]', email)
 
             try:
@@ -169,7 +169,7 @@ def refresh_cookies_via_playwright():
                     return False
 
             if "plus.gopro.com" not in page.url:
-                page.goto("https://plus.gopro.com", wait_until="networkidle", timeout=20000)
+                page.goto("https://plus.gopro.com", wait_until="domcontentloaded", timeout=20000)
 
             cookies = context.cookies()
             browser.close()
@@ -480,5 +480,6 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
