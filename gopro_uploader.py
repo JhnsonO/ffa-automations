@@ -144,7 +144,7 @@ def refresh_cookies_via_playwright():
             )
             page = context.new_page()
 
-            page.goto("https://login.gopro.com", wait_until="networkidle", timeout=30000)
+            page.goto("https://gopro.com/login", wait_until="networkidle", timeout=30000)
             page.fill('input[type="email"], input[name="email"], input[id*="email"]', email)
 
             try:
@@ -162,7 +162,7 @@ def refresh_cookies_via_playwright():
                 page.wait_for_url("**/plus.gopro.com/**", timeout=15000)
             except PlaywrightTimeout:
                 try:
-                    page.wait_for_url(lambda url: "login.gopro.com" not in url, timeout=10000)
+                    page.wait_for_url(lambda url: "gopro.com/login" not in url, timeout=10000)
                 except PlaywrightTimeout:
                     log.error(f"Playwright login failed — still on: {page.url}")
                     browser.close()
@@ -480,4 +480,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
