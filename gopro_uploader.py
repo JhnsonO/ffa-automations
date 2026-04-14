@@ -145,29 +145,26 @@ def refresh_cookies_via_playwright():
             page = context.new_page()
 
             page.goto("https://gopro.com/login", wait_until="domcontentloaded", timeout=30000)
-            page.fill('input[type="email"], input[name="email"], input[id*="email"]', email)
 
+            # Wait for the form to be ready
+            page.wait_for_selector("input#email", timeout=15000)
+
+            # Fill email and password using stable IDs
+            page.fill("input#email", email)
+            page.fill("input#password", password)
+
+            # Click login button using stable class
+            page.click("button.Login_loginButton__iaFNb")
+
+            # Wait for redirect away from login page
             try:
-                next_btn = page.locator('button:has-text("Next"), button:has-text("Continue")')
-                if next_btn.count() > 0:
-                    next_btn.first.click()
-                    page.wait_for_timeout(1500)
-            except Exception:
-                pass
-
-            page.fill('input[type="password"]', password)
-            page.click('button[type="submit"], button:has-text("Sign In"), button:has-text("Log In")')
-
-            try:
-                page.wait_for_url("**/plus.gopro.com/**", timeout=15000)
+                page.wait_for_url(lambda url: "gopro.com/login" not in url, timeout=20000)
             except PlaywrightTimeout:
-                try:
-                    page.wait_for_url(lambda url: "gopro.com/login" not in url, timeout=10000)
-                except PlaywrightTimeout:
-                    log.error(f"Playwright login failed — still on: {page.url}")
-                    browser.close()
-                    return False
+                log.error(f"Playwright login failed — still on: {page.url}")
+                browser.close()
+                return False
 
+            # Navigate to app to ensure cloud session cookies are set
             if "plus.gopro.com" not in page.url:
                 page.goto("https://plus.gopro.com", wait_until="domcontentloaded", timeout=20000)
 
@@ -480,6 +477,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
