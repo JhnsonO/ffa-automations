@@ -47,11 +47,8 @@ jobs:
             uploaded-db-v2
             uploaded-db
 
-      - name: Refresh GoPro cookies
-        env:
-          GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
-          GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
-        run: python3 refresh_cookies.py
+      - name: Write GoPro cookies
+        run: echo '${{ secrets.GOPRO_COOKIES }}' > gopro_cookies.json
 
       - name: Write YouTube credentials
         run: echo '${{ secrets.YOUTUBE_CREDENTIALS }}' > youtube_credentials.json
@@ -62,6 +59,8 @@ jobs:
       - name: Run uploader
         env:
           LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
+          GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
+          GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
         run: python3 gopro_uploader.py
 
       - name: Save upload database
