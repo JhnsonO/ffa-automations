@@ -47,9 +47,6 @@ jobs:
             uploaded-db-v2
             uploaded-db
 
-      - name: Write GoPro cookies
-        run: echo '${{ secrets.GOPRO_COOKIES }}' > gopro_cookies.json
-
       - name: Write YouTube credentials
         run: echo '${{ secrets.YOUTUBE_CREDENTIALS }}' > youtube_credentials.json
 
