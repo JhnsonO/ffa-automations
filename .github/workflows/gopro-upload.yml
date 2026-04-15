@@ -15,6 +15,10 @@ jobs:
   upload:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # Prevent overlapping runs — if a run is in progress, cancel the new one
+    concurrency:
+      group: gopro-upload
+      cancel-in-progress: false
 
     steps:
       - name: Free up disk space
@@ -27,6 +31,8 @@ jobs:
 
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -37,15 +43,6 @@ jobs:
         run: |
           pip install requests google-auth google-auth-oauthlib google-api-python-client playwright
           playwright install chromium --with-deps
-
-      - name: Restore upload database
-        uses: actions/cache@v4
-        with:
-          path: uploaded.db
-          key: uploaded-db-v2
-          restore-keys: |
-            uploaded-db-v2
-            uploaded-db
 
       - name: Write YouTube credentials
         run: echo '${{ secrets.YOUTUBE_CREDENTIALS }}' > youtube_credentials.json
@@ -60,12 +57,14 @@ jobs:
           GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
         run: python3 gopro_uploader.py
 
-      - name: Save upload database
+      - name: Commit updated database back to repo
         if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: uploaded.db
-          key: uploaded-db-v2
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add uploaded.db
+          git diff --staged --quiet || git commit -m "chore: update uploaded.db [skip ci]"
+          git push
 
       - name: Save updated YouTube token
         if: always()
