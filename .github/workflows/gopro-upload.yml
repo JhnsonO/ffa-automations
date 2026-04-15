@@ -2,7 +2,7 @@ name: Upload GoPro Sessions to YouTube
 
 on:
   schedule:
-    - cron: '0,30 * * * *'  # Every 30 minutes, all day
+    - cron: '0,30 * * * *'
   workflow_dispatch:
     inputs:
       days:
@@ -11,14 +11,17 @@ on:
         default: '2'
         type: string
 
+permissions:
+  contents: write
+
+concurrency:
+  group: gopro-upload
+  cancel-in-progress: false
+
 jobs:
   upload:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    # Prevent overlapping runs — if a run is in progress, cancel the new one
-    concurrency:
-      group: gopro-upload
-      cancel-in-progress: false
 
     steps:
       - name: Free up disk space
@@ -32,7 +35,19 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Ensure latest main
+        run: |
+          git checkout main
+          git pull --rebase origin main
+
+      - name: Ensure DB exists
+        run: |
+          touch uploaded.db
+          ls -lah uploaded.db
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -57,18 +72,36 @@ jobs:
           GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
         run: python3 gopro_uploader.py
 
+      - name: Show DB status
+        if: always()
+        run: |
+          ls -lah uploaded.db || true
+          git status --short
+
       - name: Commit updated database back to repo
         if: always()
         run: |
+          git checkout main
+          git pull --rebase origin main
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          touch uploaded.db
           git add uploaded.db
-          git diff --staged --quiet || git commit -m "chore: update uploaded.db [skip ci]"
-          git push
+
+          if git diff --staged --quiet; then
+            echo "No uploaded.db changes to commit"
+            exit 0
+          fi
+
+          git commit -m "chore: update uploaded.db [skip ci]"
+
+          git push origin HEAD:main
 
       - name: Save updated YouTube token
         if: always()
         run: |
           if [ -f youtube_token.json ]; then
             echo "YOUTUBE_TOKEN_UPDATED=$(cat youtube_token.json | base64 -w 0)" >> $GITHUB_ENV
-          fi
+          fi 
