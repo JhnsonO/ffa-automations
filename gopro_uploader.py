@@ -486,6 +486,7 @@ def run():
 
         title       = make_title(filename, captured_at, camera_label)
         description = make_description(filename, captured_at, camera_label)
+        description += f"\n\nFFA_MEDIA_ID:{media_id}\nFFA_FILENAME:{filename}"
         yt_id       = upload_to_youtube(yt, dest, title, description, gopro_filename=filename)
 
         if yt_id:
