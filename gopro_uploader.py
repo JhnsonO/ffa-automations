@@ -42,7 +42,7 @@ GOPRO_API     = "https://api.gopro.com"
 GOPRO_HEADERS = {"Accept": "application/vnd.gopro.jk.media+json; version=2.0.0"}
 YT_SCOPES     = ["https://www.googleapis.com/auth/youtube.upload"]
 
-LOOKBACK_DAYS = int(os.environ.get("LOOKBACK_DAYS") or 2)
+LOOKBACK_DAYS = int(os.environ.get("LOOKBACK_DAYS") or 0)  # 0 = use DB cutoff
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,10 +80,18 @@ def init_db():
     con.commit()
     return con
 
-def already_uploaded(con, media_id):
-    return con.execute(
-        "SELECT 1 FROM uploads WHERE media_id=?", (media_id,)
-    ).fetchone() is not None
+def already_uploaded(con, media_id, filename=None):
+    # Check by media_id first
+    if con.execute("SELECT 1 FROM uploads WHERE media_id=?", (media_id,)).fetchone():
+        return True
+    # Fallback: check by filename in case media_id wasn't recorded correctly
+    if filename:
+        if con.execute("SELECT 1 FROM uploads WHERE filename=?", (filename,)).fetchone():
+            return True
+        # Also check the filename: prefix used for manually seeded entries
+        if con.execute("SELECT 1 FROM uploads WHERE media_id=?", (f"filename:{filename}",)).fetchone():
+            return True
+    return False
 
 def recently_failed(con, media_id):
     row = con.execute(
@@ -198,10 +206,25 @@ def gopro_get(session, path, params=None):
     r.raise_for_status()
     return r.json()
 
-def fetch_recent_media(session):
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)).strftime(
-        "%Y-%m-%dT%H:%M:%S.000Z"
-    )
+def fetch_recent_media(session, con=None):
+    if LOOKBACK_DAYS > 0:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+    elif con is not None:
+        # Use the most recent uploaded video as the cutoff
+        row = con.execute("SELECT MAX(captured_at) FROM uploads").fetchone()
+        if row and row[0]:
+            cutoff = row[0]
+        else:
+            # Nothing in DB yet — default to 2 days
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime(
+                "%Y-%m-%dT%H:%M:%S.000Z"
+            )
+    else:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
     all_media = []
     page = 1
     while True:
@@ -236,7 +259,7 @@ def get_new_items(con):
     session = make_session(cookies)
 
     try:
-        media_items = fetch_recent_media(session)
+        media_items = fetch_recent_media(session, con=con)
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 401:
             if not refresh_cookies_via_playwright():
@@ -244,13 +267,13 @@ def get_new_items(con):
                 sys.exit(1)
             cookies = load_cookies_from_file()
             session = make_session(cookies)
-            media_items = fetch_recent_media(session)
+            media_items = fetch_recent_media(session, con=con)
         else:
             raise
 
     new_items = [
         m for m in media_items
-        if not already_uploaded(con, m["id"])
+        if not already_uploaded(con, m["id"], m.get("filename"))
         and not recently_failed(con, m["id"])
         and int(m.get("file_size", 0)) > 100_000_000
     ]
