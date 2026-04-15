@@ -357,6 +357,30 @@ def get_youtube_service():
             f.write(creds.to_json())
     return build("youtube", "v3", credentials=creds)
 
+def youtube_video_exists(service, media_id, filename):
+    queries = [
+        f"FFA_MEDIA_ID:{media_id}",
+        f"FFA_FILENAME:{filename}",
+        f"\"{filename}\"",
+    ]
+
+    for q in queries:
+        try:
+            resp = service.search().list(
+                part="snippet",
+                forMine=True,
+                type="video",
+                maxResults=5,
+                q=q,
+            ).execute()
+
+            if resp.get("items"):
+                return True
+        except Exception as e:
+            log.warning(f"YouTube duplicate check failed for query {q}: {e}")
+
+    return False
+
 def upload_to_youtube(service, video_path, title, description, gopro_filename="", max_retries=3):
     log.info(f"Uploading to YouTube: {title} ({gopro_filename})")
     body = {
@@ -484,8 +508,16 @@ def run():
             mark_failed(con, media_id, "download failed")
             continue
 
+        if youtube_video_exists(yt, media_id, filename):
+            log.warning(f"Skipping {filename} — already found on YouTube")
+            mark_uploaded(con, media_id, filename, captured_at, "existing")
+            if dest.exists():
+                dest.unlink()
+            continue
+
         title       = make_title(filename, captured_at, camera_label)
         description = make_description(filename, captured_at, camera_label)
+        description += f"\n\nFFA_MEDIA_ID:{media_id}\nFFA_FILENAME:{filename}"
         yt_id       = upload_to_youtube(yt, dest, title, description, gopro_filename=filename)
 
         if yt_id:
