@@ -81,11 +81,17 @@ jobs:
       - name: Commit updated database back to repo
         if: always()
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Stash any local changes so rebase can run cleanly
+          git stash --include-untracked || true
+
           git checkout main
           git pull --rebase origin main
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Restore stashed changes (uploaded.db)
+          git stash pop || true
 
           touch uploaded.db
           git add uploaded.db
@@ -96,7 +102,6 @@ jobs:
           fi
 
           git commit -m "chore: update uploaded.db [skip ci]"
-
           git push origin HEAD:main
 
       - name: Save updated YouTube token
@@ -104,4 +109,4 @@ jobs:
         run: |
           if [ -f youtube_token.json ]; then
             echo "YOUTUBE_TOKEN_UPDATED=$(cat youtube_token.json | base64 -w 0)" >> $GITHUB_ENV
-          fi 
+          fi
