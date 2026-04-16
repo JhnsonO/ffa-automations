@@ -2,7 +2,7 @@ name: Upload GoPro Sessions to YouTube
 
 on:
   schedule:
-    - cron: '0,30 * * * *'
+    - cron: '0 */4 * * *'
   workflow_dispatch:
     inputs:
       days:
@@ -110,3 +110,4 @@ jobs:
           if [ -f youtube_token.json ]; then
             echo "YOUTUBE_TOKEN_UPDATED=$(cat youtube_token.json | base64 -w 0)" >> $GITHUB_ENV
           fi
+
