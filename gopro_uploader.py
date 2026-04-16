@@ -105,7 +105,7 @@ def recently_failed(con, media_id):
 def mark_uploaded(con, media_id, filename, captured_at, youtube_id):
     con.execute("DELETE FROM failed_uploads WHERE media_id=?", (media_id,))
     con.execute(
-        "INSERT OR REPLACE INTO uploads VALUES (?,?,?,?,?)",
+        "INSERT OR REPLACE INTO uploads (media_id, filename, captured_at, youtube_id, uploaded_at) VALUES (?,?,?,?,?)",
         (media_id, filename, captured_at, youtube_id, datetime.now(timezone.utc).isoformat()),
     )
     con.commit()
@@ -532,6 +532,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
