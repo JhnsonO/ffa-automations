@@ -10,6 +10,16 @@ on:
         required: false
         default: '2'
         type: string
+      direct_video_url:
+        description: 'Optional: direct downloadable MP4/video URL to upload manually if GoPro scan misses one'
+        required: false
+        default: ''
+        type: string
+      direct_filename:
+        description: 'Optional: filename to use for the direct URL upload, e.g. GX010130.MP4'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -68,6 +78,8 @@ jobs:
       - name: Run uploader
         env:
           LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
+          DIRECT_UPLOAD_URL: ${{ github.event.inputs.direct_video_url || '' }}
+          DIRECT_UPLOAD_FILENAME: ${{ github.event.inputs.direct_filename || '' }}
           GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
           GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
         run: python3 gopro_uploader.py
@@ -110,4 +122,3 @@ jobs:
           if [ -f youtube_token.json ]; then
             echo "YOUTUBE_TOKEN_UPDATED=$(cat youtube_token.json | base64 -w 0)" >> $GITHUB_ENV
           fi
-
