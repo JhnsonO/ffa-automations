@@ -10,6 +10,11 @@ on:
         required: false
         default: '2'
         type: string
+      gopro_filename:
+        description: 'Optional: exact GoPro filename to upload manually, e.g. GX010130.MP4'
+        required: false
+        default: ''
+        type: string
       direct_video_url:
         description: 'Optional: direct downloadable MP4/video URL to upload manually if GoPro scan misses one'
         required: false
@@ -42,17 +47,17 @@ jobs:
           sudo rm -rf /opt/hostedtoolcache/CodeQL
           df -h
 
-      - name: Checkout repo
+      - name: Checkout selected workflow ref
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref }}
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Ensure latest main
+      - name: Show checked out ref
         run: |
-          git checkout main
-          git pull --rebase origin main
+          git branch --show-current
+          git log -1 --oneline
 
       - name: Ensure DB exists
         run: |
@@ -78,6 +83,7 @@ jobs:
       - name: Run uploader
         env:
           LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
+          MANUAL_GOPRO_FILENAME: ${{ github.event.inputs.gopro_filename || '' }}
           DIRECT_UPLOAD_URL: ${{ github.event.inputs.direct_video_url || '' }}
           DIRECT_UPLOAD_FILENAME: ${{ github.event.inputs.direct_filename || '' }}
           GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
@@ -90,19 +96,17 @@ jobs:
           ls -lah uploaded.db || true
           git status --short
 
-      - name: Commit updated database back to repo
+      - name: Commit updated database back to main
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Stash any local changes so rebase can run cleanly
+          # Stash DB changes made by the uploader, switch to main, then apply the DB only.
           git stash --include-untracked || true
-
+          git fetch origin main
           git checkout main
           git pull --rebase origin main
-
-          # Restore stashed changes (uploaded.db)
           git stash pop || true
 
           touch uploaded.db
