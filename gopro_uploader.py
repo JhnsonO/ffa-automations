@@ -2,25 +2,28 @@
 """
 FFA GoPro Cloud → YouTube Uploader
 -----------------------------------
-Runs every 30 minutes via GitHub Actions.
+Runs via GitHub Actions.
 
 Flow:
-1. Try existing cookies → quick check for new videos
-2. If cookies expired (401) → refresh via Playwright → retry check
-3. If no new videos → exit silently (no logs, no noise)
-4. If new videos → download and upload to YouTube
+1. Optional manual direct URL upload if DIRECT_UPLOAD_URL is provided
+2. Try existing cookies → quick check for new videos
+3. If cookies expired (401) → refresh via Playwright → retry check
+4. Log exactly why GoPro videos are accepted or filtered out
+5. If new videos → download and upload to YouTube
 """
 
 import os
 import sys
 import json
 import time
+import hashlib
 import logging
 import sqlite3
 import requests
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -41,8 +44,11 @@ LOG_PATH.parent.mkdir(exist_ok=True)
 GOPRO_API     = "https://api.gopro.com"
 GOPRO_HEADERS = {"Accept": "application/vnd.gopro.jk.media+json; version=2.0.0"}
 YT_SCOPES     = ["https://www.googleapis.com/auth/youtube.upload"]
+MIN_VIDEO_SIZE_BYTES = 100_000_000
 
 LOOKBACK_DAYS = int(os.environ.get("LOOKBACK_DAYS") or 0)  # 0 = use DB cutoff
+DIRECT_UPLOAD_URL = (os.environ.get("DIRECT_UPLOAD_URL") or "").strip()
+DIRECT_UPLOAD_FILENAME = (os.environ.get("DIRECT_UPLOAD_FILENAME") or "").strip()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,14 +87,11 @@ def init_db():
     return con
 
 def already_uploaded(con, media_id, filename=None):
-    # Check by media_id first
     if con.execute("SELECT 1 FROM uploads WHERE media_id=?", (media_id,)).fetchone():
         return True
-    # Fallback: check by filename in case media_id wasn't recorded correctly
     if filename:
         if con.execute("SELECT 1 FROM uploads WHERE filename=?", (filename,)).fetchone():
             return True
-        # Also check the filename: prefix used for manually seeded entries
         if con.execute("SELECT 1 FROM uploads WHERE media_id=?", (f"filename:{filename}",)).fetchone():
             return True
     return False
@@ -151,20 +154,12 @@ def refresh_cookies_via_playwright():
                 )
             )
             page = context.new_page()
-
             page.goto("https://gopro.com/login", wait_until="domcontentloaded", timeout=30000)
-
-            # Wait for the form to be ready
             page.wait_for_selector("input#email", timeout=15000)
-
-            # Fill email and password using stable IDs
             page.fill("input#email", email)
             page.fill("input#password", password)
-
-            # Click login button using stable class
             page.click("button.Login_loginButton__iaFNb")
 
-            # Wait for redirect away from login page
             try:
                 page.wait_for_url(lambda url: "gopro.com/login" not in url, timeout=20000)
             except PlaywrightTimeout:
@@ -172,7 +167,6 @@ def refresh_cookies_via_playwright():
                 browser.close()
                 return False
 
-            # Navigate to app to ensure cloud session cookies are set
             if "plus.gopro.com" not in page.url:
                 page.goto("https://plus.gopro.com", wait_until="domcontentloaded", timeout=20000)
 
@@ -211,20 +205,23 @@ def fetch_recent_media(session, con=None):
         cutoff = (datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)).strftime(
             "%Y-%m-%dT%H:%M:%S.000Z"
         )
+        log.info(f"GoPro scan cutoff: last {LOOKBACK_DAYS} day(s), after {cutoff}")
     elif con is not None:
-        # Use the most recent uploaded video as the cutoff
         row = con.execute("SELECT MAX(captured_at) FROM uploads").fetchone()
         if row and row[0]:
             cutoff = row[0]
+            log.info(f"GoPro scan cutoff from uploaded DB: after {cutoff}")
         else:
-            # Nothing in DB yet — default to 2 days
             cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime(
                 "%Y-%m-%dT%H:%M:%S.000Z"
             )
+            log.info(f"GoPro scan cutoff: DB empty, defaulting to after {cutoff}")
     else:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime(
             "%Y-%m-%dT%H:%M:%S.000Z"
         )
+        log.info(f"GoPro scan cutoff: defaulting to after {cutoff}")
+
     all_media = []
     page = 1
     while True:
@@ -237,11 +234,13 @@ def fetch_recent_media(session, con=None):
             "type": "Video",
         })
         items = data.get("_embedded", {}).get("media", [])
+        log.info(f"GoPro page {page}: {len(items)} video item(s) returned")
         if not items:
             break
         for item in items:
             cap = item.get("captured_at", "")
             if cap and cap < cutoff:
+                log.info(f"Stopping GoPro scan at {item.get('filename')} ({cap}) because it is older than cutoff")
                 return all_media
             all_media.append(item)
         pages = data.get("_pages", {})
@@ -250,11 +249,27 @@ def fetch_recent_media(session, con=None):
         page += 1
     return all_media
 
+def describe_media_filter(con, item):
+    media_id = item.get("id", "")
+    filename = item.get("filename", "")
+    captured_at = item.get("captured_at", "")
+    try:
+        file_size = int(item.get("file_size", 0) or 0)
+    except Exception:
+        file_size = 0
+
+    reasons = []
+    if already_uploaded(con, media_id, filename):
+        reasons.append("already uploaded / already in uploaded.db")
+    if recently_failed(con, media_id):
+        reasons.append("recently failed within 24h cooldown")
+    if file_size <= MIN_VIDEO_SIZE_BYTES:
+        reasons.append(f"file below 100MB filter ({file_size / 1e6:.1f} MB)")
+
+    summary = f"{filename or '(no filename)'} | id={media_id or '(no id)'} | captured_at={captured_at or '(no date)'} | size={file_size / 1e9:.2f} GB"
+    return reasons, summary
+
 def get_new_items(con):
-    """
-    Try existing cookies first. On 401, refresh via Playwright and retry once.
-    Returns (session, new_items).
-    """
     cookies = load_cookies_from_file()
     session = make_session(cookies)
 
@@ -262,6 +277,7 @@ def get_new_items(con):
         media_items = fetch_recent_media(session, con=con)
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 401:
+            log.warning("GoPro cookies returned 401 — refreshing via Playwright")
             if not refresh_cookies_via_playwright():
                 log.error("Cookie refresh failed — giving up")
                 sys.exit(1)
@@ -271,13 +287,17 @@ def get_new_items(con):
         else:
             raise
 
-    new_items = [
-        m for m in media_items
-        if not already_uploaded(con, m["id"], m.get("filename"))
-        and not recently_failed(con, m["id"])
-        and int(m.get("file_size", 0)) > 100_000_000
-    ]
+    log.info(f"GoPro scan found {len(media_items)} video item(s) before local filtering")
+    new_items = []
+    for item in media_items:
+        reasons, summary = describe_media_filter(con, item)
+        if reasons:
+            log.info(f"Filtered out: {summary} — {'; '.join(reasons)}")
+            continue
+        log.info(f"Accepted for upload: {summary}")
+        new_items.append(item)
 
+    log.info(f"GoPro scan accepted {len(new_items)} new video(s) after filtering")
     return session, new_items
 
 def get_concat_download_url(session, media_id):
@@ -293,7 +313,7 @@ def get_concat_download_url(session, media_id):
             for v in variations:
                 if v.get("label") == "source" and v.get("quality") == quality and v.get("available"):
                     return v["url"]
-        log.warning(f"No 4K variant found for {media_id}")
+        log.warning(f"No preferred 4K variant found for {media_id}")
         return None
     except Exception as e:
         log.error(f"Failed to get download URL for {media_id}: {e}")
@@ -316,6 +336,8 @@ def download_video(url, dest_path, max_retries=3):
                 start_time = time.time()
                 with open(dest_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if not chunk:
+                            continue
                         f.write(chunk)
                         downloaded += len(chunk)
                         elapsed = time.time() - start_time
@@ -363,7 +385,6 @@ def youtube_video_exists(service, media_id, filename):
         f"FFA_FILENAME:{filename}",
         f"\"{filename}\"",
     ]
-
     for q in queries:
         try:
             resp = service.search().list(
@@ -373,12 +394,11 @@ def youtube_video_exists(service, media_id, filename):
                 maxResults=5,
                 q=q,
             ).execute()
-
             if resp.get("items"):
+                log.info(f"YouTube duplicate check matched query: {q}")
                 return True
         except Exception as e:
             log.warning(f"YouTube duplicate check failed for query {q}: {e}")
-
     return False
 
 def upload_to_youtube(service, video_path, title, description, gopro_filename="", max_retries=3):
@@ -466,18 +486,70 @@ def make_description(filename, captured_at, camera_label=""):
     )
 
 
+def filename_from_direct_url(url):
+    parsed = urlparse(url)
+    name = Path(parsed.path).name
+    if name and "." in name:
+        return name
+    return f"manual_upload_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.mp4"
+
+def run_direct_upload(con):
+    if not DIRECT_UPLOAD_URL:
+        return False
+
+    filename = DIRECT_UPLOAD_FILENAME or filename_from_direct_url(DIRECT_UPLOAD_URL)
+    captured_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    url_hash = hashlib.sha256(DIRECT_UPLOAD_URL.encode("utf-8")).hexdigest()[:16]
+    media_id = f"direct:{filename}:{url_hash}"
+
+    log.info("=" * 60)
+    log.info("Manual direct URL upload mode enabled")
+    log.info(f"Direct URL filename: {filename}")
+
+    if already_uploaded(con, media_id, filename):
+        log.warning(f"Skipping manual upload for {filename} — already in uploaded.db")
+        return True
+
+    yt = get_youtube_service()
+    if youtube_video_exists(yt, media_id, filename):
+        log.warning(f"Skipping manual upload for {filename} — already found on YouTube")
+        mark_uploaded(con, media_id, filename, captured_at, "existing")
+        return True
+
+    dest = DOWNLOAD_DIR / filename
+    if not download_video(DIRECT_UPLOAD_URL, dest):
+        mark_failed(con, media_id, "direct URL download failed")
+        log.error(f"Manual upload failed for {filename} — could not download direct URL")
+        return True
+
+    title = make_title(filename, captured_at, "Manual")
+    description = make_description(filename, captured_at, "Manual")
+    description += f"\n\nFFA_MEDIA_ID:{media_id}\nFFA_FILENAME:{filename}\nFFA_DIRECT_UPLOAD_URL:{DIRECT_UPLOAD_URL}"
+    yt_id = upload_to_youtube(yt, dest, title, description, gopro_filename=filename)
+
+    if yt_id:
+        mark_uploaded(con, media_id, filename, captured_at, yt_id)
+        dest.unlink(missing_ok=True)
+        log.info(f"Manual upload done: {filename} -> https://youtu.be/{yt_id}")
+    else:
+        mark_failed(con, media_id, "direct URL youtube upload failed")
+        log.error(f"Manual YouTube upload failed for {filename} — will retry after 24h")
+    return True
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def run():
     con = init_db()
 
-    # Step 1: Check GoPro for new videos (Playwright only fires if cookies are stale)
-    session, new_items = get_new_items(con)
-
-    # Step 2: Nothing new — exit completely silently
-    if not new_items:
+    if run_direct_upload(con):
         return
 
-    # Step 3: Work to do — initialise logging and YouTube
+    session, new_items = get_new_items(con)
+
+    if not new_items:
+        log.info("No new GoPro videos accepted for upload after filtering. See filter logs above for details.")
+        return
+
     log.info("=" * 60)
     log.info(f"FFA GoPro -> YouTube uploader starting — {len(new_items)} new video(s)")
 
@@ -532,8 +604,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-
-
-
-
-
