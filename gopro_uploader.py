@@ -269,10 +269,15 @@ def describe_media_filter(con, item):
     captured_at = item.get("captured_at", "")
     file_size = int(item.get("file_size", 0) or 0)
     reasons = []
-    if already_uploaded(con, media_id, filename):
+    if already_uploaded(con, media_id, filename, include_filename_fallback=False):
         rows = db_upload_rows_for_filename(con, filename)
         details = "; ".join([f"db_media_id={r[0]}, youtube_id={r[3]}, uploaded_at={r[4]}" for r in rows[:3]])
-        reasons.append(f"already uploaded / already in uploaded.db ({details or 'media_id matched'})")
+        reasons.append(f"already uploaded by exact GoPro media_id ({details or 'media_id matched'})")
+    else:
+        filename_rows = db_upload_rows_for_filename(con, filename)
+        if filename_rows:
+            details = "; ".join([f"db_media_id={r[0]}, youtube_id={r[3]}, uploaded_at={r[4]}" for r in filename_rows[:3]])
+            log.warning(f"Filename reuse detected for {filename}: DB has older filename match, but media_id is different so this will NOT block upload. {details}")
     if recently_failed(con, media_id):
         reasons.append("recently failed within 24h cooldown")
     if file_size <= MIN_VIDEO_SIZE_BYTES:
@@ -480,8 +485,8 @@ def upload_item(con, yt, session, item, camera_label="", force=False):
     if not download_video(dl_url, dest):
         mark_failed(con, media_id, "download failed")
         return
-    if not force and youtube_video_exists(yt, media_id, filename):
-        log.warning(f"Skipping {filename} — already found on YouTube")
+    if not force and youtube_video_exists(yt, media_id, filename, skip_filename_query=True):
+        log.warning(f"Skipping {filename} — exact media ID already found on YouTube")
         mark_uploaded(con, media_id, filename, captured_at, "existing")
         dest.unlink(missing_ok=True)
         return
