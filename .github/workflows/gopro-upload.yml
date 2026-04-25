@@ -80,6 +80,35 @@ jobs:
       - name: Write YouTube token
         run: echo '${{ secrets.YOUTUBE_TOKEN }}' > youtube_token.json
 
+      - name: Debug GoPro scan candidates
+        env:
+          LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
+          GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
+          GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import gopro_uploader as u
+
+          con = u.init_db()
+          session = u.get_authenticated_gopro_session()
+          media_items = u.fetch_recent_media(session, con=con)
+
+          print("=" * 60)
+          print(f"DEBUG: GoPro returned {len(media_items)} item(s) before filtering")
+
+          accepted = 0
+          for item in media_items:
+              reasons, summary = u.describe_media_filter(con, item)
+              if reasons:
+                  print(f"DEBUG FILTERED: {summary} — {'; '.join(reasons)}")
+              else:
+                  accepted += 1
+                  print(f"DEBUG ACCEPTED: {summary}")
+
+          print(f"DEBUG: {accepted} item(s) would be accepted for upload")
+          print("=" * 60)
+          PY
+
       - name: Run uploader
         env:
           LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
