@@ -73,15 +73,28 @@ def init_db():
     return con
 
 
-def already_uploaded(con, media_id, filename=None):
-    if con.execute("SELECT 1 FROM uploads WHERE media_id=?", (media_id,)).fetchone():
+def already_uploaded(con, media_id, filename=None, include_filename_fallback=True):
+    row = con.execute("SELECT youtube_id FROM uploads WHERE media_id=?", (media_id,)).fetchone()
+    if row:
         return True
-    if filename:
-        if con.execute("SELECT 1 FROM uploads WHERE filename=?", (filename,)).fetchone():
+    if filename and include_filename_fallback:
+        row = con.execute("SELECT media_id, youtube_id FROM uploads WHERE filename=?", (filename,)).fetchone()
+        if row:
             return True
-        if con.execute("SELECT 1 FROM uploads WHERE media_id=?", (f"filename:{filename}",)).fetchone():
+        row = con.execute("SELECT media_id, youtube_id FROM uploads WHERE media_id=?", (f"filename:{filename}",)).fetchone()
+        if row:
             return True
     return False
+
+
+def db_upload_rows_for_filename(con, filename):
+    if not filename:
+        return []
+    rows = con.execute(
+        "SELECT media_id, filename, captured_at, youtube_id, uploaded_at FROM uploads WHERE filename=? OR media_id=? ORDER BY uploaded_at DESC",
+        (filename, f"filename:{filename}"),
+    ).fetchall()
+    return rows
 
 
 def recently_failed(con, media_id):
@@ -209,9 +222,13 @@ def fetch_recent_media(session, con=None):
         if not items:
             break
         for item in items:
+            filename = item.get("filename", "")
             cap = item.get("captured_at", "")
+            media_id = item.get("id", "")
+            file_size = int(item.get("file_size", 0) or 0)
+            log.info(f"GoPro candidate: {filename or '(no filename)'} | id={media_id or '(no id)'} | captured_at={cap or '(no date)'} | size={file_size / 1e9:.2f} GB")
             if cap and cap < cutoff:
-                log.info(f"Stopping scan at {item.get('filename')} ({cap}) because it is older than cutoff")
+                log.info(f"Stopping scan at {filename or media_id} ({cap}) because it is older than cutoff {cutoff}")
                 return all_media
             all_media.append(item)
         pages = data.get("_pages", {})
@@ -253,7 +270,9 @@ def describe_media_filter(con, item):
     file_size = int(item.get("file_size", 0) or 0)
     reasons = []
     if already_uploaded(con, media_id, filename):
-        reasons.append("already uploaded / already in uploaded.db")
+        rows = db_upload_rows_for_filename(con, filename)
+        details = "; ".join([f"db_media_id={r[0]}, youtube_id={r[3]}, uploaded_at={r[4]}" for r in rows[:3]])
+        reasons.append(f"already uploaded / already in uploaded.db ({details or 'media_id matched'})")
     if recently_failed(con, media_id):
         reasons.append("recently failed within 24h cooldown")
     if file_size <= MIN_VIDEO_SIZE_BYTES:
@@ -349,8 +368,12 @@ def get_youtube_service():
     return build("youtube", "v3", credentials=creds)
 
 
-def youtube_video_exists(service, media_id, filename):
-    for q in [f"FFA_MEDIA_ID:{media_id}", f"FFA_FILENAME:{filename}", f"\"{filename}\""]:
+def youtube_video_exists(service, media_id, filename, skip_filename_query=False):
+    queries = [f"FFA_MEDIA_ID:{media_id}"]
+    if not skip_filename_query:
+        queries.extend([f"FFA_FILENAME:{filename}", f"\"{filename}\""])
+
+    for q in queries:
         try:
             resp = service.search().list(part="snippet", forMine=True, type="video", maxResults=5, q=q).execute()
             if resp.get("items"):
@@ -442,7 +465,7 @@ def filename_from_direct_url(url):
     return name if name and "." in name else f"manual_upload_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.mp4"
 
 
-def upload_item(con, yt, session, item, camera_label=""):
+def upload_item(con, yt, session, item, camera_label="", force=False):
     media_id = item["id"]
     filename = item["filename"]
     captured_at = item["captured_at"]
@@ -457,11 +480,13 @@ def upload_item(con, yt, session, item, camera_label=""):
     if not download_video(dl_url, dest):
         mark_failed(con, media_id, "download failed")
         return
-    if youtube_video_exists(yt, media_id, filename):
+    if not force and youtube_video_exists(yt, media_id, filename):
         log.warning(f"Skipping {filename} — already found on YouTube")
         mark_uploaded(con, media_id, filename, captured_at, "existing")
         dest.unlink(missing_ok=True)
         return
+    if force:
+        log.warning(f"Manual force upload enabled for {filename}; skipping DB/filename duplicate blockers")
     description = make_description(filename, captured_at, camera_label)
     description += f"\n\nFFA_MEDIA_ID:{media_id}\nFFA_FILENAME:{filename}"
     yt_id = upload_to_youtube(yt, dest, make_title(filename, captured_at, camera_label), description, gopro_filename=filename)
@@ -522,9 +547,11 @@ def run_manual_gopro_filename(con):
         if any("file below 100MB" in r for r in reasons):
             log.error("Manual upload stopped because the matched file is below the 100MB safety filter")
             return True
-        log.info("Manual filename override will still attempt upload unless it is below 100MB")
+        for row in db_upload_rows_for_filename(con, item.get("filename")):
+            log.warning(f"Manual DB match: media_id={row[0]} filename={row[1]} captured_at={row[2]} youtube_id={row[3]} uploaded_at={row[4]}")
+        log.info("Manual filename override will force upload unless it is below 100MB")
     yt = get_youtube_service()
-    upload_item(con, yt, session, item, camera_label="Manual")
+    upload_item(con, yt, session, item, camera_label="Manual", force=True)
     return True
 
 
