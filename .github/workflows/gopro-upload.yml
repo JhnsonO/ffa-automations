@@ -59,9 +59,10 @@ jobs:
           git branch --show-current
           git log -1 --oneline
 
-      - name: Ensure DB exists
+      - name: Load latest uploaded DB from main
         run: |
-          touch uploaded.db
+          git fetch origin main
+          git checkout origin/main -- uploaded.db || touch uploaded.db
           ls -lah uploaded.db
 
       - name: Set up Python
@@ -131,7 +132,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Stash DB changes made by the uploader, switch to main, then apply the DB only.
           git stash --include-untracked || true
           git fetch origin main
           git checkout main
