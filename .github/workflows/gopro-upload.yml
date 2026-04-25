@@ -10,6 +10,21 @@ on:
         required: false
         default: '2'
         type: string
+      gopro_filename:
+        description: 'Optional: exact GoPro filename to upload manually, e.g. GX010130.MP4'
+        required: false
+        default: ''
+        type: string
+      direct_video_url:
+        description: 'Optional: direct downloadable MP4/video URL to upload manually if GoPro scan misses one'
+        required: false
+        default: ''
+        type: string
+      direct_filename:
+        description: 'Optional: filename to use for the direct URL upload, e.g. GX010130.MP4'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -32,21 +47,22 @@ jobs:
           sudo rm -rf /opt/hostedtoolcache/CodeQL
           df -h
 
-      - name: Checkout repo
+      - name: Checkout selected workflow ref
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref }}
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Ensure latest main
+      - name: Show checked out ref
         run: |
-          git checkout main
-          git pull --rebase origin main
+          git branch --show-current
+          git log -1 --oneline
 
-      - name: Ensure DB exists
+      - name: Load latest uploaded DB from main
         run: |
-          touch uploaded.db
+          git fetch origin main
+          git checkout origin/main -- uploaded.db || touch uploaded.db
           ls -lah uploaded.db
 
       - name: Set up Python
@@ -65,9 +81,41 @@ jobs:
       - name: Write YouTube token
         run: echo '${{ secrets.YOUTUBE_TOKEN }}' > youtube_token.json
 
+      - name: Debug GoPro scan candidates
+        env:
+          LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
+          GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
+          GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import gopro_uploader as u
+
+          con = u.init_db()
+          session = u.get_authenticated_gopro_session()
+          media_items = u.fetch_recent_media(session, con=con)
+
+          print("=" * 60)
+          print(f"DEBUG: GoPro returned {len(media_items)} item(s) before filtering")
+
+          accepted = 0
+          for item in media_items:
+              reasons, summary = u.describe_media_filter(con, item)
+              if reasons:
+                  print(f"DEBUG FILTERED: {summary} — {'; '.join(reasons)}")
+              else:
+                  accepted += 1
+                  print(f"DEBUG ACCEPTED: {summary}")
+
+          print(f"DEBUG: {accepted} item(s) would be accepted for upload")
+          print("=" * 60)
+          PY
+
       - name: Run uploader
         env:
           LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
+          MANUAL_GOPRO_FILENAME: ${{ github.event.inputs.gopro_filename || '' }}
+          DIRECT_UPLOAD_URL: ${{ github.event.inputs.direct_video_url || '' }}
+          DIRECT_UPLOAD_FILENAME: ${{ github.event.inputs.direct_filename || '' }}
           GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
           GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
         run: python3 gopro_uploader.py
@@ -78,19 +126,16 @@ jobs:
           ls -lah uploaded.db || true
           git status --short
 
-      - name: Commit updated database back to repo
+      - name: Commit updated database back to main
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Stash any local changes so rebase can run cleanly
           git stash --include-untracked || true
-
+          git fetch origin main
           git checkout main
           git pull --rebase origin main
-
-          # Restore stashed changes (uploaded.db)
           git stash pop || true
 
           touch uploaded.db
@@ -110,4 +155,3 @@ jobs:
           if [ -f youtube_token.json ]; then
             echo "YOUTUBE_TOKEN_UPDATED=$(cat youtube_token.json | base64 -w 0)" >> $GITHUB_ENV
           fi
-
