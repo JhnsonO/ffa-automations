@@ -81,6 +81,23 @@ jobs:
       - name: Write YouTube token
         run: echo '${{ secrets.YOUTUBE_TOKEN }}' > youtube_token.json
 
+      - name: Write GoPro cookies
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          cookies = os.environ.get("GOPRO_COOKIES", "").strip()
+          if not cookies:
+              print("WARNING: GOPRO_COOKIES secret is empty or missing; writing empty cookie file")
+              cookies = "{}"
+
+          Path("gopro_cookies.json").write_text(cookies)
+          print("GoPro cookies file written")
+          PY
+
       - name: Debug GoPro scan candidates
         env:
           LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
