@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -304,17 +305,90 @@ def get_new_items(con):
 
 def get_concat_download_url(session, media_id):
     quality_preference = ["2160p", "3000p", "1440p"]
+    label_preference = ["concat", "source"]
+
+    def log_variants(variations):
+        if not variations:
+            log.warning(f"GoPro download variants for {media_id}: none returned")
+            return
+        log.info(f"GoPro download variants for {media_id}:")
+        for i, v in enumerate(variations, start=1):
+            log.info(
+                "  variant %s: label=%s | quality=%s | available=%s | width=%s | height=%s | size=%s | has_url=%s",
+                i,
+                v.get("label", ""),
+                v.get("quality", ""),
+                v.get("available", ""),
+                v.get("width", ""),
+                v.get("height", ""),
+                v.get("file_size") or v.get("size") or "",
+                bool(v.get("url")),
+            )
+
+    def quality_score(variant):
+        quality = str(variant.get("quality") or "").lower()
+        k_match = re.search(r"(\d+(?:\.\d+)?)\s*k", quality)
+        if k_match:
+            return int(float(k_match.group(1)) * 1000)
+        p_match = re.search(r"(\d{3,5})\s*p", quality)
+        if p_match:
+            return int(p_match.group(1))
+
+        numeric_fields = []
+        for key in ["height", "width"]:
+            try:
+                numeric_fields.append(int(variant.get(key) or 0))
+            except (TypeError, ValueError):
+                pass
+        if numeric_fields:
+            return max(numeric_fields)
+
+        nums = [int(n) for n in re.findall(r"\d+", quality)]
+        return max(nums) if nums else 0
+
+    def label_score(variant):
+        label = str(variant.get("label") or "").lower()
+        if label == "concat":
+            return 3
+        if label == "source":
+            return 2
+        return 1
+
+    def size_score(variant):
+        try:
+            return int(variant.get("file_size") or variant.get("size") or 0)
+        except (TypeError, ValueError):
+            return 0
+
     try:
         data = gopro_get(session, f"/media/{media_id}/download")
         variations = data.get("_embedded", {}).get("variations", [])
-        for label in ["concat", "source"]:
+
+        for label in label_preference:
             for quality in quality_preference:
                 for v in variations:
-                    if v.get("label") == label and v.get("quality") == quality and v.get("available"):
+                    if v.get("label") == label and v.get("quality") == quality and v.get("available") and v.get("url"):
                         log.info(f"Using GoPro download variant: {label} {quality}")
                         return v["url"]
-        log.warning(f"No preferred 4K variant found for {media_id}")
-        return None
+
+        available = [v for v in variations if v.get("available") and v.get("url")]
+        if not available:
+            log.warning(f"No downloadable GoPro variant found for {media_id}")
+            log_variants(variations)
+            return None
+
+        log.warning(f"No preferred 4K variant found for {media_id}; falling back to best available variant")
+        log_variants(variations)
+        best = max(available, key=lambda v: (quality_score(v), label_score(v), size_score(v)))
+        log.info(
+            "Using fallback GoPro download variant: label=%s quality=%s width=%s height=%s size=%s",
+            best.get("label", ""),
+            best.get("quality", ""),
+            best.get("width", ""),
+            best.get("height", ""),
+            best.get("file_size") or best.get("size") or "",
+        )
+        return best["url"]
     except Exception as e:
         log.error(f"Failed to get download URL for {media_id}: {e}")
         return None
