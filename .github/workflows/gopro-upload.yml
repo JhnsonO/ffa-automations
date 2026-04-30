@@ -98,6 +98,29 @@ jobs:
           print("GoPro cookies file written")
           PY
 
+      - name: Validate or refresh GoPro cookies
+        env:
+          GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
+          GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import sys
+          import gopro_uploader as u
+
+          try:
+              session = u.make_session(u.load_cookies_from_file())
+              u.gopro_get(session, "/media/search", params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"})
+              print("Saved GoPro cookies are valid")
+          except Exception as e:
+              print(f"Saved GoPro cookies are invalid; refreshing via refresh_cookies.py: {e}")
+              import refresh_cookies
+              refresh_cookies.refresh()
+
+              session = u.make_session(u.load_cookies_from_file())
+              u.gopro_get(session, "/media/search", params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"})
+              print("Refreshed GoPro cookies are valid")
+          PY
+
       - name: Debug GoPro scan candidates
         env:
           LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
