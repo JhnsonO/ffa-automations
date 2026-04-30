@@ -112,9 +112,9 @@ jobs:
               u.gopro_get(session, "/media/search", params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"})
               print("Saved GoPro cookies are valid")
           except Exception as e:
-              print(f"Saved GoPro cookies are invalid; refreshing via refresh_cookies.py: {e}")
-              import refresh_cookies
-              refresh_cookies.refresh()
+              print(f"Saved GoPro cookies are invalid; refreshing via uploader login flow: {e}")
+              if not u.refresh_cookies_via_playwright():
+                  raise SystemExit("GoPro cookie refresh failed")
 
               session = u.make_session(u.load_cookies_from_file())
               u.gopro_get(session, "/media/search", params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"})
