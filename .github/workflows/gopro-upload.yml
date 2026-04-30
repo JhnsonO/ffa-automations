@@ -81,6 +81,39 @@ jobs:
       - name: Write YouTube token
         run: echo '${{ secrets.YOUTUBE_TOKEN }}' > youtube_token.json
 
+      - name: Diagnose YouTube token safely
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          def short_hash(value):
+              if not value:
+                  return "missing"
+              return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+          token_path = Path("youtube_token.json")
+          creds_path = Path("youtube_credentials.json")
+          token = json.loads(token_path.read_text())
+          creds = json.loads(creds_path.read_text())
+
+          installed = creds.get("installed") or creds.get("web") or {}
+          creds_client_id = installed.get("client_id", "")
+          token_client_id = token.get("client_id", "")
+
+          print("YouTube token diagnostics (secret-safe):")
+          print(f"  token_json_valid: true")
+          print(f"  token_keys: {sorted(token.keys())}")
+          print(f"  has_refresh_token: {bool(token.get('refresh_token'))}")
+          print(f"  has_token: {bool(token.get('token'))}")
+          print(f"  expiry: {token.get('expiry', 'missing')}")
+          print(f"  scopes: {token.get('scopes') or token.get('scope') or 'missing'}")
+          print(f"  token_client_id_hash: {short_hash(token_client_id)}")
+          print(f"  credentials_client_id_hash: {short_hash(creds_client_id)}")
+          print(f"  client_ids_match: {bool(token_client_id and creds_client_id and token_client_id == creds_client_id)}")
+          PY
+
       - name: Write GoPro cookies
         env:
           GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
