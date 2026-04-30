@@ -114,6 +114,21 @@ jobs:
           print(f"  client_ids_match: {bool(token_client_id and creds_client_id and token_client_id == creds_client_id)}")
           PY
 
+      - name: Validate YouTube auth before GoPro scan
+        run: |
+          python3 - <<'PY'
+          import gopro_uploader as u
+
+          try:
+              u.get_youtube_service()
+              print("YouTube auth is valid")
+          except Exception as e:
+              print("ERROR: YouTube auth failed before GoPro scan.")
+              print("This usually means the YOUTUBE_TOKEN GitHub secret is expired, revoked, incomplete, or does not match YOUTUBE_CREDENTIALS.")
+              print(f"Underlying error: {type(e).__name__}: {e}")
+              raise
+          PY
+
       - name: Write GoPro cookies
         env:
           GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
