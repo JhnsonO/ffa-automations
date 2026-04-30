@@ -1,0 +1,19 @@
+2026-04-21 00:16:56,320 [ERROR] GOPRO_EMAIL / GOPRO_PASSWORD env vars not set — cannot refresh cookies
+2026-04-21 00:16:56,322 [ERROR] Cookie refresh failed — giving up
+2026-04-21 00:17:54,105 [ERROR] GOPRO_EMAIL / GOPRO_PASSWORD env vars not set — cannot refresh cookies
+2026-04-21 00:17:54,106 [ERROR] Cookie refresh failed — giving up
+2026-04-21 00:23:35,508 [INFO] Refreshing GoPro cookies via Playwright...
+2026-04-21 00:23:51,957 [INFO] Cookie refresh successful — 12 cookies saved
+2026-04-21 00:23:53,725 [INFO] ============================================================
+2026-04-21 00:23:53,725 [INFO] FFA GoPro -> YouTube uploader starting — 2 new video(s)
+2026-04-21 00:37:25,299 [INFO] ============================================================
+2026-04-21 00:37:25,301 [INFO] FFA GoPro -> YouTube uploader starting — 2 new video(s)
+2026-04-21 00:37:41,230 [INFO] "GET /?state=YhFQcQ8paKJZfcv9uqOZc54uzWAIyS&iss=https://accounts.google.com&code=4/0Aci98E9spak1eNQWe9qkYNCd2gI5V7W3WjIfZqptwPOo65EYUtE7wRKvNWxjnUK7DY9Q8w&scope=https://www.googleapis.com/auth/youtube.upload HTTP/1.1" 200 65
+2026-04-21 00:37:43,186 [INFO] file_cache is only supported with oauth2client<4.0.0
+2026-04-21 00:37:43,319 [INFO] Processing: GX010117.MP4 (2026-04-20) Camera A — 18.1 GB
+2026-04-21 00:37:44,040 [INFO] Downloading to GX010117.MP4 (attempt 1)...
+2026-04-21 00:40:49,606 [INFO] ============================================================
+2026-04-21 00:40:49,606 [INFO] FFA GoPro -> YouTube uploader starting — 2 new video(s)
+2026-04-21 00:40:49,683 [INFO] file_cache is only supported with oauth2client<4.0.0
+2026-04-21 00:40:49,695 [INFO] Processing: GX010117.MP4 (2026-04-20) Camera A — 18.1 GB
+2026-04-21 00:40:50,408 [INFO] Downloading to GX010117.MP4 (attempt 1)...
