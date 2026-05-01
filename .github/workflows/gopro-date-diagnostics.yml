@@ -20,52 +20,46 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Checkout selected workflow ref
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref }}
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install requests playwright google-auth google-auth-oauthlib google-api-python-client
-          playwright install chromium --with-deps
-
-      - name: Write GoPro cookies
-        env:
-          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
-        run: |
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          cookies = os.environ.get("GOPRO_COOKIES", "").strip() or "{}"
-          Path("gopro_cookies.json").write_text(cookies)
-          print("GoPro cookies file written")
-          PY
+        run: pip install requests
 
       - name: Diagnose GoPro media dates
         env:
-          GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
-          GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
           PAGES: ${{ github.event.inputs.pages || '3' }}
           PER_PAGE: ${{ github.event.inputs.per_page || '50' }}
         run: |
           python3 - <<'PY'
           import json
           import os
+          import requests
           from datetime import datetime, timezone, timedelta
 
-          import gopro_uploader as u
+          GOPRO_API = "https://api.gopro.com"
+          GOPRO_HEADERS = {"Accept": "application/vnd.gopro.jk.media+json; version=2.0.0"}
 
           pages = int(os.environ.get("PAGES") or 3)
           per_page = int(os.environ.get("PER_PAGE") or 50)
+          cookies_raw = (os.environ.get("GOPRO_COOKIES") or "{}").strip() or "{}"
 
-          session = u.get_authenticated_gopro_session()
+          try:
+              cookies = json.loads(cookies_raw)
+          except json.JSONDecodeError as e:
+              raise SystemExit(f"GOPRO_COOKIES is not valid JSON: {e}")
+
+          session = requests.Session()
+          session.cookies.update(cookies)
+
+          def gopro_get(path, params=None):
+              response = session.get(f"{GOPRO_API}{path}", headers=GOPRO_HEADERS, params=params, timeout=30)
+              print(f"GoPro GET {path}: HTTP {response.status_code}")
+              response.raise_for_status()
+              return response.json()
 
           fields = ",".join([
               "id",
@@ -93,7 +87,7 @@ jobs:
 
           seen = 0
           for page in range(1, pages + 1):
-              data = u.gopro_get(session, "/media/search", params={
+              data = gopro_get("/media/search", params={
                   "fields": fields,
                   "order_by": "captured_at",
                   "order": "desc",
