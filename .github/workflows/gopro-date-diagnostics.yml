@@ -26,11 +26,15 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests
+        run: |
+          pip install requests playwright
+          playwright install chromium --with-deps
 
       - name: Diagnose GoPro media dates
         env:
           GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+          GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
+          GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
           PAGES: ${{ github.event.inputs.pages || '3' }}
           PER_PAGE: ${{ github.event.inputs.per_page || '50' }}
         run: |
@@ -55,9 +59,46 @@ jobs:
           session = requests.Session()
           session.cookies.update(cookies)
 
-          def gopro_get(path, params=None):
+          def refresh_cookies_via_playwright():
+              email = os.environ.get("GOPRO_EMAIL")
+              password = os.environ.get("GOPRO_PASSWORD")
+              if not email or not password:
+                  raise SystemExit("GOPRO_EMAIL / GOPRO_PASSWORD env vars not set — cannot refresh cookies")
+
+              from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+
+              print("Saved GoPro cookies returned 401; refreshing via Playwright...")
+              with sync_playwright() as p:
+                  browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+                  context = browser.new_context(user_agent="Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36")
+                  page = context.new_page()
+                  page.goto("https://gopro.com/login", wait_until="domcontentloaded", timeout=30000)
+                  page.wait_for_selector("input#email", timeout=15000)
+                  page.fill("input#email", email)
+                  page.fill("input#password", password)
+                  page.click("button.Login_loginButton__iaFNb")
+                  try:
+                      page.wait_for_url(lambda url: "gopro.com/login" not in url, timeout=20000)
+                  except PlaywrightTimeout:
+                      current_url = page.url
+                      browser.close()
+                      raise SystemExit(f"Playwright login failed — still on: {current_url}")
+                  if "plus.gopro.com" not in page.url:
+                      page.goto("https://plus.gopro.com", wait_until="domcontentloaded", timeout=20000)
+                  fresh_cookies = context.cookies()
+                  browser.close()
+
+              cookie_dict = {c["name"]: c["value"] for c in fresh_cookies}
+              session.cookies.clear()
+              session.cookies.update(cookie_dict)
+              print(f"Cookie refresh successful — {len(cookie_dict)} cookies loaded for this diagnostic run")
+
+          def gopro_get(path, params=None, allow_refresh=True):
               response = session.get(f"{GOPRO_API}{path}", headers=GOPRO_HEADERS, params=params, timeout=30)
               print(f"GoPro GET {path}: HTTP {response.status_code}")
+              if response.status_code == 401 and allow_refresh:
+                  refresh_cookies_via_playwright()
+                  return gopro_get(path, params=params, allow_refresh=False)
               response.raise_for_status()
               return response.json()
 
