@@ -35,6 +35,8 @@ GOPRO_API = "https://api.gopro.com"
 GOPRO_HEADERS = {"Accept": "application/vnd.gopro.jk.media+json; version=2.0.0"}
 YT_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 MIN_VIDEO_SIZE_BYTES = 100_000_000
+SUSPICIOUS_CAPTURE_GAP_DAYS = int(os.environ.get("SUSPICIOUS_CAPTURE_GAP_DAYS") or 14)
+GOPRO_FALLBACK_SCAN_PAGES = int(os.environ.get("GOPRO_FALLBACK_SCAN_PAGES") or 10)
 
 LOOKBACK_DAYS = int(os.environ.get("LOOKBACK_DAYS") or 0)
 MANUAL_GOPRO_FILENAME = (os.environ.get("MANUAL_GOPRO_FILENAME") or "").strip()
@@ -72,6 +74,58 @@ def init_db():
     """)
     con.commit()
     return con
+
+
+def parse_gopro_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def datetime_to_gopro_z(dt):
+    if not dt:
+        return ""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def media_discovery_datetime(item):
+    """Date used to decide whether a file recently appeared in GoPro Cloud."""
+    return (
+        parse_gopro_datetime(item.get("created_at"))
+        or parse_gopro_datetime(item.get("updated_at"))
+        or parse_gopro_datetime(item.get("captured_at"))
+    )
+
+
+def effective_media_datetime(item):
+    """Date used for titles/descriptions/DB when camera captured_at looks wrong."""
+    captured = parse_gopro_datetime(item.get("captured_at"))
+    created = parse_gopro_datetime(item.get("created_at"))
+    updated = parse_gopro_datetime(item.get("updated_at"))
+    now = datetime.now(timezone.utc)
+
+    if captured and created:
+        if captured > now + timedelta(days=1):
+            return created, "captured_at is in the future, using GoPro Cloud created_at"
+        if created - captured > timedelta(days=SUSPICIOUS_CAPTURE_GAP_DAYS):
+            return created, f"captured_at is more than {SUSPICIOUS_CAPTURE_GAP_DAYS} days before created_at, using GoPro Cloud created_at"
+        return captured, ""
+
+    if captured:
+        return captured, ""
+    if created:
+        return created, "captured_at missing, using GoPro Cloud created_at"
+    if updated:
+        return updated, "captured_at/created_at missing, using updated_at"
+    return now, "all GoPro date fields missing, using current time"
+
+
+def effective_media_date_string(item):
+    dt, _ = effective_media_datetime(item)
+    return datetime_to_gopro_z(dt)
 
 
 def already_uploaded(con, media_id, filename=None, include_filename_fallback=True):
@@ -195,48 +249,94 @@ def get_authenticated_gopro_session():
         raise
 
 
-def fetch_recent_media(session, con=None):
+def scan_cutoff_string(con=None):
     if LOOKBACK_DAYS > 0:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         log.info(f"GoPro scan cutoff: last {LOOKBACK_DAYS} day(s), after {cutoff}")
-    elif con is not None:
+        return cutoff
+    if con is not None:
         row = con.execute("SELECT MAX(captured_at) FROM uploads").fetchone()
         cutoff = row[0] if row and row[0] else (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         log.info(f"GoPro scan cutoff: after {cutoff}")
-    else:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        log.info(f"GoPro scan cutoff: defaulting to after {cutoff}")
+        return cutoff
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    log.info(f"GoPro scan cutoff: defaulting to after {cutoff}")
+    return cutoff
 
+
+def fetch_recent_media_with_order(session, cutoff, order_by):
+    fields = "id,captured_at,created_at,updated_at,filename,file_size,type"
     all_media = []
     page = 1
+    max_pages = None if order_by == "created_at" else GOPRO_FALLBACK_SCAN_PAGES
+
     while True:
         data = gopro_get(session, "/media/search", params={
-            "fields": "id,captured_at,filename,file_size,type",
-            "order_by": "captured_at",
+            "fields": fields,
+            "order_by": order_by,
             "order": "desc",
             "per_page": 50,
             "page": page,
             "type": "Video",
         })
         items = data.get("_embedded", {}).get("media", [])
-        log.info(f"GoPro page {page}: {len(items)} video item(s) returned")
+        log.info(f"GoPro page {page} ordered by {order_by}: {len(items)} video item(s) returned")
         if not items:
             break
+
         for item in items:
             filename = item.get("filename", "")
-            cap = item.get("captured_at", "")
             media_id = item.get("id", "")
+            captured_at = item.get("captured_at", "")
+            created_at = item.get("created_at", "")
+            updated_at = item.get("updated_at", "")
+            discovery_at = datetime_to_gopro_z(media_discovery_datetime(item))
+            effective_at, effective_reason = effective_media_datetime(item)
+            effective_at_str = datetime_to_gopro_z(effective_at)
             file_size = int(item.get("file_size", 0) or 0)
-            log.info(f"GoPro candidate: {filename or '(no filename)'} | id={media_id or '(no id)'} | captured_at={cap or '(no date)'} | size={file_size / 1e9:.2f} GB")
-            if cap and cap < cutoff:
-                log.info(f"Stopping scan at {filename or media_id} ({cap}) because it is older than cutoff {cutoff}")
-                return all_media
+
+            log.info(
+                "GoPro candidate: %s | id=%s | captured_at=%s | created_at=%s | updated_at=%s | discovery_at=%s | effective_at=%s | size=%.2f GB",
+                filename or "(no filename)",
+                media_id or "(no id)",
+                captured_at or "(none)",
+                created_at or "(none)",
+                updated_at or "(none)",
+                discovery_at or "(none)",
+                effective_at_str or "(none)",
+                file_size / 1e9,
+            )
+            if effective_reason:
+                log.warning(f"Correcting suspicious GoPro date for {filename or media_id}: {effective_reason}. captured_at={captured_at or '(none)'}, created_at={created_at or '(none)'}, effective_at={effective_at_str}")
+
+            if discovery_at and discovery_at < cutoff:
+                if order_by == "created_at":
+                    log.info(f"Stopping scan at {filename or media_id} because discovery_at {discovery_at} is older than cutoff {cutoff}")
+                    return all_media
+                log.info(f"Skipping old discovery date in fallback scan: {filename or media_id} discovery_at={discovery_at} cutoff={cutoff}")
+                continue
+
             all_media.append(item)
+
         pages = data.get("_pages", {})
         if page >= pages.get("total_pages", 1):
             break
+        if max_pages and page >= max_pages:
+            log.warning(f"Stopping fallback scan after {max_pages} page(s). Increase GOPRO_FALLBACK_SCAN_PAGES if needed.")
+            break
         page += 1
+
     return all_media
+
+
+def fetch_recent_media(session, con=None):
+    cutoff = scan_cutoff_string(con)
+    try:
+        return fetch_recent_media_with_order(session, cutoff, "created_at")
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "unknown"
+        log.warning(f"GoPro order_by=created_at failed with HTTP {status}; falling back to captured_at scan without early captured_at cutoff")
+        return fetch_recent_media_with_order(session, cutoff, "captured_at")
 
 
 def fetch_media_by_filename(session, filename, max_pages=10):
@@ -244,8 +344,8 @@ def fetch_media_by_filename(session, filename, max_pages=10):
     log.info(f"Manual GoPro filename mode: searching for exact filename {filename}")
     for page in range(1, max_pages + 1):
         data = gopro_get(session, "/media/search", params={
-            "fields": "id,captured_at,filename,file_size,type",
-            "order_by": "captured_at",
+            "fields": "id,captured_at,created_at,updated_at,filename,file_size,type",
+            "order_by": "created_at",
             "order": "desc",
             "per_page": 50,
             "page": page,
@@ -255,7 +355,18 @@ def fetch_media_by_filename(session, filename, max_pages=10):
         log.info(f"Manual filename search page {page}: {len(items)} video item(s) returned")
         for item in items:
             if (item.get("filename") or "").lower() == wanted:
-                log.info(f"Found manual GoPro file: {item.get('filename')} | id={item.get('id')} | captured_at={item.get('captured_at')} | size={int(item.get('file_size', 0) or 0)/1e9:.2f} GB")
+                effective_at, reason = effective_media_datetime(item)
+                log.info(
+                    "Found manual GoPro file: %s | id=%s | captured_at=%s | created_at=%s | effective_at=%s | size=%.2f GB",
+                    item.get("filename"),
+                    item.get("id"),
+                    item.get("captured_at"),
+                    item.get("created_at"),
+                    datetime_to_gopro_z(effective_at),
+                    int(item.get("file_size", 0) or 0) / 1e9,
+                )
+                if reason:
+                    log.warning(f"Manual file has suspicious GoPro date: {reason}")
                 return item
         pages = data.get("_pages", {})
         if page >= pages.get("total_pages", 1):
@@ -268,6 +379,8 @@ def describe_media_filter(con, item):
     media_id = item.get("id", "")
     filename = item.get("filename", "")
     captured_at = item.get("captured_at", "")
+    created_at = item.get("created_at", "")
+    effective_at = effective_media_date_string(item)
     file_size = int(item.get("file_size", 0) or 0)
     reasons = []
     if already_uploaded(con, media_id, filename, include_filename_fallback=False):
@@ -283,7 +396,7 @@ def describe_media_filter(con, item):
         reasons.append("recently failed within 24h cooldown")
     if file_size <= MIN_VIDEO_SIZE_BYTES:
         reasons.append(f"file below 100MB filter ({file_size / 1e6:.1f} MB)")
-    summary = f"{filename or '(no filename)'} | id={media_id or '(no id)'} | captured_at={captured_at or '(no date)'} | size={file_size / 1e9:.2f} GB"
+    summary = f"{filename or '(no filename)'} | id={media_id or '(no id)'} | captured_at={captured_at or '(no date)'} | created_at={created_at or '(no created_at)'} | effective_at={effective_at or '(no effective date)'} | size={file_size / 1e9:.2f} GB"
     return reasons, summary
 
 
@@ -547,9 +660,16 @@ def filename_from_direct_url(url):
 def upload_item(con, yt, session, item, camera_label="", force=False):
     media_id = item["id"]
     filename = item["filename"]
-    captured_at = item["captured_at"]
+    original_captured_at = item.get("captured_at", "")
+    created_at = item.get("created_at", "")
+    effective_at, effective_reason = effective_media_datetime(item)
+    upload_date = datetime_to_gopro_z(effective_at)
     file_size = int(item.get("file_size", 0) or 0)
-    log.info(f"Processing: {filename} ({captured_at[:10]}) Camera {camera_label or '-'} — {file_size/1e9:.1f} GB")
+
+    log.info(f"Processing: {filename} ({upload_date[:10]}) Camera {camera_label or '-'} — {file_size/1e9:.1f} GB")
+    if effective_reason:
+        log.warning(f"Using corrected date for {filename}: {effective_reason}. original_captured_at={original_captured_at or '(none)'}, created_at={created_at or '(none)'}, upload_date={upload_date}")
+
     dl_url = get_concat_download_url(session, media_id)
     if not dl_url:
         log.warning(f"Skipping {filename} — no download URL")
@@ -561,16 +681,16 @@ def upload_item(con, yt, session, item, camera_label="", force=False):
         return
     if not force and youtube_video_exists(yt, media_id, filename, skip_filename_query=True):
         log.warning(f"Skipping {filename} — exact media ID already found on YouTube")
-        mark_uploaded(con, media_id, filename, captured_at, "existing")
+        mark_uploaded(con, media_id, filename, upload_date, "existing")
         dest.unlink(missing_ok=True)
         return
     if force:
         log.warning(f"Manual force upload enabled for {filename}; skipping DB/filename duplicate blockers")
-    description = make_description(filename, captured_at, camera_label)
-    description += f"\n\nFFA_MEDIA_ID:{media_id}\nFFA_FILENAME:{filename}"
-    yt_id = upload_to_youtube(yt, dest, make_title(filename, captured_at, camera_label), description, gopro_filename=filename)
+    description = make_description(filename, upload_date, camera_label)
+    description += f"\n\nFFA_MEDIA_ID:{media_id}\nFFA_FILENAME:{filename}\nFFA_CAPTURED_AT:{original_captured_at}\nFFA_CREATED_AT:{created_at}\nFFA_EFFECTIVE_AT:{upload_date}"
+    yt_id = upload_to_youtube(yt, dest, make_title(filename, upload_date, camera_label), description, gopro_filename=filename)
     if yt_id:
-        mark_uploaded(con, media_id, filename, captured_at, yt_id)
+        mark_uploaded(con, media_id, filename, upload_date, yt_id)
         dest.unlink(missing_ok=True)
         log.info(f"Done: {filename} Camera {camera_label or '-'} -> https://youtu.be/{yt_id}")
     else:
@@ -651,7 +771,7 @@ def run():
     camera_labels = "ABCDEFGH"
     day_counters = defaultdict(int)
     for item in new_items:
-        date_key = item["captured_at"][:10]
+        date_key = effective_media_date_string(item)[:10]
         cam_index = day_counters[date_key]
         camera_label = camera_labels[cam_index] if cam_index < len(camera_labels) else str(cam_index + 1)
         day_counters[date_key] += 1
