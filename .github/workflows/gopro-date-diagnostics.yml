@@ -1,0 +1,138 @@
+name: Diagnose GoPro Media Dates
+
+on:
+  workflow_dispatch:
+    inputs:
+      pages:
+        description: 'How many GoPro media pages to inspect'
+        required: false
+        default: '3'
+        type: string
+      per_page:
+        description: 'How many items per page'
+        required: false
+        default: '50'
+        type: string
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout selected workflow ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests playwright
+          playwright install chromium --with-deps
+
+      - name: Write GoPro cookies
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          cookies = os.environ.get("GOPRO_COOKIES", "").strip() or "{}"
+          Path("gopro_cookies.json").write_text(cookies)
+          print("GoPro cookies file written")
+          PY
+
+      - name: Diagnose GoPro media dates
+        env:
+          GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
+          GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
+          PAGES: ${{ github.event.inputs.pages || '3' }}
+          PER_PAGE: ${{ github.event.inputs.per_page || '50' }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone, timedelta
+
+          import gopro_uploader as u
+
+          pages = int(os.environ.get("PAGES") or 3)
+          per_page = int(os.environ.get("PER_PAGE") or 50)
+
+          session = u.get_authenticated_gopro_session()
+
+          fields = ",".join([
+              "id",
+              "filename",
+              "file_size",
+              "type",
+              "captured_at",
+              "created_at",
+              "updated_at",
+              "uploaded_at",
+              "ready_to_view",
+              "date_created",
+              "date_modified",
+              "source_duration",
+              "duration",
+          ])
+
+          cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+          print("=" * 80)
+          print("GoPro media date diagnostics")
+          print(f"Inspecting up to {pages} page(s), {per_page} item(s) per page")
+          print(f"Current UTC time: {datetime.now(timezone.utc).isoformat()}")
+          print(f"Seven-day reference cutoff: {cutoff.isoformat()}")
+          print("=" * 80)
+
+          seen = 0
+          for page in range(1, pages + 1):
+              data = u.gopro_get(session, "/media/search", params={
+                  "fields": fields,
+                  "order_by": "captured_at",
+                  "order": "desc",
+                  "per_page": per_page,
+                  "page": page,
+                  "type": "Video",
+              })
+              items = data.get("_embedded", {}).get("media", [])
+              print(f"\nPAGE {page}: {len(items)} video item(s)")
+              if not items:
+                  break
+
+              for item in items:
+                  seen += 1
+                  filename = item.get("filename") or "(no filename)"
+                  media_id = item.get("id") or "(no id)"
+                  file_size = int(item.get("file_size", 0) or 0)
+
+                  date_keys = [
+                      "captured_at",
+                      "created_at",
+                      "updated_at",
+                      "uploaded_at",
+                      "date_created",
+                      "date_modified",
+                  ]
+                  date_values = {key: item.get(key) for key in date_keys if item.get(key)}
+                  extra_keys = sorted(k for k in item.keys() if k not in {"id", "filename", "file_size", "type"})
+
+                  print("-" * 80)
+                  print(f"{seen}. {filename} | id={media_id} | size={file_size / 1e9:.2f} GB")
+                  print(f"   available_date_fields: {date_values or 'none'}")
+                  print(f"   all_returned_extra_keys: {extra_keys}")
+
+              pages_meta = data.get("_pages", {})
+              if page >= pages_meta.get("total_pages", 1):
+                  break
+
+          print("=" * 80)
+          print(f"Diagnostics complete. Inspected {seen} item(s).")
+          print("=" * 80)
+          PY
