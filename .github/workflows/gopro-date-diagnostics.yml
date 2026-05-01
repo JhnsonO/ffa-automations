@@ -32,7 +32,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests playwright
+          pip install requests playwright google-auth google-auth-oauthlib google-api-python-client
           playwright install chromium --with-deps
 
       - name: Write GoPro cookies
