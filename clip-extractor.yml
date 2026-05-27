@@ -1,0 +1,88 @@
+name: Clip Extractor
+
+# Paste a YouTube URL and timestamps; this downloads the source at the
+# best available quality (4K preferred, 1080p minimum), cuts the clips,
+# and uploads them to OneDrive under FFA/Clips/<video_title>/.
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: 'YouTube video URL'
+        required: true
+        type: string
+      timestamps:
+        description: 'Clips — one per line OR separated by `;`. Format: START END [name]. Example: 00:01:23 00:01:45 goal_a ; 02:10 02:30 quick_clip'
+        required: true
+        type: string
+      onedrive_subfolder:
+        description: 'Optional subfolder under OneDrive:FFA/Clips/ (leave blank for default)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install yt-dlp + ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          pip install -U yt-dlp
+
+      - name: Install rclone
+        run: curl -fsSL https://rclone.org/install.sh | sudo bash
+
+      - name: Configure rclone (OneDrive)
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONFIG_ONEDRIVE }}
+        run: |
+          if [ -z "$RCLONE_CONF" ]; then
+            echo "❌ Secret RCLONE_CONFIG_ONEDRIVE is not set." >&2
+            exit 1
+          fi
+          mkdir -p ~/.config/rclone
+          printf '%s' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+          # Sanity check the remote name
+          rclone listremotes | grep -q '^onedrive:' || {
+            echo "❌ rclone.conf must define a remote named [onedrive]" >&2
+            exit 1
+          }
+
+      - name: Extract clips
+        run: |
+          python clip_extractor.py \
+            --url "${{ inputs.youtube_url }}" \
+            --timestamps "${{ inputs.timestamps }}"
+
+      - name: Upload to OneDrive
+        run: |
+          DEST="onedrive:FFA/Clips"
+          if [ -n "${{ inputs.onedrive_subfolder }}" ]; then
+            DEST="$DEST/${{ inputs.onedrive_subfolder }}"
+          fi
+          echo "📤 Uploading to $DEST"
+          rclone copy clips/ "$DEST/" \
+            --progress \
+            --transfers 4 \
+            --checkers 8 \
+            --onedrive-chunk-size 100M
+          echo "✅ Upload complete"
+
+      - name: Upload clips as workflow artifact (backup, 7-day retention)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clips
+          path: clips/
+          retention-days: 7
+          if-no-files-found: warn
