@@ -60,11 +60,19 @@ def get_sheets_service():
     sheets = build("sheets", "v4", credentials=sa_creds, cache_discovery=False)
 
     # Drive — user OAuth token (service accounts can't upload to personal Drive)
+    # Prefer file written by workflow step; fall back to env var
+    token_file = Path(__file__).parent / "youtube_token.json"
     token_json = os.environ.get("YOUTUBE_TOKEN", "")
     drive = None
-    if token_json:
+    if token_file.exists():
+        token_path = token_file
+    elif token_json:
         token_path = Path("/tmp/youtube_token.json")
         token_path.write_text(token_json)
+    else:
+        token_path = None
+
+    if token_path:
         scopes = [
             "https://www.googleapis.com/auth/youtube.upload",
             "https://www.googleapis.com/auth/youtube.readonly",

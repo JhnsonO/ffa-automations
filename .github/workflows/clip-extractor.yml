@@ -27,10 +27,13 @@ jobs:
           sudo apt-get install -y ffmpeg
           pip install -U yt-dlp google-auth google-auth-httplib2 google-api-python-client
 
+      - name: Write credentials
+        run: |
+          echo '${{ secrets.YOUTUBE_TOKEN }}' > youtube_token.json
+          echo '${{ secrets.YOUTUBE_CREDENTIALS }}' > youtube_credentials.json
+
       - name: Process pending clips
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
-          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
         run: python sheet_manager.py process-clips
