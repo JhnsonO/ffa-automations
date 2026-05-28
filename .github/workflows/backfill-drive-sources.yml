@@ -1,0 +1,35 @@
+name: Backfill Drive Sources (one-off)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -q requests google-auth google-auth-httplib2 google-api-python-client playwright
+        
+      - name: Install Playwright browsers
+        run: playwright install chromium
+
+      - name: Write credentials
+        run: |
+          echo '${{ secrets.YOUTUBE_CREDENTIALS }}' > youtube_credentials.json
+          echo '${{ secrets.YOUTUBE_TOKEN }}' > youtube_token.json
+
+      - name: Run backfill
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+          GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
+          GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: python backfill_drive_sources.py
