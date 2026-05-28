@@ -69,9 +69,16 @@ def init_db():
         CREATE TABLE IF NOT EXISTS failed_uploads (
             media_id TEXT PRIMARY KEY,
             failed_at TEXT,
-            reason TEXT
+            reason TEXT,
+            fail_count INTEGER DEFAULT 1
         )
     """)
+    # Migrate existing DBs that don't have fail_count column
+    try:
+        con.execute("ALTER TABLE failed_uploads ADD COLUMN fail_count INTEGER DEFAULT 1")
+        con.commit()
+    except Exception:
+        pass  # Column already exists
     con.commit()
     return con
 
@@ -153,11 +160,22 @@ def db_upload_rows_for_filename(con, filename):
 
 
 def recently_failed(con, media_id):
-    row = con.execute("SELECT failed_at FROM failed_uploads WHERE media_id=?", (media_id,)).fetchone()
+    row = con.execute("SELECT failed_at, reason, fail_count FROM failed_uploads WHERE media_id=?", (media_id,)).fetchone()
     if not row:
         return False
     failed_at = datetime.fromisoformat(row[0])
-    return (datetime.now(timezone.utc) - failed_at) < timedelta(hours=24)
+    reason = row[1] or ""
+    fail_count = row[2] or 1
+    # 3+ consecutive failures -> 24h cooldown regardless of reason
+    if fail_count >= 3:
+        cooldown = timedelta(hours=24)
+    # Transient GoPro-side failures (timeout, no URL, download error) -> 1h
+    elif reason in ("no download URL", "download failed"):
+        cooldown = timedelta(hours=1)
+    # YouTube upload failure -> 6h
+    else:
+        cooldown = timedelta(hours=6)
+    return (datetime.now(timezone.utc) - failed_at) < cooldown
 
 
 def mark_uploaded(con, media_id, filename, captured_at, youtube_id):
@@ -170,7 +188,12 @@ def mark_uploaded(con, media_id, filename, captured_at, youtube_id):
 
 
 def mark_failed(con, media_id, reason):
-    con.execute("INSERT OR REPLACE INTO failed_uploads VALUES (?,?,?)", (media_id, datetime.now(timezone.utc).isoformat(), reason))
+    existing = con.execute("SELECT fail_count FROM failed_uploads WHERE media_id=?", (media_id,)).fetchone()
+    fail_count = (existing[0] or 0) + 1 if existing else 1
+    con.execute(
+        "INSERT OR REPLACE INTO failed_uploads (media_id, failed_at, reason, fail_count) VALUES (?,?,?,?)",
+        (media_id, datetime.now(timezone.utc).isoformat(), reason, fail_count)
+    )
     con.commit()
 
 
@@ -393,7 +416,7 @@ def describe_media_filter(con, item):
             details = "; ".join([f"db_media_id={r[0]}, youtube_id={r[3]}, uploaded_at={r[4]}" for r in filename_rows[:3]])
             log.warning(f"Filename reuse detected for {filename}: DB has older filename match, but media_id is different so this will NOT block upload. {details}")
     if recently_failed(con, media_id):
-        reasons.append("recently failed within 24h cooldown")
+        reasons.append("recently failed — within cooldown window (1h transient / 6h upload / 24h after 3 failures)")
     if file_size <= MIN_VIDEO_SIZE_BYTES:
         reasons.append(f"file below 100MB filter ({file_size / 1e6:.1f} MB)")
     summary = f"{filename or '(no filename)'} | id={media_id or '(no id)'} | captured_at={captured_at or '(no date)'} | created_at={created_at or '(no created_at)'} | effective_at={effective_at or '(no effective date)'} | size={file_size / 1e9:.2f} GB"
@@ -695,7 +718,7 @@ def upload_item(con, yt, session, item, camera_label="", force=False):
         log.info(f"Done: {filename} Camera {camera_label or '-'} -> https://youtu.be/{yt_id}")
     else:
         mark_failed(con, media_id, "youtube upload failed")
-        log.error(f"Upload failed for {filename} — will retry after 24h")
+        log.error(f"Upload failed for {filename} — will retry after 6h (or 24h after 3 failures)")
 
 
 def run_direct_upload(con):
@@ -781,3 +804,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
