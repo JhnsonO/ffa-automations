@@ -2,7 +2,7 @@ name: Clip Extractor
 
 # Paste a YouTube URL and timestamps; this downloads the source at the
 # best available quality (4K preferred, 1080p minimum), cuts the clips,
-# and uploads them to OneDrive under FFA/Clips/<video_title>/.
+# and uploads them to Google Drive under FFA/Clips/<video_title>/.
 
 on:
   workflow_dispatch:
@@ -15,8 +15,8 @@ on:
         description: 'Clips — one per line OR separated by `;`. Format: START END [name]. Example: 00:01:23 00:01:45 goal_a ; 02:10 02:30 quick_clip'
         required: true
         type: string
-      onedrive_subfolder:
-        description: 'Optional subfolder under OneDrive:FFA/Clips/ (leave blank for default)'
+      gdrive_subfolder:
+        description: 'Optional subfolder under Google Drive: FFA/Clips/ (leave blank for default)'
         required: false
         default: ''
         type: string
@@ -42,19 +42,18 @@ jobs:
       - name: Install rclone
         run: curl -fsSL https://rclone.org/install.sh | sudo bash
 
-      - name: Configure rclone (OneDrive)
+      - name: Configure rclone (Google Drive)
         env:
-          RCLONE_CONF: ${{ secrets.RCLONE_CONFIG_ONEDRIVE }}
+          RCLONE_CONF: ${{ secrets.RCLONE_CONFIG_GDRIVE }}
         run: |
           if [ -z "$RCLONE_CONF" ]; then
-            echo "❌ Secret RCLONE_CONFIG_ONEDRIVE is not set." >&2
+            echo "❌ Secret RCLONE_CONFIG_GDRIVE is not set." >&2
             exit 1
           fi
           mkdir -p ~/.config/rclone
           printf '%s' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
-          # Sanity check the remote name
-          rclone listremotes | grep -q '^onedrive:' || {
-            echo "❌ rclone.conf must define a remote named [onedrive]" >&2
+          rclone listremotes | grep -q '^gdrive:' || {
+            echo "❌ rclone.conf must define a remote named [gdrive]" >&2
             exit 1
           }
 
@@ -64,18 +63,17 @@ jobs:
             --url "${{ inputs.youtube_url }}" \
             --timestamps "${{ inputs.timestamps }}"
 
-      - name: Upload to OneDrive
+      - name: Upload to Google Drive
         run: |
-          DEST="onedrive:FFA/Clips"
-          if [ -n "${{ inputs.onedrive_subfolder }}" ]; then
-            DEST="$DEST/${{ inputs.onedrive_subfolder }}"
+          DEST="gdrive:FFA/Clips"
+          if [ -n "${{ inputs.gdrive_subfolder }}" ]; then
+            DEST="$DEST/${{ inputs.gdrive_subfolder }}"
           fi
           echo "📤 Uploading to $DEST"
           rclone copy clips/ "$DEST/" \
             --progress \
             --transfers 4 \
-            --checkers 8 \
-            --onedrive-chunk-size 100M
+            --checkers 8
           echo "✅ Upload complete"
 
       - name: Upload clips as workflow artifact (backup, 7-day retention)
