@@ -435,6 +435,16 @@ def _parse_ts(ts: str) -> float:
     raise ValueError(f"Unrecognised format: {ts}")
 
 
+def _cookie_args() -> list:
+    """Write YOUTUBE_COOKIES env var to a temp file and return yt-dlp args."""
+    cookies = os.environ.get("YOUTUBE_COOKIES", "").strip()
+    if not cookies:
+        return []
+    cookie_path = Path("/tmp/yt_cookies.txt")
+    cookie_path.write_text(cookies)
+    return ["--cookies", str(cookie_path)]
+
+
 def _download_source(url: str, work_dir: Path) -> Path:
     fmt = (
         "bestvideo[height>=2160][ext=mp4]+bestaudio[ext=m4a]/"
@@ -447,8 +457,8 @@ def _download_source(url: str, work_dir: Path) -> Path:
         "yt-dlp", "-f", fmt,
         "--merge-output-format", "mp4",
         "-o", str(work_dir / "source.%(ext)s"),
-        "--no-playlist", "--no-progress", url,
-    ], check=True)
+        "--no-playlist", "--no-progress",
+    ] + _cookie_args() + [url], check=True)
     matches = list(work_dir.glob("source.*"))
     if not matches:
         raise RuntimeError("Download produced no file")
