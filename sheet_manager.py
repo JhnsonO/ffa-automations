@@ -300,6 +300,7 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
     result = sheets_svc.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"'{tab_name}'!A1:F",
+        valueRenderOption="FORMULA",
     ).execute()
     rows = result.get("values", [])
     if len(rows) < 5:
