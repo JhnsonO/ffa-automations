@@ -206,6 +206,7 @@ jobs:
           DIRECT_UPLOAD_FILENAME: ${{ github.event.inputs.direct_filename || '' }}
           GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
           GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: python3 gopro_uploader.py
 
       - name: Show DB status

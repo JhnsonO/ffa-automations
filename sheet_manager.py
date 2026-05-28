@@ -45,18 +45,39 @@ from pathlib import Path
 # ── Google API clients ────────────────────────────────────────────────────────
 
 def get_sheets_service():
+    """Sheets uses service account. Drive uses user OAuth token."""
     from google.oauth2 import service_account
+    from google.oauth2.credentials import Credentials as OAuthCreds
+    from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
+
+    # Sheets — service account
     sa_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-    creds = service_account.Credentials.from_service_account_info(
+    sa_creds = service_account.Credentials.from_service_account_info(
         json.loads(sa_json),
-        scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ],
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
     )
-    sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
-    drive  = build("drive",  "v3", credentials=creds, cache_discovery=False)
+    sheets = build("sheets", "v4", credentials=sa_creds, cache_discovery=False)
+
+    # Drive — user OAuth token (service accounts can't upload to personal Drive)
+    token_json = os.environ.get("YOUTUBE_TOKEN", "")
+    drive = None
+    if token_json:
+        token_path = Path("/tmp/youtube_token.json")
+        token_path.write_text(token_json)
+        scopes = [
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube.readonly",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        try:
+            drive_creds = OAuthCreds.from_authorized_user_file(str(token_path), scopes)
+            if drive_creds and drive_creds.expired and drive_creds.refresh_token:
+                drive_creds.refresh(Request())
+            drive = build("drive", "v3", credentials=drive_creds, cache_discovery=False)
+        except Exception as e:
+            print(f"Warning: could not init Drive with OAuth token: {e}")
+
     return sheets, drive
 
 
@@ -311,7 +332,10 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
         try: return rows[r][c]
         except IndexError: return ""
 
-    yt_url = _extract_url(cell(1, 1))  # row 2 col B
+    yt_url         = _extract_url(cell(1, 1))  # row 2 col B
+    gopro_filename = cell(2, 1)                # row 3 col B (Source)
+    if gopro_filename.startswith("="):
+        gopro_filename = ""  # formula cell, not a plain filename
     if not yt_url:
         print(f"  [{tab_name}] No YouTube URL found — skipping")
         return 0
@@ -346,9 +370,9 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
     # Download source video once
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        print(f"  Downloading source: {yt_url}")
+        print(f"  Downloading source (gopro={gopro_filename or 'n/a'}): {yt_url}")
         try:
-            source = _download_source(yt_url, tmp)
+            source = _download_source(yt_url, tmp, drive_svc=drive_svc, gopro_filename=gopro_filename)
         except subprocess.CalledProcessError as e:
             print(f"  ❌ Download failed: {e}")
             for i in pending_indices:
@@ -435,27 +459,50 @@ def _parse_ts(ts: str) -> float:
     raise ValueError(f"Unrecognised format: {ts}")
 
 
-def _get_oauth_token() -> str:
-    """Get a valid OAuth access token from the YOUTUBE_TOKEN secret."""
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
-
-    token_json = os.environ.get("YOUTUBE_TOKEN", "")
-    if not token_json:
+def _find_drive_source(drive_svc, gopro_filename: str) -> str:
+    """Look for a GoPro source file in Drive: FFA/Sources/. Returns file ID or empty string."""
+    if not drive_svc or not gopro_filename or gopro_filename == "—":
         return ""
-    token_path = Path("/tmp/youtube_token.json")
-    token_path.write_text(token_json)
-    scopes = [
-        "https://www.googleapis.com/auth/youtube.upload",
-        "https://www.googleapis.com/auth/youtube.readonly",
-    ]
-    creds = Credentials.from_authorized_user_file(str(token_path), scopes)
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-    return creds.token or ""
+    try:
+        res = drive_svc.files().list(
+            q=f"name='{gopro_filename}' and trashed=false",
+            fields="files(id,name)",
+            spaces="drive",
+        ).execute()
+        if res["files"]:
+            log.info(f"Found Drive source for {gopro_filename}: {res['files'][0]['id']}")
+            return res["files"][0]["id"]
+    except Exception as e:
+        log.warning(f"Drive source lookup failed: {e}")
+    return ""
 
 
-def _download_source(url: str, work_dir: Path) -> Path:
+def _download_from_drive(drive_svc, file_id: str, work_dir: Path) -> Path:
+    """Download a file from Drive by file ID."""
+    import io
+    from googleapiclient.http import MediaIoBaseDownload
+    out_path = work_dir / "source.mp4"
+    request = drive_svc.files().get_media(fileId=file_id)
+    with open(out_path, "wb") as fh:
+        downloader = MediaIoBaseDownload(fh, request, chunksize=50 * 1024 * 1024)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+            if status:
+                log.info(f"  Drive download: {int(status.progress() * 100)}%")
+    return out_path
+
+
+def _download_source(url: str, work_dir: Path, drive_svc=None, gopro_filename: str = "") -> Path:
+    # Try Drive first for GoPro sources — no bot detection, works forever
+    if drive_svc and gopro_filename:
+        file_id = _find_drive_source(drive_svc, gopro_filename)
+        if file_id:
+            log.info(f"Downloading source from Drive: {gopro_filename}")
+            return _download_from_drive(drive_svc, file_id, work_dir)
+
+    # Fall back to yt-dlp for XbotGo or when Drive source not available
+    log.info(f"Downloading source from YouTube: {url}")
     fmt = (
         "bestvideo[height>=2160][ext=mp4]+bestaudio[ext=m4a]/"
         "bestvideo[height>=2160]+bestaudio/"
@@ -463,18 +510,13 @@ def _download_source(url: str, work_dir: Path) -> Path:
         "bestvideo[height>=1080]+bestaudio/"
         "bestvideo+bestaudio/best"
     )
-    # Use OAuth token if available — avoids bot detection without cookie expiry
-    extra_args = []
-    token = _get_oauth_token()
-    if token:
-        extra_args = ["--add-header", f"Authorization:Bearer {token}"]
-
     subprocess.run([
         "yt-dlp", "-f", fmt,
         "--merge-output-format", "mp4",
         "-o", str(work_dir / "source.%(ext)s"),
         "--no-playlist", "--no-progress",
-    ] + extra_args + [url], check=True)
+        url,
+    ], check=True)
     matches = list(work_dir.glob("source.*"))
     if not matches:
         raise RuntimeError("Download produced no file")
@@ -496,29 +538,37 @@ def _cut_clip(source: Path, start: float, end: float, out: Path):
     ], check=True)
 
 
+FFA_DRIVE_FOLDER_ID_FILE = Path(__file__).parent / ".ffa_drive_folder_id"
+
+
+def _get_ffa_drive_folder_id() -> str:
+    if FFA_DRIVE_FOLDER_ID_FILE.exists():
+        return FFA_DRIVE_FOLDER_ID_FILE.read_text().strip()
+    return ""
+
+
 def _ensure_drive_folder(drive_svc, folder_name: str) -> str:
     """Get or create FFA/Clips/<folder_name> in Drive. Returns folder ID."""
-    # Find or create root FFA folder
-    ffa_id = _find_or_create_folder(drive_svc, "FFA", parent_id=None)
+    ffa_id = _get_ffa_drive_folder_id()
+    if not ffa_id:
+        raise RuntimeError(".ffa_drive_folder_id not set")
     clips_id = _find_or_create_folder(drive_svc, "Clips", parent_id=ffa_id)
     video_id = _find_or_create_folder(drive_svc, folder_name, parent_id=clips_id)
     return video_id
 
 
-def _find_or_create_folder(drive_svc, name: str, parent_id) -> str:
-    q = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    if parent_id:
-        q += f" and '{parent_id}' in parents"
-    res = drive_svc.files().list(q=q, fields="files(id,name)").execute()
+def _find_or_create_folder(drive_svc, name: str, parent_id: str) -> str:
+    q = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '{parent_id}' in parents"
+    res = drive_svc.files().list(
+        q=q, fields="files(id,name)", supportsAllDrives=True, includeItemsFromAllDrives=True
+    ).execute()
     if res["files"]:
         return res["files"][0]["id"]
-    meta = {
-        "name": name,
-        "mimeType": "application/vnd.google-apps.folder",
-    }
-    if parent_id:
-        meta["parents"] = [parent_id]
-    folder = drive_svc.files().create(body=meta, fields="id").execute()
+    folder = drive_svc.files().create(
+        body={"name": name, "mimeType": "application/vnd.google-apps.folder", "parents": [parent_id]},
+        fields="id",
+        supportsAllDrives=True,
+    ).execute()
     return folder["id"]
 
 
@@ -541,13 +591,14 @@ def _upload_to_drive(drive_svc, file_path: Path, folder_id: str, tags: str = "")
         "properties": {"ffa_tags": ",".join(tag_list)} if tag_list else {},
     }
     uploaded = drive_svc.files().create(
-        body=file_meta, media_body=media, fields="id"
+        body=file_meta, media_body=media, fields="id", supportsAllDrives=True
     ).execute()
     file_id = uploaded["id"]
     # Make readable by anyone with the link
     drive_svc.permissions().create(
         fileId=file_id,
         body={"type": "anyone", "role": "reader"},
+        supportsAllDrives=True,
     ).execute()
     return file_id
 
