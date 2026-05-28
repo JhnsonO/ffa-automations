@@ -531,13 +531,33 @@ def _download_source(url: str, work_dir: Path, drive_svc=None, gopro_filename: s
         "bestvideo[height>=1080]+bestaudio/"
         "bestvideo+bestaudio/best"
     )
+    # Find cookies file — written by workflow or env var fallback
+    cookie_args = []
+    cookie_candidates = [
+        Path(__file__).parent / "yt_cookies.txt",
+        Path("/tmp/yt_cookies.txt"),
+    ]
+    for p in cookie_candidates:
+        if p.exists() and p.stat().st_size > 0:
+            print(f"Using cookies from {p}")
+            cookie_args = ["--cookies", str(p)]
+            break
+    else:
+        cookies = os.environ.get("YOUTUBE_COOKIES", "").strip()
+        if cookies:
+            cp = Path("/tmp/yt_cookies.txt")
+            cp.write_text(cookies)
+            cookie_args = ["--cookies", str(cp)]
+            print("Using cookies from env var")
+        else:
+            print("Warning: no YouTube cookies — bot detection may block download")
+
     subprocess.run([
         "yt-dlp", "-f", fmt,
         "--merge-output-format", "mp4",
         "-o", str(work_dir / "source.%(ext)s"),
         "--no-playlist", "--no-progress",
-        url,
-    ], check=True)
+    ] + cookie_args + [url], check=True)
     matches = list(work_dir.glob("source.*"))
     if not matches:
         raise RuntimeError("Download produced no file")
