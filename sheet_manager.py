@@ -61,20 +61,23 @@ def get_sheets_service():
 
 
 def get_youtube_service():
-    """Reuse the existing OAuth token approach from gopro_uploader."""
-    import google.oauth2.credentials
+    """Load YouTube credentials the same way gopro_uploader does —
+    write the secret to a temp file and use from_authorized_user_file."""
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
-    token_json = os.environ.get("YOUTUBE_TOKEN", "{}")
-    creds_json = os.environ.get("YOUTUBE_CREDENTIALS", "{}")
-    token  = json.loads(token_json)
-    creds_data = json.loads(creds_json)
-    creds = google.oauth2.credentials.Credentials(
-        token=token.get("token"),
-        refresh_token=token.get("refresh_token"),
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=creds_data.get("client_id"),
-        client_secret=creds_data.get("client_secret"),
-    )
+
+    token_json = os.environ.get("YOUTUBE_TOKEN", "")
+    if not token_json:
+        raise RuntimeError("YOUTUBE_TOKEN env var is not set")
+
+    token_path = Path("/tmp/youtube_token.json")
+    token_path.write_text(token_json)
+
+    scopes = ["https://www.googleapis.com/auth/youtube.readonly"]
+    creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+    if creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
     return build("youtube", "v3", credentials=creds, cache_discovery=False)
 
 
