@@ -491,10 +491,10 @@ def _find_drive_source(drive_svc, gopro_filename: str) -> str:
             spaces="drive",
         ).execute()
         if res["files"]:
-            log.info(f"Found Drive source for {gopro_filename}: {res['files'][0]['id']}")
+            print(f"Found Drive source for {gopro_filename}: {res['files'][0]['id']}")
             return res["files"][0]["id"]
     except Exception as e:
-        log.warning(f"Drive source lookup failed: {e}")
+        print(f"Drive source lookup failed: {e}")
     return ""
 
 
@@ -510,7 +510,7 @@ def _download_from_drive(drive_svc, file_id: str, work_dir: Path) -> Path:
         while not done:
             status, done = downloader.next_chunk()
             if status:
-                log.info(f"  Drive download: {int(status.progress() * 100)}%")
+                print(f"  Drive download: {int(status.progress() * 100)}%")
     return out_path
 
 
@@ -519,11 +519,11 @@ def _download_source(url: str, work_dir: Path, drive_svc=None, gopro_filename: s
     if drive_svc and gopro_filename:
         file_id = _find_drive_source(drive_svc, gopro_filename)
         if file_id:
-            log.info(f"Downloading source from Drive: {gopro_filename}")
+            print(f"Downloading source from Drive: {gopro_filename}")
             return _download_from_drive(drive_svc, file_id, work_dir)
 
     # Fall back to yt-dlp for XbotGo or when Drive source not available
-    log.info(f"Downloading source from YouTube: {url}")
+    print(f"Downloading source from YouTube: {url}")
     fmt = (
         "bestvideo[height>=2160][ext=mp4]+bestaudio[ext=m4a]/"
         "bestvideo[height>=2160]+bestaudio/"
