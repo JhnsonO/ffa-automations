@@ -32,4 +32,4 @@ jobs:
           GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
           GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-        run: python backfill_drive_sources.py --limit 1
+        run: python backfill_drive_sources.py
