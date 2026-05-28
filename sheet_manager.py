@@ -239,7 +239,12 @@ def sync_videos(lookback_days: int = 14):
         yt_url    = v["yt_url"]
 
         if youtube_url_in_index(sheets_svc, spreadsheet_id, yt_url):
-            continue  # already tracked
+            continue  # already in index
+        
+        # Also check if a tab with this name already exists (race condition guard)
+        candidate_tab = safe_tab_name(title)
+        if tab_exists(sheets_svc, spreadsheet_id, candidate_tab):
+            continue  # tab already exists
 
         # Try to match to a GoPro filename via uploaded.db in repo
         source_filename = _lookup_gopro_filename(video_id)
