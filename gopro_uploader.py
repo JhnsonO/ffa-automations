@@ -583,21 +583,6 @@ def get_youtube_service():
     return build("youtube", "v3", credentials=creds)
 
 
-def youtube_video_exists(service, media_id, filename, skip_filename_query=False):
-    queries = [f"FFA_MEDIA_ID:{media_id}"]
-    if not skip_filename_query:
-        queries.extend([f"FFA_FILENAME:{filename}", f"\"{filename}\""])
-
-    for q in queries:
-        try:
-            resp = service.search().list(part="snippet", forMine=True, type="video", maxResults=5, q=q).execute()
-            if resp.get("items"):
-                log.info(f"YouTube duplicate check matched query: {q}")
-                return True
-        except Exception as e:
-            log.warning(f"YouTube duplicate check failed for query {q}: {e}")
-    return False
-
 
 def upload_to_youtube(service, video_path, title, description, gopro_filename="", max_retries=3):
     log.info(f"Uploading to YouTube: {title} ({gopro_filename})")
@@ -702,11 +687,6 @@ def upload_item(con, yt, session, item, camera_label="", force=False):
     if not download_video(dl_url, dest):
         mark_failed(con, media_id, "download failed")
         return
-    if not force and youtube_video_exists(yt, media_id, filename, skip_filename_query=True):
-        log.warning(f"Skipping {filename} — exact media ID already found on YouTube")
-        mark_uploaded(con, media_id, filename, upload_date, "existing")
-        dest.unlink(missing_ok=True)
-        return
     if force:
         log.warning(f"Manual force upload enabled for {filename}; skipping DB/filename duplicate blockers")
     description = make_description(filename, upload_date, camera_label)
@@ -733,11 +713,6 @@ def run_direct_upload(con):
     log.info(f"Direct URL filename: {filename}")
     if already_uploaded(con, media_id, filename):
         log.warning(f"Skipping manual upload for {filename} — already in uploaded.db")
-        return True
-    yt = get_youtube_service()
-    if youtube_video_exists(yt, media_id, filename):
-        log.warning(f"Skipping manual upload for {filename} — already found on YouTube")
-        mark_uploaded(con, media_id, filename, captured_at, "existing")
         return True
     dest = DOWNLOAD_DIR / filename
     if not download_video(DIRECT_UPLOAD_URL, dest):
