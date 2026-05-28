@@ -60,25 +60,47 @@ def get_sheets_service():
     return sheets, drive
 
 
-def get_youtube_service():
-    """Load YouTube credentials the same way gopro_uploader does —
-    write the secret to a temp file and use from_authorized_user_file."""
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
-    from googleapiclient.discovery import build
+FFA_CHANNEL_ID = "UCSj-hQdqQ9La4FMM3HFqvXw"
+FFA_RSS_URL = f"https://www.youtube.com/feeds/videos.xml?channel_id={FFA_CHANNEL_ID}"
 
-    token_json = os.environ.get("YOUTUBE_TOKEN", "")
-    if not token_json:
-        raise RuntimeError("YOUTUBE_TOKEN env var is not set")
 
-    token_path = Path("/tmp/youtube_token.json")
-    token_path.write_text(token_json)
+def get_recent_public_videos(lookback_days: int = 14):
+    """
+    Fetch recent public videos from the FFA YouTube RSS feed.
+    Returns list of dicts: {video_id, title, published, yt_url}
+    No OAuth required — RSS feed only shows public videos.
+    """
+    import urllib.request
+    import xml.etree.ElementTree as ET
+    from datetime import timedelta
 
-    scopes = ["https://www.googleapis.com/auth/youtube.upload"]
-    creds = Credentials.from_authorized_user_file(str(token_path), scopes)
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-    return build("youtube", "v3", credentials=creds, cache_discovery=False)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    with urllib.request.urlopen(FFA_RSS_URL, timeout=15) as resp:
+        xml_data = resp.read()
+
+    ns = {
+        "atom":  "http://www.w3.org/2005/Atom",
+        "yt":    "http://www.youtube.com/xml/schemas/2015",
+        "media": "http://search.yahoo.com/mrss/",
+    }
+    root = ET.fromstring(xml_data)
+    videos = []
+    for entry in root.findall("atom:entry", ns):
+        video_id = entry.findtext("yt:videoId", namespaces=ns)
+        title    = entry.findtext("atom:title", namespaces=ns)
+        pub_str  = entry.findtext("atom:published", namespaces=ns)
+        if not (video_id and title and pub_str):
+            continue
+        pub_dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
+        if pub_dt < cutoff:
+            continue
+        videos.append({
+            "video_id":  video_id,
+            "title":     title,
+            "published": pub_str,
+            "yt_url":    f"https://www.youtube.com/watch?v={video_id}",
+        })
+    return videos
 
 
 # ── Sheet helpers ─────────────────────────────────────────────────────────────
@@ -147,6 +169,23 @@ def youtube_url_in_index(sheets_svc, spreadsheet_id, yt_url):
     return False
 
 
+def _lookup_gopro_filename(youtube_id: str) -> str:
+    """Check uploaded.db for a GoPro filename matching this YouTube video ID."""
+    db_path = Path(__file__).parent / "uploaded.db"
+    if not db_path.exists():
+        return ""
+    try:
+        import sqlite3
+        con = sqlite3.connect(str(db_path))
+        row = con.execute(
+            "SELECT filename FROM uploads WHERE youtube_id=?", (youtube_id,)
+        ).fetchone()
+        con.close()
+        return row[0] if row else ""
+    except Exception:
+        return ""
+
+
 # ── Job 1: sync-videos ────────────────────────────────────────────────────────
 
 def sync_videos(lookback_days: int = 14):
@@ -155,52 +194,26 @@ def sync_videos(lookback_days: int = 14):
     lookback_days days that are not yet in the sheet. Creates a tab + index
     row for each new one.
     """
-    from datetime import timedelta
-    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
-    print(f"=== sync-videos (last {lookback_days} days, since {cutoff.date()}) ===")
+    print(f"=== sync-videos (last {lookback_days} days) ===")
     sheets_svc, drive_svc = get_sheets_service()
-    yt_svc = get_youtube_service()
     spreadsheet_id = get_spreadsheet_id(sheets_svc)
     ensure_index_tab(sheets_svc, spreadsheet_id)
 
-    channel_resp = yt_svc.channels().list(part="contentDetails", mine=True).execute()
-    uploads_playlist = (
-        channel_resp["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
-    )
-    playlist_resp = yt_svc.playlistItems().list(
-        part="snippet",
-        playlistId=uploads_playlist,
-        maxResults=50,
-    ).execute()
+    videos = get_recent_public_videos(lookback_days=lookback_days)
+    print(f"  {len(videos)} public video(s) found in RSS feed")
 
     new_count = 0
-    for item in playlist_resp.get("items", []):
-        snippet   = item["snippet"]
-        video_id  = snippet["resourceId"]["videoId"]
-        title     = snippet["title"]
-        published = snippet["publishedAt"]
+    for v in videos:
+        video_id  = v["video_id"]
+        title     = v["title"]
+        published = v["published"]
+        yt_url    = v["yt_url"]
 
-        # Skip anything older than the lookback window
-        pub_dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
-        if pub_dt < cutoff:
-            continue
-
-        # Check privacy status
-        vid_resp = yt_svc.videos().list(part="status,snippet", id=video_id).execute()
-        if not vid_resp["items"]:
-            continue
-        status = vid_resp["items"][0]["status"]["privacyStatus"]
-        if status != "public":
-            continue
-
-        yt_url = f"https://www.youtube.com/watch?v={video_id}"
         if youtube_url_in_index(sheets_svc, spreadsheet_id, yt_url):
             continue  # already tracked
 
-        # Try to find source GoPro filename from video description
-        description = vid_resp["items"][0]["snippet"].get("description", "")
-        source_match = re.search(r"FFA_FILENAME:([\w.]+)", description)
-        source_filename = source_match.group(1) if source_match else ""
+        # Try to match to a GoPro filename via uploaded.db in repo
+        source_filename = _lookup_gopro_filename(video_id)
 
         tab_name = safe_tab_name(title)
         # Deduplicate tab name if it clashes

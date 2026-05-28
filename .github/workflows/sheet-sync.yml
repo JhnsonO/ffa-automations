@@ -1,7 +1,8 @@
 name: Sheet Sync
 
-# Lightweight workflow — only checks for newly-public YouTube videos
-# and creates sheet tabs for them. Runs every 30 minutes.
+# Lightweight workflow — checks the FFA YouTube RSS feed for newly-public
+# videos and creates sheet tabs for them. Runs every 30 minutes.
+# No YouTube OAuth required — RSS feed only shows public videos.
 
 on:
   schedule:
@@ -26,6 +27,4 @@ jobs:
       - name: Sync newly-public videos to sheet
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
-          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
         run: python sheet_manager.py sync-videos
