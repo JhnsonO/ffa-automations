@@ -223,21 +223,21 @@ def sync_videos(lookback_days: int = 14):
             suffix += 1
 
         date_str = published[:10]
-        _create_video_tab(sheets_svc, spreadsheet_id, tab_name, title, yt_url, source_filename)
-        _add_index_row(sheets_svc, spreadsheet_id, title, yt_url, source_filename, date_str, tab_name)
+        sheet_gid = _create_video_tab(sheets_svc, spreadsheet_id, tab_name, title, yt_url, source_filename)
+        _add_index_row(sheets_svc, spreadsheet_id, title, yt_url, source_filename, date_str, tab_name, sheet_gid)
         print(f"  + Created tab '{tab_name}' for: {title}")
         new_count += 1
 
     print(f"sync-videos complete. {new_count} new video(s) added.")
 
 
-def _create_video_tab(sheets_svc, spreadsheet_id, tab_name, title, yt_url, source_filename):
-    """Add a new tab with header block and clip table header."""
-    # Create the sheet
-    sheets_svc.spreadsheets().batchUpdate(
+def _create_video_tab(sheets_svc, spreadsheet_id, tab_name, title, yt_url, source_filename) -> int:
+    """Add a new tab with header block and clip table header. Returns the new sheet GID."""
+    resp = sheets_svc.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
         body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]},
     ).execute()
+    sheet_gid = resp["replies"][0]["addSheet"]["properties"]["sheetId"]
 
     yt_formula   = f'=HYPERLINK("{yt_url}","▶ Watch on YouTube")'
     source_value = source_filename if source_filename else "—"
@@ -255,17 +255,18 @@ def _create_video_tab(sheets_svc, spreadsheet_id, tab_name, title, yt_url, sourc
         valueInputOption="USER_ENTERED",
         body={"values": values},
     ).execute()
+    return sheet_gid
 
 
-def _add_index_row(sheets_svc, spreadsheet_id, title, yt_url, source_filename, date_str, tab_name):
-    yt_formula = f'=HYPERLINK("{yt_url}","▶ Watch")'
-    tab_formula = f'=HYPERLINK("#gid=0","{tab_name}")'  # placeholder; gid resolved separately
+def _add_index_row(sheets_svc, spreadsheet_id, title, yt_url, source_filename, date_str, tab_name, sheet_gid: int):
+    yt_formula  = f'=HYPERLINK("{yt_url}","▶ Watch")'
+    tab_formula = f'=HYPERLINK("#gid={sheet_gid}","{tab_name}")'
     sheets_svc.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
         range=f"{INDEX_TAB}!A:F",
         valueInputOption="USER_ENTERED",
         insertDataOption="INSERT_ROWS",
-        body={"values": [[title, yt_formula, source_filename, date_str, tab_name, "Active"]]},
+        body={"values": [[title, yt_formula, source_filename, date_str, tab_formula, "Active"]]},
     ).execute()
 
 
