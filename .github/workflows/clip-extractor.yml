@@ -28,9 +28,12 @@ jobs:
           pip install -U yt-dlp google-auth google-auth-httplib2 google-api-python-client
 
       - name: Write credentials
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
         run: |
-          echo '${{ secrets.YOUTUBE_TOKEN }}' > youtube_token.json
-          echo '${{ secrets.YOUTUBE_CREDENTIALS }}' > youtube_credentials.json
+          python -c "import os; open('youtube_token.json','w').write(os.environ['YOUTUBE_TOKEN'])"
+          python -c "import os; open('youtube_credentials.json','w').write(os.environ['YOUTUBE_CREDENTIALS'])"
 
       - name: Process pending clips
         env:
