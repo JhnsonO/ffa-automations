@@ -243,13 +243,3 @@ jobs:
           if [ -f youtube_token.json ]; then
             echo "YOUTUBE_TOKEN_UPDATED=$(cat youtube_token.json | base64 -w 0)" >> $GITHUB_ENV
           fi
-
-      - name: Sync newly-public videos to sheet
-        if: always()
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
-          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
-        run: |
-          pip install -q google-auth google-auth-httplib2 google-api-python-client
-          python sheet_manager.py sync-videos || echo "::warning::Sheet sync failed — non-blocking"

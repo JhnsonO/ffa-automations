@@ -343,10 +343,9 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
             name      = row[2] if len(row) > 2 else f"clip_{i+1:02d}"
             tags      = row[3] if len(row) > 3 else ""
 
-            # Sanitise name + prepend tags
+            # Sanitise name — tags go to Drive metadata, not the filename
             safe_name = re.sub(r"[^A-Za-z0-9_\-]+", "_", name).strip("_") or f"clip_{i+1:02d}"
-            tag_prefix = _tags_to_prefix(tags)
-            filename   = f"{tag_prefix}{safe_name}" if tag_prefix else safe_name
+            filename  = safe_name
 
             try:
                 start_s = _parse_ts(start_str)
@@ -368,7 +367,7 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
             # Upload to Drive
             print(f"  📤 Uploading {out_path.name} to Drive")
             try:
-                file_id = _upload_to_drive(drive_svc, out_path, drive_folder_id)
+                file_id = _upload_to_drive(drive_svc, out_path, drive_folder_id, tags=tags)
                 drive_link = f"https://drive.google.com/file/d/{file_id}/view"
             except Exception as e:
                 print(f"  ❌ Drive upload failed: {e}")
@@ -395,13 +394,6 @@ def _extract_url(cell_value: str) -> str:
     m = re.search(r"https?://\S+", cell_value)
     return m.group(0) if m else ""
 
-
-def _tags_to_prefix(tags: str) -> str:
-    if not tags.strip():
-        return ""
-    parts = [re.sub(r"[^A-Za-z0-9]+", "", t.strip()) for t in tags.split(",")]
-    parts = [p for p in parts if p]
-    return ("_".join(parts) + "__") if parts else ""
 
 
 def _parse_ts(ts: str) -> float:
@@ -479,16 +471,29 @@ def _find_or_create_folder(drive_svc, name: str, parent_id) -> str:
     return folder["id"]
 
 
-def _upload_to_drive(drive_svc, file_path: Path, folder_id: str) -> str:
-    """Upload a file to Drive folder. Returns file ID."""
+def _upload_to_drive(drive_svc, file_path: Path, folder_id: str, tags: str = "") -> str:
+    """Upload a file to Drive folder. Returns file ID.
+    Tags are stored as Drive file description and as a custom property
+    so they're searchable/filterable without affecting the filename.
+    """
     from googleapiclient.http import MediaFileUpload
     media = MediaFileUpload(str(file_path), mimetype="video/mp4", resumable=True)
-    file_meta = {"name": file_path.name, "parents": [folder_id]}
+
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    description = "Tags: " + ", ".join(tag_list) if tag_list else ""
+
+    file_meta = {
+        "name": file_path.name,
+        "parents": [folder_id],
+        "description": description,
+        # Drive custom properties — filterable via API and visible in file details
+        "properties": {"ffa_tags": ",".join(tag_list)} if tag_list else {},
+    }
     uploaded = drive_svc.files().create(
         body=file_meta, media_body=media, fields="id"
     ).execute()
     file_id = uploaded["id"]
-    # Make it readable by anyone with the link
+    # Make readable by anyone with the link
     drive_svc.permissions().create(
         fileId=file_id,
         body={"type": "anyone", "role": "reader"},
