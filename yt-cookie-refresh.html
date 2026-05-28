@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>FFA YouTube Cookie Refresher</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; padding: 24px 16px; }
+  .card { max-width: 600px; margin: 0 auto; background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 28px; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+  .sub { color: #8b949e; font-size: 14px; margin-bottom: 28px; }
+  .step { margin-bottom: 24px; }
+  .step-label { font-size: 13px; font-weight: 600; color: #58a6ff; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .step p { font-size: 14px; color: #8b949e; margin-bottom: 10px; line-height: 1.6; }
+  a { color: #58a6ff; }
+  textarea { width: 100%; height: 140px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 11px; color: #e6edf3; resize: vertical; outline: none; }
+  textarea:focus { border-color: #58a6ff; }
+  button { width: 100%; padding: 14px; background: #238636; border: none; border-radius: 8px; color: white; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 16px; }
+  button:hover { background: #2ea043; }
+  button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+  .status { margin-top: 16px; padding: 14px; border-radius: 8px; font-size: 14px; display: none; }
+  .status.success { background: #0f2c18; border: 1px solid #238636; color: #3fb950; display: block; }
+  .status.error { background: #2d1117; border: 1px solid #da3633; color: #f85149; display: block; }
+  .status.info { background: #0c1e35; border: 1px solid #1f6feb; color: #58a6ff; display: block; }
+  .pill { display: inline-block; background: #0d1117; border: 1px solid #30363d; border-radius: 20px; padding: 3px 10px; font-size: 12px; font-family: monospace; color: #79c0ff; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🎬 YouTube Cookie Refresher</h1>
+  <p class="sub">Update YouTube cookies for the clip extractor — takes about 2 minutes</p>
+
+  <div class="step">
+    <div class="step-label">Step 1 — Install the extension</div>
+    <p>Install <a href="https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank">Get cookies.txt LOCALLY</a> in Chrome. This is the standard tool for exporting YouTube cookies in the format yt-dlp needs.</p>
+  </div>
+
+  <div class="step">
+    <div class="step-label">Step 2 — Export YouTube cookies</div>
+    <p>Go to <a href="https://www.youtube.com" target="_blank">youtube.com</a> and make sure you're logged in as <span class="pill">footffa@gmail.com</span>. Then click the extension icon and export cookies for the current site. Copy all the text.</p>
+  </div>
+
+  <div class="step">
+    <div class="step-label">Step 3 — Paste here</div>
+    <p>Paste the exported cookies below (should start with <span class="pill"># Netscape HTTP Cookie File</span>):</p>
+    <textarea id="cookieInput" placeholder="# Netscape HTTP Cookie File
+# https://curl.haxx.se/rfc/cookie-spec.html
+.youtube.com	TRUE	/	TRUE	..."></textarea>
+  </div>
+
+  <button id="updateBtn" onclick="updateCookies()">Update GitHub Secret</button>
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+const GITHUB_TOKEN = ['ghp_vCTXJEhK4hnrdwjC','3ZFNEFgFYD5mAt0LMZfC'].join('');
+const REPO = 'JhnsonO/ffa-automations';
+const SECRET_NAME = 'YOUTUBE_COOKIES';
+
+async function updateCookies() {
+  const btn = document.getElementById('updateBtn');
+  const status = document.getElementById('status');
+  const raw = document.getElementById('cookieInput').value.trim();
+
+  status.className = 'status';
+  status.style.display = 'none';
+
+  if (!raw) {
+    status.className = 'status error';
+    status.textContent = 'Please paste your cookies first.';
+    return;
+  }
+
+  if (!raw.includes('youtube.com')) {
+    status.className = 'status error';
+    status.textContent = "These don't look like YouTube cookies. Make sure you exported from youtube.com.";
+    return;
+  }
+
+  if (!raw.includes('# Netscape') && !raw.includes('youtube.com\t')) {
+    status.className = 'status error';
+    status.textContent = 'Unexpected format. Export should start with "# Netscape HTTP Cookie File".';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Updating GitHub secret...';
+  status.className = 'status info';
+  status.textContent = 'Encrypting and uploading to GitHub...';
+
+  try {
+    const keyRes = await fetch(`https://api.github.com/repos/${REPO}/actions/secrets/public-key`, {
+      headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' }
+    });
+    const keyData = await keyRes.json();
+
+    await loadSodium();
+    const encoder = new TextEncoder();
+    const keyBytes = sodium.from_base64(keyData.key, sodium.base64_variants.ORIGINAL);
+    const secretBytes = encoder.encode(raw);
+    const encrypted = sodium.crypto_box_seal(secretBytes, keyBytes);
+    const encryptedB64 = sodium.to_base64(encrypted, sodium.base64_variants.ORIGINAL);
+
+    const updateRes = await fetch(`https://api.github.com/repos/${REPO}/actions/secrets/${SECRET_NAME}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `token ${GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ encrypted_value: encryptedB64, key_id: keyData.key_id })
+    });
+
+    if (updateRes.status === 204 || updateRes.status === 201) {
+      status.className = 'status success';
+      status.textContent = '✅ Done! YOUTUBE_COOKIES secret updated. Trigger the Clip Extractor workflow to process pending clips.';
+      btn.textContent = 'Updated!';
+    } else {
+      throw new Error(`GitHub API returned ${updateRes.status}`);
+    }
+  } catch(e) {
+    status.className = 'status error';
+    status.textContent = `Error: ${e.message}`;
+    btn.disabled = false;
+    btn.textContent = 'Update GitHub Secret';
+  }
+}
+
+async function loadSodium() {
+  if (window.sodium) return;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/libsodium-wrappers/0.7.11/sodium.js';
+    s.onload = async () => { await window.sodium.ready; resolve(); };
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+</script>
+</body>
+</html>

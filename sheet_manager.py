@@ -435,24 +435,14 @@ def _parse_ts(ts: str) -> float:
     raise ValueError(f"Unrecognised format: {ts}")
 
 
-def _get_oauth_token() -> str:
-    """Get a valid OAuth access token from the YOUTUBE_TOKEN secret."""
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
-
-    token_json = os.environ.get("YOUTUBE_TOKEN", "")
-    if not token_json:
-        return ""
-    token_path = Path("/tmp/youtube_token.json")
-    token_path.write_text(token_json)
-    scopes = [
-        "https://www.googleapis.com/auth/youtube.upload",
-        "https://www.googleapis.com/auth/youtube.readonly",
-    ]
-    creds = Credentials.from_authorized_user_file(str(token_path), scopes)
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-    return creds.token or ""
+def _cookie_args() -> list:
+    """Write YOUTUBE_COOKIES env var to a temp file and return yt-dlp args."""
+    cookies = os.environ.get("YOUTUBE_COOKIES", "").strip()
+    if not cookies:
+        return []
+    cookie_path = Path("/tmp/yt_cookies.txt")
+    cookie_path.write_text(cookies)
+    return ["--cookies", str(cookie_path)]
 
 
 def _download_source(url: str, work_dir: Path) -> Path:
@@ -463,18 +453,12 @@ def _download_source(url: str, work_dir: Path) -> Path:
         "bestvideo[height>=1080]+bestaudio/"
         "bestvideo+bestaudio/best"
     )
-    # Use OAuth token if available — avoids bot detection without cookie expiry
-    extra_args = []
-    token = _get_oauth_token()
-    if token:
-        extra_args = ["--add-header", f"Authorization:Bearer {token}"]
-
     subprocess.run([
         "yt-dlp", "-f", fmt,
         "--merge-output-format", "mp4",
         "-o", str(work_dir / "source.%(ext)s"),
         "--no-playlist", "--no-progress",
-    ] + extra_args + [url], check=True)
+    ] + _cookie_args() + [url], check=True)
     matches = list(work_dir.glob("source.*"))
     if not matches:
         raise RuntimeError("Download produced no file")
