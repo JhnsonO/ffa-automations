@@ -33,7 +33,7 @@ LOG_PATH.parent.mkdir(exist_ok=True)
 
 GOPRO_API = "https://api.gopro.com"
 GOPRO_HEADERS = {"Accept": "application/vnd.gopro.jk.media+json; version=2.0.0"}
-YT_SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"]
+YT_SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly", "https://www.googleapis.com/auth/drive"]
 MIN_VIDEO_SIZE_BYTES = 100_000_000
 SUSPICIOUS_CAPTURE_GAP_DAYS = int(os.environ.get("SUSPICIOUS_CAPTURE_GAP_DAYS") or 14)
 GOPRO_FALLBACK_SCAN_PAGES = int(os.environ.get("GOPRO_FALLBACK_SCAN_PAGES") or 10)
@@ -585,16 +585,14 @@ def get_youtube_service():
 
 
 def get_drive_service():
-    """Get Google Drive service using service account credentials."""
-    sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-    if not sa_json:
-        return None
+    """Get Google Drive service using the user OAuth token (same as YouTube)."""
     try:
-        from google.oauth2 import service_account
-        creds = service_account.Credentials.from_service_account_info(
-            json.loads(sa_json),
-            scopes=["https://www.googleapis.com/auth/drive"],
-        )
+        creds = None
+        if TOKEN_PATH.exists():
+            creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), YT_SCOPES)
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
         return build("drive", "v3", credentials=creds, cache_discovery=False)
     except Exception as e:
         log.warning(f"Could not initialise Drive service: {e}")

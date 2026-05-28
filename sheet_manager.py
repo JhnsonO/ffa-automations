@@ -45,18 +45,39 @@ from pathlib import Path
 # ── Google API clients ────────────────────────────────────────────────────────
 
 def get_sheets_service():
+    """Sheets uses service account. Drive uses user OAuth token."""
     from google.oauth2 import service_account
+    from google.oauth2.credentials import Credentials as OAuthCreds
+    from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
+
+    # Sheets — service account
     sa_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-    creds = service_account.Credentials.from_service_account_info(
+    sa_creds = service_account.Credentials.from_service_account_info(
         json.loads(sa_json),
-        scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ],
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
     )
-    sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
-    drive  = build("drive",  "v3", credentials=creds, cache_discovery=False)
+    sheets = build("sheets", "v4", credentials=sa_creds, cache_discovery=False)
+
+    # Drive — user OAuth token (service accounts can't upload to personal Drive)
+    token_json = os.environ.get("YOUTUBE_TOKEN", "")
+    drive = None
+    if token_json:
+        token_path = Path("/tmp/youtube_token.json")
+        token_path.write_text(token_json)
+        scopes = [
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube.readonly",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        try:
+            drive_creds = OAuthCreds.from_authorized_user_file(str(token_path), scopes)
+            if drive_creds and drive_creds.expired and drive_creds.refresh_token:
+                drive_creds.refresh(Request())
+            drive = build("drive", "v3", credentials=drive_creds, cache_discovery=False)
+        except Exception as e:
+            print(f"Warning: could not init Drive with OAuth token: {e}")
+
     return sheets, drive
 
 
