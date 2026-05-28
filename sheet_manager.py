@@ -517,29 +517,37 @@ def _cut_clip(source: Path, start: float, end: float, out: Path):
     ], check=True)
 
 
+FFA_DRIVE_FOLDER_ID_FILE = Path(__file__).parent / ".ffa_drive_folder_id"
+
+
+def _get_ffa_drive_folder_id() -> str:
+    if FFA_DRIVE_FOLDER_ID_FILE.exists():
+        return FFA_DRIVE_FOLDER_ID_FILE.read_text().strip()
+    return ""
+
+
 def _ensure_drive_folder(drive_svc, folder_name: str) -> str:
     """Get or create FFA/Clips/<folder_name> in Drive. Returns folder ID."""
-    # Find or create root FFA folder
-    ffa_id = _find_or_create_folder(drive_svc, "FFA", parent_id=None)
+    ffa_id = _get_ffa_drive_folder_id()
+    if not ffa_id:
+        raise RuntimeError(".ffa_drive_folder_id not set")
     clips_id = _find_or_create_folder(drive_svc, "Clips", parent_id=ffa_id)
     video_id = _find_or_create_folder(drive_svc, folder_name, parent_id=clips_id)
     return video_id
 
 
-def _find_or_create_folder(drive_svc, name: str, parent_id) -> str:
-    q = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    if parent_id:
-        q += f" and '{parent_id}' in parents"
-    res = drive_svc.files().list(q=q, fields="files(id,name)").execute()
+def _find_or_create_folder(drive_svc, name: str, parent_id: str) -> str:
+    q = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '{parent_id}' in parents"
+    res = drive_svc.files().list(
+        q=q, fields="files(id,name)", supportsAllDrives=True, includeItemsFromAllDrives=True
+    ).execute()
     if res["files"]:
         return res["files"][0]["id"]
-    meta = {
-        "name": name,
-        "mimeType": "application/vnd.google-apps.folder",
-    }
-    if parent_id:
-        meta["parents"] = [parent_id]
-    folder = drive_svc.files().create(body=meta, fields="id").execute()
+    folder = drive_svc.files().create(
+        body={"name": name, "mimeType": "application/vnd.google-apps.folder", "parents": [parent_id]},
+        fields="id",
+        supportsAllDrives=True,
+    ).execute()
     return folder["id"]
 
 
@@ -562,13 +570,14 @@ def _upload_to_drive(drive_svc, file_path: Path, folder_id: str, tags: str = "")
         "properties": {"ffa_tags": ",".join(tag_list)} if tag_list else {},
     }
     uploaded = drive_svc.files().create(
-        body=file_meta, media_body=media, fields="id"
+        body=file_meta, media_body=media, fields="id", supportsAllDrives=True
     ).execute()
     file_id = uploaded["id"]
     # Make readable by anyone with the link
     drive_svc.permissions().create(
         fileId=file_id,
         body={"type": "anyone", "role": "reader"},
+        supportsAllDrives=True,
     ).execute()
     return file_id
 

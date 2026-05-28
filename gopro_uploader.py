@@ -601,25 +601,38 @@ def get_drive_service():
         return None
 
 
+FFA_DRIVE_FOLDER_ID_FILE = BASE_DIR / ".ffa_drive_folder_id"
+
+
+def get_ffa_drive_folder_id() -> str:
+    if FFA_DRIVE_FOLDER_ID_FILE.exists():
+        return FFA_DRIVE_FOLDER_ID_FILE.read_text().strip()
+    return ""
+
+
 def upload_source_to_drive(drive_svc, file_path: Path) -> str:
     """Upload a GoPro source file to Drive: FFA/Sources/. Returns file ID or empty string."""
     if not drive_svc:
         return ""
     try:
-        # Find or create FFA/Sources folder
-        def find_or_create(name, parent_id=None):
-            q = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-            if parent_id:
-                q += f" and '{parent_id}' in parents"
-            res = drive_svc.files().list(q=q, fields="files(id)").execute()
+        ffa_id = get_ffa_drive_folder_id()
+        if not ffa_id:
+            log.warning("Drive: .ffa_drive_folder_id not set — cannot upload source")
+            return ""
+
+        # Find or create Sources subfolder inside the shared FFA folder
+        def find_or_create(name, parent_id):
+            q = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '{parent_id}' in parents"
+            res = drive_svc.files().list(
+                q=q, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True
+            ).execute()
             if res["files"]:
                 return res["files"][0]["id"]
-            meta = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
-            if parent_id:
-                meta["parents"] = [parent_id]
-            return drive_svc.files().create(body=meta, fields="id").execute()["id"]
+            meta = {"name": name, "mimeType": "application/vnd.google-apps.folder", "parents": [parent_id]}
+            return drive_svc.files().create(
+                body=meta, fields="id", supportsAllDrives=True
+            ).execute()["id"]
 
-        ffa_id     = find_or_create("FFA")
         sources_id = find_or_create("Sources", ffa_id)
 
         # Skip if already uploaded
@@ -636,7 +649,8 @@ def upload_source_to_drive(drive_svc, file_path: Path) -> str:
         uploaded = drive_svc.files().create(
             body={"name": file_path.name, "parents": [sources_id]},
             media_body=media,
-            fields="id"
+            fields="id",
+            supportsAllDrives=True,
         ).execute()
         log.info(f"Drive upload complete: {file_path.name} -> {uploaded['id']}")
         return uploaded["id"]
