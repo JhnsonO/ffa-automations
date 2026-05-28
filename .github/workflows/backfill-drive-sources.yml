@@ -16,7 +16,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -q requests google-auth google-auth-httplib2 google-api-python-client google-auth-oauthlib playwright
+        run: python -m pip install -q requests google-auth google-auth-httplib2 google-api-python-client google-auth-oauthlib google-auth-httplib2 playwright && python -c "import google_auth_oauthlib; print('OK')"
         
       - name: Install Playwright browsers
         run: playwright install chromium
