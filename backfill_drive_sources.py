@@ -29,8 +29,14 @@ from gopro_uploader import (
 )
 
 def main():
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)).isoformat()
-    log.info(f"Backfill: last {LOOKBACK_DAYS} days (since {cutoff[:10]})")
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--limit", type=int, default=None, help="Only process the N most recent videos")
+    ap.add_argument("--days", type=int, default=LOOKBACK_DAYS, help="Lookback window in days")
+    args = ap.parse_args()
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=args.days)).isoformat()
+    log.info(f"Backfill: last {args.days} days (since {cutoff[:10]}){f', limit {args.limit}' if args.limit else ''}")
 
     con = sqlite3.connect(str(DB_PATH))
     rows = con.execute(
@@ -42,6 +48,9 @@ def main():
         (cutoff,)
     ).fetchall()
     con.close()
+
+    if args.limit:
+        rows = rows[:args.limit]
 
     if not rows:
         log.info("No GoPro videos found in the last 14 days.")
