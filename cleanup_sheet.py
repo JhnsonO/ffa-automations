@@ -51,7 +51,7 @@ def main():
             yt_url = extract_url(val)
             if yt_url: break
         # Count data rows (clip rows)
-        data_rows = sum(1 for r in rows[5:] if any(c.strip() for c in r))
+        data_rows = sum(1 for r in rows[5:] if any(str(c).strip() for c in r))
         if yt_url not in url_to_tabs:
             url_to_tabs[yt_url] = []
         url_to_tabs[yt_url].append({
