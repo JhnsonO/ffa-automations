@@ -584,6 +584,67 @@ def get_youtube_service():
 
 
 
+def get_drive_service():
+    """Get Google Drive service using service account credentials."""
+    sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    if not sa_json:
+        return None
+    try:
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_info(
+            json.loads(sa_json),
+            scopes=["https://www.googleapis.com/auth/drive"],
+        )
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
+    except Exception as e:
+        log.warning(f"Could not initialise Drive service: {e}")
+        return None
+
+
+def upload_source_to_drive(drive_svc, file_path: Path) -> str:
+    """Upload a GoPro source file to Drive: FFA/Sources/. Returns file ID or empty string."""
+    if not drive_svc:
+        return ""
+    try:
+        # Find or create FFA/Sources folder
+        def find_or_create(name, parent_id=None):
+            q = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+            if parent_id:
+                q += f" and '{parent_id}' in parents"
+            res = drive_svc.files().list(q=q, fields="files(id)").execute()
+            if res["files"]:
+                return res["files"][0]["id"]
+            meta = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
+            if parent_id:
+                meta["parents"] = [parent_id]
+            return drive_svc.files().create(body=meta, fields="id").execute()["id"]
+
+        ffa_id     = find_or_create("FFA")
+        sources_id = find_or_create("Sources", ffa_id)
+
+        # Skip if already uploaded
+        existing = drive_svc.files().list(
+            q=f"name='{file_path.name}' and '{sources_id}' in parents and trashed=false",
+            fields="files(id)"
+        ).execute()
+        if existing["files"]:
+            log.info(f"Drive: {file_path.name} already in FFA/Sources — skipping")
+            return existing["files"][0]["id"]
+
+        log.info(f"Uploading source to Drive: FFA/Sources/{file_path.name}")
+        media = MediaFileUpload(str(file_path), mimetype="video/mp4", resumable=True)
+        uploaded = drive_svc.files().create(
+            body={"name": file_path.name, "parents": [sources_id]},
+            media_body=media,
+            fields="id"
+        ).execute()
+        log.info(f"Drive upload complete: {file_path.name} -> {uploaded['id']}")
+        return uploaded["id"]
+    except Exception as e:
+        log.warning(f"Drive source upload failed for {file_path.name}: {e}")
+        return ""
+
+
 def upload_to_youtube(service, video_path, title, description, gopro_filename="", max_retries=3):
     log.info(f"Uploading to YouTube: {title} ({gopro_filename})")
     body = {
@@ -694,6 +755,7 @@ def upload_item(con, yt, session, item, camera_label="", force=False):
     yt_id = upload_to_youtube(yt, dest, make_title(filename, upload_date, camera_label), description, gopro_filename=filename)
     if yt_id:
         mark_uploaded(con, media_id, filename, upload_date, yt_id)
+        upload_source_to_drive(get_drive_service(), dest)
         dest.unlink(missing_ok=True)
         log.info(f"Done: {filename} Camera {camera_label or '-'} -> https://youtu.be/{yt_id}")
     else:

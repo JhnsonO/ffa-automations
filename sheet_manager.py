@@ -311,7 +311,10 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
         try: return rows[r][c]
         except IndexError: return ""
 
-    yt_url = _extract_url(cell(1, 1))  # row 2 col B
+    yt_url         = _extract_url(cell(1, 1))  # row 2 col B
+    gopro_filename = cell(2, 1)                # row 3 col B (Source)
+    if gopro_filename.startswith("="):
+        gopro_filename = ""  # formula cell, not a plain filename
     if not yt_url:
         print(f"  [{tab_name}] No YouTube URL found — skipping")
         return 0
@@ -346,9 +349,9 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
     # Download source video once
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        print(f"  Downloading source: {yt_url}")
+        print(f"  Downloading source (gopro={gopro_filename or 'n/a'}): {yt_url}")
         try:
-            source = _download_source(yt_url, tmp)
+            source = _download_source(yt_url, tmp, drive_svc=drive_svc, gopro_filename=gopro_filename)
         except subprocess.CalledProcessError as e:
             print(f"  ❌ Download failed: {e}")
             for i in pending_indices:
@@ -435,17 +438,50 @@ def _parse_ts(ts: str) -> float:
     raise ValueError(f"Unrecognised format: {ts}")
 
 
-def _cookie_args() -> list:
-    """Write YOUTUBE_COOKIES env var to a temp file and return yt-dlp args."""
-    cookies = os.environ.get("YOUTUBE_COOKIES", "").strip()
-    if not cookies:
-        return []
-    cookie_path = Path("/tmp/yt_cookies.txt")
-    cookie_path.write_text(cookies)
-    return ["--cookies", str(cookie_path)]
+def _find_drive_source(drive_svc, gopro_filename: str) -> str:
+    """Look for a GoPro source file in Drive: FFA/Sources/. Returns file ID or empty string."""
+    if not drive_svc or not gopro_filename or gopro_filename == "—":
+        return ""
+    try:
+        res = drive_svc.files().list(
+            q=f"name='{gopro_filename}' and trashed=false",
+            fields="files(id,name)",
+            spaces="drive",
+        ).execute()
+        if res["files"]:
+            log.info(f"Found Drive source for {gopro_filename}: {res['files'][0]['id']}")
+            return res["files"][0]["id"]
+    except Exception as e:
+        log.warning(f"Drive source lookup failed: {e}")
+    return ""
 
 
-def _download_source(url: str, work_dir: Path) -> Path:
+def _download_from_drive(drive_svc, file_id: str, work_dir: Path) -> Path:
+    """Download a file from Drive by file ID."""
+    import io
+    from googleapiclient.http import MediaIoBaseDownload
+    out_path = work_dir / "source.mp4"
+    request = drive_svc.files().get_media(fileId=file_id)
+    with open(out_path, "wb") as fh:
+        downloader = MediaIoBaseDownload(fh, request, chunksize=50 * 1024 * 1024)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+            if status:
+                log.info(f"  Drive download: {int(status.progress() * 100)}%")
+    return out_path
+
+
+def _download_source(url: str, work_dir: Path, drive_svc=None, gopro_filename: str = "") -> Path:
+    # Try Drive first for GoPro sources — no bot detection, works forever
+    if drive_svc and gopro_filename:
+        file_id = _find_drive_source(drive_svc, gopro_filename)
+        if file_id:
+            log.info(f"Downloading source from Drive: {gopro_filename}")
+            return _download_from_drive(drive_svc, file_id, work_dir)
+
+    # Fall back to yt-dlp for XbotGo or when Drive source not available
+    log.info(f"Downloading source from YouTube: {url}")
     fmt = (
         "bestvideo[height>=2160][ext=mp4]+bestaudio[ext=m4a]/"
         "bestvideo[height>=2160]+bestaudio/"
@@ -458,7 +494,8 @@ def _download_source(url: str, work_dir: Path) -> Path:
         "--merge-output-format", "mp4",
         "-o", str(work_dir / "source.%(ext)s"),
         "--no-playlist", "--no-progress",
-    ] + _cookie_args() + [url], check=True)
+        url,
+    ], check=True)
     matches = list(work_dir.glob("source.*"))
     if not matches:
         raise RuntimeError("Download produced no file")
