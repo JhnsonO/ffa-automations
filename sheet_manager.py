@@ -146,18 +146,20 @@ def youtube_url_in_index(sheets_svc, spreadsheet_id, yt_url):
 
 # ── Job 1: sync-videos ────────────────────────────────────────────────────────
 
-def sync_videos():
+def sync_videos(lookback_days: int = 14):
     """
-    Checks the YouTube channel for public videos not yet in the sheet.
-    Creates a tab + index row for each new one.
+    Checks the YouTube channel for public videos published within the last
+    lookback_days days that are not yet in the sheet. Creates a tab + index
+    row for each new one.
     """
-    print("=== sync-videos ===")
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    print(f"=== sync-videos (last {lookback_days} days, since {cutoff.date()}) ===")
     sheets_svc, drive_svc = get_sheets_service()
     yt_svc = get_youtube_service()
     spreadsheet_id = get_spreadsheet_id(sheets_svc)
     ensure_index_tab(sheets_svc, spreadsheet_id)
 
-    # Fetch up to 50 public uploads from the channel
     channel_resp = yt_svc.channels().list(part="contentDetails", mine=True).execute()
     uploads_playlist = (
         channel_resp["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
@@ -174,6 +176,11 @@ def sync_videos():
         video_id  = snippet["resourceId"]["videoId"]
         title     = snippet["title"]
         published = snippet["publishedAt"]
+
+        # Skip anything older than the lookback window
+        pub_dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
+        if pub_dt < cutoff:
+            continue
 
         # Check privacy status
         vid_resp = yt_svc.videos().list(part="status,snippet", id=video_id).execute()
@@ -519,9 +526,11 @@ if __name__ == "__main__":
     ap.add_argument("job", choices=["sync-videos", "process-clips"],
                     help="sync-videos: create tabs for newly-public videos. "
                          "process-clips: cut pending clips and upload to Drive.")
+    ap.add_argument("--lookback-days", type=int, default=14,
+                    help="How many days back to scan for new public videos (default: 14)")
     args = ap.parse_args()
 
     if args.job == "sync-videos":
-        sync_videos()
+        sync_videos(lookback_days=args.lookback_days)
     elif args.job == "process-clips":
         process_clips()
