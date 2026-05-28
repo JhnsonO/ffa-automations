@@ -68,12 +68,13 @@ def main():
             ["Title",   TITLE],
             ["YouTube", yt_formula],
             ["Source",  "—"],
+            ["Ready",   ""],
             [],
             ["Start", "End", "Name", "Tags", "Status", "Link"],
         ]
         svc.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"'{TAB_NAME}'!A1:F5",
+            range=f"'{TAB_NAME}'!A1:F6",
             valueInputOption="USER_ENTERED",
             body={"values": header},
         ).execute()
@@ -102,7 +103,7 @@ def main():
         rows = [[start, end, name, "", "", ""] for start, end, name in CLIPS]
         svc.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"'{TAB_NAME}'!A6:F{5+len(rows)}",
+            range=f"'{TAB_NAME}'!A7:F{6+len(rows)}",
             valueInputOption="USER_ENTERED",
             body={"values": rows},
         ).execute()
