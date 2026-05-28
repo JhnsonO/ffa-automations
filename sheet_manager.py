@@ -74,7 +74,7 @@ def get_youtube_service():
     token_path = Path("/tmp/youtube_token.json")
     token_path.write_text(token_json)
 
-    scopes = ["https://www.googleapis.com/auth/youtube.readonly"]
+    scopes = ["https://www.googleapis.com/auth/youtube.upload"]
     creds = Credentials.from_authorized_user_file(str(token_path), scopes)
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
