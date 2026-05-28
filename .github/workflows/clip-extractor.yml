@@ -1,30 +1,18 @@
 name: Clip Extractor
 
-# Paste a YouTube URL and timestamps; this downloads the source at the
-# best available quality (4K preferred, 1080p minimum), cuts the clips,
-# and uploads them to Google Drive under FFA/Clips/<video_title>/.
+# Reads pending clips from the FFA Google Sheet, cuts them from the source
+# YouTube video, uploads to Google Drive and writes the link back to the sheet.
+# Triggered manually or on a schedule (every 6 hours).
 
 on:
   workflow_dispatch:
-    inputs:
-      youtube_url:
-        description: 'YouTube video URL'
-        required: true
-        type: string
-      timestamps:
-        description: 'Clips — one per line OR separated by `;`. Format: START END [name]. Example: 00:01:23 00:01:45 goal_a ; 02:10 02:30 quick_clip'
-        required: true
-        type: string
-      gdrive_subfolder:
-        description: 'Optional subfolder under Google Drive: FFA/Clips/ (leave blank for default)'
-        required: false
-        default: ''
-        type: string
+  schedule:
+    - cron: '0 */6 * * *'
 
 jobs:
-  extract:
+  process:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -33,55 +21,15 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install yt-dlp + ffmpeg
+      - name: Install dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg
-          pip install -U yt-dlp
+          pip install -U yt-dlp google-auth google-auth-httplib2 google-api-python-client
 
-      - name: Install rclone
-        run: curl -fsSL https://rclone.org/install.sh | sudo bash
-
-      - name: Configure rclone (Google Drive)
+      - name: Process pending clips
         env:
-          RCLONE_CONF: ${{ secrets.RCLONE_CONFIG_GDRIVE }}
-        run: |
-          if [ -z "$RCLONE_CONF" ]; then
-            echo "::warning::RCLONE_CONFIG_GDRIVE not set — Drive upload will be skipped."
-            exit 0
-          fi
-          mkdir -p ~/.config/rclone
-          printf '%s' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
-          rclone listremotes | grep -q '^gdrive:' || {
-            echo "rclone.conf must define a remote named [gdrive]" >&2
-            exit 1
-          }
-
-      - name: Extract clips
-        run: |
-          python clip_extractor.py \
-            --url "${{ inputs.youtube_url }}" \
-            --timestamps "${{ inputs.timestamps }}"
-
-      - name: Upload to Google Drive
-        run: |
-          rclone listremotes 2>/dev/null | grep -q '^gdrive:' || {
-            echo "gdrive remote not configured — skipping Drive upload."
-            exit 0
-          }
-          DEST="gdrive:FFA/Clips"
-          if [ -n "${{ inputs.gdrive_subfolder }}" ]; then
-            DEST="$DEST/${{ inputs.gdrive_subfolder }}"
-          fi
-          echo "Uploading to $DEST"
-          rclone copy clips/ "$DEST/" --progress --transfers 4 --checkers 8
-          echo "Upload complete"
-
-      - name: Upload clips as workflow artifact (backup, 7-day retention)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: clips
-          path: clips/
-          retention-days: 7
-          if-no-files-found: warn
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: python sheet_manager.py process-clips
