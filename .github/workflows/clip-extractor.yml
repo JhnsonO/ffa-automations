@@ -25,7 +25,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg
-          pip install -U yt-dlp google-auth google-auth-httplib2 google-api-python-client
+          pip install -U google-auth google-auth-httplib2 google-api-python-client
+          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+          yt-dlp --version
 
       - name: Write credentials
         env:

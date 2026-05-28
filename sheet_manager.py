@@ -557,8 +557,7 @@ def _download_source(url: str, work_dir: Path, drive_svc=None, gopro_filename: s
         "--merge-output-format", "mp4",
         "-o", str(work_dir / "source.%(ext)s"),
         "--no-playlist", "--no-progress",
-        "--extractor-args", "youtube:player_client=tv_embedded,ios",
-    ] + [url], check=True)
+    ] + cookie_args + [url], check=True)
     matches = list(work_dir.glob("source.*"))
     if not matches:
         raise RuntimeError("Download produced no file")
