@@ -34,6 +34,7 @@ jobs:
         run: |
           python -c "import os; open('youtube_token.json','w').write(os.environ['YOUTUBE_TOKEN'])"
           python -c "import os; open('youtube_credentials.json','w').write(os.environ['YOUTUBE_CREDENTIALS'])"
+          python -c "import json, os; size=os.path.getsize('youtube_token.json'); content=open('youtube_token.json').read(50); print(f'Token file: {size} bytes, starts with: {repr(content)}')"
 
       - name: Process pending clips
         env:
