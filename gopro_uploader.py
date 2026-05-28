@@ -33,7 +33,7 @@ LOG_PATH.parent.mkdir(exist_ok=True)
 
 GOPRO_API = "https://api.gopro.com"
 GOPRO_HEADERS = {"Accept": "application/vnd.gopro.jk.media+json; version=2.0.0"}
-YT_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+YT_SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"]
 MIN_VIDEO_SIZE_BYTES = 100_000_000
 SUSPICIOUS_CAPTURE_GAP_DAYS = int(os.environ.get("SUSPICIOUS_CAPTURE_GAP_DAYS") or 14)
 GOPRO_FALLBACK_SCAN_PAGES = int(os.environ.get("GOPRO_FALLBACK_SCAN_PAGES") or 10)
