@@ -475,9 +475,7 @@ def _extract_url(cell_value: str) -> str:
 
 def _parse_ts(ts) -> float:
     # Sheets sometimes returns numeric values for timestamp-like cells.
-    # A bare number could be seconds, or a time-of-day fraction (e.g. 4:20 -> 0.18055).
     if isinstance(ts, (int, float)):
-        # Treat fractional values < 1 as time-of-day fraction (Sheets format)
         if 0 < ts < 1:
             return float(ts) * 86400
         return float(ts)
@@ -490,6 +488,9 @@ def _parse_ts(ts) -> float:
     if len(parts) == 2:
         return parts[0] * 60 + parts[1]
     if len(parts) == 3:
+        # If trailing :00 — Sheets added it to user input like "37:06" → "37:06:00"
+        if parts[2] == 0:
+            return parts[0] * 60 + parts[1]
         return parts[0] * 3600 + parts[1] * 60 + parts[2]
     raise ValueError(f"Unrecognised format: {ts}")
 
