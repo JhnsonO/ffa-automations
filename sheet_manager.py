@@ -347,8 +347,8 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
         except IndexError: return ""
 
     yt_url         = _extract_url(cell(1, 1))  # row 2 col B
-    gopro_filename = cell(2, 1)                # row 3 col B (Source)
-    ready_flag     = cell(3, 1).strip().lower() # row 4 col B (Ready)
+    gopro_filename = str(cell(2, 1))                # row 3 col B (Source)
+    ready_flag     = str(cell(3, 1)).strip().lower() # row 4 col B (Ready)
     if gopro_filename.startswith("="):
         gopro_filename = ""
     if not yt_url:
@@ -361,7 +361,7 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
     clip_rows = rows[6:]
     pending_indices = []
     for i, row in enumerate(clip_rows):
-        status = row[4] if len(row) > 4 else ""
+        status = str(row[4]) if len(row) > 4 else ""
         if status.strip().lower() not in ("done", "pending"):
             # Treat blank/empty status as Pending if start/end are filled
             start = row[0] if len(row) > 0 else ""
@@ -466,8 +466,15 @@ def _extract_url(cell_value: str) -> str:
 
 
 
-def _parse_ts(ts: str) -> float:
-    ts = ts.strip()
+def _parse_ts(ts) -> float:
+    # Sheets sometimes returns numeric values for timestamp-like cells.
+    # A bare number could be seconds, or a time-of-day fraction (e.g. 4:20 -> 0.18055).
+    if isinstance(ts, (int, float)):
+        # Treat fractional values < 1 as time-of-day fraction (Sheets format)
+        if 0 < ts < 1:
+            return float(ts) * 86400
+        return float(ts)
+    ts = str(ts).strip()
     if not ts:
         raise ValueError("Empty timestamp")
     if ":" not in ts:
