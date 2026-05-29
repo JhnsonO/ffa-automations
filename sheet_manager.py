@@ -332,18 +332,25 @@ def process_clips():
 
 def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
     """Process all Pending rows in one video tab."""
-    result = sheets_svc.spreadsheets().values().get(
+    # Fetch header with FORMULA (for URL extraction) and data with FORMATTED_VALUE (for timestamps as strings)
+    header_result = sheets_svc.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range=f"'{tab_name}'!A1:F",
+        range=f"'{tab_name}'!A1:F6",
         valueRenderOption="FORMULA",
     ).execute()
-    rows = result.get("values", [])
+    data_result = sheets_svc.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{tab_name}'!A1:F",
+        valueRenderOption="FORMATTED_VALUE",
+    ).execute()
+    header_rows = header_result.get("values", [])
+    rows = data_result.get("values", [])
     if len(rows) < 5:
         return 0  # no clip table yet
 
-    # Read header block
+    # Read header block from FORMULA-rendered data (need URLs intact)
     def cell(r, c):
-        try: return rows[r][c]
+        try: return header_rows[r][c]
         except IndexError: return ""
 
     yt_url         = _extract_url(cell(1, 1))  # row 2 col B
