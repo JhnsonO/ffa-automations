@@ -560,33 +560,41 @@ def _download_source(url: str, work_dir: Path, drive_svc=None, gopro_filename: s
         "bestvideo[height>=1080]+bestaudio/"
         "bestvideo+bestaudio/best"
     )
-    # Find cookies file — written by workflow or env var fallback
-    cookie_args = []
-    cookie_candidates = [
-        Path(__file__).parent / "yt_cookies.txt",
-        Path("/tmp/yt_cookies.txt"),
-    ]
-    for p in cookie_candidates:
-        if p.exists() and p.stat().st_size > 0:
-            print(f"Using cookies from {p}")
-            cookie_args = ["--cookies", str(p)]
-            break
-    else:
-        cookies = os.environ.get("YOUTUBE_COOKIES", "").strip()
-        if cookies:
-            cp = Path("/tmp/yt_cookies.txt")
-            cp.write_text(cookies)
-            cookie_args = ["--cookies", str(cp)]
-            print("Using cookies from env var")
-        else:
-            print("Warning: no YouTube cookies — bot detection may block download")
-
-    subprocess.run([
+    base_cmd = [
         "yt-dlp", "-f", fmt,
         "--merge-output-format", "mp4",
         "-o", str(work_dir / "source.%(ext)s"),
         "--no-playlist", "--no-progress",
-    ] + cookie_args + [url], check=True)
+    ]
+
+    # Try without cookies first (works for public videos on clean IPs)
+    print("Attempting download without cookies...")
+    result = subprocess.run(base_cmd + [url])
+    if result.returncode == 0:
+        print("Download succeeded without cookies")
+    else:
+        print("Cookie-free download failed, trying with cookies...")
+        # Find cookies file — written by workflow or env var fallback
+        cookie_args = []
+        cookie_candidates = [
+            Path(__file__).parent / "yt_cookies.txt",
+            Path("/tmp/yt_cookies.txt"),
+        ]
+        for p in cookie_candidates:
+            if p.exists() and p.stat().st_size > 0:
+                print(f"Using cookies from {p}")
+                cookie_args = ["--cookies", str(p)]
+                break
+        else:
+            cookies = os.environ.get("YOUTUBE_COOKIES", "").strip()
+            if cookies:
+                cp = Path("/tmp/yt_cookies.txt")
+                cp.write_text(cookies)
+                cookie_args = ["--cookies", str(cp)]
+                print("Using cookies from env var")
+            else:
+                print("Warning: no YouTube cookies available")
+        subprocess.run(base_cmd + cookie_args + [url], check=True)
     matches = list(work_dir.glob("source.*"))
     if not matches:
         raise RuntimeError("Download produced no file")
