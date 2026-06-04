@@ -49,7 +49,14 @@ jobs:
           echo "Token: $(wc -c < youtube_token.json) bytes"
           echo "Cookies: $(wc -c < yt_cookies.txt) bytes"
 
+      - name: Clean up tmp before run
+        run: rm -rf /tmp/clip_* /tmp/source* /tmp/ffa_* || true
+
       - name: Process pending clips
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: python sheet_manager.py process-clips
+
+      - name: Clean up tmp after run
+        if: always()
+        run: rm -rf /tmp/clip_* /tmp/source* /tmp/ffa_* || true
