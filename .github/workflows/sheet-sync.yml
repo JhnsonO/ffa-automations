@@ -27,4 +27,4 @@ jobs:
       - name: Sync newly-public videos to sheet
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-        run: python sheet_manager.py sync-videos
+        run: python sheet_manager.py sync-videos --lookback-days 60

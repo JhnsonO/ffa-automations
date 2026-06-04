@@ -210,18 +210,31 @@ def youtube_url_in_index(sheets_svc, spreadsheet_id, yt_url):
 
 
 def is_short(video_id: str) -> bool:
-    """Check if a YouTube video is a Short by requesting the /shorts/ URL."""
+    """Check if a YouTube video is a Short.
+    YouTube redirects /shorts/<id> to /watch?v=<id> for regular videos (30x).
+    For actual Shorts it returns 200 and stays on the /shorts/ URL.
+    We detect this by NOT following redirects.
+    """
     import urllib.request
+    if not video_id:
+        return False
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None  # Block all redirects
+
     try:
         req = urllib.request.Request(
             f"https://www.youtube.com/shorts/{video_id}",
             headers={"User-Agent": "Mozilla/5.0"},
             method="HEAD"
         )
-        # Don't follow redirects — Shorts return 200, regular videos redirect away
-        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
-        resp = opener.open(req, timeout=5)
+        opener = urllib.request.build_opener(NoRedirect())
+        resp = opener.open(req, timeout=8)
         return resp.status == 200
+    except urllib.error.HTTPError as e:
+        # 303/301/302 redirect = regular video, not a Short
+        return False
     except Exception:
         return False  # If in doubt, include it
 
