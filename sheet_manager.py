@@ -291,13 +291,12 @@ def _create_video_tab(sheets_svc, spreadsheet_id, tab_name, title, yt_url, sourc
         ["Title",   title],
         ["YouTube", yt_formula],
         ["Source",  source_value],
-        ["Ready",   ""],
         [],
         CLIP_HEADER,
     ]
     sheets_svc.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
-        range=f"'{tab_name}'!A1:F6",
+        range=f"'{tab_name}'!A1:F5",
         valueInputOption="USER_ENTERED",
         body={"values": values},
     ).execute()
@@ -366,27 +365,21 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
 
     yt_url         = _extract_url(cell(1, 1))  # row 2 col B
     gopro_filename = str(cell(2, 1))                # row 3 col B (Source)
-    ready_flag     = str(cell(3, 1)).strip().lower() # row 4 col B (Ready)
     if gopro_filename.startswith("="):
         gopro_filename = ""
     if not yt_url:
         print(f"  [{tab_name}] No YouTube URL found — skipping")
         return 0
-    if ready_flag != "ready":
-        return 0  # Kris hasn't marked this as ready yet
 
-    # Clip rows start at row index 6 (row 7 in sheet, after Ready row added)
-    clip_rows = rows[6:]
+    # Clip rows start at row index 5 (row 6 in sheet)
+    clip_rows = rows[5:]
     pending_indices = []
     for i, row in enumerate(clip_rows):
-        status = str(row[4]) if len(row) > 4 else ""
-        if status.strip().lower() not in ("done", "pending"):
-            # Treat blank/empty status as Pending if start/end are filled
-            start = row[0] if len(row) > 0 else ""
-            end   = row[1] if len(row) > 1 else ""
-            if start and end:
-                pending_indices.append(i)
-        elif status.strip().lower() == "pending":
+        start   = row[0] if len(row) > 0 else ""
+        end     = row[1] if len(row) > 1 else ""
+        link    = row[5] if len(row) > 5 else ""
+        # Process any row with timestamps but no Drive link yet
+        if start and end and not str(link).strip():
             pending_indices.append(i)
 
     if not pending_indices:
@@ -396,7 +389,7 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
 
     # Mark all as Processing to avoid double-runs
     for i in pending_indices:
-        sheet_row = i + 7  # 1-indexed, offset by 5 header rows + 1
+        sheet_row = i + 6  # 1-indexed, offset by 5 header rows + 1
         _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, "Processing...")
 
     # Ensure Drive folder exists for this video
@@ -411,7 +404,7 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
         except subprocess.CalledProcessError as e:
             print(f"  ❌ Download failed: {e}")
             for i in pending_indices:
-                sheet_row = i + 7
+                sheet_row = i + 6
                 _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, "Error: download failed")
             return 0
 
@@ -421,7 +414,7 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
 
         for i in pending_indices:
             row = clip_rows[i]
-            sheet_row = i + 7
+            sheet_row = i + 6
             start_str = row[0] if len(row) > 0 else ""
             end_str   = row[1] if len(row) > 1 else ""
             name      = row[2] if len(row) > 2 else f"clip_{i+1:02d}"
@@ -464,10 +457,6 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
             _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 6, link_formula, raw=True)
             print(f"  ✅ Done: {filename}")
             processed += 1
-
-    # Reset Ready flag so the tab isn't reprocessed
-    if processed > 0:
-        _write_cell(sheets_svc, spreadsheet_id, tab_name, 4, 2, "")
 
     return processed
 
