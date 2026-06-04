@@ -648,7 +648,7 @@ def _upload_to_drive(drive_svc, file_path: Path, folder_id: str, tags: str = "")
     so they're searchable/filterable without affecting the filename.
     """
     from googleapiclient.http import MediaFileUpload
-    media = MediaFileUpload(str(file_path), mimetype="video/mp4", resumable=True)
+    media = MediaFileUpload(str(file_path), mimetype="video/mp4", resumable=False)
 
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
     description = "Tags: " + ", ".join(tag_list) if tag_list else ""
@@ -657,7 +657,6 @@ def _upload_to_drive(drive_svc, file_path: Path, folder_id: str, tags: str = "")
         "name": file_path.name,
         "parents": [folder_id],
         "description": description,
-        # Drive custom properties — filterable via API and visible in file details
         "properties": {"ffa_tags": ",".join(tag_list)} if tag_list else {},
     }
     # Retry up to 3 times on transient network/SSL errors
@@ -672,8 +671,8 @@ def _upload_to_drive(drive_svc, file_path: Path, folder_id: str, tags: str = "")
         except Exception as e:
             last_err = e
             print(f"  Drive upload attempt {attempt+1} failed: {e} — retrying...")
-            import time; time.sleep(5)
-            media = MediaFileUpload(str(file_path), mimetype="video/mp4", resumable=True)
+            import time; time.sleep(10)
+            media = MediaFileUpload(str(file_path), mimetype="video/mp4", resumable=False)
     if last_err:
         raise last_err
     file_id = uploaded["id"]
