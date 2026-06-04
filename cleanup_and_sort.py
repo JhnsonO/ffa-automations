@@ -27,21 +27,9 @@ def extract_video_id(yt_url):
     m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", yt_url)
     return m.group(1) if m else ""
 
-def is_short(video_id):
-    if not video_id:
-        return False
-    import urllib.request
-    try:
-        req = urllib.request.Request(
-            f"https://www.youtube.com/shorts/{video_id}",
-            headers={"User-Agent": "Mozilla/5.0"},
-            method="HEAD"
-        )
-        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
-        resp = opener.open(req, timeout=5)
-        return resp.status == 200
-    except Exception:
-        return False
+def is_non_session(title: str) -> bool:
+    """FFA session videos always contain the word Session."""
+    return "session" not in title.lower()
 
 def main():
     svc = get_sheets_service()
@@ -65,13 +53,13 @@ def main():
     for row in index_rows:
         yt_url = extract_url(row[1]) if len(row) > 1 else ""
         video_id = extract_video_id(yt_url)
-        if video_id and is_short(video_id):
+        title = row[0] if len(row) > 0 else ""
+        if is_non_session(title):
             tab_name = row[4] if len(row) > 4 else ""
             if isinstance(tab_name, str) and tab_name.startswith("="):
-                # Extract tab name from hyperlink formula
                 m = re.search(r'"([^"]+)"\s*\)$', tab_name)
                 tab_name = m.group(1) if m else ""
-            print(f"  Short found: {row[0]} ({video_id})")
+            print(f"  Non-session found: {title}")
             shorts_to_delete.append((video_id, tab_name))
 
     # Delete Short tabs
@@ -116,7 +104,7 @@ def main():
             body={"values": clean_rows},
         ).execute()
 
-    print(f"\nDone. Removed {len(shorts_to_delete)} Short(s), sorted {len(clean_rows)} remaining videos oldest-first.")
+    print(f"\nDone. Removed {len(shorts_to_delete)} non-session video(s), sorted {len(clean_rows)} remaining videos oldest-first.")
 
 if __name__ == "__main__":
     main()

@@ -209,34 +209,13 @@ def youtube_url_in_index(sheets_svc, spreadsheet_id, yt_url):
     return False
 
 
-def is_short(video_id: str) -> bool:
-    """Check if a YouTube video is a Short.
-    YouTube redirects /shorts/<id> to /watch?v=<id> for regular videos (30x).
-    For actual Shorts it returns 200 and stays on the /shorts/ URL.
-    We detect this by NOT following redirects.
+def is_short_or_non_session(title: str) -> bool:
     """
-    import urllib.request
-    if not video_id:
-        return False
-
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *args, **kwargs):
-            return None  # Block all redirects
-
-    try:
-        req = urllib.request.Request(
-            f"https://www.youtube.com/shorts/{video_id}",
-            headers={"User-Agent": "Mozilla/5.0"},
-            method="HEAD"
-        )
-        opener = urllib.request.build_opener(NoRedirect())
-        resp = opener.open(req, timeout=8)
-        return resp.status == 200
-    except urllib.error.HTTPError as e:
-        # 303/301/302 redirect = regular video, not a Short
-        return False
-    except Exception:
-        return False  # If in doubt, include it
+    Filter out non-session videos (Shorts, highlights reels, etc).
+    FFA session videos always contain the word "Session".
+    Anything without it is likely a Short or one-off clip.
+    """
+    return "session" not in title.lower()
 
 
 def _lookup_gopro_filename(youtube_id: str) -> str:
@@ -282,9 +261,9 @@ def sync_videos(lookback_days: int = 14):
         if youtube_url_in_index(sheets_svc, spreadsheet_id, yt_url):
             continue  # already in index
 
-        # Skip YouTube Shorts
-        if is_short(video_id):
-            print(f"  Skipping Short: {title}")
+        # Skip non-session videos (Shorts, clips etc) — session videos always contain "Session"
+        if is_short_or_non_session(title):
+            print(f"  Skipping non-session: {title}")
             continue
 
         # Also check if a tab with this name already exists (race condition guard)
