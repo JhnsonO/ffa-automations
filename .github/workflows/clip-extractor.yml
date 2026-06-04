@@ -55,7 +55,7 @@ jobs:
       - name: Process pending clips
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-        run: python sheet_manager.py process-clips
+        run: python -u sheet_manager.py process-clips
 
       - name: Clean up tmp after run
         if: always()
