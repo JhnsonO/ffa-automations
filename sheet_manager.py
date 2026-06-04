@@ -104,8 +104,19 @@ def get_recent_public_videos(lookback_days: int = 14):
     from datetime import timedelta
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
-    with urllib.request.urlopen(FFA_RSS_URL, timeout=15) as resp:
-        xml_data = resp.read()
+    # Retry up to 3 times on transient errors (RSS occasionally 404s)
+    xml_data = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(FFA_RSS_URL, timeout=15) as resp:
+                xml_data = resp.read()
+            break
+        except Exception as e:
+            if attempt < 2:
+                import time; time.sleep(5)
+            else:
+                raise
+    
 
     ns = {
         "atom":  "http://www.w3.org/2005/Atom",
