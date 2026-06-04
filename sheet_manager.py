@@ -209,6 +209,23 @@ def youtube_url_in_index(sheets_svc, spreadsheet_id, yt_url):
     return False
 
 
+def is_short(video_id: str) -> bool:
+    """Check if a YouTube video is a Short by requesting the /shorts/ URL."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            f"https://www.youtube.com/shorts/{video_id}",
+            headers={"User-Agent": "Mozilla/5.0"},
+            method="HEAD"
+        )
+        # Don't follow redirects — Shorts return 200, regular videos redirect away
+        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
+        resp = opener.open(req, timeout=5)
+        return resp.status == 200
+    except Exception:
+        return False  # If in doubt, include it
+
+
 def _lookup_gopro_filename(youtube_id: str) -> str:
     """Check uploaded.db for a GoPro filename matching this YouTube video ID."""
     db_path = Path(__file__).parent / "uploaded.db"
@@ -251,7 +268,12 @@ def sync_videos(lookback_days: int = 14):
 
         if youtube_url_in_index(sheets_svc, spreadsheet_id, yt_url):
             continue  # already in index
-        
+
+        # Skip YouTube Shorts
+        if is_short(video_id):
+            print(f"  Skipping Short: {title}")
+            continue
+
         # Also check if a tab with this name already exists (race condition guard)
         candidate_tab = safe_tab_name(title)
         if tab_exists(sheets_svc, spreadsheet_id, candidate_tab):
