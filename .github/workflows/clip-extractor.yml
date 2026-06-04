@@ -30,6 +30,7 @@ jobs:
           export PATH="$HOME/.deno/bin:$PATH"
           deno --version
           # Install latest yt-dlp (no sudo — self-hosted runner)
+          mkdir -p $HOME/.local/bin
           curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o $HOME/.local/bin/yt-dlp
           chmod a+rx $HOME/.local/bin/yt-dlp
           echo "$HOME/.local/bin" >> $GITHUB_PATH
