@@ -23,17 +23,17 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg unzip
           pip install -U google-auth google-auth-httplib2 google-api-python-client jinja2
           # Install Deno for yt-dlp JS challenge solving
           curl -fsSL https://deno.land/install.sh | sh -s -- -y
           echo "$HOME/.deno/bin" >> $GITHUB_PATH
           export PATH="$HOME/.deno/bin:$PATH"
           deno --version
-          # Install latest yt-dlp
-          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-          sudo chmod a+rx /usr/local/bin/yt-dlp
+          # Install latest yt-dlp (no sudo — self-hosted runner)
+          curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o $HOME/.local/bin/yt-dlp
+          chmod a+rx $HOME/.local/bin/yt-dlp
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.local/bin:$PATH"
           yt-dlp --version
 
       - name: Write credentials
