@@ -660,9 +660,22 @@ def _upload_to_drive(drive_svc, file_path: Path, folder_id: str, tags: str = "")
         # Drive custom properties — filterable via API and visible in file details
         "properties": {"ffa_tags": ",".join(tag_list)} if tag_list else {},
     }
-    uploaded = drive_svc.files().create(
-        body=file_meta, media_body=media, fields="id", supportsAllDrives=True
-    ).execute()
+    # Retry up to 3 times on transient network/SSL errors
+    last_err = None
+    for attempt in range(3):
+        try:
+            uploaded = drive_svc.files().create(
+                body=file_meta, media_body=media, fields="id", supportsAllDrives=True
+            ).execute()
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            print(f"  Drive upload attempt {attempt+1} failed: {e} — retrying...")
+            import time; time.sleep(5)
+            media = MediaFileUpload(str(file_path), mimetype="video/mp4", resumable=True)
+    if last_err:
+        raise last_err
     file_id = uploaded["id"]
     # Make readable by anyone with the link
     drive_svc.permissions().create(
