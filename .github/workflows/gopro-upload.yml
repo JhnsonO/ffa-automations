@@ -134,16 +134,41 @@ jobs:
           GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
         run: |
           python3 - <<'PY'
-          import os
+          import os, json, requests
           from pathlib import Path
+
+          cookie_path = Path("gopro_cookies.json")
+
+          # On a self-hosted runner, cookies persist on disk between runs.
+          # Only fall back to the GitHub secret if:
+          # - No cookie file exists yet, OR
+          # - The on-disk cookies are already invalid (401 from GoPro)
+          if cookie_path.exists():
+              try:
+                  saved = json.loads(cookie_path.read_text())
+                  if saved:
+                      session = requests.Session()
+                      session.cookies.update(saved)
+                      r = session.get(
+                          "https://api.gopro.com/media/search",
+                          headers={"Accept": "application/vnd.gopro.jk.media+json; version=2.0.0"},
+                          params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"},
+                          timeout=15
+                      )
+                      if r.status_code == 200:
+                          print("On-disk GoPro cookies are valid — skipping secret overwrite")
+                          exit(0)
+                      print(f"On-disk cookies returned {r.status_code} — will overwrite from secret")
+              except Exception as e:
+                  print(f"Could not validate on-disk cookies ({e}) — will overwrite from secret")
 
           cookies = os.environ.get("GOPRO_COOKIES", "").strip()
           if not cookies:
               print("WARNING: GOPRO_COOKIES secret is empty or missing; writing empty cookie file")
               cookies = "{}"
 
-          Path("gopro_cookies.json").write_text(cookies)
-          print("GoPro cookies file written")
+          cookie_path.write_text(cookies)
+          print("GoPro cookies file written from secret")
           PY
 
       - name: Validate or refresh GoPro cookies
@@ -237,6 +262,66 @@ jobs:
 
           git commit -m "chore: update uploaded.db [skip ci]"
           git push origin HEAD:main
+
+      - name: Save refreshed GoPro cookies back to secret
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os, json, subprocess
+          from pathlib import Path
+
+          cookie_path = Path("gopro_cookies.json")
+          if not cookie_path.exists():
+              print("No cookie file to save back")
+              exit(0)
+
+          cookies = cookie_path.read_text().strip()
+          if not cookies or cookies == "{}":
+              print("Cookie file is empty — skipping secret update")
+              exit(0)
+
+          # Update the GitHub secret with the latest on-disk cookies
+          # so the secret stays fresh as a fallback for fresh runner setups
+          token = os.environ.get("GH_TOKEN", "")
+          repo = os.environ.get("REPO", "")
+          if not token or not repo:
+              print("No GH_TOKEN/REPO — skipping secret sync")
+              exit(0)
+
+          import urllib.request, base64, hashlib
+
+          # Get public key for secret encryption
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/secrets/public-key",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
+          )
+          try:
+              with urllib.request.urlopen(req) as r:
+                  key_data = json.load(r)
+              key_id = key_data["key_id"]
+              public_key = key_data["key"]
+
+              from base64 import b64encode
+              from nacl import encoding, public as nacl_public
+
+              pub_key = nacl_public.PublicKey(public_key.encode(), encoding.Base64Encoder())
+              sealed = nacl_public.SealedBox(pub_key).encrypt(cookies.encode())
+              encrypted = b64encode(sealed).decode()
+
+              payload = json.dumps({"encrypted_value": encrypted, "key_id": key_id}).encode()
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/actions/secrets/GOPRO_COOKIES",
+                  data=payload, method="PUT",
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json", "Content-Type": "application/json"}
+              )
+              with urllib.request.urlopen(req) as r:
+                  print(f"GOPRO_COOKIES secret updated (HTTP {r.status})")
+          except Exception as e:
+              print(f"Could not update secret (non-fatal): {e}")
+          PY
 
       - name: Upload login failure screenshots
         if: failure()
