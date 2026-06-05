@@ -710,7 +710,7 @@ def _fetch_video_info(video_id: str) -> dict:
         # Title
         m2 = _re.search(r'"title":"([^"]+)"', html)
         if m2:
-            title = m2.group(1).encode().decode("unicode_escape", errors="ignore") if "\u" in m2.group(1) else m2.group(1)
+            title = m2.group(1)
     except Exception as e:
         print(f"  Warning: could not scrape YouTube page for {video_id}: {e}")
 
