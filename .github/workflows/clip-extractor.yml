@@ -55,6 +55,7 @@ jobs:
       - name: Process pending clips
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          CHROME_PROFILE_PATH: /home/runner/.config/chrome-ffa
         run: python -u sheet_manager.py process-clips
 
       - name: Clean up tmp after run
