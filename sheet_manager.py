@@ -8,8 +8,10 @@ Manages the FFA Clips Google Sheet. Handles two jobs:
                     creates a tab + index row for each one. Run from the
                     scheduled gopro-upload workflow.
 
-  2. process-clips — reads all video tabs, cuts any Pending clips, uploads
-                     to Google Drive and writes the Drive link back to the sheet.
+  2. process-clips — reads all video tabs, cuts any Pending clips using
+                     yt-dlp --download-sections (fetches only the clip
+                     timestamps, not the full video), uploads to Google Drive
+                     and writes the Drive link back to the sheet.
                      Run from the clip-extractor workflow.
 
 Sheet structure
@@ -60,7 +62,6 @@ def get_sheets_service():
     sheets = build("sheets", "v4", credentials=sa_creds, cache_discovery=False)
 
     # Drive — user OAuth token (service accounts can't upload to personal Drive)
-    # Prefer file written by workflow step; fall back to env var
     token_file = Path(__file__).parent / "youtube_token.json"
     token_json = os.environ.get("YOUTUBE_TOKEN", "")
     drive = None
@@ -104,7 +105,6 @@ def get_recent_public_videos(lookback_days: int = 14):
     from datetime import timedelta
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
-    # Retry up to 3 times on transient errors (RSS occasionally 404s)
     xml_data = None
     for attempt in range(3):
         try:
@@ -116,7 +116,6 @@ def get_recent_public_videos(lookback_days: int = 14):
                 import time; time.sleep(5)
             else:
                 raise
-    
 
     ns = {
         "atom":  "http://www.w3.org/2005/Atom",
@@ -173,7 +172,6 @@ def ensure_index_tab(sheets_svc, spreadsheet_id):
             spreadsheetId=spreadsheet_id,
             body={"requests": [{"addSheet": {"properties": {"title": INDEX_TAB, "index": 0}}}]},
         ).execute()
-        # Write header
         sheets_svc.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
             range=f"{INDEX_TAB}!A1:F1",
@@ -213,7 +211,6 @@ def is_short_or_non_session(title: str) -> bool:
     """
     Filter out non-session videos (Shorts, highlights reels, etc).
     FFA session videos always contain the word "Session".
-    Anything without it is likely a Short or one-off clip.
     """
     return "session" not in title.lower()
 
@@ -238,11 +235,6 @@ def _lookup_gopro_filename(youtube_id: str) -> str:
 # ── Job 1: sync-videos ────────────────────────────────────────────────────────
 
 def sync_videos(lookback_days: int = 14):
-    """
-    Checks the YouTube channel for public videos published within the last
-    lookback_days days that are not yet in the sheet. Creates a tab + index
-    row for each new one.
-    """
     print(f"=== sync-videos (last {lookback_days} days) ===")
     sheets_svc, drive_svc = get_sheets_service()
     spreadsheet_id = get_spreadsheet_id(sheets_svc)
@@ -259,23 +251,19 @@ def sync_videos(lookback_days: int = 14):
         yt_url    = v["yt_url"]
 
         if youtube_url_in_index(sheets_svc, spreadsheet_id, yt_url):
-            continue  # already in index
+            continue
 
-        # Skip non-session videos (Shorts, clips etc) — session videos always contain "Session"
         if is_short_or_non_session(title):
             print(f"  Skipping non-session: {title}")
             continue
 
-        # Also check if a tab with this name already exists (race condition guard)
         candidate_tab = safe_tab_name(title)
         if tab_exists(sheets_svc, spreadsheet_id, candidate_tab):
-            continue  # tab already exists
+            continue
 
-        # Try to match to a GoPro filename via uploaded.db in repo
         source_filename = _lookup_gopro_filename(video_id)
 
         tab_name = safe_tab_name(title)
-        # Deduplicate tab name if it clashes
         base, suffix = tab_name, 1
         while tab_exists(sheets_svc, spreadsheet_id, tab_name):
             tab_name = f"{base}_{suffix}"
@@ -333,7 +321,9 @@ def _add_index_row(sheets_svc, spreadsheet_id, title, yt_url, source_filename, d
 
 def process_clips():
     """
-    Reads all video tabs, processes Pending clips, uploads to Drive, writes links back.
+    Reads all video tabs, processes Pending clips using yt-dlp --download-sections
+    so only the exact clip timestamps are downloaded (not the full source video).
+    Uploads clips to Drive and writes links back to sheet.
     """
     print("=== process-clips ===")
     sheets_svc, drive_svc = get_sheets_service()
@@ -356,7 +346,6 @@ def process_clips():
 
 def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
     """Process all Pending rows in one video tab."""
-    # Fetch header with FORMULA (for URL extraction) and data with FORMATTED_VALUE (for timestamps as strings)
     header_result = sheets_svc.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"'{tab_name}'!A1:F6",
@@ -370,29 +359,26 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
     header_rows = header_result.get("values", [])
     rows = data_result.get("values", [])
     if len(rows) < 5:
-        return 0  # no clip table yet
+        return 0
 
-    # Read header block from FORMULA-rendered data (need URLs intact)
     def cell(r, c):
         try: return header_rows[r][c]
         except IndexError: return ""
 
-    yt_url         = _extract_url(cell(1, 1))  # row 2 col B
-    gopro_filename = str(cell(2, 1))                # row 3 col B (Source)
+    yt_url         = _extract_url(cell(1, 1))
+    gopro_filename = str(cell(2, 1))
     if gopro_filename.startswith("="):
         gopro_filename = ""
     if not yt_url:
         print(f"  [{tab_name}] No YouTube URL found — skipping")
         return 0
 
-    # Clip rows start at row index 5 (row 6 in sheet)
     clip_rows = rows[5:]
     pending_indices = []
     for i, row in enumerate(clip_rows):
-        start   = row[0] if len(row) > 0 else ""
-        end     = row[1] if len(row) > 1 else ""
-        link    = row[5] if len(row) > 5 else ""
-        # Process any row with timestamps but no Drive link yet
+        start = row[0] if len(row) > 0 else ""
+        end   = row[1] if len(row) > 1 else ""
+        link  = row[5] if len(row) > 5 else ""
         if start and end and not str(link).strip():
             pending_indices.append(i)
 
@@ -403,60 +389,67 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
 
     # Mark all as Processing to avoid double-runs
     for i in pending_indices:
-        sheet_row = i + 6  # 1-indexed, offset by 5 header rows + 1
+        sheet_row = i + 6
         _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, "Processing...")
 
     # Ensure Drive folder exists for this video
     drive_folder_id = _ensure_drive_folder(drive_svc, tab_name)
 
-    # Download source video once
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        print(f"  Downloading source (gopro={gopro_filename or 'n/a'}): {yt_url}")
+    # Get cookie args once (shared across clips in this tab)
+    cookie_args = _get_cookie_args()
+
+    processed = 0
+    for i in pending_indices:
+        row = clip_rows[i]
+        sheet_row = i + 6
+        start_str = row[0] if len(row) > 0 else ""
+        end_str   = row[1] if len(row) > 1 else ""
+        name      = row[2] if len(row) > 2 else f"clip_{i+1:02d}"
+        tags      = row[3] if len(row) > 3 else ""
+
+        safe_name = re.sub(r"[^A-Za-z0-9_\-]+", "_", name).strip("_") or f"clip_{i+1:02d}"
+
         try:
-            source = _download_source(yt_url, tmp, drive_svc=drive_svc, gopro_filename=gopro_filename)
-        except subprocess.CalledProcessError as e:
-            print(f"  ❌ Download failed: {e}")
-            for i in pending_indices:
-                sheet_row = i + 6
-                _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, "Error: download failed")
-            return 0
+            start_s = _parse_ts(start_str)
+            end_s   = _parse_ts(end_str)
+        except ValueError as e:
+            print(f"  ⚠️  Row {sheet_row}: bad timestamp — {e}")
+            _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, f"Error: {e}")
+            continue
 
-        clips_dir = tmp / "clips"
-        clips_dir.mkdir()
-        processed = 0
+        MAX_CLIP_SECONDS = 90  # 90 seconds max
+        duration = end_s - start_s
+        if duration > MAX_CLIP_SECONDS:
+            msg = f"Skipped: clip too long ({duration/60:.1f} mins) — check timestamps"
+            print(f"  ⚠️  Row {sheet_row}: {msg}")
+            _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, msg)
+            continue
 
-        for i in pending_indices:
-            row = clip_rows[i]
-            sheet_row = i + 6
-            start_str = row[0] if len(row) > 0 else ""
-            end_str   = row[1] if len(row) > 1 else ""
-            name      = row[2] if len(row) > 2 else f"clip_{i+1:02d}"
-            tags      = row[3] if len(row) > 3 else ""
+        print(f"  ✂️  Fetching clip '{safe_name}' ({start_s:.1f}s → {end_s:.1f}s) from YouTube...")
 
-            # Sanitise name — tags go to Drive metadata, not the filename
-            safe_name = re.sub(r"[^A-Za-z0-9_\-]+", "_", name).strip("_") or f"clip_{i+1:02d}"
-            filename  = safe_name
+        # Each clip gets its own tmpdir — cleaned up independently
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            out_path = tmp / f"{safe_name}.mp4"
+            raw_path = tmp / "raw.mp4"
 
             try:
-                start_s = _parse_ts(start_str)
-                end_s   = _parse_ts(end_str)
-            except ValueError as e:
-                print(f"  ⚠️  Row {sheet_row}: bad timestamp — {e}")
-                _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, f"Error: {e}")
+                _fetch_clip_section(yt_url, start_s, end_s, raw_path, cookie_args)
+            except subprocess.CalledProcessError as e:
+                print(f"  ❌ yt-dlp failed: {e}")
+                _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, "Error: download failed")
                 continue
 
-            out_path = clips_dir / f"{filename}.mp4"
-            print(f"  ✂️  Cutting {filename} ({start_s:.1f}s → {end_s:.1f}s)")
+            # Re-encode for iOS/CapCut compatibility
             try:
-                _cut_clip(source, start_s, end_s, out_path)
+                _reencode_clip(raw_path, out_path)
             except subprocess.CalledProcessError as e:
-                print(f"  ❌ ffmpeg failed: {e}")
-                _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, "Error: cut failed")
+                print(f"  ❌ ffmpeg re-encode failed: {e}")
+                _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, "Error: encode failed")
                 continue
 
             # Upload to Drive
-            print(f"  📤 Uploading {out_path.name} to Drive")
+            print(f"  📤 Uploading {out_path.name} to Drive...")
             try:
                 file_id = _upload_to_drive(drive_svc, out_path, drive_folder_id, tags=tags)
                 drive_link = f"https://drive.google.com/file/d/{file_id}/view"
@@ -465,14 +458,106 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
                 _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, "Error: upload failed")
                 continue
 
-            # Write Done + link back to sheet
-            _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, DONE)
-            link_formula = f'=HYPERLINK("{drive_link}","▶ View Clip")'
-            _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 6, link_formula, raw=True)
-            print(f"  ✅ Done: {filename}")
-            processed += 1
+        # Write Done + link back to sheet
+        _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, DONE)
+        link_formula = f'=HYPERLINK("{drive_link}","▶ View Clip")'
+        _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 6, link_formula, raw=True)
+        print(f"  ✅ Done: {safe_name}")
+        processed += 1
 
     return processed
+
+
+# ── Clip fetching ─────────────────────────────────────────────────────────────
+
+def _secs_to_hhmmss(secs: float) -> str:
+    """Convert seconds to HH:MM:SS.mmm for yt-dlp --download-sections."""
+    h = int(secs // 3600)
+    m = int((secs % 3600) // 60)
+    s = secs % 60
+    return f"{h:02d}:{m:02d}:{s:06.3f}"
+
+
+def _get_cookie_args() -> list:
+    """Return yt-dlp cookie args if available, else empty list.
+    Priority: live Chrome profile (freshest) > cookies file > YOUTUBE_COOKIES env var
+    """
+    # 1. Live Chrome profile on Vultr self-hosted runner (freshest possible)
+    chrome_profile = os.environ.get("CHROME_PROFILE_PATH", "/root/.config/chrome-ffa").strip()
+    try:
+        if Path(chrome_profile).exists():
+            print(f"  Using live Chrome profile: {chrome_profile}")
+            return ["--cookies-from-browser", f"chrome:{chrome_profile}"]
+    except PermissionError:
+        print(f"  Chrome profile not accessible at {chrome_profile} — falling back")
+
+    # 2. Cookies file path from env var
+    cookies_file = os.environ.get("YOUTUBE_COOKIES_FILE", "").strip()
+    if cookies_file and Path(cookies_file).exists() and Path(cookies_file).stat().st_size > 0:
+        print(f"  Using cookies file: {cookies_file}")
+        return ["--cookies", cookies_file]
+
+    # 3. Raw cookie content from env var
+    cookies = os.environ.get("YOUTUBE_COOKIES", "").strip()
+    if cookies:
+        cp = Path("/tmp/yt_cookies.txt")
+        cp.write_text(cookies)
+        print("  Using cookies from YOUTUBE_COOKIES env var")
+        return ["--cookies", str(cp)]
+
+    print("  No cookies found — attempting without (public videos only)")
+    return []
+
+
+def _fetch_clip_section(yt_url: str, start_s: float, end_s: float, out_path: Path, cookie_args: list):
+    """
+    Use yt-dlp --download-sections to fetch only the clip timestamp range.
+    Tries without cookies first (works for public videos on clean IPs),
+    falls back to cookies if that fails.
+    """
+    section = f"*{_secs_to_hhmmss(start_s)}-{_secs_to_hhmmss(end_s)}"
+    fmt = (
+        "bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/"
+        "bestvideo[height>=1080]+bestaudio/"
+        "bestvideo+bestaudio/best"
+    )
+    base_cmd = [
+        "yt-dlp",
+        "--download-sections", section,
+        "-f", fmt,
+        "--merge-output-format", "mp4",
+        "-o", str(out_path),
+        "--no-playlist", "--no-progress",
+        "--force-keyframes-at-cuts",
+    ]
+
+    # Try without cookies first
+    print(f"  Fetching section {section} (no cookies)...")
+    result = subprocess.run(base_cmd + [yt_url])
+    if result.returncode == 0 and out_path.exists():
+        print("  ✅ Section download succeeded")
+        return
+
+    # Fall back to cookies
+    if cookie_args:
+        print("  Retrying with cookies...")
+        subprocess.run(base_cmd + cookie_args + [yt_url], check=True)
+    else:
+        raise subprocess.CalledProcessError(result.returncode, base_cmd)
+
+
+def _reencode_clip(raw_path: Path, out_path: Path):
+    """Re-encode clip for iOS/CapCut compatibility."""
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", str(raw_path),
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        "-loglevel", "warning", "-stats",
+        str(out_path),
+    ], check=True)
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -486,9 +571,7 @@ def _extract_url(cell_value: str) -> str:
     return m.group(0) if m else ""
 
 
-
 def _parse_ts(ts) -> float:
-    # Sheets sometimes returns numeric values for timestamp-like cells.
     if isinstance(ts, (int, float)):
         if 0 < ts < 1:
             return float(ts) * 86400
@@ -502,118 +585,10 @@ def _parse_ts(ts) -> float:
     if len(parts) == 2:
         return parts[0] * 60 + parts[1]
     if len(parts) == 3:
-        # If trailing :00 — Sheets added it to user input like "37:06" → "37:06:00"
         if parts[2] == 0:
             return parts[0] * 60 + parts[1]
         return parts[0] * 3600 + parts[1] * 60 + parts[2]
     raise ValueError(f"Unrecognised format: {ts}")
-
-
-def _find_drive_source(drive_svc, gopro_filename: str) -> str:
-    """Look for a GoPro source file in Drive: FFA/Sources/. Returns file ID or empty string."""
-    if not drive_svc or not gopro_filename or gopro_filename == "—":
-        return ""
-    try:
-        res = drive_svc.files().list(
-            q=f"name='{gopro_filename}' and trashed=false",
-            fields="files(id,name)",
-            spaces="drive",
-        ).execute()
-        if res["files"]:
-            print(f"Found Drive source for {gopro_filename}: {res['files'][0]['id']}")
-            return res["files"][0]["id"]
-    except Exception as e:
-        print(f"Drive source lookup failed: {e}")
-    return ""
-
-
-def _download_from_drive(drive_svc, file_id: str, work_dir: Path) -> Path:
-    """Download a file from Drive by file ID."""
-    import io
-    from googleapiclient.http import MediaIoBaseDownload
-    out_path = work_dir / "source.mp4"
-    request = drive_svc.files().get_media(fileId=file_id)
-    with open(out_path, "wb") as fh:
-        downloader = MediaIoBaseDownload(fh, request, chunksize=50 * 1024 * 1024)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-            if status:
-                print(f"  Drive download: {int(status.progress() * 100)}%")
-    return out_path
-
-
-def _download_source(url: str, work_dir: Path, drive_svc=None, gopro_filename: str = "") -> Path:
-    # Try Drive first for GoPro sources — no bot detection, works forever
-    if drive_svc and gopro_filename:
-        file_id = _find_drive_source(drive_svc, gopro_filename)
-        if file_id:
-            print(f"Downloading source from Drive: {gopro_filename}")
-            return _download_from_drive(drive_svc, file_id, work_dir)
-
-    # Fall back to yt-dlp for XbotGo or when Drive source not available
-    print(f"Downloading source from YouTube: {url}")
-    fmt = (
-        "bestvideo[height>=2160][ext=mp4]+bestaudio[ext=m4a]/"
-        "bestvideo[height>=2160]+bestaudio/"
-        "bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/"
-        "bestvideo[height>=1080]+bestaudio/"
-        "bestvideo+bestaudio/best"
-    )
-    base_cmd = [
-        "yt-dlp", "-f", fmt,
-        "--merge-output-format", "mp4",
-        "-o", str(work_dir / "source.%(ext)s"),
-        "--no-playlist", "--no-progress",
-    ]
-
-    # Try without cookies first (works for public videos on clean IPs)
-    print("Attempting download without cookies...")
-    result = subprocess.run(base_cmd + [url])
-    if result.returncode == 0:
-        print("Download succeeded without cookies")
-    else:
-        print("Cookie-free download failed, trying with cookies...")
-        # Find cookies file — written by workflow or env var fallback
-        cookie_args = []
-        cookie_candidates = [
-            Path(__file__).parent / "yt_cookies.txt",
-            Path("/tmp/yt_cookies.txt"),
-        ]
-        for p in cookie_candidates:
-            if p.exists() and p.stat().st_size > 0:
-                print(f"Using cookies from {p}")
-                cookie_args = ["--cookies", str(p)]
-                break
-        else:
-            cookies = os.environ.get("YOUTUBE_COOKIES", "").strip()
-            if cookies:
-                cp = Path("/tmp/yt_cookies.txt")
-                cp.write_text(cookies)
-                cookie_args = ["--cookies", str(cp)]
-                print("Using cookies from env var")
-            else:
-                print("Warning: no YouTube cookies available")
-        subprocess.run(base_cmd + cookie_args + [url], check=True)
-    matches = list(work_dir.glob("source.*"))
-    if not matches:
-        raise RuntimeError("Download produced no file")
-    return matches[0]
-
-
-def _cut_clip(source: Path, start: float, end: float, out: Path):
-    subprocess.run([
-        "ffmpeg", "-y",
-        "-ss", f"{start:.3f}",
-        "-i", str(source),
-        "-t", f"{(end - start):.3f}",
-        "-c:v", "libx264", "-preset", "slow", "-crf", "18",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart",
-        "-loglevel", "warning", "-stats",
-        str(out),
-    ], check=True)
 
 
 FFA_DRIVE_FOLDER_ID_FILE = Path(__file__).parent / ".ffa_drive_folder_id"
@@ -651,10 +626,7 @@ def _find_or_create_folder(drive_svc, name: str, parent_id: str) -> str:
 
 
 def _upload_to_drive(drive_svc, file_path: Path, folder_id: str, tags: str = "") -> str:
-    """Upload a file to Drive folder. Returns file ID.
-    Tags are stored as Drive file description and as a custom property
-    so they're searchable/filterable without affecting the filename.
-    """
+    """Upload a file to Drive folder. Returns file ID."""
     from googleapiclient.http import MediaFileUpload
     media = MediaFileUpload(str(file_path), mimetype="video/mp4", resumable=False)
 
@@ -667,7 +639,6 @@ def _upload_to_drive(drive_svc, file_path: Path, folder_id: str, tags: str = "")
         "description": description,
         "properties": {"ffa_tags": ",".join(tag_list)} if tag_list else {},
     }
-    # Retry up to 3 times on transient network/SSL errors
     last_err = None
     for attempt in range(3):
         try:
@@ -684,7 +655,6 @@ def _upload_to_drive(drive_svc, file_path: Path, folder_id: str, tags: str = "")
     if last_err:
         raise last_err
     file_id = uploaded["id"]
-    # Make readable by anyone with the link
     drive_svc.permissions().create(
         fileId=file_id,
         body={"type": "anyone", "role": "reader"},
