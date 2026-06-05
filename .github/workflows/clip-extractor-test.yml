@@ -41,17 +41,10 @@ jobs:
       - name: Clean up tmp before run
         run: rm -rf /tmp/clip_* /tmp/source* /tmp/ffa_* || true
 
-      - name: Copy cookies from Vultr
-        run: |
-          sudo cp /root/yt_cookies_permanent.txt $GITHUB_WORKSPACE/yt_cookies.txt
-          sudo chown runner:runner $GITHUB_WORKSPACE/yt_cookies.txt
-          sudo chmod 666 $GITHUB_WORKSPACE/yt_cookies.txt
-          echo "Cookies ready — $(wc -l < $GITHUB_WORKSPACE/yt_cookies.txt) lines"
-
       - name: Process pending clips
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          YOUTUBE_COOKIES_FILE: ${{ github.workspace }}/yt_cookies.txt
+          CHROME_PROFILE_PATH: /root/.config/chrome-ffa
         run: python3 -u sheet_manager.py process-clips
 
       - name: Clean up tmp after run
