@@ -44,7 +44,8 @@ jobs:
 
       - name: Refresh cookies from Chrome
         run: |
-          /home/runner/.local/bin/yt-dlp --cookies-from-browser "chrome:/root/.config/chrome-ffa" --cookies /tmp/yt_cookies.txt --skip-download https://www.youtube.com/watch?v=VnujPOUYVGg 2>&1 | tail -5
+          sudo /home/runner/.local/bin/yt-dlp --cookies-from-browser "chrome:/root/.config/chrome-ffa" --cookies /tmp/yt_cookies.txt --skip-download https://www.youtube.com/watch?v=VnujPOUYVGg 2>&1 | tail -5
+          sudo chmod 644 /tmp/yt_cookies.txt
           echo "Cookies refreshed — $(wc -l < /tmp/yt_cookies.txt) lines"
 
       - name: Process pending clips
