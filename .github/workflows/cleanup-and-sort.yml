@@ -16,3 +16,8 @@ jobs:
       - env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: python cleanup_and_sort.py
+      - name: Rename tabs if rename_tab.py exists
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -f rename_tab.py ]; then python rename_tab.py; fi
