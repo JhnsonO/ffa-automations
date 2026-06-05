@@ -796,13 +796,27 @@ def process_add_video(sheets_svc, drive_svc, spreadsheet_id):
         published = info["published"]
         date_str  = published[:10] if published else ""
 
-        # Generate unique tab name — use full title, append video ID suffix if collision
+        # Generate unique tab name — use full title, append date suffix if collision
         candidate = safe_tab_name(title)
         tab_name  = candidate
-        suffix    = 1
-        while tab_exists(sheets_svc, spreadsheet_id, tab_name):
-            tab_name = f"{candidate[:90]}_{video_id[:6]}" if suffix == 1 else f"{candidate[:87]}_{video_id[:6]}_{suffix}"
-            suffix += 1
+        if tab_exists(sheets_svc, spreadsheet_id, tab_name):
+            # Use date as suffix if available, otherwise fall back to video ID
+            if date_str:
+                try:
+                    from datetime import datetime as _dt
+                    d = _dt.strptime(date_str, "%Y-%m-%d")
+                    date_suffix = d.strftime("%-d %B %Y")
+                except Exception:
+                    date_suffix = date_str
+                tab_name = safe_tab_name(f"{title} | {date_suffix}")
+            else:
+                tab_name = safe_tab_name(f"{title} | {video_id[:8]}")
+            # Final safety check
+            suffix = 1
+            base = tab_name
+            while tab_exists(sheets_svc, spreadsheet_id, tab_name):
+                tab_name = f"{base}_{suffix}"
+                suffix += 1
 
         source_filename = _lookup_gopro_filename(video_id)
 
