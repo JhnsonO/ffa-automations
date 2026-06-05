@@ -219,13 +219,28 @@ def refresh_cookies_via_playwright():
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            context = browser.new_context(user_agent="Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36")
+            context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
             page = context.new_page()
-            page.goto("https://gopro.com/login", wait_until="domcontentloaded", timeout=30000)
+
+            def screenshot_and_log(label):
+                try:
+                    path = f"/tmp/gopro_login_{label}.png"
+                    page.screenshot(path=path)
+                    log.info(f"Screenshot saved: {path}")
+                    # Log visible button/input text to help debug selectors
+                    buttons = page.query_selector_all("button, input[type='submit']")
+                    for b in buttons[:10]:
+                        log.info(f"  Visible element: tag={b.evaluate('el => el.tagName')} text={b.inner_text()[:60]!r} type={b.get_attribute('type')!r} class={b.get_attribute('class')!r}")
+                except Exception as se:
+                    log.warning(f"Screenshot failed: {se}")
+
+            page.goto("https://gopro.com/login", wait_until="networkidle", timeout=45000)
+            page.wait_for_timeout(2000)  # Allow JS to render
 
             # Try multiple email selectors — GoPro updates their login page frequently
             email_selectors = ["input#email", "input[type='email']", "input[name='email']",
-                               "input[autocomplete='email']", "input[placeholder*='email' i]"]
+                               "input[autocomplete='email']", "input[autocomplete='username']",
+                               "input[placeholder*='email' i]", "input[placeholder*='username' i]"]
             email_field = None
             for sel in email_selectors:
                 try:
@@ -236,44 +251,74 @@ def refresh_cookies_via_playwright():
                 except PlaywrightTimeout:
                     continue
             if not email_field:
+                screenshot_and_log("no_email_field")
                 log.error("Could not find email input on GoPro login page")
                 browser.close()
                 return False
             page.fill(email_field, email)
+            page.wait_for_timeout(500)
 
-            password_selectors = ["input#password", "input[type='password']", "input[name='password']"]
+            # GoPro may use a two-step flow: email first, then "Continue", then password
+            continue_selectors = ["button:has-text('Continue')", "button:has-text('Next')",
+                                  "button[type='submit']:not([style*='display: none'])"]
+            for sel in continue_selectors:
+                try:
+                    el = page.query_selector(sel)
+                    if el and el.is_visible():
+                        el.click()
+                        log.info(f"Clicked continue button: {sel}")
+                        page.wait_for_timeout(2000)
+                        break
+                except Exception:
+                    continue
+
+            password_selectors = ["input#password", "input[type='password']", "input[name='password']",
+                                  "input[autocomplete='current-password']"]
             password_field = None
             for sel in password_selectors:
                 try:
-                    page.wait_for_selector(sel, timeout=3000)
+                    page.wait_for_selector(sel, timeout=6000)
                     password_field = sel
+                    log.info(f"Found password field: {sel}")
                     break
                 except PlaywrightTimeout:
                     continue
             if not password_field:
+                screenshot_and_log("no_password_field")
                 log.error("Could not find password input on GoPro login page")
                 browser.close()
                 return False
             page.fill(password_field, password)
+            page.wait_for_timeout(500)
 
-            submit_selectors = ["button.Login_loginButton__iaFNb", "button[type='submit']",
-                               "button:has-text('Log In')", "button:has-text('Sign In')", "input[type='submit']"]
+            submit_selectors = [
+                "button[type='submit']",
+                "button:has-text('Log In')", "button:has-text('Sign In')",
+                "button:has-text('Login')", "button:has-text('Continue')",
+                "input[type='submit']",
+                "form button",
+            ]
             clicked = False
             for sel in submit_selectors:
                 try:
-                    page.click(sel, timeout=3000)
-                    clicked = True
-                    break
+                    el = page.query_selector(sel)
+                    if el and el.is_visible():
+                        el.click()
+                        clicked = True
+                        log.info(f"Clicked submit: {sel}")
+                        break
                 except Exception:
                     continue
             if not clicked:
+                screenshot_and_log("no_submit_button")
                 log.error("Could not find submit button on GoPro login page")
                 browser.close()
                 return False
 
             try:
-                page.wait_for_url(lambda url: "gopro.com/login" not in url, timeout=25000)
+                page.wait_for_url(lambda url: "gopro.com/login" not in url, timeout=30000)
             except PlaywrightTimeout:
+                screenshot_and_log("login_timeout")
                 log.error(f"Playwright login failed — still on: {page.url}")
                 browser.close()
                 return False
@@ -898,4 +943,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
