@@ -234,8 +234,9 @@ def refresh_cookies_via_playwright():
                 except Exception as se:
                     log.warning(f"Screenshot failed: {se}")
 
-            page.goto("https://gopro.com/login", wait_until="networkidle", timeout=45000)
-            page.wait_for_timeout(2000)  # Allow JS to render
+            page.goto("https://gopro.com/login", wait_until="domcontentloaded", timeout=30000)
+            # Wait for JS to hydrate — networkidle never fires due to analytics/tracking iframes
+            page.wait_for_timeout(4000)
 
             # Try multiple email selectors — GoPro updates their login page frequently
             email_selectors = ["input#email", "input[type='email']", "input[name='email']",
@@ -960,6 +961,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
