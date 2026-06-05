@@ -18,18 +18,17 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -U google-auth google-auth-httplib2 google-api-python-client jinja2
+          python3 -m pip install -U google-auth google-auth-httplib2 google-api-python-client jinja2
           mkdir -p $HOME/.local/bin
           curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o $HOME/.local/bin/yt-dlp
           chmod a+rx $HOME/.local/bin/yt-dlp
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-          # Install deno for runner user if not present
           if [ ! -f "$HOME/.deno/bin/deno" ]; then
             curl -fsSL https://deno.land/install.sh | sh -s -- -y
           fi
           echo "$HOME/.deno/bin" >> $GITHUB_PATH
-          export PATH="$HOME/.deno/bin:$PATH"
-          yt-dlp --version
+          $HOME/.local/bin/yt-dlp --version
+          $HOME/.deno/bin/deno --version
 
       - name: Write credentials
         env:
@@ -44,7 +43,7 @@ jobs:
 
       - name: Refresh cookies from Chrome
         run: |
-          sudo /home/runner/.local/bin/yt-dlp --cookies-from-browser "chrome:/root/.config/chrome-ffa" --cookies /tmp/yt_cookies.txt --skip-download https://www.youtube.com/watch?v=VnujPOUYVGg 2>&1 | tail -5
+          sudo $HOME/.local/bin/yt-dlp --cookies-from-browser "chrome:/root/.config/chrome-ffa" --cookies /tmp/yt_cookies.txt --skip-download https://www.youtube.com/watch?v=VnujPOUYVGg 2>&1 | tail -5
           sudo chmod 644 /tmp/yt_cookies.txt
           echo "Cookies refreshed — $(wc -l < /tmp/yt_cookies.txt) lines"
 
@@ -52,7 +51,7 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           YOUTUBE_COOKIES_FILE: /tmp/yt_cookies.txt
-        run: python -u sheet_manager.py process-clips
+        run: python3 -u sheet_manager.py process-clips
 
       - name: Clean up tmp after run
         if: always()
