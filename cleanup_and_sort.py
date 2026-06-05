@@ -148,8 +148,9 @@ def main():
     # Decide visibility
     hide_requests = []
     show_requests = []
+    ALWAYS_VISIBLE = {INDEX_TAB, "Add Video"}
     for tab_name, props in all_sheets.items():
-        if tab_name == INDEX_TAB:
+        if tab_name in ALWAYS_VISIBLE:
             continue
         sheet_id       = props["sheetId"]
         currently_hidden = props.get("hidden", False)
