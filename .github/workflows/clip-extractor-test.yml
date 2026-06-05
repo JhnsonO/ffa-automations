@@ -43,14 +43,14 @@ jobs:
 
       - name: Refresh cookies from Chrome
         run: |
-          sudo $HOME/.local/bin/yt-dlp --cookies-from-browser "chrome:/root/.config/chrome-ffa" --cookies /tmp/yt_cookies_root.txt --skip-download https://www.youtube.com/watch?v=VnujPOUYVGg 2>&1 | tail -5
-          cp /tmp/yt_cookies_root.txt $HOME/yt_cookies.txt
-          echo "Cookies refreshed — $(wc -l < $HOME/yt_cookies.txt) lines"
+          sudo PATH="/root/.deno/bin:/home/runner/.local/bin:$PATH" yt-dlp --cookies-from-browser "chrome:/root/.config/chrome-ffa" --cookies $GITHUB_WORKSPACE/yt_cookies.txt --skip-download https://www.youtube.com/watch?v=VnujPOUYVGg 2>&1 | tail -5
+          sudo chmod 644 $GITHUB_WORKSPACE/yt_cookies.txt
+          echo "Cookies refreshed — $(wc -l < $GITHUB_WORKSPACE/yt_cookies.txt) lines"
 
       - name: Process pending clips
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          YOUTUBE_COOKIES_FILE: /home/runner/yt_cookies.txt
+          YOUTUBE_COOKIES_FILE: ${{ github.workspace }}/yt_cookies.txt
         run: python3 -u sheet_manager.py process-clips
 
       - name: Clean up tmp after run
