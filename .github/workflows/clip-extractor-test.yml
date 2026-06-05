@@ -44,7 +44,8 @@ jobs:
       - name: Copy cookies from Vultr
         run: |
           sudo cp /root/yt_cookies_permanent.txt $GITHUB_WORKSPACE/yt_cookies.txt
-          sudo chmod 644 $GITHUB_WORKSPACE/yt_cookies.txt
+          sudo chown runner:runner $GITHUB_WORKSPACE/yt_cookies.txt
+          sudo chmod 666 $GITHUB_WORKSPACE/yt_cookies.txt
           echo "Cookies ready — $(wc -l < $GITHUB_WORKSPACE/yt_cookies.txt) lines"
 
       - name: Process pending clips
