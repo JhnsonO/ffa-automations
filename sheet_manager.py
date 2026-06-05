@@ -149,6 +149,7 @@ INDEX_TAB = "Index"
 CLIP_HEADER = ["Start", "End", "Name", "Tags", "Status", "Link"]
 PENDING = "Pending"
 DONE    = "Done"
+ADD_VIDEO_TAB = "Add Video"
 
 
 def get_spreadsheet_id(sheets_svc):
@@ -676,9 +677,152 @@ def _write_cell(sheets_svc, spreadsheet_id, tab, row_1indexed, col_1indexed, val
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+
+
+# ── Job 3: process-add-video ──────────────────────────────────────────────────
+
+def _fetch_video_info(video_id: str) -> dict:
+    """Fetch title and published date for a YouTube video via oEmbed + RSS fallback."""
+    import urllib.request
+    import xml.etree.ElementTree as ET
+
+    # Try oEmbed for title
+    title = None
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        with urllib.request.urlopen(oembed_url, timeout=10) as resp:
+            import json as _json
+            title = _json.loads(resp.read()).get("title", "")
+    except Exception:
+        pass
+
+    # Try video RSS feed for published date
+    published = ""
+    try:
+        rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={FFA_CHANNEL_ID}"
+        with urllib.request.urlopen(rss_url, timeout=15) as resp:
+            xml_data = resp.read()
+        ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
+        root = ET.fromstring(xml_data)
+        for entry in root.findall("atom:entry", ns):
+            if entry.findtext("yt:videoId", namespaces=ns) == video_id:
+                published = entry.findtext("atom:published", namespaces=ns) or ""
+                if not title:
+                    title = entry.findtext("atom:title", namespaces=ns) or ""
+                break
+    except Exception:
+        pass
+
+    return {"title": title or f"Video {video_id}", "published": published}
+
+
+def ensure_add_video_tab(sheets_svc, spreadsheet_id):
+    """Create the Add Video tab if it doesn't exist."""
+    meta = sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    existing = [s["properties"]["title"] for s in meta["sheets"]]
+    if ADD_VIDEO_TAB not in existing:
+        sheets_svc.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": ADD_VIDEO_TAB, "index": 1}}}]},
+        ).execute()
+        sheets_svc.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{ADD_VIDEO_TAB}'!A1:B1",
+            valueInputOption="USER_ENTERED",
+            body={"values": [["YouTube URL", "Status"]]},
+        ).execute()
+        print(f"Created '{ADD_VIDEO_TAB}' tab")
+
+
+def process_add_video(sheets_svc, drive_svc, spreadsheet_id):
+    """
+    Reads the 'Add Video' tab and creates a clip tab for any unprocessed URLs.
+    Kris pastes YouTube URLs in column A; this writes status back to column B.
+    """
+    ensure_add_video_tab(sheets_svc, spreadsheet_id)
+
+    result = sheets_svc.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{ADD_VIDEO_TAB}'!A2:B",
+        valueRenderOption="FORMATTED_VALUE",
+    ).execute()
+    rows = result.get("values", [])
+    if not rows:
+        print("No URLs in Add Video tab")
+        return
+
+    # Get existing video IDs from Index to detect duplicates
+    existing_rows = index_rows(sheets_svc, spreadsheet_id)
+    existing_ids = set()
+    for row in existing_rows:
+        yt_url = row[1] if len(row) > 1 else ""
+        vid_id = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", yt_url)
+        if vid_id:
+            existing_ids.add(vid_id.group(1))
+
+    processed = 0
+    for i, row in enumerate(rows):
+        sheet_row = i + 2
+        url_raw = row[0].strip() if len(row) > 0 else ""
+        status  = row[1].strip() if len(row) > 1 else ""
+
+        if not url_raw or status in ("Done", "Already exists", "Error: invalid URL"):
+            continue
+
+        # Extract video ID
+        m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", url_raw)
+        if not m:
+            # Try short URL format youtu.be/VIDEO_ID
+            m = re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", url_raw)
+        if not m:
+            _write_cell(sheets_svc, spreadsheet_id, ADD_VIDEO_TAB, sheet_row, 2, "Error: invalid URL")
+            continue
+
+        video_id = m.group(1)
+        yt_url   = f"https://www.youtube.com/watch?v={video_id}"
+
+        # Check for duplicate
+        if video_id in existing_ids:
+            print(f"  Skipping {video_id} — already in sheet")
+            _write_cell(sheets_svc, spreadsheet_id, ADD_VIDEO_TAB, sheet_row, 2, "Already exists")
+            continue
+
+        # Mark as processing
+        _write_cell(sheets_svc, spreadsheet_id, ADD_VIDEO_TAB, sheet_row, 2, "Processing...")
+
+        # Fetch video info
+        info = _fetch_video_info(video_id)
+        title     = info["title"]
+        published = info["published"]
+        date_str  = published[:10] if published else ""
+
+        # Generate unique tab name — use full title, append video ID suffix if collision
+        candidate = safe_tab_name(title)
+        tab_name  = candidate
+        suffix    = 1
+        while tab_exists(sheets_svc, spreadsheet_id, tab_name):
+            tab_name = f"{candidate[:90]}_{video_id[:6]}" if suffix == 1 else f"{candidate[:87]}_{video_id[:6]}_{suffix}"
+            suffix += 1
+
+        source_filename = _lookup_gopro_filename(video_id)
+
+        try:
+            sheet_gid = _create_video_tab(sheets_svc, spreadsheet_id, tab_name, title, yt_url, source_filename)
+            _add_index_row(sheets_svc, spreadsheet_id, title, yt_url, source_filename, date_str, tab_name, sheet_gid)
+            _write_cell(sheets_svc, spreadsheet_id, ADD_VIDEO_TAB, sheet_row, 2, "Done")
+            existing_ids.add(video_id)
+            print(f"  + Created tab '{tab_name}' for: {title}")
+            processed += 1
+        except Exception as e:
+            _write_cell(sheets_svc, spreadsheet_id, ADD_VIDEO_TAB, sheet_row, 2, f"Error: {e}")
+            print(f"  ❌ Failed for {video_id}: {e}")
+
+    print(f"process-add-video complete. {processed} tab(s) created.")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("job", choices=["sync-videos", "process-clips"],
+    ap.add_argument("job", choices=["sync-videos", "process-clips", "process-add-video"],
                     help="sync-videos: create tabs for newly-public videos. "
                          "process-clips: cut pending clips and upload to Drive.")
     ap.add_argument("--lookback-days", type=int, default=14,
@@ -689,3 +833,7 @@ if __name__ == "__main__":
         sync_videos(lookback_days=args.lookback_days)
     elif args.job == "process-clips":
         process_clips()
+    elif args.job == "process-add-video":
+        sheets_svc, drive_svc = get_sheets_service()
+        spreadsheet_id = get_spreadsheet_id(sheets_svc)
+        process_add_video(sheets_svc, drive_svc, spreadsheet_id)
