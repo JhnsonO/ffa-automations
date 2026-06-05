@@ -23,7 +23,12 @@ jobs:
           curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o $HOME/.local/bin/yt-dlp
           chmod a+rx $HOME/.local/bin/yt-dlp
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-          echo "/root/.deno/bin" >> $GITHUB_PATH
+          # Install deno for runner user if not present
+          if [ ! -f "$HOME/.deno/bin/deno" ]; then
+            curl -fsSL https://deno.land/install.sh | sh -s -- -y
+          fi
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.deno/bin:$PATH"
           yt-dlp --version
 
       - name: Write credentials
