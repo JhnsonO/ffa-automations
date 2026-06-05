@@ -41,11 +41,11 @@ jobs:
       - name: Clean up tmp before run
         run: rm -rf /tmp/clip_* /tmp/source* /tmp/ffa_* || true
 
-      - name: Refresh cookies from Chrome
+      - name: Copy cookies from Vultr
         run: |
-          sudo env PATH="/root/.deno/bin:/home/runner/.local/bin:$PATH" /home/runner/.local/bin/yt-dlp --cookies-from-browser "chrome:/root/.config/chrome-ffa" --cookies $GITHUB_WORKSPACE/yt_cookies.txt --skip-download https://www.youtube.com/watch?v=VnujPOUYVGg 2>&1 | tail -5
+          sudo cp /root/yt_cookies_permanent.txt $GITHUB_WORKSPACE/yt_cookies.txt
           sudo chmod 644 $GITHUB_WORKSPACE/yt_cookies.txt
-          echo "Cookies refreshed — $(wc -l < $GITHUB_WORKSPACE/yt_cookies.txt) lines"
+          echo "Cookies ready — $(wc -l < $GITHUB_WORKSPACE/yt_cookies.txt) lines"
 
       - name: Process pending clips
         env:
