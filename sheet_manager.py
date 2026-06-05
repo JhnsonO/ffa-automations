@@ -682,36 +682,64 @@ def _write_cell(sheets_svc, spreadsheet_id, tab, row_1indexed, col_1indexed, val
 # ── Job 3: process-add-video ──────────────────────────────────────────────────
 
 def _fetch_video_info(video_id: str) -> dict:
-    """Fetch title and published date for a YouTube video via oEmbed + RSS fallback."""
+    """Fetch title and published date for a YouTube video.
+    Priority: YouTube page (public upload date) > RSS feed > oEmbed (title only)
+    """
     import urllib.request
     import xml.etree.ElementTree as ET
+    import json as _json
 
-    # Try oEmbed for title
     title = None
-    try:
-        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-        with urllib.request.urlopen(oembed_url, timeout=10) as resp:
-            import json as _json
-            title = _json.loads(resp.read()).get("title", "")
-    except Exception:
-        pass
-
-    # Try video RSS feed for published date
     published = ""
+
+    # 1. Scrape YouTube page for upload date and title (works for all public videos)
     try:
-        rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={FFA_CHANNEL_ID}"
-        with urllib.request.urlopen(rss_url, timeout=15) as resp:
-            xml_data = resp.read()
-        ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
-        root = ET.fromstring(xml_data)
-        for entry in root.findall("atom:entry", ns):
-            if entry.findtext("yt:videoId", namespaces=ns) == video_id:
-                published = entry.findtext("atom:published", namespaces=ns) or ""
-                if not title:
-                    title = entry.findtext("atom:title", namespaces=ns) or ""
-                break
-    except Exception:
-        pass
+        req = urllib.request.Request(
+            f"https://www.youtube.com/watch?v={video_id}",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+        import re as _re
+        # Upload date
+        m = _re.search(r'"uploadDate":"([^"]+)"', html)
+        if not m:
+            m = _re.search(r'"datePublished":"([^"]+)"', html)
+        if m:
+            published = m.group(1)[:10]  # YYYY-MM-DD
+        # Title
+        m2 = _re.search(r'"title":"([^"]+)"', html)
+        if m2:
+            title = m2.group(1).encode().decode("unicode_escape", errors="ignore") if "\u" in m2.group(1) else m2.group(1)
+    except Exception as e:
+        print(f"  Warning: could not scrape YouTube page for {video_id}: {e}")
+
+    # 2. RSS feed fallback (only covers last ~15 videos)
+    if not published or not title:
+        try:
+            rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={FFA_CHANNEL_ID}"
+            with urllib.request.urlopen(rss_url, timeout=15) as resp:
+                xml_data = resp.read()
+            ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
+            root = ET.fromstring(xml_data)
+            for entry in root.findall("atom:entry", ns):
+                if entry.findtext("yt:videoId", namespaces=ns) == video_id:
+                    if not published:
+                        published = (entry.findtext("atom:published", namespaces=ns) or "")[:10]
+                    if not title:
+                        title = entry.findtext("atom:title", namespaces=ns) or ""
+                    break
+        except Exception:
+            pass
+
+    # 3. oEmbed fallback for title only
+    if not title:
+        try:
+            oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+            with urllib.request.urlopen(oembed_url, timeout=10) as resp:
+                title = _json.loads(resp.read()).get("title", "")
+        except Exception:
+            pass
 
     return {"title": title or f"Video {video_id}", "published": published}
 
