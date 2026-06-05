@@ -291,12 +291,29 @@ def refresh_cookies_via_playwright():
             page.fill(password_field, password)
             page.wait_for_timeout(500)
 
+            # Dismiss cookie consent banner if present — it can intercept clicks
+            for consent_sel in ["button:has-text('Accept All Cookies')", "button:has-text('Accept All')", "button#onetrust-accept-btn-handler"]:
+                try:
+                    el = page.query_selector(consent_sel)
+                    if el and el.is_visible():
+                        el.click()
+                        log.info(f"Dismissed cookie consent: {consent_sel}")
+                        page.wait_for_timeout(500)
+                        break
+                except Exception:
+                    continue
+
             submit_selectors = [
-                "button[type='submit']",
+                # Exact class seen in logs — most reliable
+                "button.Login_loginButton__iaFNb",
+                # Case-insensitive text variants
+                "button:has-text('LOGIN')",
                 "button:has-text('Log In')", "button:has-text('Sign In')",
                 "button:has-text('Login')", "button:has-text('Continue')",
-                "input[type='submit']",
-                "form button",
+                # Type-based
+                "button[type='submit']", "input[type='submit']",
+                # Last resort — any visible button in the form
+                "form button:visible",
             ]
             clicked = False
             for sel in submit_selectors:
@@ -943,5 +960,6 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
