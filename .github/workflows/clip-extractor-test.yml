@@ -43,7 +43,7 @@ jobs:
 
       - name: Refresh cookies from Chrome
         run: |
-          sudo PATH="/root/.deno/bin:/home/runner/.local/bin:$PATH" yt-dlp --cookies-from-browser "chrome:/root/.config/chrome-ffa" --cookies $GITHUB_WORKSPACE/yt_cookies.txt --skip-download https://www.youtube.com/watch?v=VnujPOUYVGg 2>&1 | tail -5
+          sudo env PATH="/root/.deno/bin:/home/runner/.local/bin:$PATH" /home/runner/.local/bin/yt-dlp --cookies-from-browser "chrome:/root/.config/chrome-ffa" --cookies $GITHUB_WORKSPACE/yt_cookies.txt --skip-download https://www.youtube.com/watch?v=VnujPOUYVGg 2>&1 | tail -5
           sudo chmod 644 $GITHUB_WORKSPACE/yt_cookies.txt
           echo "Cookies refreshed — $(wc -l < $GITHUB_WORKSPACE/yt_cookies.txt) lines"
 
