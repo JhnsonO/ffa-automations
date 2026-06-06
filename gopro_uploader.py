@@ -907,10 +907,39 @@ def upload_item(con, yt, session, item, camera_label="", force=False):
         mark_failed(con, media_id, "no download URL")
         return
     dest = DOWNLOAD_DIR / filename
-    if not download_video(dl_url, dest):
-        mark_failed(con, media_id, "download failed")
-        return
-    upload_path = transcode_if_large(dest)
+    size_gb = file_size / 1e9
+    if size_gb > TRANSCODE_THRESHOLD_GB:
+        # Stream-transcode directly from GoPro CDN — never write raw file to disk
+        log.info(f"Large file ({size_gb:.2f} GB > {TRANSCODE_THRESHOLD_GB} GB threshold) — stream-transcoding directly from GoPro CDN at {TRANSCODE_BITRATE}")
+        upload_path = dest.with_suffix(".transcoded.mp4")
+        upload_path.unlink(missing_ok=True)
+        import subprocess
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", dl_url,
+            "-c:v", "libx264",
+            "-b:v", TRANSCODE_BITRATE,
+            "-maxrate", TRANSCODE_BITRATE,
+            "-bufsize", "70M",
+            "-preset", "fast",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-movflags", "+faststart",
+            str(upload_path),
+        ]
+        result = subprocess.run(cmd)
+        if result.returncode != 0 or not upload_path.exists() or upload_path.stat().st_size < 1e6:
+            log.error(f"Stream-transcode failed for {filename}")
+            upload_path.unlink(missing_ok=True)
+            mark_failed(con, media_id, "download failed")
+            return
+        new_size_gb = upload_path.stat().st_size / 1e9
+        log.info(f"Stream-transcode complete: {filename} {size_gb:.2f} GB -> {upload_path.name} {new_size_gb:.2f} GB")
+    else:
+        if not download_video(dl_url, dest):
+            mark_failed(con, media_id, "download failed")
+            return
+        upload_path = dest
     if force:
         log.warning(f"Manual force upload enabled for {filename}; skipping DB/filename duplicate blockers")
     description = make_description(filename, upload_date, camera_label)
