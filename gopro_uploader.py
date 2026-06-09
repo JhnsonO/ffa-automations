@@ -676,48 +676,6 @@ def download_video(url, dest_path, max_retries=3):
     return False
 
 
-TRANSCODE_THRESHOLD_GB = 30.0  # files larger than this get re-encoded
-TRANSCODE_BITRATE = "35M"       # target video bitrate for large files
-
-
-def transcode_if_large(src_path: Path) -> Path:
-    """Re-encode to H.264 35 Mbps if file exceeds TRANSCODE_THRESHOLD_GB.
-    Returns the path to use for upload (transcoded file or original).
-    The caller is responsible for deleting the returned path after upload."""
-    size_gb = src_path.stat().st_size / 1e9
-    if size_gb <= TRANSCODE_THRESHOLD_GB:
-        log.info(f"Transcode not needed: {src_path.name} is {size_gb:.2f} GB (threshold {TRANSCODE_THRESHOLD_GB} GB)")
-        return src_path
-
-    out_path = src_path.with_suffix(".transcoded.mp4")
-    out_path.unlink(missing_ok=True)
-    log.info(f"Transcoding {src_path.name} ({size_gb:.2f} GB) -> {out_path.name} at {TRANSCODE_BITRATE} (H.264)")
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", str(src_path),
-        "-c:v", "libx264",
-        "-b:v", TRANSCODE_BITRATE,
-        "-maxrate", TRANSCODE_BITRATE,
-        "-bufsize", "70M",
-        "-preset", "fast",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-movflags", "+faststart",
-        str(out_path),
-    ]
-    import subprocess
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        log.error(f"FFmpeg transcode failed for {src_path.name}: {result.stderr[-500:]}")
-        out_path.unlink(missing_ok=True)
-        log.warning("Falling back to original file for upload")
-        return src_path
-    new_size_gb = out_path.stat().st_size / 1e9
-    log.info(f"Transcode complete: {src_path.name} {size_gb:.2f} GB -> {out_path.name} {new_size_gb:.2f} GB")
-    src_path.unlink(missing_ok=True)  # free disk space immediately
-    return out_path
-
-
 def get_youtube_service():
     creds = None
     if TOKEN_PATH.exists():
@@ -907,48 +865,18 @@ def upload_item(con, yt, session, item, camera_label="", force=False):
         mark_failed(con, media_id, "no download URL")
         return
     dest = DOWNLOAD_DIR / filename
-    size_gb = file_size / 1e9
-    if size_gb > TRANSCODE_THRESHOLD_GB:
-        # Stream-transcode directly from GoPro CDN — never write raw file to disk
-        log.info(f"Large file ({size_gb:.2f} GB > {TRANSCODE_THRESHOLD_GB} GB threshold) — stream-transcoding directly from GoPro CDN at {TRANSCODE_BITRATE}")
-        upload_path = dest.with_suffix(".transcoded.mp4")
-        upload_path.unlink(missing_ok=True)
-        import subprocess
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", dl_url,
-            "-c:v", "libx264",
-            "-b:v", TRANSCODE_BITRATE,
-            "-maxrate", TRANSCODE_BITRATE,
-            "-bufsize", "70M",
-            "-preset", "fast",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-movflags", "+faststart",
-            str(upload_path),
-        ]
-        result = subprocess.run(cmd)
-        if result.returncode != 0 or not upload_path.exists() or upload_path.stat().st_size < 1e6:
-            log.error(f"Stream-transcode failed for {filename}")
-            upload_path.unlink(missing_ok=True)
-            mark_failed(con, media_id, "download failed")
-            return
-        new_size_gb = upload_path.stat().st_size / 1e9
-        log.info(f"Stream-transcode complete: {filename} {size_gb:.2f} GB -> {upload_path.name} {new_size_gb:.2f} GB")
-    else:
-        if not download_video(dl_url, dest):
-            mark_failed(con, media_id, "download failed")
-            return
-        upload_path = dest
+    if not download_video(dl_url, dest):
+        mark_failed(con, media_id, "download failed")
+        return
     if force:
         log.warning(f"Manual force upload enabled for {filename}; skipping DB/filename duplicate blockers")
     description = make_description(filename, upload_date, camera_label)
     description += f"\n\nFFA_MEDIA_ID:{media_id}\nFFA_FILENAME:{filename}\nFFA_CAPTURED_AT:{original_captured_at}\nFFA_CREATED_AT:{created_at}\nFFA_EFFECTIVE_AT:{upload_date}"
-    yt_id = upload_to_youtube(yt, upload_path, make_title(filename, upload_date, camera_label), description, gopro_filename=filename)
+    yt_id = upload_to_youtube(yt, dest, make_title(filename, upload_date, camera_label), description, gopro_filename=filename)
     if yt_id:
         mark_uploaded(con, media_id, filename, upload_date, yt_id)
-        upload_source_to_drive(get_drive_service(), upload_path)
-        upload_path.unlink(missing_ok=True)
+        upload_source_to_drive(get_drive_service(), dest)
+        dest.unlink(missing_ok=True)
         log.info(f"Done: {filename} Camera {camera_label or '-'} -> https://youtu.be/{yt_id}")
     else:
         mark_failed(con, media_id, "youtube upload failed")
@@ -1033,7 +961,6 @@ def run():
 
 if __name__ == "__main__":
     run()
-
 
 
 
