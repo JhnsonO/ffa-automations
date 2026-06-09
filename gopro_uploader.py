@@ -676,7 +676,7 @@ def download_video(url, dest_path, max_retries=3):
     return False
 
 
-TRANSCODE_THRESHOLD_GB = 20.0  # files larger than this get re-encoded
+TRANSCODE_THRESHOLD_GB = 30.0  # files larger than this get re-encoded
 TRANSCODE_BITRATE = "35M"       # target video bitrate for large files
 
 
