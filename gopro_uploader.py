@@ -652,6 +652,7 @@ def download_video(url, dest_path, max_retries=3):
                 total = int(r.headers.get("content-length", 0))
                 downloaded = 0
                 start_time = time.time()
+                _last_dl_print = 0
                 with open(dest_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=1024 * 1024):
                         if not chunk:
@@ -664,7 +665,9 @@ def download_video(url, dest_path, max_retries=3):
                             remaining = (total - downloaded) / speed
                             mins, secs = divmod(int(remaining), 60)
                             pct = downloaded / total * 100
-                            print(f"\r  {pct:.1f}% ({downloaded/1e9:.2f}/{total/1e9:.2f} GB) — {speed/1e6:.1f} MB/s — ETA: {mins}m {secs}s    ", end="", flush=True)
+                            if elapsed - _last_dl_print >= 2:
+                                _last_dl_print = elapsed
+                                print(f"  {pct:.1f}% ({downloaded/1e9:.2f}/{total/1e9:.2f} GB) — {speed/1e6:.1f} MB/s — ETA: {mins}m {secs}s", flush=True)
                 print()
             log.info(f"Download complete: {dest_path.stat().st_size / 1e9:.2f} GB")
             return True
@@ -786,6 +789,7 @@ def upload_to_youtube(service, video_path, title, description, gopro_filename=""
             request = service.videos().insert(part="snippet,status", body=body, media_body=media)
             response = None
             upload_start = time.time()
+            _last_ul_print = 0
             while response is None:
                 status, response = request.next_chunk()
                 if status:
@@ -793,7 +797,9 @@ def upload_to_youtube(service, video_path, title, description, gopro_filename=""
                     elapsed = time.time() - upload_start
                     speed = progress / elapsed if elapsed > 0 else 0
                     eta = f"{int((1-progress)/speed//60)}m {int((1-progress)/speed%60)}s" if speed > 0 else "calculating..."
-                    print(f"\r  [{gopro_filename}] {int(progress*100)}% — ETA: {eta}    ", end="", flush=True)
+                    if elapsed - _last_ul_print >= 2:
+                        _last_ul_print = elapsed
+                        print(f"  [{gopro_filename}] {int(progress*100)}% — ETA: {eta}", flush=True)
             print()
             vid_id = response.get("id")
             log.info(f"YouTube upload complete: https://youtu.be/{vid_id}")
