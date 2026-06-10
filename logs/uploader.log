@@ -20,3 +20,36 @@
 2026-06-10 09:05:31,414 [WARNING] GoPro cookies returned 401 — refreshing via Playwright
 2026-06-10 09:05:31,414 [ERROR] Playwright not installed
 2026-06-10 09:05:31,414 [ERROR] Cookie refresh failed — giving up
+2026-06-10 21:53:52,912 [INFO] Refreshing YouTube token...
+2026-06-10 21:53:53,114 [INFO] file_cache is only supported with oauth2client<4.0.0
+2026-06-10 21:53:53,866 [INFO] GoPro scan cutoff: last 2 day(s), after 2026-06-08T21:53:53.000Z
+2026-06-10 21:53:53,925 [INFO] GoPro page 1 ordered by created_at: 50 video item(s) returned
+2026-06-10 21:53:53,925 [INFO] GoPro candidate: GS010404.360 | id=6a28547cf8aee4df3daf078e | captured_at=2026-06-09T17:44:57Z | created_at=2026-06-09T17:59:24Z | updated_at=2026-06-09T22:55:18Z | discovery_at=2026-06-09T17:59:24Z | effective_at=2026-06-09T17:44:57Z | size=24.93 GB
+2026-06-10 21:53:53,925 [INFO] GoPro candidate: GX010166.MP4 | id=6a28546513389dd49d2d171d | captured_at=2026-06-09T17:40:15Z | created_at=2026-06-09T17:59:01Z | updated_at=2026-06-09T19:24:15Z | discovery_at=2026-06-09T17:59:01Z | effective_at=2026-06-09T17:40:15Z | size=19.32 GB
+2026-06-10 21:53:53,925 [INFO] GoPro candidate: GX010160.MP4 | id=6a28543c0f9a8f5c2be4b002 | captured_at=2026-06-09T17:37:52Z | created_at=2026-06-09T17:58:20Z | updated_at=2026-06-09T19:39:49Z | discovery_at=2026-06-09T17:58:20Z | effective_at=2026-06-09T17:37:52Z | size=20.03 GB
+2026-06-10 21:53:53,925 [INFO] GoPro candidate: GX010159.MP4 | id=6a270f619adfa534c80f5aaa | captured_at=2026-06-08T18:07:53Z | created_at=2026-06-08T18:52:17Z | updated_at=2026-06-08T20:32:30Z | discovery_at=2026-06-08T18:52:17Z | effective_at=2026-06-08T18:07:53Z | size=19.52 GB
+2026-06-10 21:53:53,925 [INFO] Stopping scan at GX010159.MP4 because discovery_at 2026-06-08T18:52:17Z is older than cutoff 2026-06-08T21:53:53.000Z
+2026-06-10 21:53:54,303 [INFO] GoPro scan cutoff: last 2 day(s), after 2026-06-08T21:53:54.000Z
+2026-06-10 21:53:54,354 [INFO] GoPro page 1 ordered by created_at: 50 video item(s) returned
+2026-06-10 21:53:54,354 [INFO] GoPro candidate: GS010404.360 | id=6a28547cf8aee4df3daf078e | captured_at=2026-06-09T17:44:57Z | created_at=2026-06-09T17:59:24Z | updated_at=2026-06-09T22:55:18Z | discovery_at=2026-06-09T17:59:24Z | effective_at=2026-06-09T17:44:57Z | size=24.93 GB
+2026-06-10 21:53:54,354 [INFO] GoPro candidate: GX010166.MP4 | id=6a28546513389dd49d2d171d | captured_at=2026-06-09T17:40:15Z | created_at=2026-06-09T17:59:01Z | updated_at=2026-06-09T19:24:15Z | discovery_at=2026-06-09T17:59:01Z | effective_at=2026-06-09T17:40:15Z | size=19.32 GB
+2026-06-10 21:53:54,354 [INFO] GoPro candidate: GX010160.MP4 | id=6a28543c0f9a8f5c2be4b002 | captured_at=2026-06-09T17:37:52Z | created_at=2026-06-09T17:58:20Z | updated_at=2026-06-09T19:39:49Z | discovery_at=2026-06-09T17:58:20Z | effective_at=2026-06-09T17:37:52Z | size=20.03 GB
+2026-06-10 21:53:54,355 [INFO] GoPro candidate: GX010159.MP4 | id=6a270f619adfa534c80f5aaa | captured_at=2026-06-08T18:07:53Z | created_at=2026-06-08T18:52:17Z | updated_at=2026-06-08T20:32:30Z | discovery_at=2026-06-08T18:52:17Z | effective_at=2026-06-08T18:07:53Z | size=19.52 GB
+2026-06-10 21:53:54,355 [INFO] Stopping scan at GX010159.MP4 because discovery_at 2026-06-08T18:52:17Z is older than cutoff 2026-06-08T21:53:54.000Z
+2026-06-10 21:53:54,355 [INFO] GoPro scan found 3 video item(s) before local filtering
+2026-06-10 21:53:54,355 [INFO] Filtered out: GS010404.360 | id=6a28547cf8aee4df3daf078e | captured_at=2026-06-09T17:44:57Z | created_at=2026-06-09T17:59:24Z | effective_at=2026-06-09T17:44:57Z | size=24.93 GB — already uploaded by exact GoPro media_id (db_media_id=6a28547cf8aee4df3daf078e, youtube_id=73fm_H8ptTs, uploaded_at=2026-06-10T01:12:02.021878+00:00); recently failed — within cooldown window (1h transient / 6h upload / 24h after 3 failures)
+2026-06-10 21:53:54,355 [INFO] Accepted for upload: GX010166.MP4 | id=6a28546513389dd49d2d171d | captured_at=2026-06-09T17:40:15Z | created_at=2026-06-09T17:59:01Z | effective_at=2026-06-09T17:40:15Z | size=19.32 GB
+2026-06-10 21:53:54,355 [INFO] Filtered out: GX010160.MP4 | id=6a28543c0f9a8f5c2be4b002 | captured_at=2026-06-09T17:37:52Z | created_at=2026-06-09T17:58:20Z | effective_at=2026-06-09T17:37:52Z | size=20.03 GB — already uploaded by exact GoPro media_id (db_media_id=6a28543c0f9a8f5c2be4b002, youtube_id=Ealu1hY_Oto, uploaded_at=2026-06-10T20:52:56.075180+00:00; db_media_id=6a20a55d27fa71c563834ddc, youtube_id=1cHbLgpjTmc, uploaded_at=2026-06-04T03:02:51.646529+00:00)
+2026-06-10 21:53:54,355 [INFO] GoPro scan accepted 1 new video(s) after filtering
+2026-06-10 21:53:54,355 [INFO] ============================================================
+2026-06-10 21:53:54,356 [INFO] FFA GoPro -> YouTube uploader starting — 1 new video(s)
+2026-06-10 21:53:54,359 [INFO] file_cache is only supported with oauth2client<4.0.0
+2026-06-10 21:53:54,362 [INFO] Processing: GX010166.MP4 (2026-06-09) Camera A — 19.3 GB
+2026-06-10 21:53:54,547 [INFO] Using GoPro download variant: concat 2160p
+2026-06-10 21:53:54,547 [INFO] Downloading to GX010166.MP4 (attempt 1)...
+2026-06-10 21:58:35,394 [INFO] Download complete: 19.32 GB
+2026-06-10 21:58:35,395 [INFO] Uploading to YouTube: Tuesday Session | 9th June 2026 | FFA Leicester | Camera A (GX010166.MP4)
+2026-06-10 22:02:23,356 [INFO] YouTube upload complete: https://youtu.be/WCxlJ8ZyUBw
+2026-06-10 22:02:23,939 [INFO] Drive: GX010166.MP4 already in FFA/Sources — skipping
+2026-06-10 22:02:24,163 [INFO] Done: GX010166.MP4 Camera A -> https://youtu.be/WCxlJ8ZyUBw
+2026-06-10 22:02:24,163 [INFO] All done.
