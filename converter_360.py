@@ -82,20 +82,20 @@ def _build_filter_chain() -> str:
 
     top = (
         # ── top half seam blend left ──
-        f"[0:5]crop=128:1344:x=624:y=0,format=yuvj420p,{gi}:interpolation=n,"
+        f"[0:1]crop=128:1344:x=624:y=0,format=yuvj420p,{gi}:interpolation=n,"
         f"crop=64:1344:x=0:y=0,format=yuvj420p,scale=96:1344[leftTopCrop],"
         # ── top half left / right tiles ──
-        f"[0:5]crop=624:1344:x=0:y=0,format=yuvj420p[firstLeftTop],"
-        f"[0:5]crop=624:1344:x=752:y=0,format=yuvj420p[firstRightTop],"
+        f"[0:1]crop=624:1344:x=0:y=0,format=yuvj420p[firstLeftTop],"
+        f"[0:1]crop=624:1344:x=752:y=0,format=yuvj420p[firstRightTop],"
         f"[firstLeftTop][leftTopCrop]hstack[topLeftHalf],"
         f"[topLeftHalf][firstRightTop]hstack[topLeftDone],"
         # ── top half middle ──
-        f"[0:5]crop=1344:1344:1376:0[TopMiddle],"
+        f"[0:1]crop=1344:1344:1376:0[TopMiddle],"
         # ── top half seam blend right ──
-        f"[0:5]crop=128:1344:x=3344:y=0,format=yuvj420p,{gi}:interpolation=n,"
+        f"[0:1]crop=128:1344:x=3344:y=0,format=yuvj420p,{gi}:interpolation=n,"
         f"crop=64:1344:x=0:y=0,format=yuvj420p,scale=96:1344[TopcropRightBottom],"
-        f"[0:5]crop=624:1344:x=2720:y=0,format=yuvj420p[TopleftRightBottom],"
-        f"[0:5]crop=624:1344:x=3472:y=0,format=yuvj420p[ToprightRightBottom],"
+        f"[0:1]crop=624:1344:x=2720:y=0,format=yuvj420p[TopleftRightBottom],"
+        f"[0:1]crop=624:1344:x=3472:y=0,format=yuvj420p[ToprightRightBottom],"
         f"[TopleftRightBottom][TopcropRightBottom]hstack[ToprightAll],"
         f"[ToprightAll][ToprightRightBottom]hstack[ToprightBottomDone],"
         f"[topLeftDone][TopMiddle]hstack[TopleftMiddle],"
