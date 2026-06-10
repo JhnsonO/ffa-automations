@@ -12,7 +12,7 @@ on:
         default: '2'
         type: string
       gopro_filename:
-        description: 'Optional: exact GoPro filename to upload manually, e.g. GX010130.MP4'
+        description: 'Optional: exact GoPro filename to upload manually, e.g. GS010404.360 or GX010130.MP4'
         required: false
         default: ''
         type: string
@@ -40,7 +40,6 @@ jobs:
     name: Refresh GoPro Cookies (VM)
     runs-on: self-hosted
     timeout-minutes: 30
-    # Run on the daily 03:00 schedule, or if forced via dispatch
     if: >-
       github.event.schedule == '0 3 * * *' ||
       github.event.inputs.run_cookie_refresh == 'true'
@@ -48,7 +47,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: feature/hosted-runner-split
+          ref: feature/360-camera-v2
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -68,7 +67,6 @@ jobs:
           import os, json
           from pathlib import Path
           cookie_path = Path("gopro_cookies.json")
-          # Only write from secret if no valid on-disk cookies exist
           if cookie_path.exists():
               try:
                   existing = json.loads(cookie_path.read_text())
@@ -161,13 +159,13 @@ jobs:
   # ─────────────────────────────────────────────────────────────
   # JOB 2: Upload — runs on GitHub-hosted ubuntu-latest runner.
   # No VM involved. Reads cookies from GOPRO_COOKIES secret.
+  # Installs ffmpeg + exiftool for .360 stitching.
   # Runs every 4 hours on schedule, or on manual dispatch.
   # ─────────────────────────────────────────────────────────────
   upload:
     name: Upload GoPro Sessions (GitHub Runner)
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    # Run on the 4-hourly schedule or manual dispatch (not the 03:00 cookie-only schedule)
     if: >-
       github.event.schedule == '0 */4 * * *' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.run_cookie_refresh != 'true')
@@ -176,7 +174,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: feature/hosted-runner-split
+          ref: feature/360-camera-v2
           fetch-depth: 0
           persist-credentials: true
 
@@ -191,9 +189,16 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           pip install requests google-auth google-auth-oauthlib google-api-python-client
+
+      - name: Install ffmpeg and exiftool
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg libimage-exiftool-perl
+          ffmpeg -version | head -1
+          exiftool -ver
 
       - name: Write YouTube credentials
         run: echo '${{ secrets.YOUTUBE_CREDENTIALS }}' > youtube_credentials.json
@@ -282,11 +287,13 @@ jobs:
           accepted = 0
           for item in media_items:
               reasons, summary = u.describe_media_filter(con, item)
+              is_360 = item.get("filename", "").lower().endswith(".360")
+              tag = " [360°]" if is_360 else ""
               if reasons:
-                  print(f"DEBUG FILTERED: {summary} — {'; '.join(reasons)}")
+                  print(f"DEBUG FILTERED: {summary}{tag} — {'; '.join(reasons)}")
               else:
                   accepted += 1
-                  print(f"DEBUG ACCEPTED: {summary}")
+                  print(f"DEBUG ACCEPTED: {summary}{tag}")
 
           print(f"DEBUG: {accepted} item(s) would be accepted for upload")
           print("=" * 60)
@@ -299,6 +306,7 @@ jobs:
           GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
           GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          TRANSCODE_360_BITRATE: '20M'
         run: python3 gopro_uploader.py
 
       - name: Show DB status
