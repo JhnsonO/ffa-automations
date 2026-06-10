@@ -16,16 +16,6 @@ on:
         required: false
         default: ''
         type: string
-      direct_video_url:
-        description: 'Optional: direct downloadable MP4/video URL to upload manually if GoPro scan misses one'
-        required: false
-        default: ''
-        type: string
-      direct_filename:
-        description: 'Optional: filename to use for the direct URL upload, e.g. GX010130.MP4'
-        required: false
-        default: ''
-        type: string
       run_cookie_refresh:
         description: 'Force a cookie refresh run (VM job)'
         required: false
@@ -306,8 +296,6 @@ jobs:
         env:
           LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
           MANUAL_GOPRO_FILENAME: ${{ github.event.inputs.gopro_filename || '' }}
-          DIRECT_UPLOAD_URL: ${{ github.event.inputs.direct_video_url || '' }}
-          DIRECT_UPLOAD_FILENAME: ${{ github.event.inputs.direct_filename || '' }}
           GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
           GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
