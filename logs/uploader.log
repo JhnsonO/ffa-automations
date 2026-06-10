@@ -17,6 +17,6 @@
 2026-04-21 00:40:49,683 [INFO] file_cache is only supported with oauth2client<4.0.0
 2026-04-21 00:40:49,695 [INFO] Processing: GX010117.MP4 (2026-04-20) Camera A — 18.1 GB
 2026-04-21 00:40:50,408 [INFO] Downloading to GX010117.MP4 (attempt 1)...
-2026-06-10 09:01:24,596 [WARNING] GoPro cookies returned 401 — refreshing via Playwright
-2026-06-10 09:01:24,596 [ERROR] Playwright not installed
-2026-06-10 09:01:24,596 [ERROR] Cookie refresh failed — giving up
+2026-06-10 09:05:31,414 [WARNING] GoPro cookies returned 401 — refreshing via Playwright
+2026-06-10 09:05:31,414 [ERROR] Playwright not installed
+2026-06-10 09:05:31,414 [ERROR] Cookie refresh failed — giving up
