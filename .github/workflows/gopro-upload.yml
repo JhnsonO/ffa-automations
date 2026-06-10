@@ -67,7 +67,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests playwright
+          pip install requests playwright pynacl
           playwright install chromium --with-deps
 
       - name: Write existing cookies from secret (fallback baseline)
