@@ -17,95 +17,87 @@
 2026-04-21 00:40:49,683 [INFO] file_cache is only supported with oauth2client<4.0.0
 2026-04-21 00:40:49,695 [INFO] Processing: GX010117.MP4 (2026-04-20) Camera A — 18.1 GB
 2026-04-21 00:40:50,408 [INFO] Downloading to GX010117.MP4 (attempt 1)...
-2026-06-10 07:10:55,826 [INFO] Refreshing YouTube token...
-2026-06-10 07:10:56,004 [INFO] file_cache is only supported with oauth2client<4.0.0
-2026-06-10 07:10:56,892 [INFO] Refreshing GoPro cookies via Playwright...
-2026-06-10 07:11:02,215 [INFO] Found email field: input#email
-2026-06-10 07:11:02,742 [INFO] Found password field: input#password
-2026-06-10 07:11:03,371 [INFO] Clicked submit: button.Login_loginButton__iaFNb
-2026-06-10 07:11:05,201 [INFO] Cookie refresh successful — 14 cookies saved
-2026-06-10 07:11:05,949 [INFO] GoPro scan cutoff: last 2 day(s), after 2026-06-08T07:11:05.000Z
-2026-06-10 07:11:06,166 [INFO] GoPro page 1 ordered by created_at: 50 video item(s) returned
-2026-06-10 07:11:06,166 [INFO] GoPro candidate: GS010404.360 | id=6a28547cf8aee4df3daf078e | captured_at=2026-06-09T17:44:57Z | created_at=2026-06-09T17:59:24Z | updated_at=2026-06-09T22:55:18Z | discovery_at=2026-06-09T17:59:24Z | effective_at=2026-06-09T17:44:57Z | size=24.93 GB
-2026-06-10 07:11:06,166 [INFO] GoPro candidate: GX010166.MP4 | id=6a28546513389dd49d2d171d | captured_at=2026-06-09T17:40:15Z | created_at=2026-06-09T17:59:01Z | updated_at=2026-06-09T19:24:15Z | discovery_at=2026-06-09T17:59:01Z | effective_at=2026-06-09T17:40:15Z | size=19.32 GB
-2026-06-10 07:11:06,166 [INFO] GoPro candidate: GX010160.MP4 | id=6a28543c0f9a8f5c2be4b002 | captured_at=2026-06-09T17:37:52Z | created_at=2026-06-09T17:58:20Z | updated_at=2026-06-09T19:39:49Z | discovery_at=2026-06-09T17:58:20Z | effective_at=2026-06-09T17:37:52Z | size=20.03 GB
-2026-06-10 07:11:06,166 [INFO] GoPro candidate: GX010159.MP4 | id=6a270f619adfa534c80f5aaa | captured_at=2026-06-08T18:07:53Z | created_at=2026-06-08T18:52:17Z | updated_at=2026-06-08T20:32:30Z | discovery_at=2026-06-08T18:52:17Z | effective_at=2026-06-08T18:07:53Z | size=19.52 GB
-2026-06-10 07:11:06,166 [INFO] GoPro candidate: GX010165.MP4 | id=6a270f58bb2389010563259c | captured_at=2026-06-08T18:05:49Z | created_at=2026-06-08T18:52:08Z | updated_at=2026-06-08T20:31:33Z | discovery_at=2026-06-08T18:52:08Z | effective_at=2026-06-08T18:05:49Z | size=20.86 GB
-2026-06-10 07:11:06,166 [INFO] GoPro candidate: GX010158.MP4 | id=6a241b4d43b882258c6bd6a7 | captured_at=2026-06-06T09:18:41Z | created_at=2026-06-06T13:06:21Z | updated_at=2026-06-06T15:24:11Z | discovery_at=2026-06-06T13:06:21Z | effective_at=2026-06-06T09:18:41Z | size=36.18 GB
-2026-06-10 07:11:06,166 [INFO] Stopping scan at GX010158.MP4 because discovery_at 2026-06-06T13:06:21Z is older than cutoff 2026-06-08T07:11:05.000Z
-2026-06-10 07:11:06,167 [WARNING] Filename reuse detected for GX010160.MP4: DB has older filename match, but media_id is different so this will NOT block upload. db_media_id=6a20a55d27fa71c563834ddc, youtube_id=1cHbLgpjTmc, uploaded_at=2026-06-04T03:02:51.646529+00:00
-2026-06-10 07:11:06,602 [INFO] Manual GoPro filename mode: searching for exact filename GS010326.360
-2026-06-10 07:11:06,825 [INFO] Manual filename search page 1: 50 video item(s) returned
-2026-06-10 07:11:07,093 [INFO] Manual filename search page 2: 50 video item(s) returned
-2026-06-10 07:11:07,369 [INFO] Manual filename search page 3: 50 video item(s) returned
-2026-06-10 07:11:07,592 [INFO] Manual filename search page 4: 50 video item(s) returned
-2026-06-10 07:11:07,816 [INFO] Manual filename search page 5: 50 video item(s) returned
-2026-06-10 07:11:08,051 [INFO] Manual filename search page 6: 50 video item(s) returned
-2026-06-10 07:11:08,265 [INFO] Manual filename search page 7: 50 video item(s) returned
-2026-06-10 07:11:08,491 [INFO] Manual filename search page 8: 50 video item(s) returned
-2026-06-10 07:11:08,743 [INFO] Manual filename search page 9: 50 video item(s) returned
-2026-06-10 07:11:08,968 [INFO] Manual filename search page 10: 50 video item(s) returned
-2026-06-10 07:11:09,179 [INFO] Manual filename search page 11: 50 video item(s) returned
-2026-06-10 07:11:09,421 [INFO] Manual filename search page 12: 50 video item(s) returned
-2026-06-10 07:11:09,690 [INFO] Manual filename search page 13: 50 video item(s) returned
-2026-06-10 07:11:09,690 [INFO] Found manual GoPro file: GS010326.360 | id=RD0o9L0oRaLyo | captured_at=2024-11-15T18:15:05Z | created_at=2024-11-17T21:12:36Z | effective_at=2024-11-15T18:15:05Z | size=0.03 GB
-2026-06-10 07:11:09,690 [WARNING] Manual filename matched but would normally be filtered: GS010326.360 | id=RD0o9L0oRaLyo | captured_at=2024-11-15T18:15:05Z | created_at=2024-11-17T21:12:36Z | effective_at=2024-11-15T18:15:05Z | size=0.03 GB — already uploaded by exact GoPro media_id (db_media_id=RD0o9L0oRaLyo, youtube_id=EsQAAlNEtO4, uploaded_at=2026-06-10T00:02:28.954397+00:00); recently failed — within cooldown window (1h transient / 6h upload / 24h after 3 failures); file below 100MB filter (33.4 MB)
-2026-06-10 07:11:09,690 [WARNING] Manual upload: file is below 100MB safety filter but proceeding anyway (manual override)
-2026-06-10 07:11:09,690 [WARNING] Manual DB match: media_id=RD0o9L0oRaLyo filename=GS010326.360 captured_at=2024-11-15T18:15:05Z youtube_id=EsQAAlNEtO4 uploaded_at=2026-06-10T00:02:28.954397+00:00
-2026-06-10 07:11:09,690 [INFO] Manual filename override will force upload unless it is below 100MB
-2026-06-10 07:11:09,692 [INFO] file_cache is only supported with oauth2client<4.0.0
-2026-06-10 07:11:09,694 [INFO] Processing: GS010326.360 (2024-11-15) Camera Manual — 0.0 GB
-2026-06-10 07:11:09,944 [WARNING] No preferred 4K variant found for RD0o9L0oRaLyo; falling back to best available variant
-2026-06-10 07:11:09,944 [INFO] GoPro download variants for RD0o9L0oRaLyo:
-2026-06-10 07:11:09,944 [INFO]   variant 1: label=audio_proxy | quality=0p | available=True | width=0 | height=0 | size= | has_url=True
-2026-06-10 07:11:09,944 [INFO]   variant 2: label=source | quality=2688p | available=True | width=4096 | height=2688 | size= | has_url=True
-2026-06-10 07:11:09,944 [INFO]   variant 3: label=high_res_proxy_mp4 | quality=1344p | available=True | width=3840 | height=1344 | size= | has_url=True
-2026-06-10 07:11:09,945 [INFO] Using fallback GoPro download variant: label=source quality=2688p width=4096 height=2688 size=
-2026-06-10 07:11:09,945 [INFO] Detected .360 file (GoPro Max): GS010326.360 — routing through 360 conversion pipeline
-2026-06-10 07:11:10,203 [INFO] 360 download variants for RD0o9L0oRaLyo:
-2026-06-10 07:11:10,204 [INFO]   label=audio_proxy quality=0p available=True width=0 height=0 has_url=True
-2026-06-10 07:11:10,204 [INFO]   label=source quality=2688p available=True width=4096 height=2688 has_url=True
-2026-06-10 07:11:10,204 [INFO]   label=high_res_proxy_mp4 quality=1344p available=True width=3840 height=1344 has_url=True
-2026-06-10 07:11:10,204 [WARNING] 360: concat not found, falling back to high_res_proxy_mp4 (may be truncated)
-2026-06-10 07:11:10,204 [INFO] 360 conversion: re-encoding pre-stitched proxy GS010326.360 -> H.264 MP4
-2026-06-10 07:11:10,204 [INFO] 360 bitrate: 20M | output: GS010326.equirect.mp4
-2026-06-10 07:11:10,204 [INFO] 360 FFmpeg command: ffmpeg -y -i https://media-cdn-vod-us-west-2.gopro.com/2a2c8057-83d9-4f45-a8f4-f91667ab2a7f/2802093913903466073/high_res_proxy_mp4/default/1.mp4?ver=1731878021&response-content-disposition=attachment%3B%20filename%3DGS010326.mp4%3B&Expires=1781079070&Signature=AQ6wLykPD0y1gNpe9R1l~uA9UDNyNm2lvOtqg7rgCtWqntT8Sa8evU510dEGOLYw77LFPZLmI6RB-o5WCiq-0ROq6YusECz20MFSYZxynl1HUZie~3a9pmPefcWWaSbTQNYaigODCjXvfVV2lbNFCtm7lSikvrw1fSraI49tvPXZNwjZTaTirWI8pfQzDquB41sny8t0lMM9-CPeNZqpOViu1lx~RfsNLvPv~FXfbrx61C6msF6YUDvEoRQkzcJPmsOpwo9DOwMvn2yUdEpQGpZI2TiX1H57yeyt1souWRyP2Iq27Kuhms-TcC4Zm4QHcAtcG7OupH5j0AwB3BWggA__&Key-Pair-Id=K2W5RBKCTEO7AM -filter_complex [0:0]format=yuv420p[front];[0:4]format=yuv420p[rear];[front][rear]vstack[stacked];[stacked]v360=eac:equirect[out] -map [out] -map 0:a:0 -c:v libx264 -preset ultrafast -stats -b:v 20M -maxrate 20M -bufsize 100M -pix_fmt yuv420p -c:a aac -ac 2 -b:a 192k -movflags +faststart /home/runner/work/ffa-automations/ffa-automations/downloads/GS010326.equirect.mp4
-2026-06-10 07:11:10,240 [INFO] [ffmpeg] ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers
-2026-06-10 07:11:10,241 [INFO] [ffmpeg]   built with gcc 13 (Ubuntu 13.2.0-23ubuntu3)
-2026-06-10 07:11:10,241 [INFO] [ffmpeg]   configuration: --prefix=/usr --extra-version=3ubuntu5 --toolchain=hardened --libdir=/usr/lib/x86_64-linux-gnu --incdir=/usr/include/x86_64-linux-gnu --arch=amd64 --enable-gpl --disable-stripping --disable-omx --enable-gnutls --enable-libaom --enable-libass --enable-libbs2b --enable-libcaca --enable-libcdio --enable-libcodec2 --enable-libdav1d --enable-libflite --enable-libfontconfig --enable-libfreetype --enable-libfribidi --enable-libglslang --enable-libgme --enable-libgsm --enable-libharfbuzz --enable-libmp3lame --enable-libmysofa --enable-libopenjpeg --enable-libopenmpt --enable-libopus --enable-librubberband --enable-libshine --enable-libsnappy --enable-libsoxr --enable-libspeex --enable-libtheora --enable-libtwolame --enable-libvidstab --enable-libvorbis --enable-libvpx --enable-libwebp --enable-libx265 --enable-libxml2 --enable-libxvid --enable-libzimg --enable-openal --enable-opencl --enable-opengl --disable-sndio --enable-libvpl --disable-libmfx --enable-libdc1394 --enable-libdrm --enable-libiec61883 --enable-chromaprint --enable-frei0r --enable-ladspa --enable-libbluray --enable-libjack --enable-libpulse --enable-librabbitmq --enable-librist --enable-libsrt --enable-libssh --enable-libsvtav1 --enable-libx264 --enable-libzmq --enable-libzvbi --enable-lv2 --enable-sdl2 --enable-libplacebo --enable-librav1e --enable-pocketsphinx --enable-librsvg --enable-libjxl --enable-shared
-2026-06-10 07:11:10,241 [INFO] [ffmpeg]   libavutil      58. 29.100 / 58. 29.100
-2026-06-10 07:11:10,241 [INFO] [ffmpeg]   libavcodec     60. 31.102 / 60. 31.102
-2026-06-10 07:11:10,241 [INFO] [ffmpeg]   libavformat    60. 16.100 / 60. 16.100
-2026-06-10 07:11:10,241 [INFO] [ffmpeg]   libavdevice    60.  3.100 / 60.  3.100
-2026-06-10 07:11:10,241 [INFO] [ffmpeg]   libavfilter     9. 12.100 /  9. 12.100
-2026-06-10 07:11:10,241 [INFO] [ffmpeg]   libswscale      7.  5.100 /  7.  5.100
-2026-06-10 07:11:10,241 [INFO] [ffmpeg]   libswresample   4. 12.100 /  4. 12.100
-2026-06-10 07:11:10,241 [INFO] [ffmpeg]   libpostproc    57.  3.100 / 57.  3.100
-2026-06-10 07:11:10,768 [INFO] [ffmpeg] [mov,mp4,m4a,3gp,3g2,mj2 @ 0x55b1172fba80] st: 0 edit list: 1 Missing key frame while searching for timestamp: 0
-2026-06-10 07:11:10,768 [INFO] [ffmpeg] [mov,mp4,m4a,3gp,3g2,mj2 @ 0x55b1172fba80] st: 0 edit list 1 Cannot find an index entry before timestamp: 0.
-2026-06-10 07:11:11,038 [INFO] [ffmpeg] Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'https://media-cdn-vod-us-west-2.gopro.com/2a2c8057-83d9-4f45-a8f4-f91667ab2a7f/2802093913903466073/high_res_proxy_mp4/default/1.mp4?ver=1731878021&response-content-disposition=attachment%3B%20filename%3DGS010326.mp4%3B&Expires=1781079070&Signature=AQ6wLykPD0y1gNpe9R1l~uA9UDNyNm2lvOtqg7rgCtWqntT8Sa8evU510dEGOLYw77LFPZLmI6RB-o5WCiq-0ROq6YusECz20MFSYZxynl1HUZie~3a9pmPefcWWaSbTQNYaigODCjXvfVV2lbNFCtm7lSikvrw1fSraI49tvPXZNwjZTaTirWI8pfQzDquB41sny8t0lMM9-CPeNZqpOViu1lx~RfsNLvPv~FXfbrx61C6msF6YUDvEoRQkzcJPmsOpwo9DOwMvn2yUdEpQGpZI2TiX1H57yeyt1souWRyP2Iq27Kuhms-TcC4Zm4QHcAtcG7OupH5j0AwB3BWggA__&Key-Pair-Id=K2W5RBKCTEO7AM':
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]   Metadata:
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]     major_brand     : isom
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]     minor_version   : 512
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]     compatible_brands: isomiso2avc1mp41
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]     creation_time   : 2024-11-17T21:13:07.000000Z
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]     firmware        : H19.03.02.02.00
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]     location        : +52.6438-001.1388/
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]     location-eng    : +52.6438-001.1388/
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]   Duration: 00:00:04.00, start: 0.000000, bitrate: 15667 kb/s
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]   Stream #0:0[0x1](eng): Video: h264 (High) (avc1 / 0x31637661), yuvj420p(pc, progressive), 3840x1344 [SAR 1:1 DAR 20:7], 15283 kb/s, 29.97 fps, 29.97 tbr, 90k tbn (default)
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]     Metadata:
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]       creation_time   : 2024-11-17T21:13:07.000000Z
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]       handler_name    : VideoHandler
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]       vendor_id       : [0][0][0][0]
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]       encoder         : Lavc61.3.100 libx264
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]     Side data:
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]       spherical: equirectangular (0.000000/0.000000/0.000000)
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]   Stream #0:1[0x2](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 188 kb/s (default)
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]     Metadata:
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]       creation_time   : 2024-11-17T21:13:07.000000Z
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]       handler_name    : GoPro AAC
-2026-06-10 07:11:11,038 [INFO] [ffmpeg]       vendor_id       : [0][0][0][0]
-2026-06-10 07:11:11,040 [INFO] [ffmpeg] [fc#0 @ 0x55b1172ba540] Stream specifier ':4' in filtergraph description [0:0]format=yuv420p[front];[0:4]format=yuv420p[rear];[front][rear]vstack[stacked];[stacked]v360=eac:equirect[out] matches no streams.
-2026-06-10 07:11:11,040 [INFO] [ffmpeg] Error initializing complex filters: Invalid argument
-2026-06-10 07:11:11,046 [ERROR] 360 FFmpeg transcode failed (exit 234)
+2026-06-10 07:13:04,603 [INFO] Refreshing YouTube token...
+2026-06-10 07:13:04,722 [INFO] file_cache is only supported with oauth2client<4.0.0
+2026-06-10 07:13:05,693 [INFO] Refreshing GoPro cookies via Playwright...
+2026-06-10 07:13:12,473 [INFO] Found email field: input#email
+2026-06-10 07:13:13,007 [INFO] Found password field: input#password
+2026-06-10 07:13:13,647 [INFO] Clicked submit: button.Login_loginButton__iaFNb
+2026-06-10 07:13:15,481 [INFO] Cookie refresh successful — 14 cookies saved
+2026-06-10 07:13:16,356 [INFO] GoPro scan cutoff: last 2 day(s), after 2026-06-08T07:13:16.000Z
+2026-06-10 07:13:16,563 [INFO] GoPro page 1 ordered by created_at: 50 video item(s) returned
+2026-06-10 07:13:16,563 [INFO] GoPro candidate: GS010404.360 | id=6a28547cf8aee4df3daf078e | captured_at=2026-06-09T17:44:57Z | created_at=2026-06-09T17:59:24Z | updated_at=2026-06-09T22:55:18Z | discovery_at=2026-06-09T17:59:24Z | effective_at=2026-06-09T17:44:57Z | size=24.93 GB
+2026-06-10 07:13:16,563 [INFO] GoPro candidate: GX010166.MP4 | id=6a28546513389dd49d2d171d | captured_at=2026-06-09T17:40:15Z | created_at=2026-06-09T17:59:01Z | updated_at=2026-06-09T19:24:15Z | discovery_at=2026-06-09T17:59:01Z | effective_at=2026-06-09T17:40:15Z | size=19.32 GB
+2026-06-10 07:13:16,563 [INFO] GoPro candidate: GX010160.MP4 | id=6a28543c0f9a8f5c2be4b002 | captured_at=2026-06-09T17:37:52Z | created_at=2026-06-09T17:58:20Z | updated_at=2026-06-09T19:39:49Z | discovery_at=2026-06-09T17:58:20Z | effective_at=2026-06-09T17:37:52Z | size=20.03 GB
+2026-06-10 07:13:16,564 [INFO] GoPro candidate: GX010159.MP4 | id=6a270f619adfa534c80f5aaa | captured_at=2026-06-08T18:07:53Z | created_at=2026-06-08T18:52:17Z | updated_at=2026-06-08T20:32:30Z | discovery_at=2026-06-08T18:52:17Z | effective_at=2026-06-08T18:07:53Z | size=19.52 GB
+2026-06-10 07:13:16,564 [INFO] GoPro candidate: GX010165.MP4 | id=6a270f58bb2389010563259c | captured_at=2026-06-08T18:05:49Z | created_at=2026-06-08T18:52:08Z | updated_at=2026-06-08T20:31:33Z | discovery_at=2026-06-08T18:52:08Z | effective_at=2026-06-08T18:05:49Z | size=20.86 GB
+2026-06-10 07:13:16,564 [INFO] GoPro candidate: GX010158.MP4 | id=6a241b4d43b882258c6bd6a7 | captured_at=2026-06-06T09:18:41Z | created_at=2026-06-06T13:06:21Z | updated_at=2026-06-06T15:24:11Z | discovery_at=2026-06-06T13:06:21Z | effective_at=2026-06-06T09:18:41Z | size=36.18 GB
+2026-06-10 07:13:16,564 [INFO] Stopping scan at GX010158.MP4 because discovery_at 2026-06-06T13:06:21Z is older than cutoff 2026-06-08T07:13:16.000Z
+2026-06-10 07:13:16,564 [WARNING] Filename reuse detected for GX010160.MP4: DB has older filename match, but media_id is different so this will NOT block upload. db_media_id=6a20a55d27fa71c563834ddc, youtube_id=1cHbLgpjTmc, uploaded_at=2026-06-04T03:02:51.646529+00:00
+2026-06-10 07:13:17,285 [INFO] Manual GoPro filename mode: searching for exact filename GS010387.360
+2026-06-10 07:13:17,506 [INFO] Manual filename search page 1: 50 video item(s) returned
+2026-06-10 07:13:17,834 [INFO] Manual filename search page 2: 50 video item(s) returned
+2026-06-10 07:13:18,238 [INFO] Manual filename search page 3: 50 video item(s) returned
+2026-06-10 07:13:18,455 [INFO] Manual filename search page 4: 50 video item(s) returned
+2026-06-10 07:13:18,705 [INFO] Manual filename search page 5: 50 video item(s) returned
+2026-06-10 07:13:19,039 [INFO] Manual filename search page 6: 50 video item(s) returned
+2026-06-10 07:13:19,360 [INFO] Manual filename search page 7: 50 video item(s) returned
+2026-06-10 07:13:19,603 [INFO] Manual filename search page 8: 50 video item(s) returned
+2026-06-10 07:13:19,820 [INFO] Manual filename search page 9: 50 video item(s) returned
+2026-06-10 07:13:19,820 [INFO] Found manual GoPro file: GS010387.360 | id=5W8rD9QD3lgkz | captured_at=2025-06-23T18:21:04Z | created_at=2025-06-24T16:08:53Z | effective_at=2025-06-23T18:21:04Z | size=5.27 GB
+2026-06-10 07:13:19,820 [WARNING] Manual filename matched but would normally be filtered: GS010387.360 | id=5W8rD9QD3lgkz | captured_at=2025-06-23T18:21:04Z | created_at=2025-06-24T16:08:53Z | effective_at=2025-06-23T18:21:04Z | size=5.27 GB — already uploaded by exact GoPro media_id (db_media_id=5W8rD9QD3lgkz, youtube_id=lquA38nklOI, uploaded_at=2026-06-09T21:45:49.812308+00:00)
+2026-06-10 07:13:19,820 [WARNING] Manual DB match: media_id=5W8rD9QD3lgkz filename=GS010387.360 captured_at=2025-06-23T18:21:04Z youtube_id=lquA38nklOI uploaded_at=2026-06-09T21:45:49.812308+00:00
+2026-06-10 07:13:19,820 [INFO] Manual filename override will force upload unless it is below 100MB
+2026-06-10 07:13:19,823 [INFO] file_cache is only supported with oauth2client<4.0.0
+2026-06-10 07:13:19,826 [INFO] Processing: GS010387.360 (2025-06-23) Camera Manual — 5.3 GB
+2026-06-10 07:13:20,068 [WARNING] No preferred 4K variant found for 5W8rD9QD3lgkz; falling back to best available variant
+2026-06-10 07:13:20,068 [INFO] GoPro download variants for 5W8rD9QD3lgkz:
+2026-06-10 07:13:20,068 [INFO]   variant 1: label=source | quality=2688p | available=True | width=4096 | height=2688 | size= | has_url=True
+2026-06-10 07:13:20,068 [INFO]   variant 2: label=source | quality=2688p | available=True | width=4096 | height=2688 | size= | has_url=True
+2026-06-10 07:13:20,068 [INFO]   variant 3: label=high_res_proxy_mp4 | quality=1920p | available=True | width=3840 | height=1920 | size= | has_url=True
+2026-06-10 07:13:20,069 [INFO] Using fallback GoPro download variant: label=source quality=2688p width=4096 height=2688 size=
+2026-06-10 07:13:20,069 [INFO] Detected .360 file (GoPro Max): GS010387.360 — routing through 360 conversion pipeline
+2026-06-10 07:13:20,391 [INFO] 360 download variants for 5W8rD9QD3lgkz:
+2026-06-10 07:13:20,392 [INFO]   label=source quality=2688p available=True width=4096 height=2688 has_url=True
+2026-06-10 07:13:20,392 [INFO]   label=source quality=2688p available=True width=4096 height=2688 has_url=True
+2026-06-10 07:13:20,392 [INFO]   label=high_res_proxy_mp4 quality=1920p available=True width=3840 height=1920 has_url=True
+2026-06-10 07:13:20,392 [WARNING] 360: concat not found, falling back to high_res_proxy_mp4 (may be truncated)
+2026-06-10 07:13:20,392 [INFO] 360 conversion: re-encoding pre-stitched proxy GS010387.360 -> H.264 MP4
+2026-06-10 07:13:20,392 [INFO] 360 bitrate: 20M | output: GS010387.equirect.mp4
+2026-06-10 07:13:20,392 [INFO] 360 FFmpeg command: ffmpeg -y -i https://media-cdn-vod-us-west-2.gopro.com/2a2c8057-83d9-4f45-a8f4-f91667ab2a7f/2960666929758471784/high_res_proxy_mp4/default/1.mp4?ver=1750787415&response-content-disposition=attachment%3B%20filename%3DGS010387.mp4%3B&Expires=1781079200&Signature=d8pHi07KDpCdyly3rHMADtnS0wiVBpVZcnHFS1nLVLi42HBs5h894Sxv7SvWqqQsya6uO8nJ~-yUSMEFsgTgDYlnfmM~G2RwfAoxq17jBJ1AVpg9Cjyb8SHd8A8hxsVNboUiEGe-pFSZubYJCrKA~2oRJ~In-dc8N58WlElgOV4QWytTRP93Lch1DYhn-gE1MpNrfw6nS82UbYirzfQUlBWy~ON9oCF~JK~2MTmSYp4ulrcahflYsVVMGX4QXJInyJMhJ2SljmdTgjADMQWdcw8IG2cyLW4SMBix73mrTYurag9IPGAWuekkIlgX5FklJIUK-ISM5PVOqOJ6uVeTtQ__&Key-Pair-Id=K2W5RBKCTEO7AM -filter_complex [0:0]format=yuv420p[front];[0:4]format=yuv420p[rear];[front][rear]vstack[stacked];[stacked]v360=eac:equirect[out] -map [out] -map 0:a:0 -c:v libx264 -preset ultrafast -stats -b:v 20M -maxrate 20M -bufsize 100M -pix_fmt yuv420p -c:a aac -ac 2 -b:a 192k -movflags +faststart /home/runner/work/ffa-automations/ffa-automations/downloads/GS010387.equirect.mp4
+2026-06-10 07:13:21,098 [INFO] [ffmpeg] ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers
+2026-06-10 07:13:21,098 [INFO] [ffmpeg]   built with gcc 13 (Ubuntu 13.2.0-23ubuntu3)
+2026-06-10 07:13:21,098 [INFO] [ffmpeg]   configuration: --prefix=/usr --extra-version=3ubuntu5 --toolchain=hardened --libdir=/usr/lib/x86_64-linux-gnu --incdir=/usr/include/x86_64-linux-gnu --arch=amd64 --enable-gpl --disable-stripping --disable-omx --enable-gnutls --enable-libaom --enable-libass --enable-libbs2b --enable-libcaca --enable-libcdio --enable-libcodec2 --enable-libdav1d --enable-libflite --enable-libfontconfig --enable-libfreetype --enable-libfribidi --enable-libglslang --enable-libgme --enable-libgsm --enable-libharfbuzz --enable-libmp3lame --enable-libmysofa --enable-libopenjpeg --enable-libopenmpt --enable-libopus --enable-librubberband --enable-libshine --enable-libsnappy --enable-libsoxr --enable-libspeex --enable-libtheora --enable-libtwolame --enable-libvidstab --enable-libvorbis --enable-libvpx --enable-libwebp --enable-libx265 --enable-libxml2 --enable-libxvid --enable-libzimg --enable-openal --enable-opencl --enable-opengl --disable-sndio --enable-libvpl --disable-libmfx --enable-libdc1394 --enable-libdrm --enable-libiec61883 --enable-chromaprint --enable-frei0r --enable-ladspa --enable-libbluray --enable-libjack --enable-libpulse --enable-librabbitmq --enable-librist --enable-libsrt --enable-libssh --enable-libsvtav1 --enable-libx264 --enable-libzmq --enable-libzvbi --enable-lv2 --enable-sdl2 --enable-libplacebo --enable-librav1e --enable-pocketsphinx --enable-librsvg --enable-libjxl --enable-shared
+2026-06-10 07:13:21,098 [INFO] [ffmpeg]   libavutil      58. 29.100 / 58. 29.100
+2026-06-10 07:13:21,098 [INFO] [ffmpeg]   libavcodec     60. 31.102 / 60. 31.102
+2026-06-10 07:13:21,098 [INFO] [ffmpeg]   libavformat    60. 16.100 / 60. 16.100
+2026-06-10 07:13:21,098 [INFO] [ffmpeg]   libavdevice    60.  3.100 / 60.  3.100
+2026-06-10 07:13:21,099 [INFO] [ffmpeg]   libavfilter     9. 12.100 /  9. 12.100
+2026-06-10 07:13:21,099 [INFO] [ffmpeg]   libswscale      7.  5.100 /  7.  5.100
+2026-06-10 07:13:21,099 [INFO] [ffmpeg]   libswresample   4. 12.100 /  4. 12.100
+2026-06-10 07:13:21,099 [INFO] [ffmpeg]   libpostproc    57.  3.100 / 57.  3.100
+2026-06-10 07:13:21,896 [INFO] [ffmpeg] [mov,mp4,m4a,3gp,3g2,mj2 @ 0x558f8fea0a80] st: 0 edit list: 1 Missing key frame while searching for timestamp: 0
+2026-06-10 07:13:21,896 [INFO] [ffmpeg] [mov,mp4,m4a,3gp,3g2,mj2 @ 0x558f8fea0a80] st: 0 edit list 1 Cannot find an index entry before timestamp: 0.
+2026-06-10 07:13:22,217 [INFO] [ffmpeg] Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'https://media-cdn-vod-us-west-2.gopro.com/2a2c8057-83d9-4f45-a8f4-f91667ab2a7f/2960666929758471784/high_res_proxy_mp4/default/1.mp4?ver=1750787415&response-content-disposition=attachment%3B%20filename%3DGS010387.mp4%3B&Expires=1781079200&Signature=d8pHi07KDpCdyly3rHMADtnS0wiVBpVZcnHFS1nLVLi42HBs5h894Sxv7SvWqqQsya6uO8nJ~-yUSMEFsgTgDYlnfmM~G2RwfAoxq17jBJ1AVpg9Cjyb8SHd8A8hxsVNboUiEGe-pFSZubYJCrKA~2oRJ~In-dc8N58WlElgOV4QWytTRP93Lch1DYhn-gE1MpNrfw6nS82UbYirzfQUlBWy~ON9oCF~JK~2MTmSYp4ulrcahflYsVVMGX4QXJInyJMhJ2SljmdTgjADMQWdcw8IG2cyLW4SMBix73mrTYurag9IPGAWuekkIlgX5FklJIUK-ISM5PVOqOJ6uVeTtQ__&Key-Pair-Id=K2W5RBKCTEO7AM':
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]   Metadata:
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]     major_brand     : isom
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]     minor_version   : 512
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]     compatible_brands: isomiso2avc1mp41
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]     creation_time   : 2025-06-24T17:46:11.000000Z
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]     firmware        : H19.03.02.02.00
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]   Duration: 00:10:35.03, start: 0.000000, bitrate: 33555 kb/s
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]   Stream #0:0[0x1](eng): Video: h264 (High) (avc1 / 0x31637661), yuvj420p(pc, progressive), 3840x1920 [SAR 1:1 DAR 2:1], 33350 kb/s, 29.97 fps, 29.97 tbr, 90k tbn (default)
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]     Metadata:
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]       creation_time   : 2025-06-24T17:46:11.000000Z
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]       handler_name    : ideoHandler
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]       vendor_id       : [0][0][0][0]
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]       encoder         : Lavc61.3.100 libx264
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]     Side data:
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]       spherical: equirectangular (0.000000/0.000000/0.000000)
+2026-06-10 07:13:22,217 [INFO] [ffmpeg]   Stream #0:1[0x2](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 189 kb/s (default)
+2026-06-10 07:13:22,218 [INFO] [ffmpeg]     Metadata:
+2026-06-10 07:13:22,218 [INFO] [ffmpeg]       creation_time   : 2025-06-24T17:46:11.000000Z
+2026-06-10 07:13:22,218 [INFO] [ffmpeg]       vendor_id       : [0][0][0][0]
+2026-06-10 07:13:22,219 [INFO] [ffmpeg] [fc#0 @ 0x558f8fe5f540] Stream specifier ':4' in filtergraph description [0:0]format=yuv420p[front];[0:4]format=yuv420p[rear];[front][rear]vstack[stacked];[stacked]v360=eac:equirect[out] matches no streams.
+2026-06-10 07:13:22,219 [INFO] [ffmpeg] Error initializing complex filters: Invalid argument
+2026-06-10 07:13:22,282 [ERROR] 360 FFmpeg transcode failed (exit 234)
