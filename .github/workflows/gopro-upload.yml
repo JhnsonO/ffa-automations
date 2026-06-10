@@ -116,7 +116,7 @@ jobs:
 
       - name: Sync refreshed cookies back to GOPRO_COOKIES secret
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
         run: |
           python3 - <<'PY'
