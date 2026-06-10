@@ -21,6 +21,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
+from converter_360 import is_360_file, process_360_file
+
 BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "uploaded.db"
 LOG_PATH = BASE_DIR / "logs" / "uploader.log"
@@ -811,7 +813,7 @@ def upload_to_youtube(service, video_path, title, description, gopro_filename=""
     return None
 
 
-def make_title(filename, captured_at, camera_label=""):
+def make_title(filename, captured_at, camera_label="", is_360=False):
     try:
         dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
         day_name = dt.strftime("%A")
@@ -821,10 +823,11 @@ def make_title(filename, captured_at, camera_label=""):
     except Exception:
         day_name, date_str = "Session", captured_at[:10]
     cam = f" | Camera {camera_label}" if camera_label else ""
-    return f"{day_name} Session | {date_str} | FFA Leicester{cam}"
+    suffix_360 = " | 360°" if is_360 else ""
+    return f"{day_name} Session | {date_str} | FFA Leicester{cam}{suffix_360}"
 
 
-def make_description(filename, captured_at, camera_label=""):
+def make_description(filename, captured_at, camera_label="", is_360=False):
     try:
         dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
         day_name = dt.strftime("%A")
@@ -836,9 +839,10 @@ def make_description(filename, captured_at, camera_label=""):
         day_name, date_str, is_monday = "Session", captured_at[:10], False
     cam_line = f"Camera {camera_label} footage.\n" if camera_label else ""
     monday_section = "\n\nThis is part of the FFA Monday League — our weekly competitive kickabout with individual player standings.\nCheck the league table: https://www.officialffa.co.uk/mnl\n" if is_monday else ""
+    immersive_line = "\n🌐 360° immersive footage — drag to look around, or move your phone to explore the full pitch view!\n" if is_360 else ""
     return (
         f"FFA Leicester | {day_name} Session | {date_str}\n"
-        f"{cam_line}\nCompetitive kickabouts in Leicester, running weekly. All levels welcome.\n"
+        f"{cam_line}{immersive_line}\nCompetitive kickabouts in Leicester, running weekly. All levels welcome.\n"
         f"{monday_section}\nWant to play? Book your spot:\nhttps://www.officialffa.co.uk\n\n"
         f"Interested in tournaments or events? Get in touch via our website or socials.\n\n"
         f"Shop FFA merch: https://www.officialffa.co.uk/store\n\n"
@@ -860,8 +864,9 @@ def upload_item(con, yt, session, item, camera_label="", force=False):
     effective_at, effective_reason = effective_media_datetime(item)
     upload_date = datetime_to_gopro_z(effective_at)
     file_size = int(item.get("file_size", 0) or 0)
+    file_is_360 = is_360_file(filename)
 
-    log.info(f"Processing: {filename} ({upload_date[:10]}) Camera {camera_label or '-'} — {file_size/1e9:.1f} GB")
+    log.info(f"Processing: {filename} ({upload_date[:10]}) Camera {camera_label or '-'} — {file_size/1e9:.1f} GB {'[360°]' if file_is_360 else ''}")
     if effective_reason:
         log.warning(f"Using corrected date for {filename}: {effective_reason}. original_captured_at={original_captured_at or '(none)'}, created_at={created_at or '(none)'}, upload_date={upload_date}")
 
@@ -870,15 +875,30 @@ def upload_item(con, yt, session, item, camera_label="", force=False):
         log.warning(f"Skipping {filename} — no download URL")
         mark_failed(con, media_id, "no download URL")
         return
-    dest = DOWNLOAD_DIR / filename
-    if not download_video(dl_url, dest):
-        mark_failed(con, media_id, "download failed")
-        return
+
+    if file_is_360:
+        # ── 360° path: stream-transcode via FFmpeg, never write raw .360 to disk ──
+        dest_stem = Path(filename).stem
+        dest = DOWNLOAD_DIR / f"{dest_stem}_360.mp4"
+        log.info(f"360° file detected — running FFmpeg stitch to {dest.name}")
+        if not process_360_file(dl_url, dest):
+            mark_failed(con, media_id, "360 transcode failed")
+            return
+    else:
+        # ── Standard path: download as-is ──
+        dest = DOWNLOAD_DIR / filename
+        if not download_video(dl_url, dest):
+            mark_failed(con, media_id, "download failed")
+            return
+
     if force:
         log.warning(f"Manual force upload enabled for {filename}; skipping DB/filename duplicate blockers")
-    description = make_description(filename, upload_date, camera_label)
+
+    description = make_description(filename, upload_date, camera_label, is_360=file_is_360)
     description += f"\n\nFFA_MEDIA_ID:{media_id}\nFFA_FILENAME:{filename}\nFFA_CAPTURED_AT:{original_captured_at}\nFFA_CREATED_AT:{created_at}\nFFA_EFFECTIVE_AT:{upload_date}"
-    yt_id = upload_to_youtube(yt, dest, make_title(filename, upload_date, camera_label), description, gopro_filename=filename)
+
+    title = make_title(filename, upload_date, camera_label, is_360=file_is_360)
+    yt_id = upload_to_youtube(yt, dest, title, description, gopro_filename=filename)
     if yt_id:
         mark_uploaded(con, media_id, filename, upload_date, yt_id)
         upload_source_to_drive(get_drive_service(), dest)
