@@ -150,6 +150,7 @@ CLIP_HEADER = ["Start", "End", "Name", "Tags", "Status", "Link"]
 PENDING = "Pending"
 DONE    = "Done"
 ADD_VIDEO_TAB = "Add Video"
+CLIPS_TRACKER_TAB = "Clips Tracker"
 
 
 def get_spreadsheet_id(sheets_svc):
@@ -329,6 +330,7 @@ def process_clips():
     print("=== process-clips ===")
     sheets_svc, drive_svc = get_sheets_service()
     spreadsheet_id = get_spreadsheet_id(sheets_svc)
+    ensure_clips_tracker_tab(sheets_svc, spreadsheet_id)
 
     meta = sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     tab_names = [
@@ -463,6 +465,10 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
         _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, DONE)
         link_formula = f'=HYPERLINK("{drive_link}","▶ View Clip")'
         _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 6, link_formula, raw=True)
+
+        # Append to Clips Tracker
+        _append_to_clips_tracker(sheets_svc, spreadsheet_id, safe_name, tab_name, tags, drive_link)
+
         print(f"  ✅ Done: {safe_name}")
         processed += 1
 
@@ -860,6 +866,49 @@ def process_add_video(sheets_svc, drive_svc, spreadsheet_id):
             print(f"  ❌ Failed for {video_id}: {e}")
 
     print(f"process-add-video complete. {processed} tab(s) created.")
+
+
+
+
+def ensure_clips_tracker_tab(sheets_svc, spreadsheet_id):
+    """Create the Clips Tracker tab if it doesn't exist."""
+    meta = sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    existing = [s["properties"]["title"] for s in meta["sheets"]]
+    if CLIPS_TRACKER_TAB not in existing:
+        sheets_svc.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": CLIPS_TRACKER_TAB, "index": 2}}}]},
+        ).execute()
+        sheets_svc.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{CLIPS_TRACKER_TAB}'!A1:H1",
+            valueInputOption="USER_ENTERED",
+            body={"values": [["#", "Clip Name", "Session", "Tags", "Drive Link", "Instagram", "TikTok", "YouTube"]]},
+        ).execute()
+        print(f"Created '{CLIPS_TRACKER_TAB}' tab")
+
+
+def _append_to_clips_tracker(sheets_svc, spreadsheet_id, clip_name, session_name, tags, drive_link):
+    """Append a new row to the Clips Tracker tab after a clip is processed."""
+    ensure_clips_tracker_tab(sheets_svc, spreadsheet_id)
+
+    # Get current rows to determine next #
+    result = sheets_svc.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{CLIPS_TRACKER_TAB}'!A:A",
+    ).execute()
+    existing_rows = result.get("values", [])
+    next_num = len(existing_rows)  # header is row 1, so len gives next number
+
+    drive_formula = f'=HYPERLINK("{drive_link}","▶ View Clip")' if drive_link else ""
+
+    sheets_svc.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{CLIPS_TRACKER_TAB}'!A:H",
+        valueInputOption="USER_ENTERED",
+        insertDataOption="INSERT_ROWS",
+        body={"values": [[next_num, clip_name, session_name, tags, drive_formula, "", "", ""]]},
+    ).execute()
 
 
 if __name__ == "__main__":
