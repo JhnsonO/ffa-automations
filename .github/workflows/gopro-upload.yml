@@ -356,28 +356,48 @@ jobs:
 
       - name: Commit updated database back to main
         if: always()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          python3 - <<'PY'
+          import os, json, base64, urllib.request
+          from pathlib import Path
 
-          # Upload the DB directly via GitHub API — no branch switching needed
-          if [ ! -f uploaded.db ]; then
-            echo "No uploaded.db found — skipping"
-            exit 0
-          fi
+          db_path = Path("uploaded.db")
+          if not db_path.exists():
+              print("No uploaded.db found — skipping")
+              exit(0)
 
-          DB_B64=$(base64 -w 0 uploaded.db)
-          CURRENT_SHA=$(curl -s -H "Authorization: token ${{ secrets.GH_PAT }}"             "https://api.github.com/repos/${{ github.repository }}/contents/uploaded.db?ref=main"             | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'])")
+          token = os.environ["GH_PAT"]
+          repo = os.environ["REPO"]
+          encoded = base64.b64encode(db_path.read_bytes()).decode()
 
-          RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT             -H "Authorization: token ${{ secrets.GH_PAT }}"             -H "Content-Type: application/json"             "https://api.github.com/repos/${{ github.repository }}/contents/uploaded.db"             -d "{"message":"chore: update uploaded.db [skip ci]","content":"$DB_B64","sha":"$CURRENT_SHA","branch":"main"}")
+          # Get current SHA
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/contents/uploaded.db?ref=main",
+              headers={"Authorization": f"token {token}"}
+          )
+          with urllib.request.urlopen(req) as r:
+              current_sha = json.load(r)["sha"]
 
-          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-            echo "uploaded.db committed via API (HTTP $HTTP_CODE)"
-          else
-            echo "API commit failed (HTTP $HTTP_CODE): $RESPONSE"
-            exit 1
-          fi
+          # Push updated DB
+          payload = json.dumps({
+              "message": "chore: update uploaded.db [skip ci]",
+              "content": encoded,
+              "sha": current_sha,
+              "branch": "main"
+          }).encode()
+
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/contents/uploaded.db",
+              data=payload, method="PUT",
+              headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
+          )
+          with urllib.request.urlopen(req) as r:
+              result = json.load(r)
+          print(f"uploaded.db committed via API: {result['commit']['sha']}")
+          PY
 
       - name: Save updated YouTube token
         if: always()
