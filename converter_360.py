@@ -64,7 +64,7 @@ def convert_360_to_vr180(source_url: str, dest_path: Path) -> bool:
         "-i", source_url,
         "-y",
         "-filter_complex",
-        "[0:0]v360=fisheye:e:ih_fov=177:iv_fov=177:interp=cubic[v]",
+        "[0:0]v360=fisheye:e:ih_fov=177:iv_fov=177:interp=cubic:w=3840:h=2160[v]",
         "-map", "[v]",
         "-map", "0:2",           # AAC stereo audio
         "-c:v", "libx264",
