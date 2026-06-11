@@ -149,9 +149,9 @@ jobs:
 
           pub_key = open("/tmp/vastai_key.pub").read().strip()
 
-          # Search: verified, reliability>=98%, disk>=50GB, 1 GPU, cheapest first
+          # Search: verified, reliability>=98%, disk>=50GB, 1 GPU, tflops>=20 (RTX 3070+), cheapest first
           print("Searching for offers...")
-          query = "verified=True reliability2>=0.98 disk_space>=50 num_gpus=1 rentable=True gpu_totalram>=8"
+          query = "verified=True reliability2>=0.98 disk_space>=50 num_gpus=1 rentable=True flops_per_dphtotal>=300"
           offers_raw = vast.search_offers(query=query, order="dph_total", limit=10)
 
           # Parse the output (SDK returns a string or list)
@@ -174,12 +174,11 @@ jobs:
           # Launch
           print(f"Launching instance {offer_id}...")
           result = vast.create_instance(
-              ID=offer_id,
+              id=offer_id,
               image="ubuntu:22.04",
               disk=40,
               ssh=True,
               direct=True,
-              env=f"-e VAST_CONTAINTER_USER_ID=root",
           )
           print(f"Launch result: {result}")
 
