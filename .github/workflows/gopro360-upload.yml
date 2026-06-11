@@ -138,28 +138,57 @@ jobs:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
         run: |
           python3 - <<'PY'
-          import os, time, subprocess, json
+          import os, time, json, urllib.request, urllib.parse
 
-          # Use vastai SDK
-          import vastai as vai_module
-          from vastai import VastAI
-
-          api_key = os.environ["VAST_API_KEY"]
-          vast = VastAI(api_key=api_key)
-
+          API_KEY = os.environ["VAST_API_KEY"]
           pub_key = open("/tmp/vastai_key.pub").read().strip()
 
-          # Search: verified, reliability>=98%, disk>=50GB, 1 GPU, tflops>=20 (RTX 3070+), cheapest first
+          BASE = "https://console.vast.ai/api/v0"
+          headers = {
+              "Authorization": f"Bearer {API_KEY}",
+              "Content-Type": "application/json",
+              "Accept": "application/json",
+          }
+
+          def vast_get(path):
+              req = urllib.request.Request(f"{BASE}{path}", headers=headers)
+              with urllib.request.urlopen(req) as r:
+                  return json.loads(r.read())
+
+          def vast_put(path, data):
+              req = urllib.request.Request(f"{BASE}{path}",
+                  data=json.dumps(data).encode(), method="PUT", headers=headers)
+              with urllib.request.urlopen(req) as r:
+                  return json.loads(r.read())
+
+          def vast_post(path, data):
+              req = urllib.request.Request(f"{BASE}{path}",
+                  data=json.dumps(data).encode(), method="POST", headers=headers)
+              with urllib.request.urlopen(req) as r:
+                  return json.loads(r.read())
+
+          def vast_delete(path):
+              req = urllib.request.Request(f"{BASE}{path}", method="DELETE", headers=headers)
+              with urllib.request.urlopen(req) as r:
+                  return json.loads(r.read())
+
+          # ── Register SSH key ────────────────────────────────────────────────
+          print("Registering SSH key...")
+          vast_post("/ssh/", {"ssh_key": pub_key})
+          print("SSH key registered")
+
+          # ── Search offers ───────────────────────────────────────────────────
           print("Searching for offers...")
-          query = "verified=True reliability2>=0.98 disk_space>=50 num_gpus=1 rentable=True flops_per_dphtotal>=300"
-          offers_raw = vast.search_offers(query=query, order="dph_total", limit=10)
-
-          # Parse the output (SDK returns a string or list)
-          if isinstance(offers_raw, str):
-              offers = json.loads(offers_raw)
-          else:
-              offers = offers_raw
-
+          q = json.dumps({
+              "verified": {"eq": True},
+              "disk_space": {"gte": 50},
+              "num_gpus": {"eq": 1},
+              "rentable": {"eq": True},
+              "order": [["dph_total", "asc"]],
+              "type": "on-demand",
+          })
+          resp = vast_get(f"/bundles/?q={urllib.parse.quote(q)}")
+          offers = resp.get("offers", [])
           if not offers:
               print("ERROR: No offers found")
               exit(1)
@@ -169,50 +198,38 @@ jobs:
           gpu_name = best.get("gpu_name", "?")
           price    = best.get("dph_total", "?")
           disk     = best.get("disk_space", "?")
-          print(f"Best: {gpu_name} @ ${price}/hr | disk: {disk}GB | id: {offer_id}")
+          print(f"Best: {gpu_name} @ ${price:.4f}/hr | disk: {disk:.0f}GB | id: {offer_id}")
 
-          # Launch
+          # ── Launch instance ─────────────────────────────────────────────────
           print(f"Launching instance {offer_id}...")
-          result = vast.create_instance(
-              id=offer_id,
-              image="ubuntu:22.04",
-              disk=40,
-              ssh=True,
-              direct=True,
-          )
-          print(f"Launch result: {result}")
+          result = vast_put(f"/asks/{offer_id}/", {
+              "image": "ubuntu:22.04",
+              "disk": 40,
+              "runtype": "ssh",
+              "ssh_key": pub_key,
+              "env": {},
+          })
+          print(f"Launch response: {result}")
 
-          if isinstance(result, str):
-              result = json.loads(result)
-
-          instance_id = result.get("new_contract") or result.get("id")
+          instance_id = result.get("new_contract")
           if not instance_id:
-              print(f"ERROR: No instance ID in response: {result}")
+              print(f"ERROR: No instance ID returned: {result}")
               exit(1)
-
           print(f"Instance ID: {instance_id}")
 
-          # Add SSH key to instance
-          print("Adding SSH key...")
-          vast.create_ssh_key(key=pub_key)
-
-          # Poll until running
-          print("Waiting for instance to be running...")
+          # ── Poll until running ──────────────────────────────────────────────
+          print("Waiting for instance to start...")
           ip = port = None
           for attempt in range(40):
               time.sleep(15)
-              instances_raw = vast.show_instances()
-              if isinstance(instances_raw, str):
-                  instances = json.loads(instances_raw)
-              else:
-                  instances = instances_raw
-
-              inst = next((i for i in instances if i["id"] == instance_id), None)
-              if not inst:
-                  print(f"  [{attempt+1}] instance not found yet...")
+              try:
+                  resp = vast_get(f"/instances/{instance_id}/")
+                  inst = resp.get("instances", [resp])[0] if "instances" in resp else resp
+              except Exception as e:
+                  print(f"  [{attempt+1}] poll error: {e}")
                   continue
 
-              status = inst.get("actual_status", "")
+              status   = inst.get("actual_status", "")
               ssh_host = inst.get("ssh_host") or inst.get("public_ipaddr")
               ssh_port = inst.get("ssh_port", 22)
               print(f"  [{attempt+1}] status={status} host={ssh_host} port={ssh_port}")
@@ -224,11 +241,11 @@ jobs:
 
           if not ip:
               print("ERROR: Instance never reached running state — terminating")
-              vast.destroy_instance(id=instance_id)
+              try: vast_delete(f"/instances/{instance_id}/")
+              except: pass
               exit(1)
 
           print(f"Ready: {ip}:{port}")
-
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"instance_id={instance_id}\n")
               f.write(f"ip={ip}\n")
@@ -315,11 +332,19 @@ jobs:
             exit 0
           fi
           python3 - <<'PY'
-          import os
-          from vastai import VastAI
+          import os, json, urllib.request
 
-          vast = VastAI(api_key=os.environ["VAST_API_KEY"])
-          instance_id = int(os.environ["INSTANCE_ID"])
-          result = vast.destroy_instance(id=instance_id)
-          print(f"Terminated {instance_id}: {result}")
+          API_KEY = os.environ["VAST_API_KEY"]
+          INSTANCE_ID = os.environ["INSTANCE_ID"]
+
+          req = urllib.request.Request(
+              f"https://console.vast.ai/api/v0/instances/{INSTANCE_ID}/",
+              method="DELETE",
+              headers={"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"},
+          )
+          try:
+              with urllib.request.urlopen(req) as r:
+                  print(f"Terminated {INSTANCE_ID}: {json.loads(r.read())}")
+          except Exception as e:
+              print(f"Termination error (may already be gone): {e}")
           PY
