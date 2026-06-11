@@ -149,6 +149,28 @@ jobs:
               print(f"GOPRO_COOKIES secret synced (HTTP {r.status})")
           PY
 
+      - name: Re-trigger upload workflow
+        if: success()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request
+
+          token = os.environ["GH_PAT"]
+          repo = os.environ["REPO"]
+
+          payload = json.dumps({"ref": "main"}).encode()
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/workflows/gopro-upload.yml/dispatches",
+              data=payload, method="POST",
+              headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
+          )
+          urllib.request.urlopen(req)
+          print("Upload workflow re-triggered after successful cookie refresh")
+          PY
+
       - name: Upload login failure screenshots
         if: failure()
         uses: actions/upload-artifact@v4
@@ -247,64 +269,47 @@ jobs:
           print("GoPro cookies written from secret")
           PY
 
-      - name: Validate GoPro cookies (refresh via VM if expired)
+      - name: Validate GoPro cookies
+        id: validate_cookies
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
         run: |
           python3 - <<'PY'
-          import sys, os, json, urllib.request, time
+          import sys, os, json, urllib.request
           import gopro_uploader as u
 
-          def cookies_valid():
-              try:
-                  session = u.make_session(u.load_cookies_from_file())
-                  u.gopro_get(session, "/media/search", params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"})
-                  return True
-              except Exception as e:
-                  print(f"  Cookie check failed: {e}")
-                  return False
-
-          if cookies_valid():
+          try:
+              session = u.make_session(u.load_cookies_from_file())
+              u.gopro_get(session, "/media/search", params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"})
               print("GoPro cookies are valid")
-              sys.exit(0)
+              # Write output for downstream steps
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("cookies_valid=true\n")
+          except Exception as e:
+              print(f"GoPro cookies invalid: {e}")
+              print("Dispatching cookie refresh — upload will be re-triggered on completion")
 
-          print("GoPro cookies invalid — triggering VM cookie refresh...")
-          token = os.environ["GH_PAT"]
-          repo = os.environ["REPO"]
+              token = os.environ["GH_PAT"]
+              repo = os.environ["REPO"]
 
-          # Dispatch cookie-refresh job
-          payload = json.dumps({
-              "ref": "main",
-              "inputs": {"run_cookie_refresh": "true"}
-          }).encode()
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/actions/workflows/gopro-upload.yml/dispatches",
-              data=payload, method="POST",
-              headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
-          )
-          urllib.request.urlopen(req)
-          print("Cookie refresh dispatched — waiting 90s for VM to complete...")
-          time.sleep(90)
-
-          # Re-read cookies from secret (VM will have updated it)
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/actions/secrets/GOPRO_COOKIES",
-              headers={"Authorization": f"token {token}"}
-          )
-          # Secret values aren't readable via API — just wait and hope VM wrote them
-          # Re-validate with what we have (VM syncs back to secret, but this runner
-          # already has the old secret — so we check if VM refreshed the on-disk file)
-          print("Re-checking cookies after refresh...")
-          if cookies_valid():
-              print("Cookies now valid after VM refresh")
-              sys.exit(0)
-          else:
-              print("ERROR: Cookies still invalid after VM refresh attempt")
-              sys.exit(1)
+              payload = json.dumps({
+                  "ref": "main",
+                  "inputs": {"run_cookie_refresh": "true"}
+              }).encode()
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/actions/workflows/gopro-upload.yml/dispatches",
+                  data=payload, method="POST",
+                  headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
+              )
+              urllib.request.urlopen(req)
+              print("Cookie refresh dispatched — exiting cleanly")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("cookies_valid=false\n")
           PY
 
       - name: Debug GoPro scan candidates
+        if: steps.validate_cookies.outputs.cookies_valid == 'true'
         env:
           LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
           GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
@@ -334,6 +339,7 @@ jobs:
           PY
 
       - name: Run uploader
+        if: steps.validate_cookies.outputs.cookies_valid == 'true'
         env:
           LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
           MANUAL_GOPRO_FILENAME: ${{ github.event.inputs.gopro_filename || '' }}
