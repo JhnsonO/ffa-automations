@@ -1,0 +1,326 @@
+name: Upload GoPro 360 Session (Vast.ai)
+
+on:
+  workflow_dispatch:
+    inputs:
+      media_id:
+        description: 'GoPro media ID for the .360 file'
+        required: true
+        type: string
+      filename:
+        description: 'GoPro filename e.g. GS010404.360'
+        required: true
+        type: string
+      captured_at:
+        description: 'Capture timestamp (ISO8601) — leave blank to auto-detect'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gopro360-upload-${{ github.event.inputs.media_id }}
+  cancel-in-progress: false
+
+jobs:
+  upload-360:
+    name: Stitch + Upload 360 via Vast.ai
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python deps
+        run: pip install requests google-auth google-auth-oauthlib google-api-python-client vastai
+
+      - name: Write GoPro cookies
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+        run: |
+          python3 -c "
+          import os
+          from pathlib import Path
+          cookies = os.environ.get('GOPRO_COOKIES', '{}').strip() or '{}'
+          Path('gopro_cookies.json').write_text(cookies)
+          print('GoPro cookies written')
+          "
+
+      - name: Get GoPro CDN URL for .360 file
+        id: get_url
+        env:
+          MEDIA_ID: ${{ github.event.inputs.media_id }}
+          FILENAME: ${{ github.event.inputs.filename }}
+          CAPTURED_AT: ${{ github.event.inputs.captured_at }}
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          import gopro_uploader as u
+
+          media_id = os.environ["MEDIA_ID"]
+          filename  = os.environ["FILENAME"]
+          captured_at = os.environ.get("CAPTURED_AT", "").strip()
+
+          session = u.make_session(u.load_cookies_from_file())
+
+          # Fetch download variants for this media item
+          try:
+              resp = u.gopro_get(session, f"/media/{media_id}/download")
+              variations = resp.get("_embedded", {}).get("variations", [])
+          except Exception as e:
+              print(f"ERROR fetching variants: {e}")
+              sys.exit(1)
+
+          # Prefer concat (full-length dual-fisheye), then proxy (capped ~15min)
+          cdn_url = None
+          variant_used = None
+          for label in ["concat", "high_res_proxy_mp4"]:
+              for v in variations:
+                  if v.get("label") == label and v.get("url"):
+                      cdn_url = v["url"]
+                      variant_used = label
+                      break
+              if cdn_url:
+                  break
+
+          if not cdn_url:
+              for v in sorted(variations, key=lambda x: int(x.get("width", 0)), reverse=True):
+                  if v.get("url"):
+                      cdn_url = v["url"]
+                      variant_used = v.get("label", "unknown")
+                      break
+
+          if not cdn_url:
+              print(f"ERROR: No downloadable variant found for {filename}")
+              sys.exit(1)
+
+          print(f"Variant: {variant_used}")
+          print(f"URL: {cdn_url[:80]}...")
+
+          # Auto-detect captured_at if not supplied
+          if not captured_at:
+              try:
+                  pages = u.fetch_recent_media(u.get_authenticated_gopro_session())
+                  for item in pages:
+                      if item.get("id") == media_id:
+                          captured_at = item.get("captured_at", "")
+                          print(f"Auto-detected captured_at: {captured_at}")
+                          break
+              except Exception as ex:
+                  print(f"Warning: could not auto-detect captured_at: {ex}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"cdn_url={cdn_url}\n")
+              f.write(f"captured_at={captured_at}\n")
+              f.write(f"variant={variant_used}\n")
+          PY
+
+      - name: Generate SSH key pair for this run
+        run: |
+          ssh-keygen -t ed25519 -f /tmp/vastai_key -N "" -C "ffa-360-actions"
+          echo "pub_key=$(cat /tmp/vastai_key.pub)" >> $GITHUB_OUTPUT
+        id: ssh_key
+
+      - name: Search for cheapest offer + launch Vast.ai instance
+        id: launch
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, time, subprocess, json
+
+          # Use vastai SDK
+          import vastai as vai_module
+          from vastai import VastAI
+
+          api_key = os.environ["VAST_API_KEY"]
+          vast = VastAI(api_key=api_key)
+
+          pub_key = open("/tmp/vastai_key.pub").read().strip()
+
+          # Search: verified, reliability>=98%, disk>=50GB, 1 GPU, cheapest first
+          print("Searching for offers...")
+          query = "verified=True reliability2>=0.98 disk_space>=50 num_gpus=1 rentable=True"
+          offers_raw = vast.search_offers(query=query, order="dph_total", limit=10)
+
+          # Parse the output (SDK returns a string or list)
+          if isinstance(offers_raw, str):
+              offers = json.loads(offers_raw)
+          else:
+              offers = offers_raw
+
+          if not offers:
+              print("ERROR: No offers found")
+              exit(1)
+
+          best = offers[0]
+          offer_id = best["id"]
+          gpu_name = best.get("gpu_name", "?")
+          price    = best.get("dph_total", "?")
+          disk     = best.get("disk_space", "?")
+          print(f"Best: {gpu_name} @ ${price}/hr | disk: {disk}GB | id: {offer_id}")
+
+          # Launch
+          print(f"Launching instance {offer_id}...")
+          result = vast.create_instance(
+              ID=offer_id,
+              image="ubuntu:22.04",
+              disk=40,
+              ssh=True,
+              direct=True,
+              env=f"-e VAST_CONTAINTER_USER_ID=root",
+          )
+          print(f"Launch result: {result}")
+
+          if isinstance(result, str):
+              result = json.loads(result)
+
+          instance_id = result.get("new_contract") or result.get("id")
+          if not instance_id:
+              print(f"ERROR: No instance ID in response: {result}")
+              exit(1)
+
+          print(f"Instance ID: {instance_id}")
+
+          # Add SSH key to instance
+          print("Adding SSH key...")
+          vast.create_ssh_key(key=pub_key)
+
+          # Poll until running
+          print("Waiting for instance to be running...")
+          ip = port = None
+          for attempt in range(40):
+              time.sleep(15)
+              instances_raw = vast.show_instances()
+              if isinstance(instances_raw, str):
+                  instances = json.loads(instances_raw)
+              else:
+                  instances = instances_raw
+
+              inst = next((i for i in instances if i["id"] == instance_id), None)
+              if not inst:
+                  print(f"  [{attempt+1}] instance not found yet...")
+                  continue
+
+              status = inst.get("actual_status", "")
+              ssh_host = inst.get("ssh_host") or inst.get("public_ipaddr")
+              ssh_port = inst.get("ssh_port", 22)
+              print(f"  [{attempt+1}] status={status} host={ssh_host} port={ssh_port}")
+
+              if status == "running" and ssh_host:
+                  ip = ssh_host
+                  port = str(ssh_port)
+                  break
+
+          if not ip:
+              print("ERROR: Instance never reached running state — terminating")
+              vast.destroy_instance(id=instance_id)
+              exit(1)
+
+          print(f"Ready: {ip}:{port}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"instance_id={instance_id}\n")
+              f.write(f"ip={ip}\n")
+              f.write(f"port={port}\n")
+          PY
+
+      - name: Wait for SSH
+        run: |
+          IP="${{ steps.launch.outputs.ip }}"
+          PORT="${{ steps.launch.outputs.port }}"
+          echo "Waiting for SSH on ${IP}:${PORT}..."
+          for i in $(seq 1 24); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
+                   -i /tmp/vastai_key -p "${PORT}" "root@${IP}" \
+                   "echo SSH_OK" 2>/dev/null | grep -q SSH_OK; then
+              echo "SSH is up after ${i} attempts"
+              exit 0
+            fi
+            echo "  [${i}/24] not ready — waiting 15s..."
+            sleep 15
+          done
+          echo "ERROR: SSH never came up"
+          exit 1
+
+      - name: Copy stitch script to instance
+        run: |
+          # Pull vastai_stitch.sh from repo
+          python3 - <<'PY'
+          import urllib.request, json, base64
+          from pathlib import Path
+
+          PAT  = "${{ secrets.GH_PAT }}"
+          REPO = "${{ github.repository }}"
+
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{REPO}/contents/gopro360/vastai_stitch.sh",
+              headers={"Authorization": f"token {PAT}", "Accept": "application/vnd.github.v3+json"}
+          )
+          with urllib.request.urlopen(req) as r:
+              data = json.loads(r.read())
+          Path("/tmp/vastai_stitch.sh").write_bytes(base64.b64decode(data["content"]))
+          print("Script fetched OK")
+          PY
+
+          scp -o StrictHostKeyChecking=no \
+              -i /tmp/vastai_key \
+              -P "${{ steps.launch.outputs.port }}" \
+              /tmp/vastai_stitch.sh \
+              "root@${{ steps.launch.outputs.ip }}:/tmp/vastai_stitch.sh"
+          echo "Script transferred"
+
+      - name: Run stitch + upload on instance
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          # Pass secrets as env vars over SSH (avoids quoting issues with URLs/JSON)
+          ssh -o StrictHostKeyChecking=no \
+              -o ServerAliveInterval=60 \
+              -o ServerAliveCountMax=60 \
+              -i /tmp/vastai_key \
+              -p "${{ steps.launch.outputs.port }}" \
+              "root@${{ steps.launch.outputs.ip }}" \
+              "SOURCE_URL='${{ steps.get_url.outputs.cdn_url }}' \
+               MEDIA_ID='${{ github.event.inputs.media_id }}' \
+               FILENAME='${{ github.event.inputs.filename }}' \
+               CAPTURED_AT='${{ steps.get_url.outputs.captured_at }}' \
+               YOUTUBE_CREDS='${YOUTUBE_CREDENTIALS}' \
+               YOUTUBE_TOKEN='${YOUTUBE_TOKEN}' \
+               GH_PAT='${GH_PAT}' \
+               REPO='${{ github.repository }}' \
+               TRANSCODE_BITRATE='20M' \
+               bash /tmp/vastai_stitch.sh"
+
+      - name: Terminate Vast.ai instance
+        if: always()
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+          INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
+        run: |
+          if [ -z "${INSTANCE_ID}" ]; then
+            echo "No instance ID — nothing to terminate"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import os
+          from vastai import VastAI
+
+          vast = VastAI(api_key=os.environ["VAST_API_KEY"])
+          instance_id = int(os.environ["INSTANCE_ID"])
+          result = vast.destroy_instance(id=instance_id)
+          print(f"Terminated {instance_id}: {result}")
+          PY
