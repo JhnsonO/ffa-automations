@@ -20,7 +20,7 @@ jobs:
 
           API_KEY = os.environ["VAST_API_KEY"]
           headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-          req = urllib.request.Request("https://console.vast.ai/api/v0/instances/", headers=headers)
+          req = urllib.request.Request("https://cloud.vast.ai/api/v0/instances/", headers=headers)
           with urllib.request.urlopen(req) as r:
               data = json.loads(r.read())
 
