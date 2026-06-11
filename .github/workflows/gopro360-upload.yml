@@ -146,7 +146,7 @@ jobs:
           API_KEY = os.environ["VAST_API_KEY"]
           pub_key = open("/tmp/vastai_key.pub").read().strip()
 
-          BASE = "https://console.vast.ai/api/v0"
+          BASE = "https://cloud.vast.ai/api/v0"
           headers = {
               "Authorization": f"Bearer {API_KEY}",
               "Content-Type": "application/json",
@@ -384,7 +384,7 @@ jobs:
           INSTANCE_ID = os.environ["INSTANCE_ID"]
 
           req = urllib.request.Request(
-              f"https://console.vast.ai/api/v0/instances/{INSTANCE_ID}/",
+              f"https://cloud.vast.ai/api/v0/instances/{INSTANCE_ID}/",
               method="DELETE",
               headers={"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"},
           )
