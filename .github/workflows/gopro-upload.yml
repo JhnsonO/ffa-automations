@@ -1,212 +1,54 @@
-name: Upload GoPro Sessions to YouTube
+name: Upload GoPro Session to YouTube
 
 on:
-  schedule:
-    - cron: '0 */4 * * *'       # upload runs every 4 hours
-    - cron: '0 3 * * *'         # cookie refresh runs once daily at 03:00 UTC
   workflow_dispatch:
     inputs:
-      days:
-        description: 'How many days back to check for new videos'
+      media_id:
+        description: 'GoPro media ID to upload (from queue)'
         required: false
-        default: '2'
+        default: ''
         type: string
       gopro_filename:
         description: 'Optional: exact GoPro filename to upload manually, e.g. GX010130.MP4'
         required: false
         default: ''
         type: string
-      run_cookie_refresh:
-        description: 'Force a cookie refresh run (VM job)'
-        required: false
-        default: 'false'
-        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: gopro-upload
+  group: gopro-upload-${{ github.event.inputs.media_id || 'manual' }}
   cancel-in-progress: false
 
 jobs:
 
   # ─────────────────────────────────────────────────────────────
-  # JOB 1: Cookie refresh — runs on Vultr VM, once daily at 03:00
-  # or when forced via workflow_dispatch. Lightweight — just
-  # Playwright login + secret sync. If it fails, it retries once.
-  # ─────────────────────────────────────────────────────────────
-  cookie-refresh:
-    name: Refresh GoPro Cookies (VM)
-    runs-on: self-hosted
-    timeout-minutes: 30
-    # Run on the daily 03:00 schedule, or if forced via dispatch
-    if: >-
-      github.event.schedule == '0 3 * * *' ||
-      github.event.inputs.run_cookie_refresh == 'true'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: feature/hosted-runner-split
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install requests playwright pynacl
-          playwright install chromium --with-deps
-
-      - name: Write existing cookies from secret (fallback baseline)
-        env:
-          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
-        run: |
-          python3 - <<'PY'
-          import os, json
-          from pathlib import Path
-          cookie_path = Path("gopro_cookies.json")
-          # Only write from secret if no valid on-disk cookies exist
-          if cookie_path.exists():
-              try:
-                  existing = json.loads(cookie_path.read_text())
-                  if existing:
-                      print("On-disk cookies already present — keeping them")
-                      exit(0)
-              except Exception:
-                  pass
-          cookies = os.environ.get("GOPRO_COOKIES", "{}").strip() or "{}"
-          cookie_path.write_text(cookies)
-          print("Wrote cookies from secret")
-          PY
-
-      - name: Validate cookies — refresh via Playwright if expired
-        env:
-          GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
-          GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
-        run: |
-          python3 - <<'PY'
-          import sys
-          import gopro_uploader as u
-
-          try:
-              session = u.make_session(u.load_cookies_from_file())
-              u.gopro_get(session, "/media/search", params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"})
-              print("Cookies valid — no refresh needed")
-          except Exception as e:
-              print(f"Cookies invalid ({e}) — refreshing via Playwright")
-              if not u.refresh_cookies_via_playwright():
-                  raise SystemExit("GoPro cookie refresh failed")
-              session = u.make_session(u.load_cookies_from_file())
-              u.gopro_get(session, "/media/search", params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"})
-              print("Refreshed cookies are valid")
-          PY
-
-      - name: Sync refreshed cookies back to GOPRO_COOKIES secret
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          REPO: ${{ github.repository }}
-        run: |
-          python3 - <<'PY'
-          import os, json, urllib.request
-          from pathlib import Path
-          from base64 import b64encode
-          from nacl import encoding, public as nacl_public
-
-          cookie_path = Path("gopro_cookies.json")
-          if not cookie_path.exists():
-              print("No cookie file — skipping")
-              exit(0)
-
-          cookies = cookie_path.read_text().strip()
-          if not cookies or cookies == "{}":
-              print("Empty cookies — skipping secret update")
-              exit(0)
-
-          token = os.environ.get("GH_TOKEN", "")
-          repo = os.environ.get("REPO", "")
-
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/actions/secrets/public-key",
-              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
-          )
-          with urllib.request.urlopen(req) as r:
-              key_data = json.load(r)
-
-          pub_key = nacl_public.PublicKey(key_data["key"].encode(), encoding.Base64Encoder())
-          sealed = nacl_public.SealedBox(pub_key).encrypt(cookies.encode())
-          encrypted = b64encode(sealed).decode()
-
-          payload = json.dumps({"encrypted_value": encrypted, "key_id": key_data["key_id"]}).encode()
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/actions/secrets/GOPRO_COOKIES",
-              data=payload, method="PUT",
-              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json", "Content-Type": "application/json"}
-          )
-          with urllib.request.urlopen(req) as r:
-              print(f"GOPRO_COOKIES secret synced (HTTP {r.status})")
-          PY
-
-      - name: Re-trigger upload workflow
-        if: success()
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-          REPO: ${{ github.repository }}
-        run: |
-          python3 - <<'PY'
-          import os, json, urllib.request
-
-          token = os.environ["GH_PAT"]
-          repo = os.environ["REPO"]
-
-          payload = json.dumps({"ref": "main"}).encode()
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/actions/workflows/gopro-upload.yml/dispatches",
-              data=payload, method="POST",
-              headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
-          )
-          urllib.request.urlopen(req)
-          print("Upload workflow re-triggered after successful cookie refresh")
-          PY
-
-      - name: Upload login failure screenshots
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gopro-login-screenshots
-          path: /tmp/gopro_login_*.png
-          if-no-files-found: ignore
-          retention-days: 3
-
-  # ─────────────────────────────────────────────────────────────
-  # JOB 2: Upload — runs on GitHub-hosted ubuntu-latest runner.
-  # No VM involved. Reads cookies from GOPRO_COOKIES secret.
-  # Runs every 4 hours on schedule, or on manual dispatch.
+  # Upload — runs on GitHub-hosted ubuntu-latest runner.
+  # Triggered by the scanner (one run per video) or manually.
   # ─────────────────────────────────────────────────────────────
   upload:
-    name: Upload GoPro Sessions (GitHub Runner)
+    name: Upload GoPro Session (GitHub Runner)
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    # Run on the 4-hourly schedule or manual dispatch (not the 03:00 cookie-only schedule)
-    if: >-
-      github.event.schedule == '0 */4 * * *' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_cookie_refresh != 'true')
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: feature/hosted-runner-split
+          ref: main
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Load latest uploaded DB from main
+      - name: Load latest DB and queue from main
         run: |
           git fetch origin main
-          git checkout origin/main -- uploaded.db || touch uploaded.db
+          git checkout origin/main -- uploaded.db upload_queue.json || true
+          [ -f uploaded.db ] || touch uploaded.db
+          [ -f upload_queue.json ] || echo '[]' > upload_queue.json
           ls -lah uploaded.db
+          echo "Queue:"
+          cat upload_queue.json
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -214,36 +56,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install requests google-auth google-auth-oauthlib google-api-python-client
+        run: pip install requests google-auth google-auth-oauthlib google-api-python-client
 
       - name: Write YouTube credentials
         run: echo '${{ secrets.YOUTUBE_CREDENTIALS }}' > youtube_credentials.json
 
       - name: Write YouTube token
         run: echo '${{ secrets.YOUTUBE_TOKEN }}' > youtube_token.json
-
-      - name: Diagnose YouTube token safely
-        run: |
-          python3 - <<'PY'
-          import hashlib, json
-          from pathlib import Path
-
-          def short_hash(value):
-              if not value:
-                  return "missing"
-              return hashlib.sha256(value.encode()).hexdigest()[:12]
-
-          token = json.loads(Path("youtube_token.json").read_text())
-          creds = json.loads(Path("youtube_credentials.json").read_text())
-          installed = creds.get("installed") or creds.get("web") or {}
-
-          print("YouTube token diagnostics (secret-safe):")
-          print(f"  token_keys: {sorted(token.keys())}")
-          print(f"  has_refresh_token: {bool(token.get('refresh_token'))}")
-          print(f"  expiry: {token.get('expiry', 'missing')}")
-          print(f"  client_ids_match: {bool(token.get('client_id') and installed.get('client_id') and token.get('client_id') == installed.get('client_id'))}")
-          PY
 
       - name: Validate YouTube auth
         run: |
@@ -283,22 +102,19 @@ jobs:
               session = u.make_session(u.load_cookies_from_file())
               u.gopro_get(session, "/media/search", params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"})
               print("GoPro cookies are valid")
-              # Write output for downstream steps
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                   f.write("cookies_valid=true\n")
           except Exception as e:
               print(f"GoPro cookies invalid: {e}")
-              print("Dispatching cookie refresh — upload will be re-triggered on completion")
-
+              print("Dispatching cookie refresh — this upload will be re-queued after refresh")
               token = os.environ["GH_PAT"]
               repo = os.environ["REPO"]
-
               payload = json.dumps({
                   "ref": "main",
                   "inputs": {"run_cookie_refresh": "true"}
               }).encode()
               req = urllib.request.Request(
-                  f"https://api.github.com/repos/{repo}/actions/workflows/gopro-upload.yml/dispatches",
+                  f"https://api.github.com/repos/{repo}/actions/workflows/cookie-refresh.yml/dispatches",
                   data=payload, method="POST",
                   headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
               )
@@ -308,53 +124,148 @@ jobs:
                   f.write("cookies_valid=false\n")
           PY
 
-      - name: Debug GoPro scan candidates
-        if: steps.validate_cookies.outputs.cookies_valid == 'true'
-        env:
-          LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
-          GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
-          GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
-        run: |
-          python3 - <<'PY'
-          import gopro_uploader as u
-
-          con = u.init_db()
-          session = u.get_authenticated_gopro_session()
-          media_items = u.fetch_recent_media(session, con=con)
-
-          print("=" * 60)
-          print(f"DEBUG: GoPro returned {len(media_items)} item(s) before filtering")
-
-          accepted = 0
-          for item in media_items:
-              reasons, summary = u.describe_media_filter(con, item)
-              if reasons:
-                  print(f"DEBUG FILTERED: {summary} — {'; '.join(reasons)}")
-              else:
-                  accepted += 1
-                  print(f"DEBUG ACCEPTED: {summary}")
-
-          print(f"DEBUG: {accepted} item(s) would be accepted for upload")
-          print("=" * 60)
-          PY
-
       - name: Run uploader
         if: steps.validate_cookies.outputs.cookies_valid == 'true'
+        id: run_upload
         env:
-          LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
+          MEDIA_ID_OVERRIDE: ${{ github.event.inputs.media_id || '' }}
           MANUAL_GOPRO_FILENAME: ${{ github.event.inputs.gopro_filename || '' }}
           GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
           GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: python3 gopro_uploader.py
 
-      - name: Show DB status
-        if: always()
+      - name: Remove uploaded item from queue
+        if: steps.validate_cookies.outputs.cookies_valid == 'true' && steps.run_upload.outcome == 'success'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+          MEDIA_ID: ${{ github.event.inputs.media_id || '' }}
         run: |
-          ls -lah uploaded.db || true
-          git status --short
+          python3 - <<'PY'
+          import os, json, base64, urllib.request
+          from pathlib import Path
 
-      - name: Commit updated database back to main
+          media_id = os.environ.get("MEDIA_ID", "").strip()
+          if not media_id:
+              print("No media_id — skipping queue cleanup")
+              exit(0)
+
+          token = os.environ["GH_PAT"]
+          repo = os.environ["REPO"]
+
+          queue_path = Path("upload_queue.json")
+          queue = json.loads(queue_path.read_text()) if queue_path.exists() else []
+          before = len(queue)
+          queue = [item for item in queue if item["media_id"] != media_id]
+          print(f"Queue: {before} → {len(queue)} items (removed {media_id})")
+          queue_path.write_text(json.dumps(queue, indent=2))
+
+          encoded = base64.b64encode(queue_path.read_bytes()).decode()
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/contents/upload_queue.json?ref=main",
+              headers={"Authorization": f"token {token}"}
+          )
+          with urllib.request.urlopen(req) as r:
+              current_sha = json.load(r)["sha"]
+
+          payload = json.dumps({
+              "message": f"chore: remove {media_id} from upload queue [skip ci]",
+              "content": encoded,
+              "sha": current_sha,
+              "branch": "main"
+          }).encode()
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/contents/upload_queue.json",
+              data=payload, method="PUT",
+              headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
+          )
+          with urllib.request.urlopen(req) as r:
+              result = json.load(r)
+          print(f"Queue committed: {result['commit']['sha']}")
+          PY
+
+      - name: Handle upload failure — update fail count or alert
+        if: steps.validate_cookies.outputs.cookies_valid == 'true' && steps.run_upload.outcome == 'failure'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+          MEDIA_ID: ${{ github.event.inputs.media_id || '' }}
+        run: |
+          python3 - <<'PY'
+          import os, json, base64, urllib.request
+          from pathlib import Path
+
+          media_id = os.environ.get("MEDIA_ID", "").strip()
+          if not media_id:
+              print("No media_id — skipping failure handling")
+              exit(0)
+
+          token = os.environ["GH_PAT"]
+          repo = os.environ["REPO"]
+
+          queue_path = Path("upload_queue.json")
+          queue = json.loads(queue_path.read_text()) if queue_path.exists() else []
+
+          alert_needed = False
+          for item in queue:
+              if item["media_id"] == media_id:
+                  item["fail_count"] = item.get("fail_count", 0) + 1
+                  print(f"Fail count for {item['filename']}: {item['fail_count']}")
+                  if item["fail_count"] >= 3:
+                      alert_needed = True
+                      print(f"ALERT: {item['filename']} has failed {item['fail_count']} times")
+                  break
+
+          queue_path.write_text(json.dumps(queue, indent=2))
+          encoded = base64.b64encode(queue_path.read_bytes()).decode()
+
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/contents/upload_queue.json?ref=main",
+              headers={"Authorization": f"token {token}"}
+          )
+          with urllib.request.urlopen(req) as r:
+              current_sha = json.load(r)["sha"]
+
+          payload = json.dumps({
+              "message": f"chore: update fail count for {media_id} [skip ci]",
+              "content": encoded,
+              "sha": current_sha,
+              "branch": "main"
+          }).encode()
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/contents/upload_queue.json",
+              data=payload, method="PUT",
+              headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
+          )
+          with urllib.request.urlopen(req) as r:
+              print(f"Queue updated: {json.load(r)['commit']['sha']}")
+
+          if alert_needed:
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("send_alert=true\n")
+          PY
+
+      - name: Send failure alert email
+        if: steps.validate_cookies.outputs.cookies_valid == 'true' && steps.run_upload.outcome == 'failure'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.ALERT_EMAIL_FROM }}
+          password: ${{ secrets.ALERT_EMAIL_PASSWORD }}
+          to: ${{ secrets.ALERT_EMAIL_TO }}
+          from: FFA Automations
+          subject: "⚠️ FFA Upload Failed 3 Times — ${{ github.event.inputs.media_id }}"
+          body: |
+            The video with media ID ${{ github.event.inputs.media_id }} has failed to upload 3 times.
+
+            Check the Actions log for details:
+            https://github.com/${{ github.repository }}/actions
+
+            The video remains in the upload queue. You may need to manually investigate or remove it.
+
+      - name: Commit updated DB to main
         if: always()
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
@@ -366,14 +277,13 @@ jobs:
 
           db_path = Path("uploaded.db")
           if not db_path.exists():
-              print("No uploaded.db found — skipping")
+              print("No uploaded.db — skipping")
               exit(0)
 
           token = os.environ["GH_PAT"]
           repo = os.environ["REPO"]
           encoded = base64.b64encode(db_path.read_bytes()).decode()
 
-          # Get current SHA
           req = urllib.request.Request(
               f"https://api.github.com/repos/{repo}/contents/uploaded.db?ref=main",
               headers={"Authorization": f"token {token}"}
@@ -381,14 +291,12 @@ jobs:
           with urllib.request.urlopen(req) as r:
               current_sha = json.load(r)["sha"]
 
-          # Push updated DB
           payload = json.dumps({
               "message": "chore: update uploaded.db [skip ci]",
               "content": encoded,
               "sha": current_sha,
               "branch": "main"
           }).encode()
-
           req = urllib.request.Request(
               f"https://api.github.com/repos/{repo}/contents/uploaded.db",
               data=payload, method="PUT",
@@ -396,12 +304,5 @@ jobs:
           )
           with urllib.request.urlopen(req) as r:
               result = json.load(r)
-          print(f"uploaded.db committed via API: {result['commit']['sha']}")
+          print(f"uploaded.db committed: {result['commit']['sha']}")
           PY
-
-      - name: Save updated YouTube token
-        if: always()
-        run: |
-          if [ -f youtube_token.json ]; then
-            echo "YOUTUBE_TOKEN_UPDATED=$(cat youtube_token.json | base64 -w 0)" >> $GITHUB_ENV
-          fi
