@@ -527,6 +527,17 @@ def describe_media_filter(con, item):
         reasons.append("recently failed — within cooldown window (1h transient / 6h upload / 24h after 3 failures)")
     if file_size <= MIN_VIDEO_SIZE_BYTES:
         reasons.append(f"file below 100MB filter ({file_size / 1e6:.1f} MB)")
+    # Skip if GoPro updated the file within the last 30 minutes — still processing
+    updated_at = item.get("updated_at", "")
+    if updated_at:
+        try:
+            from datetime import datetime, timezone, timedelta
+            updated_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            age_minutes = (datetime.now(timezone.utc) - updated_dt).total_seconds() / 60
+            if age_minutes < 30:
+                reasons.append(f"GoPro file still processing — updated_at only {age_minutes:.1f} min ago (< 30 min threshold)")
+        except Exception:
+            pass
     summary = f"{filename or '(no filename)'} | id={media_id or '(no id)'} | captured_at={captured_at or '(no date)'} | created_at={created_at or '(no created_at)'} | effective_at={effective_at or '(no effective date)'} | size={file_size / 1e9:.2f} GB"
     return reasons, summary
 
