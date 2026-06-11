@@ -1,30 +1,37 @@
 #!/usr/bin/env python3
 """
-FFA GoPro MAX .360 → VR180 front-hemisphere converter.
+FFA GoPro MAX .360 → flat 16:9 wide-angle converter.
 
-Approach: extract only the front (pitch-facing) fisheye lens (stream 0:0),
-convert it to equirectangular front-hemisphere, inject VR180 XMP metadata.
+Approach:
+  1. Combine both EAC streams (front + rear) into a full equirectangular frame
+  2. Crop the front-facing 180° to a flat 16:9 output
+  3. No spatial/360° metadata — plays as a standard wide-angle video everywhere
 
-Why not full 360°:
-  - Camera is mounted against a fence — rear lens shows fence, not pitch
-  - Full equirectangular stitch takes >60 mins on GitHub runner, exceeding
-    GoPro CDN signed URL expiry (~60 mins)
-  - Single-lens extraction is ~3-4x faster, output ~half the size
-  - VR180 gives full left/right/up/down interactivity on YouTube
+Why flat crop instead of full 360°/VR180:
+  - Camera is mounted on a bungee behind the goal facing the pitch
+  - Rear lens shows fence/sky — no useful content
+  - Full EAC→equirect stitch of both streams at native res (5376×2688) takes
+    >60 mins on GitHub runner, exceeding GoPro CDN signed URL expiry (~60 mins)
+  - Flat 16:9 crop is ~4× faster to transcode, ~half the output size
+  - Plays on all devices/platforms with no viewer plugin needed
+  - Gives a genuinely wide-angle pitch view that standard GoPro footage can't
 
 Stream layout of GoPro MAX .360 concat variant:
-  0:0  Video  HEVC  4096x1344  front (pitch-facing) fisheye
-  0:1  Video  HEVC  4096x1344  rear (fence-facing) fisheye
+  0:0  Video  HEVC  4096×1344  front EAC strip (3 cube faces)
+  0:1  Video  HEVC  4096×1344  rear EAC strip  (3 cube faces)
   0:2  Audio  AAC   stereo
   0:3  Audio  PCM   ambisonic
   0:4  Data   timecode
   0:5  Data   GPMD telemetry
 
-We use only 0:0 and 0:2.
+FFmpeg pipeline:
+  [0:0][0:1]vstack → full 4096×2688 EAC frame
+  v360=eac:equirect → 5376×2688 equirectangular
+  crop=5376:3024:0:0 → front 16:9 strip (top ~56% of equirect = horizon + pitch)
+  scale=3840:2160 → 4K output
 
 Dependencies (installed in the Actions workflow):
   - ffmpeg
-  - exiftool  (apt: libimage-exiftool-perl)
 """
 
 import logging
@@ -40,17 +47,12 @@ def is_360_file(filename: str) -> bool:
     return Path(filename).suffix.lower() == ".360"
 
 
-def convert_360_to_vr180(source_url: str, dest_path: Path) -> bool:
+def convert_360_to_flat(source_url: str, dest_path: Path) -> bool:
     """
-    Stream-transcode the front fisheye lens of a GoPro MAX .360 file
-    to a front-hemisphere equirectangular MP4.
+    Stream-transcode a GoPro MAX .360 file to a flat 16:9 wide-angle MP4.
 
-    Only stream 0:0 (front/pitch-facing lens) is processed.
-    Stream 0:1 (rear/fence-facing lens) is ignored entirely.
-
-    The v360 filter converts fisheye → equirectangular with:
-      - ih_fov / iv_fov: GoPro MAX fisheye field of view (~180°)
-      - interp=cubic: good quality resampling
+    Both EAC streams are stacked into the full EAC canvas, converted to
+    equirectangular, then the front-facing pitch view is cropped to 16:9.
 
     Source is streamed directly from GoPro CDN — no raw file written to disk.
     Output is written to dest_path.
@@ -59,12 +61,22 @@ def convert_360_to_vr180(source_url: str, dest_path: Path) -> bool:
     """
     bitrate = os.environ.get("TRANSCODE_360_BITRATE", "20M")
 
+    # EAC full canvas: stack front (0:0) on top of rear (0:1) → 4096×2688
+    # v360=eac:equirect → 5376×2688 full equirectangular
+    # crop: take top 3024 rows (56% of height) = horizon + pitch, discard sky/ground
+    # scale to 3840×2160 (4K 16:9)
+    vf = (
+        "[0:0][0:1]vstack=inputs=2[eac];"
+        "[eac]v360=eac:equirect:interp=cubic:w=5376:h=2688[eq];"
+        "[eq]crop=5376:3024:0:0[crop];"
+        "[crop]scale=3840:2160[v]"
+    )
+
     cmd = [
         "ffmpeg",
         "-i", source_url,
         "-y",
-        "-filter_complex",
-        "[0:0]v360=fisheye:e:ih_fov=177:iv_fov=177:interp=cubic:w=3840:h=2160[v]",
+        "-filter_complex", vf,
         "-map", "[v]",
         "-map", "0:2",           # AAC stereo audio
         "-c:v", "libx264",
@@ -75,7 +87,8 @@ def convert_360_to_vr180(source_url: str, dest_path: Path) -> bool:
         str(dest_path),
     ]
 
-    log.info(f"Starting FFmpeg VR180 front-lens extraction → {dest_path.name} (bitrate={bitrate})")
+    log.info(f"Starting FFmpeg flat crop extraction → {dest_path.name} (bitrate={bitrate})")
+    log.info(f"Filter: {vf}")
 
     try:
         process = subprocess.Popen(
@@ -100,7 +113,7 @@ def convert_360_to_vr180(source_url: str, dest_path: Path) -> bool:
             return False
 
         size_mb = dest_path.stat().st_size / 1e6 if dest_path.exists() else 0
-        log.info(f"FFmpeg VR180 extraction complete: {dest_path.name} ({size_mb:.1f} MB)")
+        log.info(f"FFmpeg flat crop complete: {dest_path.name} ({size_mb:.1f} MB)")
         return True
 
     except FileNotFoundError:
@@ -111,62 +124,15 @@ def convert_360_to_vr180(source_url: str, dest_path: Path) -> bool:
         return False
 
 
-def inject_vr180_metadata(video_path: Path) -> bool:
-    """
-    Inject YouTube VR180 XMP metadata into the converted MP4 using exiftool.
-
-    VR180 = equirectangular projection, mono (single eye), front hemisphere only.
-    YouTube recognises this and enables the interactive 180° viewer.
-
-    Returns True on success, False on failure.
-    """
-    cmd = [
-        "exiftool",
-        "-api", "LargeFileSupport=1",
-        "-overwrite_original",
-        "-XMP-GSpherical:Spherical=true",
-        "-XMP-GSpherical:Stitched=true",
-        "-XMP-GSpherical:StitchingSoftware=FFmpeg",
-        "-XMP-GSpherical:ProjectionType=equirectangular",
-        "-XMP-GSpherical:SourceCount=1",
-        "-XMP-GSpherical:InitialViewHeadingDegrees=0",
-        "-XMP-GSpherical:InitialViewPitchDegrees=0",
-        "-XMP-GSpherical:InitialViewRollDegrees=0",
-        "-XMP-GSpherical:CroppedAreaLeftPixels=0",
-        "-XMP-GSpherical:CroppedAreaTopPixels=0",
-        str(video_path),
-    ]
-
-    log.info(f"Injecting VR180 XMP metadata into {video_path.name}")
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            log.error(f"exiftool failed (code {result.returncode}): {result.stderr.strip()}")
-            return False
-        log.info(f"exiftool: {result.stdout.strip() or 'metadata injected'}")
-        return True
-
-    except FileNotFoundError:
-        log.error("exiftool not found — ensure libimage-exiftool-perl is installed")
-        return False
-    except Exception as e:
-        log.error(f"exiftool metadata injection failed: {e}")
-        return False
-
-
 def process_360_file(source_url: str, dest_path: Path) -> bool:
     """
-    Full pipeline: front-lens extraction + VR180 metadata injection.
+    Full pipeline: EAC → equirect → flat 16:9 crop.
 
-    Returns True if both steps succeed, False otherwise.
+    No metadata injection needed — output is a standard MP4.
+    Returns True on success, False on failure.
     dest_path is cleaned up on failure.
     """
-    if not convert_360_to_vr180(source_url, dest_path):
-        dest_path.unlink(missing_ok=True)
-        return False
-
-    if not inject_vr180_metadata(dest_path):
+    if not convert_360_to_flat(source_url, dest_path):
         dest_path.unlink(missing_ok=True)
         return False
 
