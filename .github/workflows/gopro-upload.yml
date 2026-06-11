@@ -313,12 +313,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git stash --include-untracked || true
+          # Save the updated DB from this run
+          cp uploaded.db /tmp/uploaded_new.db || true
+
+          # Fresh checkout of main to avoid any branch/conflict issues
           git fetch origin main
           git checkout main
-          git pull --rebase origin main
-          git stash pop || true
+          git pull origin main
 
+          # Copy updated DB onto clean main
+          cp /tmp/uploaded_new.db uploaded.db || true
           touch uploaded.db
           git add uploaded.db
 
