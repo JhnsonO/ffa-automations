@@ -184,6 +184,8 @@ jobs:
               "disk_space": {"gte": 50},
               "num_gpus": {"eq": 1},
               "rentable": {"eq": True},
+              "gpu_totalram": {"gte": 8},
+              "flops_per_dphtotal": {"gte": 100},
               "order": [["dph_total", "asc"]],
               "type": "on-demand",
           })
@@ -223,8 +225,10 @@ jobs:
           for attempt in range(40):
               time.sleep(15)
               try:
-                  resp = vast_get(f"/instances/{instance_id}/")
-                  inst = resp.get("instances", [resp])[0] if "instances" in resp else resp
+                  resp = vast_get("/instances/")
+                  instances_list = resp.get("instances", [])
+                  inst = next((x for x in instances_list if x["id"] == instance_id), None)
+                  if not inst: print(f"  [{attempt+1}] instance not visible yet"); continue
               except Exception as e:
                   print(f"  [{attempt+1}] poll error: {e}")
                   continue
