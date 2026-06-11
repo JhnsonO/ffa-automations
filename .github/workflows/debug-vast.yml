@@ -1,0 +1,32 @@
+name: Debug Vast Instances
+
+on:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dump /instances/ JSON
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request
+
+          API_KEY = os.environ["VAST_API_KEY"]
+          headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+          req = urllib.request.Request("https://console.vast.ai/api/v0/instances/", headers=headers)
+          with urllib.request.urlopen(req) as r:
+              data = json.loads(r.read())
+
+          instances = data.get("instances", [])
+          print(f"Instance count: {len(instances)}")
+          for inst in instances:
+              # Print full dict for first instance, key fields for all
+              print(json.dumps(inst, indent=2, default=str))
+          PY
