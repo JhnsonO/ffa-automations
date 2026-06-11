@@ -186,30 +186,21 @@ jobs:
           # ── Dynamic offer search ────────────────────────────────────────────
           # Search for cheapest reliable single RTX 3060 with enough disk for FFmpeg
           print("Searching for cheapest available offer...")
+          # verified=True excludes unverified hosts
+          # geolocation excludes China (CN) — unreliable boot times over GitHub Actions SSH
           query = json.dumps({
-              "gpu_name": {"eq": "RTX_3060"},
-              "reliability2": {"gte": 0.95},
+              "reliability2": {"gte": 0.98},
               "num_gpus": {"eq": 1},
-              "inet_up": {"gte": 100},
+              "inet_up": {"gte": 200},
               "disk_space": {"gte": 60},
+              "gpu_ram": {"gte": 8},
               "rentable": {"eq": True},
+              "verified": {"eq": True},
+              "geolocation": {"neq": "CN"},
           })
           resp = vast_get("/bundles/", {"q": query})
           offers = resp.get("offers", [])
-
-          if not offers:
-              # Broaden search — any cheap GPU with enough disk
-              print("No RTX 3060 found — broadening search to any single GPU >= RTX 3060 tier...")
-              query = json.dumps({
-                  "reliability2": {"gte": 0.95},
-                  "num_gpus": {"eq": 1},
-                  "inet_up": {"gte": 100},
-                  "disk_space": {"gte": 60},
-                  "gpu_ram": {"gte": 8},
-                  "rentable": {"eq": True},
-              })
-              resp = vast_get("/bundles/", {"q": query})
-              offers = resp.get("offers", [])
+          print(f"Found {len(offers)} verified non-CN offers")
 
           if not offers:
               print("ERROR: No matching offers found", file=sys.stderr)
@@ -244,7 +235,7 @@ jobs:
           # ── Poll until running ──────────────────────────────────────────────
           print("Waiting for instance to start...")
           ip = port = None
-          for attempt in range(40):
+          for attempt in range(20):  # max 5 min boot wait
               time.sleep(15)
               try:
                   resp = vast_get("/instances/")
@@ -268,10 +259,39 @@ jobs:
                   break
 
           if not ip:
-              print("ERROR: Instance never reached running state — terminating", file=sys.stderr)
+              print(f"ERROR: Instance {instance_id} never reached running — terminating and retrying next offer", file=sys.stderr)
               try: vast_delete(f"/instances/{instance_id}/")
               except: pass
-              sys.exit(1)
+              # Try next offer if available
+              if len(offers) > 1:
+                  offer = offers[1]
+                  offer_id = offer["id"]
+                  print(f"Retrying with offer {offer_id} — {offer.get('gpu_name')} @ ${offer.get('dph_total',0):.4f}/hr ({offer.get('geolocation','?')})")
+                  result = vast_put(f"/asks/{offer_id}/", {
+                      "image": "ubuntu:22.04",
+                      "disk": 60,
+                      "runtype": "ssh",
+                      "ssh_key": pub_key,
+                      "env": {},
+                  })
+                  instance_id = result.get("new_contract")
+                  ip = port = None
+                  for attempt in range(20):
+                      time.sleep(15)
+                      try:
+                          resp = vast_get("/instances/")
+                          inst = next((x for x in resp.get("instances",[]) if x["id"]==instance_id), None)
+                          if not inst: continue
+                          status = inst.get("actual_status","")
+                          ssh_host = inst.get("ssh_host") or inst.get("public_ipaddr")
+                          ssh_port = inst.get("ssh_port", 22)
+                          print(f"  retry [{attempt+1}] status={status}")
+                          if status == "running" and ssh_host:
+                              ip = ssh_host; port = str(ssh_port); break
+                      except: pass
+              if not ip:
+                  print("ERROR: All offers exhausted — giving up", file=sys.stderr)
+                  sys.exit(1)
 
           print(f"Ready: {ip}:{port}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
