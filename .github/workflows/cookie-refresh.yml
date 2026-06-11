@@ -1,0 +1,160 @@
+name: Refresh GoPro Cookies
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # once daily at 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      run_cookie_refresh:
+        description: 'Force a cookie refresh'
+        required: false
+        default: 'true'
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cookie-refresh
+  cancel-in-progress: false
+
+jobs:
+
+  cookie-refresh:
+    name: Refresh GoPro Cookies (VM)
+    runs-on: self-hosted
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests playwright pynacl
+          playwright install chromium --with-deps
+
+      - name: Write existing cookies from secret (fallback baseline)
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+        run: |
+          python3 - <<'PY'
+          import os, json
+          from pathlib import Path
+          cookie_path = Path("gopro_cookies.json")
+          if cookie_path.exists():
+              try:
+                  if json.loads(cookie_path.read_text()):
+                      print("On-disk cookies already present — keeping them")
+                      exit(0)
+              except Exception:
+                  pass
+          cookies = os.environ.get("GOPRO_COOKIES", "{}").strip() or "{}"
+          cookie_path.write_text(cookies)
+          print("Wrote cookies from secret")
+          PY
+
+      - name: Validate cookies — refresh via Playwright if expired
+        env:
+          GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
+          GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import sys
+          import gopro_uploader as u
+
+          try:
+              session = u.make_session(u.load_cookies_from_file())
+              u.gopro_get(session, "/media/search", params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"})
+              print("Cookies valid — no refresh needed")
+          except Exception as e:
+              print(f"Cookies invalid ({e}) — refreshing via Playwright")
+              if not u.refresh_cookies_via_playwright():
+                  raise SystemExit("GoPro cookie refresh failed")
+              session = u.make_session(u.load_cookies_from_file())
+              u.gopro_get(session, "/media/search", params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"})
+              print("Refreshed cookies are valid")
+          PY
+
+      - name: Sync refreshed cookies back to GOPRO_COOKIES secret
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request
+          from pathlib import Path
+          from base64 import b64encode
+          from nacl import encoding, public as nacl_public
+
+          cookie_path = Path("gopro_cookies.json")
+          if not cookie_path.exists():
+              print("No cookie file — skipping")
+              exit(0)
+
+          cookies = cookie_path.read_text().strip()
+          if not cookies or cookies == "{}":
+              print("Empty cookies — skipping secret update")
+              exit(0)
+
+          token = os.environ.get("GH_TOKEN", "")
+          repo = os.environ.get("REPO", "")
+
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/secrets/public-key",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
+          )
+          with urllib.request.urlopen(req) as r:
+              key_data = json.load(r)
+
+          pub_key = nacl_public.PublicKey(key_data["key"].encode(), encoding.Base64Encoder())
+          sealed = nacl_public.SealedBox(pub_key).encrypt(cookies.encode())
+          encrypted = b64encode(sealed).decode()
+
+          payload = json.dumps({"encrypted_value": encrypted, "key_id": key_data["key_id"]}).encode()
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/secrets/GOPRO_COOKIES",
+              data=payload, method="PUT",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json", "Content-Type": "application/json"}
+          )
+          with urllib.request.urlopen(req) as r:
+              print(f"GOPRO_COOKIES secret synced (HTTP {r.status})")
+          PY
+
+      - name: Re-trigger scanner after cookie refresh
+        if: success()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request
+
+          token = os.environ["GH_PAT"]
+          repo = os.environ["REPO"]
+
+          payload = json.dumps({"ref": "main"}).encode()
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/workflows/gopro-scanner.yml/dispatches",
+              data=payload, method="POST",
+              headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
+          )
+          urllib.request.urlopen(req)
+          print("Scanner re-triggered after cookie refresh")
+          PY
+
+      - name: Upload login failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gopro-login-screenshots
+          path: /tmp/gopro_login_*.png
+          if-no-files-found: ignore
+          retention-days: 3
