@@ -177,32 +177,14 @@ jobs:
           vast_post("/ssh/", {"ssh_key": pub_key})
           print("SSH key registered")
 
-          # ── Search offers ───────────────────────────────────────────────────
-          print("Searching for offers...")
-          q = json.dumps({
-              "verified": {"eq": True},
-              "disk_space": {"gte": 50},
-              "num_gpus": {"eq": 1},
-              "rentable": {"eq": True},
-              "gpu_totalram": {"gte": 8},
-              "flops_per_dphtotal": {"gte": 100},
-              "order": [["dph_total", "asc"]],
-              "type": "on-demand",
-          })
-          resp = vast_get(f"/bundles/?q={urllib.parse.quote(q)}")
-          offers = resp.get("offers", [])
-          if not offers:
-              print("ERROR: No offers found")
-              exit(1)
+          # ── Hardcoded offer for testing (RTX 3060, Poland, $0.054/hr) ─────────
+          # Switch to dynamic search once pipeline is proven working
+          offer_id = 20693
+          gpu_name = "RTX 3060"
+          price = 0.054
+          print(f"Using hardcoded test offer: {gpu_name} @ ${price}/hr | id: {offer_id}")
 
-          best = offers[0]
-          offer_id = best["id"]
-          gpu_name = best.get("gpu_name", "?")
-          price    = best.get("dph_total", "?")
-          disk     = best.get("disk_space", "?")
-          print(f"Best: {gpu_name} @ ${price:.4f}/hr | disk: {disk:.0f}GB | id: {offer_id}")
-
-          # ── Launch instance ─────────────────────────────────────────────────
+          # ── Launch instance ─────────────────────────────────────────────────────
           print(f"Launching instance {offer_id}...")
           result = vast_put(f"/asks/{offer_id}/", {
               "image": "ubuntu:22.04",
@@ -218,7 +200,6 @@ jobs:
               print(f"ERROR: No instance ID returned: {result}")
               exit(1)
           print(f"Instance ID: {instance_id}")
-
           # ── Poll until running ──────────────────────────────────────────────
           print("Waiting for instance to start...")
           ip = port = None
