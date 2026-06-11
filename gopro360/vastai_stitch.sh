@@ -32,10 +32,17 @@ mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
 echo "--- Installing dependencies ---"
+# ffmpeg and exiftool — use parallel install for speed
 apt-get update -qq
-apt-get install -y -qq ffmpeg libimage-exiftool-perl python3-pip python3-venv > /dev/null
-pip install -q --break-system-packages google-auth google-auth-oauthlib google-api-python-client 2>/dev/null || \
-  pip install -q google-auth google-auth-oauthlib google-api-python-client
+apt-get install -y -qq --no-install-recommends ffmpeg libimage-exiftool-perl python3-pip > /dev/null &
+APT_PID=$!
+
+# pip deps in parallel while apt runs
+pip install -q --break-system-packages google-auth google-auth-oauthlib google-api-python-client 2>/dev/null &
+PIP_PID=$!
+
+wait $APT_PID && echo "apt done" || { echo "apt failed"; exit 1; }
+wait $PIP_PID && echo "pip done" || pip install -q google-auth google-auth-oauthlib google-api-python-client
 
 echo "--- Writing YouTube credentials ---"
 echo "${YOUTUBE_CREDS}" > youtube_credentials.json
