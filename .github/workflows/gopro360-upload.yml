@@ -151,7 +151,7 @@ jobs:
 
           # Search: verified, reliability>=98%, disk>=50GB, 1 GPU, cheapest first
           print("Searching for offers...")
-          query = "verified=True reliability2>=0.98 disk_space>=50 num_gpus=1 rentable=True"
+          query = "verified=True reliability2>=0.98 disk_space>=50 num_gpus=1 rentable=True gpu_totalram>=8"
           offers_raw = vast.search_offers(query=query, order="dph_total", limit=10)
 
           # Parse the output (SDK returns a string or list)
