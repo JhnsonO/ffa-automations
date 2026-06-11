@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check v1 instances endpoint
+      - name: Terminate leaked instance 40642710
         env:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
         run: |
@@ -21,20 +21,13 @@ jobs:
           API_KEY = os.environ["VAST_API_KEY"]
           headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
 
-          for url in [
-              "https://cloud.vast.ai/api/v1/instances/",
-              "https://console.vast.ai/api/v1/instances/",
-          ]:
-              print(f"--- {url} ---")
-              try:
-                  req = urllib.request.Request(url, headers=headers)
-                  with urllib.request.urlopen(req, timeout=15) as r:
-                      body = r.read().decode()
-                      print(f"  HTTP {r.status}")
-                      print(f"  {body[:1500]}")
-              except urllib.error.HTTPError as e:
-                  print(f"  HTTP {e.code}: {e.read().decode()[:500]}")
-              except Exception as e:
-                  print(f"  ERROR: {e}")
-              print()
+          req = urllib.request.Request(
+              "https://cloud.vast.ai/api/v1/instances/40642710/",
+              method="DELETE", headers=headers
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  print(f"HTTP {r.status}: {r.read().decode()}")
+          except urllib.error.HTTPError as e:
+              print(f"HTTP {e.code}: {e.read().decode()}")
           PY
