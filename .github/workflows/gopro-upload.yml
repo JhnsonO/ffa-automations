@@ -47,7 +47,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: feature/360-vr180
+          ref: feature/360-flat-crop
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -159,7 +159,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────
   # JOB 2: Upload — runs on GitHub-hosted ubuntu-latest runner.
   # No VM involved. Reads cookies from GOPRO_COOKIES secret.
-  # Installs ffmpeg + exiftool for .360 stitching.
+  # Installs ffmpeg for .360 flat-crop transcode.
   # Runs every 4 hours on schedule, or on manual dispatch.
   # ─────────────────────────────────────────────────────────────
   upload:
@@ -174,7 +174,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: feature/360-vr180
+          ref: feature/360-flat-crop
           fetch-depth: 0
           persist-credentials: true
 
@@ -193,7 +193,7 @@ jobs:
         run: |
           pip install requests google-auth google-auth-oauthlib google-api-python-client
 
-      - name: Install ffmpeg and exiftool
+      - name: Install ffmpeg
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg libimage-exiftool-perl
