@@ -17,6 +17,9 @@ on:
         default: ''
         type: string
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
   contents: write
 
@@ -43,7 +46,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python deps
-        run: pip install requests google-auth google-auth-oauthlib google-api-python-client vastai
+        run: pip install requests google-auth google-auth-oauthlib google-api-python-client
 
       - name: Write GoPro cookies
         env:
@@ -138,7 +141,7 @@ jobs:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
         run: |
           python3 - <<'PY'
-          import os, time, json, urllib.request, urllib.parse
+          import os, time, json, urllib.request, urllib.parse, sys
 
           API_KEY = os.environ["VAST_API_KEY"]
           pub_key = open("/tmp/vastai_key.pub").read().strip()
@@ -150,8 +153,11 @@ jobs:
               "Accept": "application/json",
           }
 
-          def vast_get(path):
-              req = urllib.request.Request(f"{BASE}{path}", headers=headers)
+          def vast_get(path, params=None):
+              url = f"{BASE}{path}"
+              if params:
+                  url += "?" + urllib.parse.urlencode(params)
+              req = urllib.request.Request(url, headers=headers)
               with urllib.request.urlopen(req) as r:
                   return json.loads(r.read())
 
@@ -177,18 +183,52 @@ jobs:
           vast_post("/ssh/", {"ssh_key": pub_key})
           print("SSH key registered")
 
-          # ── Hardcoded offer for testing (RTX 3060, Poland, $0.054/hr) ─────────
-          # Switch to dynamic search once pipeline is proven working
-          offer_id = 20693
-          gpu_name = "RTX 3060"
-          price = 0.054
-          print(f"Using hardcoded test offer: {gpu_name} @ ${price}/hr | id: {offer_id}")
+          # ── Dynamic offer search ────────────────────────────────────────────
+          # Search for cheapest reliable single RTX 3060 with enough disk for FFmpeg
+          print("Searching for cheapest available offer...")
+          query = json.dumps({
+              "gpu_name": {"eq": "RTX_3060"},
+              "reliability2": {"gte": 0.95},
+              "num_gpus": {"eq": 1},
+              "inet_up": {"gte": 100},
+              "disk_space": {"gte": 60},
+              "rentable": {"eq": True},
+          })
+          resp = vast_get("/bundles/", {"q": query})
+          offers = resp.get("offers", [])
 
-          # ── Launch instance ─────────────────────────────────────────────────────
+          if not offers:
+              # Broaden search — any cheap GPU with enough disk
+              print("No RTX 3060 found — broadening search to any single GPU >= RTX 3060 tier...")
+              query = json.dumps({
+                  "reliability2": {"gte": 0.95},
+                  "num_gpus": {"eq": 1},
+                  "inet_up": {"gte": 100},
+                  "disk_space": {"gte": 60},
+                  "gpu_ram": {"gte": 8},
+                  "rentable": {"eq": True},
+              })
+              resp = vast_get("/bundles/", {"q": query})
+              offers = resp.get("offers", [])
+
+          if not offers:
+              print("ERROR: No matching offers found", file=sys.stderr)
+              sys.exit(1)
+
+          # Sort by price per hour, take cheapest
+          offers.sort(key=lambda o: float(o.get("dph_total", 999)))
+          offer = offers[0]
+          offer_id = offer["id"]
+          gpu_name = offer.get("gpu_name", "unknown")
+          price = offer.get("dph_total", "?")
+          location = offer.get("geolocation", "?")
+          print(f"Selected offer {offer_id} — {gpu_name} @ ${price:.4f}/hr ({location})")
+
+          # ── Launch instance ──────────────────────────────────────────────────
           print(f"Launching instance {offer_id}...")
           result = vast_put(f"/asks/{offer_id}/", {
               "image": "ubuntu:22.04",
-              "disk": 40,
+              "disk": 60,
               "runtype": "ssh",
               "ssh_key": pub_key,
               "env": {},
@@ -197,9 +237,10 @@ jobs:
 
           instance_id = result.get("new_contract")
           if not instance_id:
-              print(f"ERROR: No instance ID returned: {result}")
-              exit(1)
+              print(f"ERROR: No instance ID returned: {result}", file=sys.stderr)
+              sys.exit(1)
           print(f"Instance ID: {instance_id}")
+
           # ── Poll until running ──────────────────────────────────────────────
           print("Waiting for instance to start...")
           ip = port = None
@@ -209,7 +250,9 @@ jobs:
                   resp = vast_get("/instances/")
                   instances_list = resp.get("instances", [])
                   inst = next((x for x in instances_list if x["id"] == instance_id), None)
-                  if not inst: print(f"  [{attempt+1}] instance not visible yet"); continue
+                  if not inst:
+                      print(f"  [{attempt+1}] instance not visible yet")
+                      continue
               except Exception as e:
                   print(f"  [{attempt+1}] poll error: {e}")
                   continue
@@ -225,10 +268,10 @@ jobs:
                   break
 
           if not ip:
-              print("ERROR: Instance never reached running state — terminating")
+              print("ERROR: Instance never reached running state — terminating", file=sys.stderr)
               try: vast_delete(f"/instances/{instance_id}/")
               except: pass
-              exit(1)
+              sys.exit(1)
 
           print(f"Ready: {ip}:{port}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
@@ -257,7 +300,6 @@ jobs:
 
       - name: Copy stitch script to instance
         run: |
-          # Pull vastai_stitch.sh from repo
           python3 - <<'PY'
           import urllib.request, json, base64
           from pathlib import Path
@@ -288,7 +330,6 @@ jobs:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          # Pass secrets as env vars over SSH (avoids quoting issues with URLs/JSON)
           ssh -o StrictHostKeyChecking=no \
               -o ServerAliveInterval=60 \
               -o ServerAliveCountMax=60 \
