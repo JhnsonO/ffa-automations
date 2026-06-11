@@ -313,26 +313,24 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Save the updated DB from this run
-          cp uploaded.db /tmp/uploaded_new.db || true
-
-          # Fresh checkout of main to avoid any branch/conflict issues
-          git fetch origin main
-          git checkout main
-          git pull origin main
-
-          # Copy updated DB onto clean main
-          cp /tmp/uploaded_new.db uploaded.db || true
-          touch uploaded.db
-          git add uploaded.db
-
-          if git diff --staged --quiet; then
-            echo "No uploaded.db changes to commit"
+          # Upload the DB directly via GitHub API — no branch switching needed
+          if [ ! -f uploaded.db ]; then
+            echo "No uploaded.db found — skipping"
             exit 0
           fi
 
-          git commit -m "chore: update uploaded.db [skip ci]"
-          git push origin HEAD:main
+          DB_B64=$(base64 -w 0 uploaded.db)
+          CURRENT_SHA=$(curl -s -H "Authorization: token ${{ secrets.GH_PAT }}"             "https://api.github.com/repos/${{ github.repository }}/contents/uploaded.db?ref=main"             | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'])")
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT             -H "Authorization: token ${{ secrets.GH_PAT }}"             -H "Content-Type: application/json"             "https://api.github.com/repos/${{ github.repository }}/contents/uploaded.db"             -d "{"message":"chore: update uploaded.db [skip ci]","content":"$DB_B64","sha":"$CURRENT_SHA","branch":"main"}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+            echo "uploaded.db committed via API (HTTP $HTTP_CODE)"
+          else
+            echo "API commit failed (HTTP $HTTP_CODE): $RESPONSE"
+            exit 1
+          fi
 
       - name: Save updated YouTube token
         if: always()
