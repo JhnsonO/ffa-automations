@@ -243,23 +243,35 @@ jobs:
 
           queue = json.loads(Path("upload_queue.json").read_text())
 
-          # Trigger one upload dispatch per queued item
+          # Route .360 files (GoPro MAX) to gopro360-upload.yml via Vast.ai
+          # All other videos go to gopro-upload.yml (GitHub runner)
           triggered = 0
           for item in queue:
-              payload = json.dumps({
-                  "ref": "main",
-                  "inputs": {"media_id": item["media_id"]}
-              }).encode()
+              filename = item.get("filename", "")
+              is_360 = filename.lower().endswith(".360")
+              workflow = "gopro360-upload.yml" if is_360 else "gopro-upload.yml"
+
+              if is_360:
+                  inputs = {
+                      "media_id": item["media_id"],
+                      "filename": filename,
+                      "captured_at": item.get("captured_at", ""),
+                  }
+              else:
+                  inputs = {"media_id": item["media_id"]}
+
+              payload = json.dumps({"ref": "main", "inputs": inputs}).encode()
               req = urllib.request.Request(
-                  f"https://api.github.com/repos/{repo}/actions/workflows/gopro-upload.yml/dispatches",
+                  f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/dispatches",
                   data=payload, method="POST",
                   headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
               )
               urllib.request.urlopen(req)
-              print(f"Triggered upload for {item['filename']} ({item['media_id']})")
+              label = "360°" if is_360 else "MP4"
+              print(f"Triggered {label} upload for {filename} ({item['media_id']}) → {workflow}")
               triggered += 1
               if triggered < len(queue):
-                  time.sleep(5)  # small gap between dispatches
+                  time.sleep(5)
 
           print(f"\nTriggered {triggered} upload run(s)")
           PY
