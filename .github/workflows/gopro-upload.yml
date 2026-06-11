@@ -47,7 +47,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: feature/360-camera-v2
+          ref: feature/360-vr180
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -174,7 +174,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: feature/360-camera-v2
+          ref: feature/360-vr180
           fetch-depth: 0
           persist-credentials: true
 
