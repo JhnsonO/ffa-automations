@@ -1,0 +1,265 @@
+name: GoPro Cloud Scanner
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # every hour
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'How many days back to scan'
+        required: false
+        default: '2'
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gopro-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: Scan GoPro Cloud for New Videos
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests google-auth google-auth-oauthlib google-api-python-client
+
+      - name: Write GoPro cookies from secret
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          cookies = os.environ.get("GOPRO_COOKIES", "{}").strip() or "{}"
+          Path("gopro_cookies.json").write_text(cookies)
+          print("GoPro cookies written from secret")
+          PY
+
+      - name: Validate GoPro cookies
+        id: validate_cookies
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import sys, os, json, urllib.request
+          import gopro_uploader as u
+
+          try:
+              session = u.make_session(u.load_cookies_from_file())
+              u.gopro_get(session, "/media/search", params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"})
+              print("GoPro cookies are valid")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("cookies_valid=true\n")
+          except Exception as e:
+              print(f"GoPro cookies invalid: {e}")
+              print("Dispatching cookie refresh — scanner will re-run after refresh")
+              token = os.environ["GH_PAT"]
+              repo = os.environ["REPO"]
+              payload = json.dumps({
+                  "ref": "main",
+                  "inputs": {"run_cookie_refresh": "true"}
+              }).encode()
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/actions/workflows/cookie-refresh.yml/dispatches",
+                  data=payload, method="POST",
+                  headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
+              )
+              urllib.request.urlopen(req)
+              print("Cookie refresh dispatched — exiting cleanly")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("cookies_valid=false\n")
+          PY
+
+      - name: Load uploaded DB and upload queue from main
+        if: steps.validate_cookies.outputs.cookies_valid == 'true'
+        run: |
+          git fetch origin main
+          git checkout origin/main -- uploaded.db upload_queue.json || true
+          [ -f uploaded.db ] || touch uploaded.db
+          [ -f upload_queue.json ] || echo '[]' > upload_queue.json
+          echo "Current queue:"
+          cat upload_queue.json
+
+      - name: Scan GoPro for new videos
+        if: steps.validate_cookies.outputs.cookies_valid == 'true'
+        id: scan
+        env:
+          LOOKBACK_DAYS: ${{ github.event.inputs.days || '2' }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os, json, sqlite3, urllib.request
+          from pathlib import Path
+          from datetime import datetime, timezone
+          import gopro_uploader as u
+
+          MIN_SIZE_BYTES = 15 * 1024 * 1024 * 1024  # 15GB
+
+          # Load existing queue
+          queue_path = Path("upload_queue.json")
+          queue = json.loads(queue_path.read_text()) if queue_path.exists() else []
+          queued_media_ids = {item["media_id"] for item in queue}
+
+          # Load DB
+          con = u.init_db()
+          session = u.get_authenticated_gopro_session()
+          media_items = u.fetch_recent_media(session, con=con)
+
+          new_items = []
+          for item in media_items:
+              media_id = item.get("id", "")
+              filename = item.get("filename", "")
+              file_size = int(item.get("file_size", 0) or 0)
+              captured_at = item.get("captured_at", "")
+              updated_at = item.get("updated_at", "")
+
+              # Skip if already in DB
+              reasons, summary = u.describe_media_filter(con, item)
+              if reasons:
+                  print(f"SKIP: {summary} — {'; '.join(reasons)}")
+                  continue
+
+              # Skip if already queued
+              if media_id in queued_media_ids:
+                  print(f"ALREADY QUEUED: {filename}")
+                  continue
+
+              # Skip if under 15GB
+              if file_size < MIN_SIZE_BYTES:
+                  print(f"SKIP (too small — {file_size/1e9:.2f} GB < 15 GB): {filename}")
+                  continue
+
+              print(f"NEW: {filename} | {file_size/1e9:.2f} GB | captured: {captured_at}")
+              new_items.append({
+                  "media_id": media_id,
+                  "filename": filename,
+                  "file_size": file_size,
+                  "captured_at": captured_at,
+                  "queued_at": datetime.now(timezone.utc).isoformat(),
+                  "fail_count": 0
+              })
+
+          if new_items:
+              queue.extend(new_items)
+              queue_path.write_text(json.dumps(queue, indent=2))
+              print(f"\nAdded {len(new_items)} new item(s) to queue")
+              print(f"Queue now has {len(queue)} item(s)")
+
+              # Write output so next step knows to trigger uploads
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(f"new_count={len(new_items)}\n")
+          else:
+              print("No new videos found")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("new_count=0\n")
+
+          con.close()
+          PY
+
+      - name: Commit updated queue to main
+        if: steps.validate_cookies.outputs.cookies_valid == 'true' && steps.scan.outputs.new_count != '0'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os, json, base64, urllib.request
+          from pathlib import Path
+
+          token = os.environ["GH_PAT"]
+          repo = os.environ["REPO"]
+
+          queue_path = Path("upload_queue.json")
+          if not queue_path.exists():
+              print("No queue file — skipping")
+              exit(0)
+
+          encoded = base64.b64encode(queue_path.read_bytes()).decode()
+
+          # Get current SHA (file may not exist yet)
+          try:
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/contents/upload_queue.json?ref=main",
+                  headers={"Authorization": f"token {token}"}
+              )
+              with urllib.request.urlopen(req) as r:
+                  current_sha = json.load(r)["sha"]
+              payload = json.dumps({
+                  "message": "chore: update upload_queue.json [skip ci]",
+                  "content": encoded,
+                  "sha": current_sha,
+                  "branch": "main"
+              }).encode()
+          except urllib.error.HTTPError as e:
+              if e.code == 404:
+                  # File doesn't exist yet — create it
+                  payload = json.dumps({
+                      "message": "chore: create upload_queue.json [skip ci]",
+                      "content": encoded,
+                      "branch": "main"
+                  }).encode()
+              else:
+                  raise
+
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/contents/upload_queue.json",
+              data=payload, method="PUT",
+              headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
+          )
+          with urllib.request.urlopen(req) as r:
+              result = json.load(r)
+          print(f"upload_queue.json committed: {result['commit']['sha']}")
+          PY
+
+      - name: Trigger upload run per new video
+        if: steps.validate_cookies.outputs.cookies_valid == 'true' && steps.scan.outputs.new_count != '0'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, time
+          from pathlib import Path
+
+          token = os.environ["GH_PAT"]
+          repo = os.environ["REPO"]
+
+          queue = json.loads(Path("upload_queue.json").read_text())
+
+          # Trigger one upload dispatch per queued item
+          triggered = 0
+          for item in queue:
+              payload = json.dumps({
+                  "ref": "main",
+                  "inputs": {"media_id": item["media_id"]}
+              }).encode()
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/actions/workflows/gopro-upload.yml/dispatches",
+                  data=payload, method="POST",
+                  headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
+              )
+              urllib.request.urlopen(req)
+              print(f"Triggered upload for {item['filename']} ({item['media_id']})")
+              triggered += 1
+              if triggered < len(queue):
+                  time.sleep(5)  # small gap between dispatches
+
+          print(f"\nTriggered {triggered} upload run(s)")
+          PY
