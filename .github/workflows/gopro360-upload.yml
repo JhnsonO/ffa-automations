@@ -191,11 +191,10 @@ jobs:
           # geolocation excludes China (CN) — unreliable boot times over GitHub Actions SSH
           query = json.dumps({
               "reliability2": {"gte": 0.98},
-              "num_gpus": {"eq": 1},
               "inet_up": {"gte": 200},
               "disk_space": {"gte": 60},
-              "gpu_ram": {"gte": 8},
-              "cpu_cores": {"gte": 32},
+              "cpu_cores": {"gte": 64},
+              "cpu_ram": {"gte": 64},
               "rentable": {"eq": True},
               "verified": {"eq": True},
               "geolocation": {"neq": "CN"},
