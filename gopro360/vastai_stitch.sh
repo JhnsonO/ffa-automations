@@ -117,56 +117,69 @@ FILTER_COMPLEX="\
 
 # ── Transcode with live progress heartbeat ─────────────────────────────────────
 log ""
-log "--- Starting FFmpeg transcode (maskedmerge seam blend, h264_nvenc) ---"
 log "Source: ${SOURCE_URL:0:80}..."
 
 PROGRESS_FILE="${WORKDIR}/ffmpeg_progress.log"
-rm -f "${PROGRESS_FILE}"
 
-stdbuf -oL -eL ffmpeg -y \
-  -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 30 \
-  -i "${SOURCE_URL}" \
-  -i "${MASK_PNG}" \
-  -filter_complex "${FILTER_COMPLEX}" \
-  -map "[v]" \
-  -map "0:a:0?" \
-  -c:v h264_nvenc \
-  -b:v "${BITRATE}" \
-  -preset fast \
-  -c:a aac \
-  -ac 2 \
-  -b:a 192k \
-  -movflags +faststart \
-  -progress "${PROGRESS_FILE}" \
-  -nostats \
-  "${OUTPUT_EQUIRECT}" > "${WORKDIR}/ffmpeg_stdout.log" 2>&1 &
-FFMPEG_PID=$!
+run_ffmpeg() {
+  local codec_args=("$@")
+  rm -f "${PROGRESS_FILE}" "${OUTPUT_EQUIRECT}"
 
-# Heartbeat: print progress every 5s, never go quiet for longer than that
-log "FFmpeg started (pid ${FFMPEG_PID}) — progress every 5s:"
-while kill -0 "${FFMPEG_PID}" 2>/dev/null; do
-  sleep 5
-  if [ -f "${PROGRESS_FILE}" ]; then
-    FRAME=$(grep -a "^frame=" "${PROGRESS_FILE}" | tail -1 | cut -d= -f2 || true)
-    FPS=$(grep -a "^fps=" "${PROGRESS_FILE}" | tail -1 | cut -d= -f2 || true)
-    OUT_TIME=$(grep -a "^out_time=" "${PROGRESS_FILE}" | tail -1 | cut -d= -f2 || true)
-    SPEED=$(grep -a "^speed=" "${PROGRESS_FILE}" | tail -1 | cut -d= -f2 || true)
-    log "  ffmpeg: frame=${FRAME:-0} fps=${FPS:-0} out_time=${OUT_TIME:-0:00:00} speed=${SPEED:-0}x"
+  stdbuf -oL -eL ffmpeg -y \
+    -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 30 \
+    -i "${SOURCE_URL}" \
+    -i "${MASK_PNG}" \
+    -filter_complex "${FILTER_COMPLEX}" \
+    -map "[v]" \
+    -map "0:a:0?" \
+    "${codec_args[@]}" \
+    -c:a aac \
+    -ac 2 \
+    -b:a 192k \
+    -movflags +faststart \
+    -progress "${PROGRESS_FILE}" \
+    -nostats \
+    "${OUTPUT_EQUIRECT}" > "${WORKDIR}/ffmpeg_stdout.log" 2>&1 &
+  FFMPEG_PID=$!
+
+  # Heartbeat: print progress every 5s, never go quiet for longer than that
+  log "FFmpeg started (pid ${FFMPEG_PID}) — progress every 5s:"
+  while kill -0 "${FFMPEG_PID}" 2>/dev/null; do
+    sleep 5
+    if [ -f "${PROGRESS_FILE}" ]; then
+      FRAME=$(grep -a "^frame=" "${PROGRESS_FILE}" | tail -1 | cut -d= -f2 || true)
+      FPS=$(grep -a "^fps=" "${PROGRESS_FILE}" | tail -1 | cut -d= -f2 || true)
+      OUT_TIME=$(grep -a "^out_time=" "${PROGRESS_FILE}" | tail -1 | cut -d= -f2 || true)
+      SPEED=$(grep -a "^speed=" "${PROGRESS_FILE}" | tail -1 | cut -d= -f2 || true)
+      log "  ffmpeg: frame=${FRAME:-0} fps=${FPS:-0} out_time=${OUT_TIME:-0:00:00} speed=${SPEED:-0}x"
+    else
+      log "  ffmpeg: starting up (no progress file yet)..."
+    fi
+  done
+
+  set +e
+  wait "${FFMPEG_PID}"
+  FFMPEG_EXIT=$?
+  set -e
+  log "FFmpeg exited with code ${FFMPEG_EXIT}"
+  return "${FFMPEG_EXIT}"
+}
+
+log "--- Starting FFmpeg transcode (maskedmerge seam blend, h264_nvenc) ---"
+if run_ffmpeg -c:v h264_nvenc -b:v "${BITRATE}" -preset fast; then
+  log "NVENC encode succeeded"
+else
+  log "WARNING: h264_nvenc failed (no capable device on this host?) — last 10 lines:"
+  tail -10 "${WORKDIR}/ffmpeg_stdout.log"
+  log ""
+  log "--- Falling back to libx264 (CPU encode) ---"
+  if run_ffmpeg -c:v libx264 -b:v "${BITRATE}" -preset veryfast; then
+    log "libx264 fallback encode succeeded"
   else
-    log "  ffmpeg: starting up (no progress file yet)..."
+    log "ERROR: FFmpeg failed on both h264_nvenc and libx264 — last 30 lines of output:"
+    tail -30 "${WORKDIR}/ffmpeg_stdout.log"
+    exit 1
   fi
-done
-
-set +e
-wait "${FFMPEG_PID}"
-FFMPEG_EXIT=$?
-set -e
-log "FFmpeg exited with code ${FFMPEG_EXIT}"
-
-if [ "${FFMPEG_EXIT}" -ne 0 ]; then
-  log "ERROR: FFmpeg failed — last 30 lines of output:"
-  tail -30 "${WORKDIR}/ffmpeg_stdout.log"
-  exit 1
 fi
 
 # Check output exists and has reasonable size
