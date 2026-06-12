@@ -1,0 +1,30 @@
+name: Debug Vast Instances
+
+on:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Full instance stats
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request
+
+          API_KEY = os.environ["VAST_API_KEY"]
+          headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+          req = urllib.request.Request("https://cloud.vast.ai/api/v1/instances/", headers=headers)
+          with urllib.request.urlopen(req, timeout=15) as r:
+              data = json.loads(r.read())
+
+          for inst in data.get("instances", []):
+              for k in ["id","actual_status","cur_state","gpu_util","gpu_temp","cpu_util","disk_usage","gpu_display_active","client_run_time","status_msg"]:
+                  print(f"{k}={inst.get(k)}")
+          PY
