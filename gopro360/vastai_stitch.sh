@@ -165,21 +165,13 @@ run_ffmpeg() {
   return "${FFMPEG_EXIT}"
 }
 
-log "--- Starting FFmpeg transcode (maskedmerge seam blend, h264_nvenc) ---"
-if run_ffmpeg -c:v h264_nvenc -b:v "${BITRATE}" -preset fast; then
-  log "NVENC encode succeeded"
+log "--- Starting FFmpeg transcode (maskedmerge seam blend, libx264 CPU) ---"
+if run_ffmpeg -c:v libx264 -b:v "${BITRATE}" -preset veryfast -threads 0; then
+  log "libx264 encode succeeded"
 else
-  log "WARNING: h264_nvenc failed (no capable device on this host?) — last 10 lines:"
-  tail -10 "${WORKDIR}/ffmpeg_stdout.log"
-  log ""
-  log "--- Falling back to libx264 (CPU encode) ---"
-  if run_ffmpeg -c:v libx264 -b:v "${BITRATE}" -preset veryfast; then
-    log "libx264 fallback encode succeeded"
-  else
-    log "ERROR: FFmpeg failed on both h264_nvenc and libx264 — last 30 lines of output:"
-    tail -30 "${WORKDIR}/ffmpeg_stdout.log"
-    exit 1
-  fi
+  log "ERROR: FFmpeg failed — last 30 lines of output:"
+  tail -30 "${WORKDIR}/ffmpeg_stdout.log"
+  exit 1
 fi
 
 # Check output exists and has reasonable size
