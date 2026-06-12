@@ -118,7 +118,8 @@ FILTER_COMPLEX="\
 # ── Probe source duration ──────────────────────────────────────────────────────
 log ""
 log "Source: ${SOURCE_URL:0:80}..."
-log "--- Probing source duration ---"
+log "--- GPU check ---"
+nvidia-smi || log "WARNING: nvidia-smi not available"
 TOTAL_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "${SOURCE_URL}")
 log "Source duration: ${TOTAL_DUR}s"
 
