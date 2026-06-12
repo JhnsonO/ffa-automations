@@ -220,7 +220,7 @@ jobs:
           # ── Launch instance ──────────────────────────────────────────────────
           print(f"Launching instance {offer_id}...")
           result = vast_put(f"/asks/{offer_id}/", {
-              "image": "ubuntu:22.04",
+              "image": "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
               "disk": 60,
               "runtype": "ssh",
               "ssh_key": pub_key,
@@ -270,7 +270,7 @@ jobs:
                   offer_id = offer["id"]
                   print(f"Retrying with offer {offer_id} — {offer.get('gpu_name')} @ ${offer.get('dph_total',0):.4f}/hr ({offer.get('geolocation','?')})")
                   result = vast_put(f"/asks/{offer_id}/", {
-                      "image": "ubuntu:22.04",
+                      "image": "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
                       "disk": 60,
                       "runtype": "ssh",
                       "ssh_key": pub_key,
