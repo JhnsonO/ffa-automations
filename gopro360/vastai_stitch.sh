@@ -156,9 +156,13 @@ encode_chunk() {
 log "--- Launching parallel chunk encodes (NVENC) ---"
 pids=()
 for ((i=0; i<NUM_CHUNKS; i++)); do
-  while [ "$(jobs -rp | wc -l)" -ge "${MAX_PARALLEL}" ]; do sleep 2; done
+  while [ "$(jobs -rp | wc -l)" -ge "${MAX_PARALLEL}" ]; do
+    log "  waiting for a chunk slot (running=$(jobs -rp | wc -l)/${MAX_PARALLEL}, launched=${i}/${NUM_CHUNKS})..."
+    sleep 5
+  done
   encode_chunk "$i" &
   pids+=($!)
+  log "  launched chunk ${i}/${NUM_CHUNKS} (pid $!)"
 done
 
 # Heartbeat across all chunks until every pid finishes
