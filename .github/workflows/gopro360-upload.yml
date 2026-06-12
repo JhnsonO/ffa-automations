@@ -195,6 +195,7 @@ jobs:
               "inet_up": {"gte": 200},
               "disk_space": {"gte": 60},
               "gpu_ram": {"gte": 8},
+              "cpu_cores": {"gte": 32},
               "rentable": {"eq": True},
               "verified": {"eq": True},
               "geolocation": {"neq": "CN"},
@@ -395,3 +396,4 @@ jobs:
           except Exception as e:
               print(f"Termination error (may already be gone): {e}")
           PY
+
