@@ -79,12 +79,12 @@ log "Seam mask generated: ${MASK_PNG}"
 # the far side of the tile. maskedmerge(A,B,mask) blends A->B left-to-right.
 
 FILTER_COMPLEX="\
-[1:v]format=gray[mask],\
+[1:v]format=gray,split=4[mask1][mask2][mask3][mask4],\
 [0:0]crop=624:1344:x=0:y=0,format=yuvj420p[left],\
 [0:0]crop=624:1344:x=752:y=0,format=yuvj420p[right],\
 [0:0]crop=64:1344:x=624:y=0,format=yuvj420p[segA],\
 [0:0]crop=64:1344:x=688:y=0,format=yuvj420p[segB],\
-[segA][segB][mask]maskedmerge[crop],\
+[segA][segB][mask1]maskedmerge[crop],\
 [crop]scale=96:1344[cropScaled],\
 [left][cropScaled]hstack[leftAll],[leftAll][right]hstack[leftDone],\
 [0:0]crop=1344:1344:1376:0[middle],\
@@ -92,7 +92,7 @@ FILTER_COMPLEX="\
 [0:0]crop=624:1344:x=3472:y=0,format=yuvj420p[rRB],\
 [0:0]crop=64:1344:x=3344:y=0,format=yuvj420p[segARB],\
 [0:0]crop=64:1344:x=3408:y=0,format=yuvj420p[segBRB],\
-[segARB][segBRB][mask]maskedmerge[cropRB],\
+[segARB][segBRB][mask2]maskedmerge[cropRB],\
 [cropRB]scale=96:1344[cropRBScaled],\
 [lRB][cropRBScaled]hstack[rAll],[rAll][rRB]hstack[rBotDone],\
 [leftDone][middle]hstack[lMid],[lMid][rBotDone]hstack[botComplete],\
@@ -100,7 +100,7 @@ FILTER_COMPLEX="\
 [0:1]crop=624:1344:x=752:y=0,format=yuvj420p[frt],\
 [0:1]crop=64:1344:x=624:y=0,format=yuvj420p[segC],\
 [0:1]crop=64:1344:x=688:y=0,format=yuvj420p[segD],\
-[segC][segD][mask]maskedmerge[ltc],\
+[segC][segD][mask3]maskedmerge[ltc],\
 [ltc]scale=96:1344[ltcScaled],\
 [flt][ltcScaled]hstack[tlh],[tlh][frt]hstack[tlDone],\
 [0:1]crop=1344:1344:1376:0[tMid],\
@@ -108,7 +108,7 @@ FILTER_COMPLEX="\
 [0:1]crop=624:1344:x=3472:y=0,format=yuvj420p[trRB],\
 [0:1]crop=64:1344:x=3344:y=0,format=yuvj420p[segE],\
 [0:1]crop=64:1344:x=3408:y=0,format=yuvj420p[segF],\
-[segE][segF][mask]maskedmerge[tcRB],\
+[segE][segF][mask4]maskedmerge[tcRB],\
 [tcRB]scale=96:1344[tcRBScaled],\
 [tlRB][tcRBScaled]hstack[trAll],[trAll][trRB]hstack[trBotDone],\
 [tlDone][tMid]hstack[tlMid],[tlMid][trBotDone]hstack[topComplete],\
@@ -156,8 +156,10 @@ while kill -0 "${FFMPEG_PID}" 2>/dev/null; do
   fi
 done
 
+set +e
 wait "${FFMPEG_PID}"
 FFMPEG_EXIT=$?
+set -e
 log "FFmpeg exited with code ${FFMPEG_EXIT}"
 
 if [ "${FFMPEG_EXIT}" -ne 0 ]; then
