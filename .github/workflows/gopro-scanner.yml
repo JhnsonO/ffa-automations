@@ -89,15 +89,18 @@ jobs:
                   f.write("cookies_valid=false\n")
           PY
 
-      - name: Load uploaded DB and upload queue from main
+      - name: Load uploaded DB, upload queue, and size-check tracker from main
         if: steps.validate_cookies.outputs.cookies_valid == 'true'
         run: |
           git fetch origin main
-          git checkout origin/main -- uploaded.db upload_queue.json || true
+          git checkout origin/main -- uploaded.db upload_queue.json size_check.json || true
           [ -f uploaded.db ] || touch uploaded.db
           [ -f upload_queue.json ] || echo '[]' > upload_queue.json
+          [ -f size_check.json ] || echo '{}' > size_check.json
           echo "Current queue:"
           cat upload_queue.json
+          echo "Current size-check tracker:"
+          cat size_check.json
 
       - name: Scan GoPro for new videos
         if: steps.validate_cookies.outputs.cookies_valid == 'true'
@@ -113,59 +116,134 @@ jobs:
           from datetime import datetime, timezone
           import gopro_uploader as u
 
-          MIN_SIZE_BYTES = 15 * 1024 * 1024 * 1024  # 15GB
+          HIGH_CONFIDENCE_SIZE = 15 * 1024 * 1024 * 1024   # 15GB — 4K, clearly complete
+          MIN_TRACK_SIZE = 1 * 1024 * 1024 * 1024          # 1GB — below this, definitely still recording
+          STABLE_WAIT_SECONDS = 60 * 60                     # 1 hour — size must be stable this long
 
-          # Load existing queue
+          # Load existing queue and size-check tracker
           queue_path = Path("upload_queue.json")
           queue = json.loads(queue_path.read_text()) if queue_path.exists() else []
           queued_media_ids = {item["media_id"] for item in queue}
+
+          tracker_path = Path("size_check.json")
+          tracker = json.loads(tracker_path.read_text()) if tracker_path.exists() else {}
 
           # Load DB
           con = u.init_db()
           session = u.get_authenticated_gopro_session()
           media_items = u.fetch_recent_media(session, con=con)
 
+          now = datetime.now(timezone.utc)
+          seen_media_ids = set()
           new_items = []
+          tracker_changed = False
+
           for item in media_items:
               media_id = item.get("id", "")
               filename = item.get("filename", "")
               file_size = int(item.get("file_size", 0) or 0)
               captured_at = item.get("captured_at", "")
-              updated_at = item.get("updated_at", "")
+
+              seen_media_ids.add(media_id)
 
               # Skip if already in DB
               reasons, summary = u.describe_media_filter(con, item)
               if reasons:
                   print(f"SKIP: {summary} — {'; '.join(reasons)}")
+                  if media_id in tracker:
+                      del tracker[media_id]
+                      tracker_changed = True
                   continue
 
               # Skip if already queued
               if media_id in queued_media_ids:
                   print(f"ALREADY QUEUED: {filename}")
+                  if media_id in tracker:
+                      del tracker[media_id]
+                      tracker_changed = True
                   continue
 
-              # Skip if under 15GB
-              if file_size < MIN_SIZE_BYTES:
-                  print(f"SKIP (too small — {file_size/1e9:.2f} GB < 15 GB): {filename}")
+              # Definitely complete (4K-sized) — queue immediately
+              if file_size >= HIGH_CONFIDENCE_SIZE:
+                  print(f"NEW (>=15GB): {filename} | {file_size/1e9:.2f} GB | captured: {captured_at}")
+                  new_items.append({
+                      "media_id": media_id,
+                      "filename": filename,
+                      "file_size": file_size,
+                      "captured_at": captured_at,
+                      "queued_at": now.isoformat(),
+                      "fail_count": 0
+                  })
+                  if media_id in tracker:
+                      del tracker[media_id]
+                      tracker_changed = True
                   continue
 
-              print(f"NEW: {filename} | {file_size/1e9:.2f} GB | captured: {captured_at}")
-              new_items.append({
-                  "media_id": media_id,
-                  "filename": filename,
-                  "file_size": file_size,
-                  "captured_at": captured_at,
-                  "queued_at": datetime.now(timezone.utc).isoformat(),
-                  "fail_count": 0
-              })
+              # Definitely still recording/uploading — skip and don't track
+              if file_size < MIN_TRACK_SIZE:
+                  print(f"SKIP (too small — {file_size/1e9:.2f} GB < 1 GB, still recording): {filename}")
+                  if media_id in tracker:
+                      del tracker[media_id]
+                      tracker_changed = True
+                  continue
+
+              # Between 1GB and 15GB — size-stability check (handles non-4K sessions)
+              prev = tracker.get(media_id)
+              if prev is None:
+                  print(f"TRACKING: {filename} | {file_size/1e9:.2f} GB | first seen, waiting for stability")
+                  tracker[media_id] = {
+                      "filename": filename,
+                      "file_size": file_size,
+                      "captured_at": captured_at,
+                      "first_seen": now.isoformat()
+                  }
+                  tracker_changed = True
+                  continue
+
+              if prev["file_size"] != file_size:
+                  print(f"TRACKING: {filename} | size changed {prev['file_size']/1e9:.2f} GB -> {file_size/1e9:.2f} GB, still uploading — resetting timer")
+                  tracker[media_id] = {
+                      "filename": filename,
+                      "file_size": file_size,
+                      "captured_at": captured_at,
+                      "first_seen": now.isoformat()
+                  }
+                  tracker_changed = True
+                  continue
+
+              # Size unchanged — check elapsed time
+              first_seen = datetime.fromisoformat(prev["first_seen"])
+              elapsed = (now - first_seen).total_seconds()
+              if elapsed >= STABLE_WAIT_SECONDS:
+                  print(f"NEW (stable {elapsed/60:.0f} min, {file_size/1e9:.2f} GB): {filename} | captured: {captured_at}")
+                  new_items.append({
+                      "media_id": media_id,
+                      "filename": filename,
+                      "file_size": file_size,
+                      "captured_at": captured_at,
+                      "queued_at": now.isoformat(),
+                      "fail_count": 0
+                  })
+                  del tracker[media_id]
+                  tracker_changed = True
+              else:
+                  remaining = (STABLE_WAIT_SECONDS - elapsed) / 60
+                  print(f"TRACKING: {filename} | {file_size/1e9:.2f} GB | stable, waiting {remaining:.0f} more min")
+
+          # Clean up tracker entries for media no longer seen at all
+          for media_id in list(tracker.keys()):
+              if media_id not in seen_media_ids:
+                  del tracker[media_id]
+                  tracker_changed = True
+
+          if tracker_changed:
+              tracker_path.write_text(json.dumps(tracker, indent=2))
 
           if new_items:
               queue.extend(new_items)
               queue_path.write_text(json.dumps(queue, indent=2))
               print(f"\nAdded {len(new_items)} new item(s) to queue")
               print(f"Queue now has {len(queue)} item(s)")
-
-              # Write output so next step knows to trigger uploads
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                   f.write(f"new_count={len(new_items)}\n")
           else:
@@ -173,11 +251,14 @@ jobs:
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                   f.write("new_count=0\n")
 
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"tracker_changed={'true' if tracker_changed else 'false'}\n")
+
           con.close()
           PY
 
-      - name: Commit updated queue to main
-        if: steps.validate_cookies.outputs.cookies_valid == 'true' && steps.scan.outputs.new_count != '0'
+      - name: Commit updated queue and size-check tracker to main
+        if: steps.validate_cookies.outputs.cookies_valid == 'true' && (steps.scan.outputs.new_count != '0' || steps.scan.outputs.tracker_changed == 'true')
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
