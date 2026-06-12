@@ -270,46 +270,46 @@ jobs:
           token = os.environ["GH_PAT"]
           repo = os.environ["REPO"]
 
-          queue_path = Path("upload_queue.json")
-          if not queue_path.exists():
-              print("No queue file — skipping")
-              exit(0)
-
-          encoded = base64.b64encode(queue_path.read_bytes()).decode()
-
-          # Get current SHA (file may not exist yet)
-          try:
-              req = urllib.request.Request(
-                  f"https://api.github.com/repos/{repo}/contents/upload_queue.json?ref=main",
-                  headers={"Authorization": f"token {token}"}
-              )
-              with urllib.request.urlopen(req) as r:
-                  current_sha = json.load(r)["sha"]
-              payload = json.dumps({
-                  "message": "chore: update upload_queue.json [skip ci]",
-                  "content": encoded,
-                  "sha": current_sha,
-                  "branch": "main"
-              }).encode()
-          except urllib.error.HTTPError as e:
-              if e.code == 404:
-                  # File doesn't exist yet — create it
+          def push_file(local_path, repo_path):
+              p = Path(local_path)
+              if not p.exists():
+                  print(f"No {local_path} — skipping")
+                  return
+              encoded = base64.b64encode(p.read_bytes()).decode()
+              try:
+                  req = urllib.request.Request(
+                      f"https://api.github.com/repos/{repo}/contents/{repo_path}?ref=main",
+                      headers={"Authorization": f"token {token}"}
+                  )
+                  with urllib.request.urlopen(req) as r:
+                      sha = json.load(r)["sha"]
                   payload = json.dumps({
-                      "message": "chore: create upload_queue.json [skip ci]",
+                      "message": f"chore: update {repo_path} [skip ci]",
                       "content": encoded,
+                      "sha": sha,
                       "branch": "main"
                   }).encode()
-              else:
-                  raise
+              except urllib.error.HTTPError as e:
+                  if e.code == 404:
+                      payload = json.dumps({
+                          "message": f"chore: create {repo_path} [skip ci]",
+                          "content": encoded,
+                          "branch": "main"
+                      }).encode()
+                  else:
+                      raise
 
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/contents/upload_queue.json",
-              data=payload, method="PUT",
-              headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
-          )
-          with urllib.request.urlopen(req) as r:
-              result = json.load(r)
-          print(f"upload_queue.json committed: {result['commit']['sha']}")
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/contents/{repo_path}",
+                  data=payload, method="PUT",
+                  headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
+              )
+              with urllib.request.urlopen(req) as r:
+                  result = json.load(r)
+              print(f"{repo_path} committed: {result['commit']['sha']}")
+
+          push_file("upload_queue.json", "upload_queue.json")
+          push_file("size_check.json", "size_check.json")
           PY
 
       - name: Trigger upload run per new video
