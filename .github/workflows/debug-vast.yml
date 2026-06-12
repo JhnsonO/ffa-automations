@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: List instances
+      - name: Terminate instance 40643535
         env:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
         run: |
@@ -20,10 +20,7 @@ jobs:
 
           API_KEY = os.environ["VAST_API_KEY"]
           headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-          req = urllib.request.Request("https://cloud.vast.ai/api/v1/instances/", headers=headers)
+          req = urllib.request.Request("https://cloud.vast.ai/api/v1/instances/40643535/", method="DELETE", headers=headers)
           with urllib.request.urlopen(req, timeout=15) as r:
-              data = json.loads(r.read())
-          print(f"total_instances={data.get('total_instances')}")
-          for inst in data.get("instances", []):
-              print(f"  id={inst['id']} status={inst['actual_status']}")
+              print(f"HTTP {r.status}: {r.read().decode()}")
           PY
