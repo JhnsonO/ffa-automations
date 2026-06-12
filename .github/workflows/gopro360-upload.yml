@@ -192,9 +192,10 @@ jobs:
           query = json.dumps({
               "reliability2": {"gte": 0.98},
               "inet_up": {"gte": 200},
-              "disk_space": {"gte": 60},
-              "cpu_cores": {"gte": 64},
+              "disk_space": {"gte": 100},
+              "cpu_cores": {"gte": 16},
               "cpu_ram": {"gte": 64},
+              "gpu_name": {"in": ["RTX 4090", "RTX 6000Ada", "L40", "L40S"]},
               "rentable": {"eq": True},
               "verified": {"eq": True},
               "geolocation": {"neq": "CN"},
@@ -223,7 +224,7 @@ jobs:
               "disk": 60,
               "runtype": "ssh",
               "ssh_key": pub_key,
-              "env": {},
+              "env": {"NVIDIA_VISIBLE_DEVICES": "all", "NVIDIA_DRIVER_CAPABILITIES": "all"},
           })
           print(f"Launch response: {result}")
 
@@ -273,7 +274,7 @@ jobs:
                       "disk": 60,
                       "runtype": "ssh",
                       "ssh_key": pub_key,
-                      "env": {},
+                      "env": {"NVIDIA_VISIBLE_DEVICES": "all", "NVIDIA_DRIVER_CAPABILITIES": "all"},
                   })
                   instance_id = result.get("new_contract")
                   ip = port = None
