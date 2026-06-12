@@ -60,10 +60,12 @@ log "Credentials written"
 log "--- Generating seam blend mask ---"
 python3 - <<'PY'
 from PIL import Image
-import numpy as np
 w, h = 64, 1344
-grad = np.tile(np.linspace(0, 255, w, dtype=np.uint8), (h, 1))
-Image.fromarray(grad, mode="L").save("/tmp/ffa360/seam_mask.png")
+img = Image.new("L", (w, h))
+row = bytes(int(x * 255 / (w - 1)) for x in range(w))
+data = row * h
+img.putdata(list(data))
+img.save("/tmp/ffa360/seam_mask.png")
 PY
 log "Seam mask generated: ${MASK_PNG}"
 
