@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Full instance stats
+      - name: List instances
         env:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
         run: |
@@ -23,8 +23,7 @@ jobs:
           req = urllib.request.Request("https://cloud.vast.ai/api/v1/instances/", headers=headers)
           with urllib.request.urlopen(req, timeout=15) as r:
               data = json.loads(r.read())
-
+          print(f"total_instances={data.get('total_instances')}")
           for inst in data.get("instances", []):
-              for k in ["id","actual_status","cur_state","gpu_util","gpu_temp","cpu_util","disk_usage","gpu_display_active","client_run_time","status_msg"]:
-                  print(f"{k}={inst.get(k)}")
+              print(f"  id={inst['id']} status={inst['actual_status']}")
           PY
