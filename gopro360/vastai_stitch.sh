@@ -120,6 +120,11 @@ log ""
 log "Source: ${SOURCE_URL:0:80}..."
 log "--- GPU check ---"
 nvidia-smi || log "WARNING: nvidia-smi not available"
+
+log "--- Removing CUDA forward-compat libs (use host driver instead) ---"
+rm -rf /usr/local/cuda/compat 2>/dev/null || true
+ldconfig
+log "ldconfig done"
 TOTAL_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "${SOURCE_URL}")
 log "Source duration: ${TOTAL_DUR}s"
 
