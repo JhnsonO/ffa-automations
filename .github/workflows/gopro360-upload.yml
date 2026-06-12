@@ -303,6 +303,8 @@ jobs:
           PY
 
       - name: Wait for SSH
+        id: wait_ssh
+        continue-on-error: true
         run: |
           IP="${{ steps.launch.outputs.ip }}"
           PORT="${{ steps.launch.outputs.port }}"
@@ -320,7 +322,21 @@ jobs:
           echo "ERROR: SSH never came up"
           exit 1
 
+      - name: Re-dispatch on SSH failure
+        if: steps.wait_ssh.outcome == 'failure'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          echo "SSH never came up on this host — instance was a dud. Re-dispatching a fresh run with the same inputs..."
+          curl -s -X POST -H "Authorization: token ${GH_PAT}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-upload.yml/dispatches" \
+            -d '{"ref":"${{ github.ref_name }}","inputs":{"media_id":"${{ github.event.inputs.media_id }}","filename":"${{ github.event.inputs.filename }}","captured_at":"${{ github.event.inputs.captured_at }}"}}'
+          echo "Fresh run dispatched. Failing this run (dud host already terminated below)."
+          exit 1
+
       - name: Copy stitch script to instance
+        if: steps.wait_ssh.outcome == 'success'
         run: |
           python3 - <<'PY'
           import urllib.request, json, base64
@@ -347,6 +363,7 @@ jobs:
           echo "Script transferred"
 
       - name: Run stitch + upload on instance
+        if: steps.wait_ssh.outcome == 'success'
         env:
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
