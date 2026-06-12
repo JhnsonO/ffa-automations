@@ -147,18 +147,19 @@ jobs:
           pub_key = open("/tmp/vastai_key.pub").read().strip()
 
           BASE = "https://cloud.vast.ai/api/v0"
+          BASE_V1 = "https://cloud.vast.ai/api/v1"
           headers = {
               "Authorization": f"Bearer {API_KEY}",
               "Content-Type": "application/json",
               "Accept": "application/json",
           }
 
-          def vast_get(path, params=None):
-              url = f"{BASE}{path}"
+          def vast_get(path, params=None, base=None):
+              url = f"{base or BASE}{path}"
               if params:
                   url += "?" + urllib.parse.urlencode(params)
               req = urllib.request.Request(url, headers=headers)
-              with urllib.request.urlopen(req) as r:
+              with urllib.request.urlopen(req, timeout=20) as r:
                   return json.loads(r.read())
 
           def vast_put(path, data):
@@ -173,9 +174,9 @@ jobs:
               with urllib.request.urlopen(req) as r:
                   return json.loads(r.read())
 
-          def vast_delete(path):
-              req = urllib.request.Request(f"{BASE}{path}", method="DELETE", headers=headers)
-              with urllib.request.urlopen(req) as r:
+          def vast_delete(path, base=None):
+              req = urllib.request.Request(f"{base or BASE}{path}", method="DELETE", headers=headers)
+              with urllib.request.urlopen(req, timeout=20) as r:
                   return json.loads(r.read())
 
           # ── Register SSH key ────────────────────────────────────────────────
@@ -238,7 +239,7 @@ jobs:
           for attempt in range(20):  # max 5 min boot wait
               time.sleep(15)
               try:
-                  resp = vast_get("/instances/")
+                  resp = vast_get("/instances/", base=BASE_V1)
                   instances_list = resp.get("instances", [])
                   inst = next((x for x in instances_list if x["id"] == instance_id), None)
                   if not inst:
@@ -260,7 +261,7 @@ jobs:
 
           if not ip:
               print(f"ERROR: Instance {instance_id} never reached running — terminating and retrying next offer", file=sys.stderr)
-              try: vast_delete(f"/instances/{instance_id}/")
+              try: vast_delete(f"/instances/{instance_id}/", base=BASE_V1)
               except: pass
               # Try next offer if available
               if len(offers) > 1:
@@ -279,7 +280,7 @@ jobs:
                   for attempt in range(20):
                       time.sleep(15)
                       try:
-                          resp = vast_get("/instances/")
+                          resp = vast_get("/instances/", base=BASE_V1)
                           inst = next((x for x in resp.get("instances",[]) if x["id"]==instance_id), None)
                           if not inst: continue
                           status = inst.get("actual_status","")
@@ -384,12 +385,12 @@ jobs:
           INSTANCE_ID = os.environ["INSTANCE_ID"]
 
           req = urllib.request.Request(
-              f"https://cloud.vast.ai/api/v0/instances/{INSTANCE_ID}/",
+              f"https://cloud.vast.ai/api/v1/instances/{INSTANCE_ID}/",
               method="DELETE",
               headers={"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"},
           )
           try:
-              with urllib.request.urlopen(req) as r:
+              with urllib.request.urlopen(req, timeout=20) as r:
                   print(f"Terminated {INSTANCE_ID}: {json.loads(r.read())}")
           except Exception as e:
               print(f"Termination error (may already be gone): {e}")
