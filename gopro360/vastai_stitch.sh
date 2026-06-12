@@ -124,6 +124,7 @@ PROGRESS_FILE="${WORKDIR}/ffmpeg_progress.log"
 rm -f "${PROGRESS_FILE}"
 
 stdbuf -oL -eL ffmpeg -y \
+  -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 30 \
   -i "${SOURCE_URL}" \
   -i "${MASK_PNG}" \
   -filter_complex "${FILTER_COMPLEX}" \
@@ -180,6 +181,22 @@ log "Transcode complete: ${SIZE_MB}MB"
 if [ "${SIZE_MB}" -lt 10 ]; then
   log "ERROR: Output is suspiciously small (${SIZE_MB}MB) — transcode likely failed"
   exit 1
+fi
+
+# Duration check: compare output duration against expected source duration.
+# Catches truncated reads (e.g. CDN connection drop) that still produce a
+# valid, non-tiny MP4 but only cover a fraction of the source.
+OUT_DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "${OUTPUT_EQUIRECT}")
+if [ -n "${EXPECTED_DURATION_SEC:-}" ]; then
+  MIN_DURATION=$(python3 -c "print(${EXPECTED_DURATION_SEC} * 0.9)")
+  if python3 -c "exit(0 if float('${OUT_DURATION}') >= float('${MIN_DURATION}') else 1)"; then
+    log "Duration check OK: ${OUT_DURATION}s (expected >= ${MIN_DURATION}s)"
+  else
+    log "ERROR: Output duration ${OUT_DURATION}s is less than 90% of expected ${EXPECTED_DURATION_SEC}s — source likely truncated (CDN drop)"
+    exit 1
+  fi
+else
+  log "Output duration: ${OUT_DURATION}s (EXPECTED_DURATION_SEC not provided — skipping duration check)"
 fi
 
 # ── Inject 360° metadata ──────────────────────────────────────────────────────
