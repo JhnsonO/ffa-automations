@@ -19,77 +19,111 @@ BITRATE="${TRANSCODE_BITRATE:-20M}"
 WORKDIR="/tmp/ffa360"
 OUTPUT_EQUIRECT="${WORKDIR}/output.equirect.mp4"
 OUTPUT_FINAL="${WORKDIR}/output.final.mp4"
+MASK_PNG="${WORKDIR}/seam_mask.png"
 
-echo "=== FFA GoPro 360 Stitch + Upload ==="
-echo "File     : ${FILENAME}"
-echo "Media ID : ${MEDIA_ID}"
-echo "Captured : ${CAPTURED_AT}"
-echo "Bitrate  : ${BITRATE}"
-echo ""
+log() {
+  echo "[$(date -u +%H:%M:%S)] $*"
+}
+
+log "=== FFA GoPro 360 Stitch + Upload ==="
+log "File     : ${FILENAME}"
+log "Media ID : ${MEDIA_ID}"
+log "Captured : ${CAPTURED_AT}"
+log "Bitrate  : ${BITRATE}"
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
-echo "--- Installing dependencies ---"
-# ffmpeg and exiftool — use parallel install for speed
+log "--- Installing dependencies ---"
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends ffmpeg libimage-exiftool-perl python3-pip > /dev/null &
+log "apt-get update done"
+
+apt-get install -y -qq --no-install-recommends ffmpeg libimage-exiftool-perl python3-pip python3-pil > /dev/null &
 APT_PID=$!
 
-# pip deps in parallel while apt runs
 pip install -q --break-system-packages google-auth google-auth-oauthlib google-api-python-client 2>/dev/null &
 PIP_PID=$!
 
-wait $APT_PID && echo "apt done" || { echo "apt failed"; exit 1; }
-wait $PIP_PID && echo "pip done" || pip install -q google-auth google-auth-oauthlib google-api-python-client
+wait $APT_PID && log "apt install done" || { log "apt install FAILED"; exit 1; }
+wait $PIP_PID && log "pip install done" || { log "pip install (system) — trying without --break-system-packages"; pip install -q google-auth google-auth-oauthlib google-api-python-client; }
 
-echo "--- Writing YouTube credentials ---"
+log "--- Writing YouTube credentials ---"
 echo "${YOUTUBE_CREDS}" > youtube_credentials.json
 echo "${YOUTUBE_TOKEN}" > youtube_token.json
+log "Credentials written"
 
-# ── FFmpeg filter chain (devclef/gopro-max-video-tools approach) ───────────────
+# ── Generate seam-blend gradient mask (once, cheap) ────────────────────────────
+# 64px wide x 1344px tall, linear gradient 0 -> 255 left to right.
+# Used with maskedmerge to replicate the soft seam blend that the old
+# geq-based approach did per-pixel (and far too slowly for full-length video).
+log "--- Generating seam blend mask ---"
+python3 - <<'PY'
+from PIL import Image
+import numpy as np
+w, h = 64, 1344
+grad = np.tile(np.linspace(0, 255, w, dtype=np.uint8), (h, 1))
+Image.fromarray(grad, mode="L").save("/tmp/ffa360/seam_mask.png")
+PY
+log "Seam mask generated: ${MASK_PNG}"
+
+# ── FFmpeg filter chain ──────────────────────────────────────────────────────
 # GoPro MAX .360 CDN concat file has 2 streams: 0:0 (front), 0:1 (rear)
-# Each stream is a 4096x1344 EAC tile. We blend seams, vstack, then v360=eac:equirect.
-DIV=65
-
-geq() {
-  echo "geq=lum='if(between(X,0,64),(p((X+64),Y)*(((X+1))/${DIV}))+(p(X,Y)*(($DIV-((X+1)))/${DIV})),p(X,Y))':cb='if(between(X,0,64),(p((X+64),Y)*(((X+1))/${DIV}))+(p(X,Y)*(($DIV-((X+1)))/${DIV})),p(X,Y))':cr='if(between(X,0,64),(p((X+64),Y)*(((X+1))/${DIV}))+(p(X,Y)*(($DIV-((X+1)))/${DIV})),p(X,Y))':a='if(between(X,0,64),(p((X+64),Y)*(((X+1))/${DIV}))+(p(X,Y)*(($DIV-((X+1)))/${DIV})),p(X,Y))'"
-}
-
-G=$(geq)
+# Each stream is a 4096x1344 EAC tile. We blend the seams using maskedmerge
+# (fast, SIMD) instead of geq (slow, interpreted per-pixel) — same visual
+# result, dramatically faster.
+#
+# For each seam: A = the "near" 64px strip, B = the wrapped 64px strip from
+# the far side of the tile. maskedmerge(A,B,mask) blends A->B left-to-right.
 
 FILTER_COMPLEX="\
-[0:0]crop=128:1344:x=624:y=0,format=yuvj420p,${G}:interpolation=b,crop=64:1344:x=0:y=0,format=yuvj420p,scale=96:1344[crop],\
+[1:v]format=gray[mask],\
 [0:0]crop=624:1344:x=0:y=0,format=yuvj420p[left],\
 [0:0]crop=624:1344:x=752:y=0,format=yuvj420p[right],\
-[left][crop]hstack[leftAll],[leftAll][right]hstack[leftDone],\
+[0:0]crop=64:1344:x=624:y=0,format=yuvj420p[segA],\
+[0:0]crop=64:1344:x=688:y=0,format=yuvj420p[segB],\
+[segA][segB][mask]maskedmerge[crop],\
+[crop]scale=96:1344[cropScaled],\
+[left][cropScaled]hstack[leftAll],[leftAll][right]hstack[leftDone],\
 [0:0]crop=1344:1344:1376:0[middle],\
-[0:0]crop=128:1344:x=3344:y=0,format=yuvj420p,${G}:interpolation=b,crop=64:1344:x=0:y=0,format=yuvj420p,scale=96:1344[cropRB],\
 [0:0]crop=624:1344:x=2720:y=0,format=yuvj420p[lRB],\
 [0:0]crop=624:1344:x=3472:y=0,format=yuvj420p[rRB],\
-[lRB][cropRB]hstack[rAll],[rAll][rRB]hstack[rBotDone],\
+[0:0]crop=64:1344:x=3344:y=0,format=yuvj420p[segARB],\
+[0:0]crop=64:1344:x=3408:y=0,format=yuvj420p[segBRB],\
+[segARB][segBRB][mask]maskedmerge[cropRB],\
+[cropRB]scale=96:1344[cropRBScaled],\
+[lRB][cropRBScaled]hstack[rAll],[rAll][rRB]hstack[rBotDone],\
 [leftDone][middle]hstack[lMid],[lMid][rBotDone]hstack[botComplete],\
-[0:1]crop=128:1344:x=624:y=0,format=yuvj420p,${G}:interpolation=n,crop=64:1344:x=0:y=0,format=yuvj420p,scale=96:1344[ltc],\
 [0:1]crop=624:1344:x=0:y=0,format=yuvj420p[flt],\
 [0:1]crop=624:1344:x=752:y=0,format=yuvj420p[frt],\
-[flt][ltc]hstack[tlh],[tlh][frt]hstack[tlDone],\
+[0:1]crop=64:1344:x=624:y=0,format=yuvj420p[segC],\
+[0:1]crop=64:1344:x=688:y=0,format=yuvj420p[segD],\
+[segC][segD][mask]maskedmerge[ltc],\
+[ltc]scale=96:1344[ltcScaled],\
+[flt][ltcScaled]hstack[tlh],[tlh][frt]hstack[tlDone],\
 [0:1]crop=1344:1344:1376:0[tMid],\
-[0:1]crop=128:1344:x=3344:y=0,format=yuvj420p,${G}:interpolation=n,crop=64:1344:x=0:y=0,format=yuvj420p,scale=96:1344[tcRB],\
 [0:1]crop=624:1344:x=2720:y=0,format=yuvj420p[tlRB],\
 [0:1]crop=624:1344:x=3472:y=0,format=yuvj420p[trRB],\
-[tlRB][tcRB]hstack[trAll],[trAll][trRB]hstack[trBotDone],\
+[0:1]crop=64:1344:x=3344:y=0,format=yuvj420p[segE],\
+[0:1]crop=64:1344:x=3408:y=0,format=yuvj420p[segF],\
+[segE][segF][mask]maskedmerge[tcRB],\
+[tcRB]scale=96:1344[tcRBScaled],\
+[tlRB][tcRBScaled]hstack[trAll],[trAll][trRB]hstack[trBotDone],\
 [tlDone][tMid]hstack[tlMid],[tlMid][trBotDone]hstack[topComplete],\
 [botComplete][topComplete]vstack[complete],\
 [complete]v360=eac:e:interp=cubic,crop=4032:2388:x=0:y=0[v]"
 
-# ── Transcode ─────────────────────────────────────────────────────────────────
-echo ""
-echo "--- Starting FFmpeg transcode (this will take a while) ---"
-echo "Source: ${SOURCE_URL:0:80}..."
+# ── Transcode with live progress heartbeat ─────────────────────────────────────
+log ""
+log "--- Starting FFmpeg transcode (maskedmerge seam blend, h264_nvenc) ---"
+log "Source: ${SOURCE_URL:0:80}..."
 
-ffmpeg -y \
+PROGRESS_FILE="${WORKDIR}/ffmpeg_progress.log"
+rm -f "${PROGRESS_FILE}"
+
+stdbuf -oL -eL ffmpeg -y \
   -i "${SOURCE_URL}" \
+  -i "${MASK_PNG}" \
   -filter_complex "${FILTER_COMPLEX}" \
   -map "[v]" \
   -map "0:a:0?" \
@@ -100,25 +134,53 @@ ffmpeg -y \
   -ac 2 \
   -b:a 192k \
   -movflags +faststart \
-  "${OUTPUT_EQUIRECT}" 2>&1 | grep -E "^(frame=|size=|time=|speed=|error|Error|WARNING|Stream)" || true
+  -progress "${PROGRESS_FILE}" \
+  -nostats \
+  "${OUTPUT_EQUIRECT}" > "${WORKDIR}/ffmpeg_stdout.log" 2>&1 &
+FFMPEG_PID=$!
+
+# Heartbeat: print progress every 5s, never go quiet for longer than that
+log "FFmpeg started (pid ${FFMPEG_PID}) — progress every 5s:"
+while kill -0 "${FFMPEG_PID}" 2>/dev/null; do
+  sleep 5
+  if [ -f "${PROGRESS_FILE}" ]; then
+    FRAME=$(grep -a "^frame=" "${PROGRESS_FILE}" | tail -1 | cut -d= -f2)
+    FPS=$(grep -a "^fps=" "${PROGRESS_FILE}" | tail -1 | cut -d= -f2)
+    OUT_TIME=$(grep -a "^out_time=" "${PROGRESS_FILE}" | tail -1 | cut -d= -f2)
+    SPEED=$(grep -a "^speed=" "${PROGRESS_FILE}" | tail -1 | cut -d= -f2)
+    log "  ffmpeg: frame=${FRAME:-0} fps=${FPS:-0} out_time=${OUT_TIME:-0:00:00} speed=${SPEED:-0}x"
+  else
+    log "  ffmpeg: starting up (no progress file yet)..."
+  fi
+done
+
+wait "${FFMPEG_PID}"
+FFMPEG_EXIT=$?
+log "FFmpeg exited with code ${FFMPEG_EXIT}"
+
+if [ "${FFMPEG_EXIT}" -ne 0 ]; then
+  log "ERROR: FFmpeg failed — last 30 lines of output:"
+  tail -30 "${WORKDIR}/ffmpeg_stdout.log"
+  exit 1
+fi
 
 # Check output exists and has reasonable size
 if [ ! -f "${OUTPUT_EQUIRECT}" ]; then
-  echo "ERROR: FFmpeg produced no output file"
+  log "ERROR: FFmpeg produced no output file"
   exit 1
 fi
 
 SIZE_MB=$(du -m "${OUTPUT_EQUIRECT}" | cut -f1)
-echo "Transcode complete: ${SIZE_MB}MB"
+log "Transcode complete: ${SIZE_MB}MB"
 
 if [ "${SIZE_MB}" -lt 10 ]; then
-  echo "ERROR: Output is suspiciously small (${SIZE_MB}MB) — transcode likely failed"
+  log "ERROR: Output is suspiciously small (${SIZE_MB}MB) — transcode likely failed"
   exit 1
 fi
 
 # ── Inject 360° metadata ──────────────────────────────────────────────────────
-echo ""
-echo "--- Injecting 360° XMP metadata ---"
+log ""
+log "--- Injecting 360° XMP metadata ---"
 cp "${OUTPUT_EQUIRECT}" "${OUTPUT_FINAL}"
 exiftool \
   -api LargeFileSupport=1 \
@@ -127,13 +189,12 @@ exiftool \
   -XMP-GSpherical:Stitched=true \
   -XMP-GSpherical:StitchingSoftware=FFmpeg \
   -XMP-GSpherical:ProjectionType=equirectangular \
-  "${OUTPUT_FINAL}"
-
-echo "Metadata injected"
+  "${OUTPUT_FINAL}" > /dev/null
+log "Metadata injected"
 
 # ── Upload to YouTube ─────────────────────────────────────────────────────────
-echo ""
-echo "--- Uploading to YouTube ---"
+log ""
+log "--- Uploading to YouTube ---"
 
 python3 - <<PYEOF
 import json, sys, os
@@ -160,7 +221,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
 ]
 
-# Load credentials
 creds_data = json.loads(CREDS_PATH.read_text())
 token_data = json.loads(TOKEN_PATH.read_text())
 
@@ -180,16 +240,13 @@ if creds.expired and creds.refresh_token:
         "refresh_token": creds.refresh_token,
         "token_uri": creds.token_uri,
     }))
-    print("Token refreshed")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Token refreshed")
 
 yt = build("youtube", "v3", credentials=creds)
 
-# Build title and description
 try:
     dt = datetime.fromisoformat(CAPTURED_AT.replace("Z", "+00:00"))
     day_name = dt.strftime("%A")
-    date_str = dt.strftime("%-dst %B %Y").replace("1st", "1st").replace("2nd", "2nd").replace("3rd", "3rd")
-    # Fix ordinal
     day = dt.day
     suffix = "th" if 11 <= day <= 13 else {1:"st",2:"nd",3:"rd"}.get(day%10,"th")
     date_str = dt.strftime(f"%-d{suffix} %B %Y")
@@ -199,16 +256,16 @@ except Exception:
 
 title = f"{day_name} Session | {date_str} | FFA Leicester | 360°"
 description = (
-    f"FFA Leicester — {day_name} session footage captured {date_str}.\n"
-    f"360° video — use a VR headset or drag to look around.\n\n"
-    f"FFA_MEDIA_ID:{MEDIA_ID}\n"
-    f"FFA_FILENAME:{FILENAME}\n"
-    f"FFA_CAPTURED_AT:{CAPTURED_AT}\n"
+    f"FFA Leicester — {day_name} session footage captured {date_str}.\\n"
+    f"360° video — use a VR headset or drag to look around.\\n\\n"
+    f"FFA_MEDIA_ID:{MEDIA_ID}\\n"
+    f"FFA_FILENAME:{FILENAME}\\n"
+    f"FFA_CAPTURED_AT:{CAPTURED_AT}\\n"
     f"FFA_360:true"
 )
 
-print(f"Title: {title}")
-print(f"File size: {VIDEO_PATH.stat().st_size / 1e9:.2f} GB")
+print(f"[{datetime.now().strftime('%H:%M:%S')}] Title: {title}")
+print(f"[{datetime.now().strftime('%H:%M:%S')}] File size: {VIDEO_PATH.stat().st_size / 1e9:.2f} GB")
 
 media = MediaFileUpload(
     str(VIDEO_PATH),
@@ -238,33 +295,30 @@ while yt_id is None:
     status, response = request.next_chunk()
     if status:
         pct = int(status.progress() * 100)
-        if pct % 10 == 0:
-            print(f"Upload progress: {pct}%")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Upload progress: {pct}%")
     if response:
         yt_id = response["id"]
 
-print(f"Uploaded successfully: https://www.youtube.com/watch?v={yt_id}")
+print(f"[{datetime.now().strftime('%H:%M:%S')}] Uploaded successfully: https://www.youtube.com/watch?v={yt_id}")
 print(f"YT_ID={yt_id}")
-
-# Save yt_id to file so bash can pick it up
 Path("/tmp/yt_id.txt").write_text(yt_id)
 PYEOF
 
 YT_ID=$(cat /tmp/yt_id.txt 2>/dev/null || echo "")
 
 if [ -z "${YT_ID}" ]; then
-  echo "ERROR: YouTube upload failed — no video ID returned"
+  log "ERROR: YouTube upload failed — no video ID returned"
   exit 1
 fi
 
-echo ""
-echo "=== SUCCESS ==="
-echo "YouTube ID : ${YT_ID}"
-echo "URL        : https://www.youtube.com/watch?v=${YT_ID}"
+log ""
+log "=== SUCCESS ==="
+log "YouTube ID : ${YT_ID}"
+log "URL        : https://www.youtube.com/watch?v=${YT_ID}"
 
 # ── Update uploaded.db via GitHub API ─────────────────────────────────────────
-echo ""
-echo "--- Updating uploaded.db ---"
+log ""
+log "--- Updating uploaded.db ---"
 
 python3 - <<PYEOF
 import json, base64, sqlite3, urllib.request, tempfile, os
@@ -286,12 +340,10 @@ def gh_get(path):
     with urllib.request.urlopen(req) as r:
         return json.loads(r.read())
 
-# Fetch current uploaded.db
 data = gh_get("contents/uploaded.db")
 db_content = base64.b64decode(data["content"])
 sha = data["sha"]
 
-# Write to temp file, update, re-encode
 with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
     f.write(db_content)
     tmp_path = f.name
@@ -332,8 +384,8 @@ with urllib.request.urlopen(req) as r:
 print(f"uploaded.db committed: {result['commit']['sha']}")
 PYEOF
 
-echo ""
-echo "--- Cleaning up ---"
+log ""
+log "--- Cleaning up ---"
 rm -rf "${WORKDIR}"
 
-echo "Done. Instance will now terminate."
+log "Done. Instance will now terminate."
