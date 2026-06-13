@@ -173,7 +173,6 @@ aria2c \
   --timeout=60 \
   --max-tries=10 \
   --retry-wait=5 \
-  --lowest-speed-limit=50K \
   --max-overall-download-limit=0 \
   --file-allocation=none \
   --allow-overwrite=true \
