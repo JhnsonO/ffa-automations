@@ -208,7 +208,7 @@ jobs:
           # Exclude weak/old CPUs (Xeon E5/E3, old Opteron) — filter graph is CPU-bound
           BAD_CPU_SUBSTRINGS = ["E5-", "E3-", "Opteron", "Xeon W3", "Xeon X5"]
           before = len(offers)
-          offers = [o for o in offers if not any(s in o.get("cpu_name", "") for s in BAD_CPU_SUBSTRINGS)]
+          offers = [o for o in offers if not any(s in (o.get("cpu_name") or "") for s in BAD_CPU_SUBSTRINGS)]
           print(f"Filtered out {before - len(offers)} offers with weak/old CPUs, {len(offers)} remain")
 
           if not offers:
