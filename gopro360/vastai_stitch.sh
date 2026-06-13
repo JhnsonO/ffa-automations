@@ -15,6 +15,11 @@
 
 set -euo pipefail
 
+WORKDIR_EARLY="/tmp/ffa360"
+mkdir -p "${WORKDIR_EARLY}"
+rm -f "${WORKDIR_EARLY}/DONE" "${WORKDIR_EARLY}/FAILED"
+trap 'code=$?; if [ $code -ne 0 ]; then echo "$code" > "${WORKDIR_EARLY}/FAILED"; fi' EXIT
+
 BITRATE="${TRANSCODE_BITRATE:-auto}"
 WORKDIR="/tmp/ffa360"
 OUTPUT_EQUIRECT="${WORKDIR}/output.equirect.mp4"
@@ -459,6 +464,11 @@ PYEOF
 
 log ""
 log "--- Cleaning up ---"
-rm -rf "${WORKDIR}"
-
+touch "${WORKDIR}/DONE"
+YT_URL_LINE="https://www.youtube.com/watch?v=${YT_ID:-unknown}"
+echo "${YT_URL_LINE}" > "${WORKDIR}/RESULT_URL" || true
 log "Done. Instance will now terminate."
+# Note: cleanup of WORKDIR intentionally happens AFTER marker files are written
+# so the polling step can see DONE before the directory disappears.
+sleep 5
+rm -rf "${WORKDIR}"
