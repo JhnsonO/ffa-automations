@@ -29,7 +29,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: gopro360-upload-${{ github.event.inputs.media_id }}
+  group: gopro360-upload-${{ github.event.inputs.media_id }}-${{ github.event.inputs.test_duration_sec }}
   cancel-in-progress: false
 
 jobs:
