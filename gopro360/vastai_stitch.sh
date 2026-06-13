@@ -133,8 +133,14 @@ log "Source duration: ${TOTAL_DUR}s"
 # local -ss seeks are instant and frame-accurate.
 LOCAL_SOURCE="${WORKDIR}/source.360"
 log "--- Downloading source to local disk ---"
-curl -L --fail --retry 3 --retry-delay 5 -o "${LOCAL_SOURCE}" "${SOURCE_URL}" \
-  --progress-bar 2>&1 | tail -1
+curl -L --fail --retry 3 --retry-delay 5 -o "${LOCAL_SOURCE}" "${SOURCE_URL}" > "${WORKDIR}/download.log" 2>&1 &
+DL_PID=$!
+while kill -0 "${DL_PID}" 2>/dev/null; do
+  sleep 5
+  SZ=$(du -m "${LOCAL_SOURCE}" 2>/dev/null | cut -f1 || echo 0)
+  log "  downloading... ${SZ}MB so far"
+done
+wait "${DL_PID}" || { log "ERROR: download failed:"; tail -20 "${WORKDIR}/download.log"; exit 1; }
 SRC_SIZE_MB=$(du -m "${LOCAL_SOURCE}" | cut -f1)
 log "Downloaded: ${SRC_SIZE_MB}MB -> ${LOCAL_SOURCE}"
 
