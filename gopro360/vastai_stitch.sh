@@ -187,10 +187,25 @@ encode_chunk() {
 }
 
 log "--- Launching parallel chunk encodes (NVENC) ---"
+progress_line() {
+  local line="" i fr fps ot sp p
+  for ((i=0; i<NUM_CHUNKS; i++)); do
+    p="${CHUNKS_DIR}/progress_${i}.log"
+    if [ -f "$p" ]; then
+      fr=$(grep -a "^frame=" "$p" | tail -1 | cut -d= -f2 || true)
+      fps=$(grep -a "^fps=" "$p" | tail -1 | cut -d= -f2 || true)
+      ot=$(grep -a "^out_time=" "$p" | tail -1 | cut -d= -f2 || true)
+      sp=$(grep -a "^speed=" "$p" | tail -1 | cut -d= -f2 || true)
+      line="${line} [${i}]frame=${fr:-0} fps=${fps:-0} t=${ot:-0:00:00} ${sp:-0}x;"
+    fi
+  done
+  echo "$line"
+}
+
 pids=()
 for ((i=0; i<NUM_CHUNKS; i++)); do
   while [ "$(jobs -rp | wc -l)" -ge "${MAX_PARALLEL}" ]; do
-    log "  waiting for a chunk slot (running=$(jobs -rp | wc -l)/${MAX_PARALLEL}, launched=${i}/${NUM_CHUNKS})..."
+    log "  waiting for slot (running=$(jobs -rp | wc -l)/${MAX_PARALLEL}, launched=${i}/${NUM_CHUNKS}):$(progress_line)"
     sleep 5
   done
   encode_chunk "$i" &
@@ -206,18 +221,7 @@ while true; do
   for pid in "${pids[@]}"; do
     kill -0 "$pid" 2>/dev/null && running=$((running+1))
   done
-  line=""
-  for ((i=0; i<NUM_CHUNKS; i++)); do
-    p="${CHUNKS_DIR}/progress_${i}.log"
-    if [ -f "$p" ]; then
-      fr=$(grep -a "^frame=" "$p" | tail -1 | cut -d= -f2 || true)
-      fps=$(grep -a "^fps=" "$p" | tail -1 | cut -d= -f2 || true)
-      ot=$(grep -a "^out_time=" "$p" | tail -1 | cut -d= -f2 || true)
-      sp=$(grep -a "^speed=" "$p" | tail -1 | cut -d= -f2 || true)
-      line="${line} [${i}]frame=${fr:-0} fps=${fps:-0} t=${ot:-0:00:00} ${sp:-0}x;"
-    fi
-  done
-  log "  running=${running}/${NUM_CHUNKS}${line}"
+  log "  running=${running}/${NUM_CHUNKS}:$(progress_line)"
 
   # Every 6th tick (~30s): process snapshot + live ffmpeg stderr tail for chunk 0
   if [ $((TICK % 6)) -eq 0 ]; then
