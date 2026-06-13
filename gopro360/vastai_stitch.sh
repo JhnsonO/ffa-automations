@@ -162,12 +162,18 @@ PROGRESS="${WORKDIR}/progress.log"
 STDOUT="${WORKDIR}/ffmpeg_stdout.log"
 
 log "--- Starting single-pass encode (libx264, ${NPROC} threads) ---"
+ENCODE_DUR_ARGS=()
+if [ -n "${TEST_DURATION_SEC:-}" ]; then
+  log "TEST MODE: limiting encode to first ${TEST_DURATION_SEC}s"
+  ENCODE_DUR_ARGS=(-t "${TEST_DURATION_SEC}")
+fi
 stdbuf -oL -eL ffmpeg -y -v info \
   -i "${LOCAL_SOURCE}" \
   -i "${MASK_PNG}" \
   -filter_complex "${FILTER_COMPLEX}" \
   -map "[v]" \
   -map "0:a:0?" \
+  "${ENCODE_DUR_ARGS[@]}" \
   -c:v libx264 -preset veryfast -b:v "${BITRATE}" -threads 0 \
   -c:a aac -ac 2 -b:a 192k \
   -movflags +faststart \
