@@ -18,9 +18,10 @@ jobs:
           headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json", "Content-Type": "application/json"}
           iid = 40823599
 
-          req = urllib.request.Request(f"https://cloud.vast.ai/api/v1/instances/{iid}/", headers=headers)
+          req = urllib.request.Request("https://cloud.vast.ai/api/v1/instances/", headers=headers)
           with urllib.request.urlopen(req, timeout=15) as r:
               d = json.loads(r.read())
-          inst = d.get("instances") or d
-          print("status:", inst.get("actual_status"), "ssh_host:", inst.get("ssh_host"), "ssh_port:", inst.get("ssh_port"))
+          for inst in d.get("instances", []):
+              if inst["id"] == iid:
+                  print("status:", inst.get("actual_status"), "ssh_host:", inst.get("ssh_host"), "ssh_port:", inst.get("ssh_port"), "public_ip:", inst.get("public_ipaddr"))
           PY
