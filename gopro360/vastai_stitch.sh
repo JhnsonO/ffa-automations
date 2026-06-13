@@ -181,6 +181,7 @@ fi
 log "  Benchmark passed — proceeding with download"
 
 # ── Dry-run exit (termination test) ─────────────────────────────────────────
+log "  DRY_RUN value: '${DRY_RUN:-}'"
 if [ "${DRY_RUN:-}" = "true" ]; then
   log "DRY_RUN=true — skipping download/encode/upload, writing DONE now"
   touch "${WORKDIR}/DONE"
