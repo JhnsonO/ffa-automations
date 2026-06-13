@@ -171,7 +171,7 @@ encode_chunk() {
     -filter_complex "${FILTER_COMPLEX}" \
     -map "[v]" \
     -map "0:a:0?" \
-    -c:v h264_nvenc -preset p5 -b:v "${BITRATE}" \
+    -c:v libx264 -preset veryfast -b:v "${BITRATE}" -threads 0 \
     -c:a aac -ac 2 -b:a 192k \
     -progress "${progress}" -nostats \
     "${out}" > "${stdout}" 2>&1
