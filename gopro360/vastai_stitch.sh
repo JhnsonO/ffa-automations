@@ -18,7 +18,7 @@ set -euo pipefail
 WORKDIR_EARLY="/tmp/ffa360"
 mkdir -p "${WORKDIR_EARLY}"
 rm -f "${WORKDIR_EARLY}/DONE" "${WORKDIR_EARLY}/FAILED"
-trap 'code=$?; if [ $code -ne 0 ] && [ ! -s "${WORKDIR_EARLY}/FAILED" ]; then echo "$code" > "${WORKDIR_EARLY}/FAILED"; fi' EXIT
+trap 'code=$?; if [ $code -ne 0 ] && [ ! -s "${WORKDIR_EARLY}/FAILED" ]; then echo "FAILED:$code" > "${WORKDIR_EARLY}/FAILED"; fi' EXIT
 
 BITRATE="${TRANSCODE_BITRATE:-auto}"
 WORKDIR="/tmp/ffa360"
@@ -173,7 +173,7 @@ aria2c \
   --timeout=60 \
   --max-tries=10 \
   --retry-wait=5 \
-  --lowest-speed-limit=512K \
+  --lowest-speed-limit=50K \
   --max-overall-download-limit=0 \
   --file-allocation=none \
   --allow-overwrite=true \
