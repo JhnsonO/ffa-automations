@@ -8,29 +8,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: List all instances and balance
+      - name: Terminate stuck instance
         env:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
         run: |
           python3 - <<'PY'
-          import os, json, urllib.request
+          import os, json, urllib.request, urllib.error
           API_KEY = os.environ["VAST_API_KEY"]
           headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-
-          req = urllib.request.Request("https://cloud.vast.ai/api/v1/instances/", headers=headers)
-          with urllib.request.urlopen(req, timeout=15) as r:
-              d = json.loads(r.read())
-          print(f"Total instances: {d.get('total_instances')}")
-          for inst in d.get("instances", []):
-              print(f"  id={inst['id']} status={inst['actual_status']} gpu={inst.get('gpu_name')} "
-                    f"dph={inst.get('dph_total')} start_date={inst.get('start_date')} "
-                    f"cur_balance={inst.get('cur_balance')}")
-
-          req2 = urllib.request.Request("https://cloud.vast.ai/api/v1/users/current/", headers=headers)
-          try:
-              with urllib.request.urlopen(req2, timeout=15) as r:
-                  u = json.loads(r.read())
-              print(f"\nAccount balance: {u.get('credit')} / {u.get('balance')}")
-          except Exception as e:
-              print(f"\nuser endpoint: {e}")
+          for iid in [40835891]:
+              req = urllib.request.Request(f"https://cloud.vast.ai/api/v1/instances/{iid}/", method="DELETE", headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      print(f"id={iid}: HTTP {r.status} {r.read().decode()}")
+              except urllib.error.HTTPError as e:
+                  print(f"id={iid}: HTTP {e.code} {e.read().decode()}")
           PY
