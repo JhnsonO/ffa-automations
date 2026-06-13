@@ -149,123 +149,60 @@ wait "${DL_PID}" || { log "ERROR: download failed:"; tail -20 "${WORKDIR}/downlo
 SRC_SIZE_MB=$(du -m "${LOCAL_SOURCE}" | cut -f1)
 log "Downloaded: ${SRC_SIZE_MB}MB -> ${LOCAL_SOURCE}"
 
-NUM_CHUNKS="${NUM_CHUNKS:-12}"
-MAX_PARALLEL="${MAX_PARALLEL:-2}"
 NPROC=$(nproc)
-THREADS_PER_CHUNK=$(( NPROC / MAX_PARALLEL ))
-[ "$THREADS_PER_CHUNK" -lt 1 ] && THREADS_PER_CHUNK=1
-CHUNK_DUR=$(python3 -c "import math; print(math.ceil(${TOTAL_DUR} / ${NUM_CHUNKS}))")
+TARGET_SPEED=4.0
 
 log "--- System info ---"
 log "  nproc: ${NPROC}"
 free -m | sed 's/^/  /' | while read -r l; do log "$l"; done
 log "  ffmpeg: $(ffmpeg -version | head -1)"
-log "Splitting into ${NUM_CHUNKS} chunks of ~${CHUNK_DUR}s, max ${MAX_PARALLEL} in parallel, ${THREADS_PER_CHUNK} threads/chunk"
+log "Target: ${TARGET_SPEED}x realtime (i.e. ${TOTAL_DUR}s source in $(python3 -c "print(round(${TOTAL_DUR}/${TARGET_SPEED}))")s)"
 
-CHUNKS_DIR="${WORKDIR}/chunks"
-mkdir -p "${CHUNKS_DIR}"
+PROGRESS="${WORKDIR}/progress.log"
+STDOUT="${WORKDIR}/ffmpeg_stdout.log"
 
-encode_chunk() {
-  local idx="$1"
-  local start=$(python3 -c "print(${idx} * ${CHUNK_DUR})")
-  local out="${CHUNKS_DIR}/chunk_${idx}.mp4"
-  local progress="${CHUNKS_DIR}/progress_${idx}.log"
-  local stdout="${CHUNKS_DIR}/stdout_${idx}.log"
+log "--- Starting single-pass encode (libx264, ${NPROC} threads) ---"
+stdbuf -oL -eL ffmpeg -y -v info \
+  -i "${LOCAL_SOURCE}" \
+  -i "${MASK_PNG}" \
+  -filter_complex "${FILTER_COMPLEX}" \
+  -map "[v]" \
+  -map "0:a:0?" \
+  -c:v libx264 -preset veryfast -b:v "${BITRATE}" -threads 0 \
+  -c:a aac -ac 2 -b:a 192k \
+  -movflags +faststart \
+  -progress "${PROGRESS}" \
+  "${OUTPUT_EQUIRECT}" > "${STDOUT}" 2>&1 &
+FFMPEG_PID=$!
 
-  stdbuf -oL -eL ffmpeg -y -v info \
-    -ss "${start}" -t "${CHUNK_DUR}" \
-    -i "${LOCAL_SOURCE}" \
-    -i "${MASK_PNG}" \
-    -filter_complex "${FILTER_COMPLEX}" \
-    -map "[v]" \
-    -map "0:a:0?" \
-    -c:v libx264 -preset veryfast -b:v "${BITRATE}" -threads "${THREADS_PER_CHUNK}" \
-    -c:a aac -ac 2 -b:a 192k \
-    -progress "${progress}" \
-    "${out}" > "${stdout}" 2>&1
-  echo "$?" > "${CHUNKS_DIR}/exit_${idx}.code"
-}
-
-log "--- Launching parallel chunk encodes (NVENC) ---"
-progress_line() {
-  local line="" i fr fps ot sp p
-  for ((i=0; i<NUM_CHUNKS; i++)); do
-    p="${CHUNKS_DIR}/progress_${i}.log"
-    if [ -f "$p" ]; then
-      fr=$(grep -a "^frame=" "$p" | tail -1 | cut -d= -f2 || true)
-      fps=$(grep -a "^fps=" "$p" | tail -1 | cut -d= -f2 || true)
-      ot=$(grep -a "^out_time=" "$p" | tail -1 | cut -d= -f2 || true)
-      sp=$(grep -a "^speed=" "$p" | tail -1 | cut -d= -f2 || true)
-      line="${line} [${i}]frame=${fr:-0} fps=${fps:-0} t=${ot:-0:00:00} ${sp:-0}x;"
-    fi
-  done
-  echo "$line"
-}
-
-pids=()
-for ((i=0; i<NUM_CHUNKS; i++)); do
-  while [ "$(jobs -rp | wc -l)" -ge "${MAX_PARALLEL}" ]; do
-    log "  waiting for slot (running=$(jobs -rp | wc -l)/${MAX_PARALLEL}, launched=${i}/${NUM_CHUNKS}):$(progress_line)"
-    sleep 5
-  done
-  encode_chunk "$i" &
-  pids+=($!)
-  log "  launched chunk ${i}/${NUM_CHUNKS} (pid $!)"
-done
-
-# Heartbeat across all chunks until every pid finishes
 TICK=0
-while true; do
+while kill -0 "${FFMPEG_PID}" 2>/dev/null; do
   TICK=$((TICK+1))
-  running=0
-  for pid in "${pids[@]}"; do
-    kill -0 "$pid" 2>/dev/null && running=$((running+1))
-  done
-  log "  running=${running}/${NUM_CHUNKS}:$(progress_line)"
-
-  # Every 6th tick (~30s): process snapshot + live ffmpeg stderr tail for chunk 0
-  if [ $((TICK % 6)) -eq 0 ]; then
-    log "  -- ps snapshot (ffmpeg procs: pid %cpu nlwp cmd) --"
-    ps -eo pid,pcpu,nlwp,comm | grep -i ffmpeg | sed 's/^/    /' | while read -r l; do log "$l"; done
-    log "  -- chunk 0 ffmpeg stderr tail --"
-    tail -5 "${CHUNKS_DIR}/stdout_0.log" 2>/dev/null | sed 's/^/    /' | while read -r l; do log "$l"; done
-  fi
-
-  [ "$running" -eq 0 ] && break
   sleep 5
-done
+  fr=$(grep -a "^frame=" "${PROGRESS}" | tail -1 | cut -d= -f2 || true)
+  fps=$(grep -a "^fps=" "${PROGRESS}" | tail -1 | cut -d= -f2 || true)
+  ot=$(grep -a "^out_time=" "${PROGRESS}" | tail -1 | cut -d= -f2 || true)
+  sp=$(grep -a "^speed=" "${PROGRESS}" | tail -1 | cut -d= -f2 || true)
+  sp_num=$(echo "${sp:-0}" | tr -d 'x')
+  vs_target=$(python3 -c "print(f'{${sp_num:-0}/${TARGET_SPEED}*100:.0f}%')" 2>/dev/null || echo "?")
+  log "  frame=${fr:-0} fps=${fps:-0} t=${ot:-0:00:00} speed=${sp:-0}x (${vs_target} of ${TARGET_SPEED}x target)"
 
-# Check all chunks succeeded
-FAILED=0
-for ((i=0; i<NUM_CHUNKS; i++)); do
-  code=$(cat "${CHUNKS_DIR}/exit_${i}.code" 2>/dev/null || echo 1)
-  if [ "$code" != "0" ]; then
-    log "ERROR: chunk ${i} failed (exit ${code}) — last 20 lines:"
-    tail -20 "${CHUNKS_DIR}/stdout_${i}.log"
-    FAILED=1
+  if [ $((TICK % 6)) -eq 0 ]; then
+    log "  -- ps snapshot --"
+    ps -eo pid,pcpu,nlwp,comm | grep -i ffmpeg | sed 's/^/    /' | while read -r l; do log "$l"; done
   fi
 done
-if [ "$FAILED" -eq 1 ]; then
-  log "ERROR: one or more chunks failed"
+
+set +e
+wait "${FFMPEG_PID}"
+FFMPEG_EXIT=$?
+set -e
+log "FFmpeg exited with code ${FFMPEG_EXIT}"
+if [ "${FFMPEG_EXIT}" != "0" ]; then
+  log "ERROR: FFmpeg failed — last 30 lines:"
+  tail -30 "${STDOUT}"
   exit 1
 fi
-log "All ${NUM_CHUNKS} chunks encoded successfully"
-
-# ── Concatenate chunks ────────────────────────────────────────────────────────
-log "--- Concatenating chunks ---"
-CONCAT_LIST="${CHUNKS_DIR}/concat.txt"
-> "${CONCAT_LIST}"
-for ((i=0; i<NUM_CHUNKS; i++)); do
-  echo "file '${CHUNKS_DIR}/chunk_${i}.mp4'" >> "${CONCAT_LIST}"
-done
-
-ffmpeg -y -f concat -safe 0 -i "${CONCAT_LIST}" -c copy -movflags +faststart "${OUTPUT_EQUIRECT}" \
-  > "${WORKDIR}/concat.log" 2>&1 || {
-    log "ERROR: concat failed — last 20 lines:"
-    tail -20 "${WORKDIR}/concat.log"
-    exit 1
-  }
-log "Concat complete"
 
 # Check output exists and has reasonable size
 if [ ! -f "${OUTPUT_EQUIRECT}" ]; then
