@@ -407,10 +407,11 @@ jobs:
                       -p "${{ steps.launch.outputs.port }}" \
                       "root@${{ steps.launch.outputs.ip }}" \
                       "tail -n +\$(( $LAST_LINE_COUNT + 1 )) /tmp/ffa360_run.log 2>/dev/null; \
-                       echo '---STATUS---'; \
+                       echo '__FFA_STATUS_BEGIN__'; \
                        if [ -f /tmp/ffa360/DONE ]; then echo DONE; \
                        elif [ -f /tmp/ffa360/FAILED ]; then echo FAILED \$(cat /tmp/ffa360/FAILED); \
                        else echo RUNNING; fi; \
+                       echo '__FFA_LINE_COUNT__'; \
                        wc -l < /tmp/ffa360_run.log" 2>/dev/null) || {
               CONSEC_FAIL=$((CONSEC_FAIL+1))
               echo "[poll $i] SSH unreachable (${CONSEC_FAIL}/${MAX_CONSEC_FAIL})"
@@ -422,9 +423,9 @@ jobs:
             }
             CONSEC_FAIL=0
 
-            NEW_LOG=$(echo "$OUT" | sed -n '1,/^---STATUS---$/{/^---STATUS---$/!p}')
-            STATUS_LINE=$(echo "$OUT" | sed -n '/^---STATUS---$/{n;p}')
-            NEW_TOTAL=$(echo "$OUT" | tail -1)
+            NEW_LOG=$(echo "$OUT" | sed -n '1,/^__FFA_STATUS_BEGIN__$/{/^__FFA_STATUS_BEGIN__$/!p}')
+            STATUS_LINE=$(echo "$OUT" | sed -n '/^__FFA_STATUS_BEGIN__$/{n;p}')
+            NEW_TOTAL=$(echo "$OUT" | sed -n '/^__FFA_LINE_COUNT__$/{n;p}')
 
             [ -n "$NEW_LOG" ] && echo "$NEW_LOG"
             LAST_LINE_COUNT="$NEW_TOTAL"
