@@ -196,11 +196,12 @@ jobs:
           # geolocation excludes China (CN) — unreliable boot times over GitHub Actions SSH
           query = json.dumps({
               "reliability2": {"gte": 0.98},
-              "inet_up": {"gte": 200},
-              "disk_space": {"gte": 100},
-              "cpu_cores": {"gte": 16},
+              "inet_up": {"gte": 800},
+              "inet_down": {"gte": 800},
+              "disk_space": {"gte": 150},
+              "cpu_cores": {"gte": 24},
               "cpu_ram": {"gte": 64},
-              "cpu_ghz": {"gte": 3.0},
+              "cpu_ghz": {"gte": 4.0},
               "rentable": {"eq": True},
               "verified": {"eq": True},
               "geolocation": {"neq": "CN"},
@@ -225,7 +226,7 @@ jobs:
 
           IMAGE_PAYLOAD = {
               "image": "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
-              "disk": 60,
+              "disk": 150,
               "runtype": "ssh",
               "ssh_key": pub_key,
               "env": {"NVIDIA_VISIBLE_DEVICES": "all", "NVIDIA_DRIVER_CAPABILITIES": "all"},

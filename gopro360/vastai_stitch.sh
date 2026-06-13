@@ -235,6 +235,12 @@ fi
 SIZE_MB=$(du -m "${OUTPUT_EQUIRECT}" | cut -f1)
 log "Transcode complete: ${SIZE_MB}MB"
 
+# Free up disk space — source file no longer needed, and the metadata
+# injection step used to `cp` the output (briefly doubling disk usage,
+# which caused "No space left on device" on a 60GB disk).
+rm -f "${LOCAL_SOURCE}"
+log "Removed local source (${SRC_SIZE_MB}MB freed)"
+
 if [ "${SIZE_MB}" -lt 10 ]; then
   log "ERROR: Output is suspiciously small (${SIZE_MB}MB) — transcode likely failed"
   exit 1
@@ -259,7 +265,7 @@ fi
 # ── Inject 360° metadata ──────────────────────────────────────────────────────
 log ""
 log "--- Injecting 360° XMP metadata ---"
-cp "${OUTPUT_EQUIRECT}" "${OUTPUT_FINAL}"
+mv "${OUTPUT_EQUIRECT}" "${OUTPUT_FINAL}"
 exiftool \
   -api LargeFileSupport=1 \
   -overwrite_original \
