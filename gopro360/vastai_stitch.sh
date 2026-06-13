@@ -152,46 +152,6 @@ if [ "${NPROC}" -lt 16 ]; then
   exit 1
 fi
 
-# ── CPU speed benchmark (abort before download if too slow) ─────────────────
-# Generates 10s of synthetic 5760x2880 blank video through v360+libx264
-# (same filter chain as real encode) and checks speed= against MIN_SPEED.
-MIN_SPEED="0.5"
-log "--- CPU benchmark (10s synthetic encode, min ${MIN_SPEED}x required) ---"
-BENCH_LOG="${WORKDIR}/bench.log"
-# Use reduced resolution (1920x960) so benchmark completes quickly on any machine.
-# We scale the speed threshold accordingly — full res is 9x more pixels than 1920x960,
-# so a machine doing 0.5x at low res will do ~1.5x real-time at full res with ultrafast.
-timeout 60 ffmpeg -y -v stats \
-  -f lavfi -i "color=c=black:s=1920x960:r=30:d=5" \
-  -vf "v360=e:eac:interp=linear" \
-  -c:v libx264 -preset ultrafast -threads 0 \
-  -f null /dev/null > "${BENCH_LOG}" 2>&1 || true
-BENCH_SPEED=$(grep -oP 'speed=\s*\K[0-9.]+' "${BENCH_LOG}" | tail -1)
-
-if [ -z "${BENCH_SPEED}" ]; then
-  log "ERROR: benchmark failed to produce speed reading (timeout or ffmpeg error) — aborting"
-  echo "BENCHMARK_FAILED" > "${WORKDIR}/FAILED"
-  exit 1
-fi
-
-log "  Benchmark speed: ${BENCH_SPEED}x (min required: ${MIN_SPEED}x)"
-BENCH_OK=$(python3 -c "print('yes' if float('${BENCH_SPEED}') >= float('${MIN_SPEED}') else 'no')")
-if [ "${BENCH_OK}" != "yes" ]; then
-  log "ERROR: machine too slow (${BENCH_SPEED}x < ${MIN_SPEED}x) — aborting to retry on better offer"
-  echo "BENCHMARK_FAILED" > "${WORKDIR}/FAILED"
-  exit 1
-fi
-log "  Benchmark passed — proceeding with download"
-
-# ── Dry-run exit (termination test) ─────────────────────────────────────────
-log "  DRY_RUN value: '${DRY_RUN:-}'"
-if [ "${DRY_RUN:-}" = "true" ]; then
-  log "DRY_RUN=true — skipping download/encode/upload, writing DONE now"
-  touch "${WORKDIR}/DONE"
-  log "Done. Instance will now terminate."
-  exit 0
-fi
-
 # ── Download source to local NVMe ───────────────────────────────────────────
 # Avoids N parallel remote seeks against the GoPro CDN (unreliable/slow);
 # local -ss seeks are instant and frame-accurate.
@@ -268,24 +228,7 @@ while kill -0 "${FFMPEG_PID}" 2>/dev/null; do
   sp=$(grep -a "^speed=" "${PROGRESS}" | tail -1 | cut -d= -f2 || true)
   sp_num=$(echo "${sp:-0}" | tr -d 'x')
   vs_target=$(python3 -c "print(f'{${sp_num:-0}/${TARGET_SPEED}*100:.0f}%')" 2>/dev/null || echo "?")
-  eta_str=$(python3 -c "
-sp=float('${sp_num:-0}')
-total=float('${TOTAL_DUR:-0}')
-ot_str='${ot:-0:00:00.000000}'
-try:
-    parts=ot_str.split(':')
-    done_sec=int(parts[0])*3600+int(parts[1])*60+float(parts[2])
-except:
-    done_sec=0
-if sp>0 and total>0 and done_sec<total:
-    remaining_src=total-done_sec
-    eta_wall=remaining_src/sp
-    m=int(eta_wall//60); s=int(eta_wall%60)
-    print(f'ETA ~{m}m{s:02d}s')
-else:
-    print('ETA ?')
-" 2>/dev/null || echo "ETA ?")
-  log "  frame=${fr:-0} fps=${fps:-0} t=${ot:-0:00:00} speed=${sp:-0}x (${vs_target} of ${TARGET_SPEED}x target) ${eta_str}"
+  log "  frame=${fr:-0} fps=${fps:-0} t=${ot:-0:00:00} speed=${sp:-0}x (${vs_target} of ${TARGET_SPEED}x target)"
 
   if [ $((TICK % 6)) -eq 0 ]; then
     log "  -- ps snapshot --"
@@ -554,4 +497,5 @@ echo "${YT_URL_LINE}" > "${WORKDIR}/RESULT_URL" || true
 log "Done. Instance will now terminate."
 # Note: cleanup of WORKDIR intentionally happens AFTER marker files are written
 # so the polling step can see DONE before the directory disappears.
-
+sleep 5
+rm -rf "${WORKDIR}"
