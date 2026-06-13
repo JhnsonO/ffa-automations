@@ -128,6 +128,16 @@ log "ldconfig done"
 TOTAL_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "${SOURCE_URL}")
 log "Source duration: ${TOTAL_DUR}s"
 
+# ── Download source to local NVMe ───────────────────────────────────────────
+# Avoids N parallel remote seeks against the GoPro CDN (unreliable/slow);
+# local -ss seeks are instant and frame-accurate.
+LOCAL_SOURCE="${WORKDIR}/source.360"
+log "--- Downloading source to local disk ---"
+curl -L --fail --retry 3 --retry-delay 5 -o "${LOCAL_SOURCE}" "${SOURCE_URL}" \
+  --progress-bar 2>&1 | tail -1
+SRC_SIZE_MB=$(du -m "${LOCAL_SOURCE}" | cut -f1)
+log "Downloaded: ${SRC_SIZE_MB}MB -> ${LOCAL_SOURCE}"
+
 NUM_CHUNKS="${NUM_CHUNKS:-12}"
 MAX_PARALLEL="${MAX_PARALLEL:-4}"
 CHUNK_DUR=$(python3 -c "import math; print(math.ceil(${TOTAL_DUR} / ${NUM_CHUNKS}))")
@@ -144,9 +154,8 @@ encode_chunk() {
   local stdout="${CHUNKS_DIR}/stdout_${idx}.log"
 
   stdbuf -oL -eL ffmpeg -y \
-    -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 30 \
     -ss "${start}" -t "${CHUNK_DUR}" \
-    -i "${SOURCE_URL}" \
+    -i "${LOCAL_SOURCE}" \
     -i "${MASK_PNG}" \
     -filter_complex "${FILTER_COMPLEX}" \
     -map "[v]" \
