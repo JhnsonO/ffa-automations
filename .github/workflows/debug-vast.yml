@@ -6,32 +6,44 @@ env:
 jobs:
   debug:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 15
     steps:
-      - name: Attach SSH key to instance
-        env:
-          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+      - name: Finish pipeline on test instance and get download link
         run: |
-          python3 - <<'PY'
-          import os, json, urllib.request
-          API_KEY = os.environ["VAST_API_KEY"]
-          headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json", "Content-Type": "application/json"}
-          pubkey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILmtQvIxOA1cwx9Xl9/lrXVRAxXVK+EbVIPABG4UQ+0Z root@vm"
-          iid = 40823599
+          mkdir -p ~/.ssh
+          cat > ~/.ssh/vast_key << 'KEYEOF'
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACC5rULyMTgNXMMfV5ff5a11UQMV1SvhG1SDwARuFEPtGQAAAJDNKuU/zSrl
+PwAAAAtzc2gtZWQyNTUxOQAAACC5rULyMTgNXMMfV5ff5a11UQMV1SvhG1SDwARuFEPtGQ
+AAAEAZuFKcP3K4e9cSNs7G2JgluufpBAbiXhuErlh5U1q/Z7mtQvIxOA1cwx9Xl9/lrXVR
+AxXVK+EbVIPABG4UQ+0ZAAAAB3Jvb3RAdm0BAgMEBQY=
+-----END OPENSSH PRIVATE KEY-----
+KEYEOF
+          chmod 600 ~/.ssh/vast_key
 
-          body = json.dumps({"ssh_key": pubkey}).encode()
-          for url, method in [
-              (f"https://cloud.vast.ai/api/v1/instances/{iid}/ssh/", "POST"),
-              (f"https://console.vast.ai/api/v0/instances/{iid}/ssh/", "POST"),
-              (f"https://cloud.vast.ai/api/v0/instances/{iid}/ssh/", "POST"),
-              (f"https://cloud.vast.ai/api/v1/instances/{iid}/", "PUT"),
-          ]:
-              req = urllib.request.Request(url, data=body, method=method, headers=headers)
-              try:
-                  with urllib.request.urlopen(req, timeout=15) as r:
-                      print(f"{method} {url}: HTTP {r.status} {r.read().decode()}")
-              except urllib.error.HTTPError as e:
-                  print(f"{method} {url}: HTTP {e.code} {e.read().decode()[:200]}")
-              except Exception as e:
-                  print(f"{method} {url}: {e}")
-          PY
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/vast_key -p 23598 root@ssh9.vast.ai 'bash -s' << 'REMOTE'
+            set -e
+            cd /tmp/ffa360
+            echo "--- files ---"
+            ls -la
+            echo "--- checking output ---"
+            if ! ffprobe -v error -show_entries format=duration -of csv=p=0 output.equirect.mp4 2>/dev/null; then
+              echo "repairing moov atom..."
+              ffmpeg -y -i output.equirect.mp4 -c copy -movflags +faststart output.repaired.mp4
+              mv output.repaired.mp4 output.equirect.mp4
+              ffprobe -v error -show_entries format=duration -of csv=p=0 output.equirect.mp4
+            fi
+            echo "--- injecting 360 metadata ---"
+            cp output.equirect.mp4 output.final.mp4
+            exiftool -api LargeFileSupport=1 -overwrite_original \
+              -XMP-GSpherical:Spherical=true -XMP-GSpherical:Stitched=true \
+              -XMP-GSpherical:StitchingSoftware=FFmpeg -XMP-GSpherical:ProjectionType=equirectangular \
+              output.final.mp4
+            echo "--- uploading for download link ---"
+            ls -la output.final.mp4
+            curl -s --upload-file output.final.mp4 https://transfer.sh/output.final.mp4
+            echo ""
+            curl -s --upload-file output.final.mp4 https://0x0.st
+            echo ""
+REMOTE
