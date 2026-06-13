@@ -113,7 +113,7 @@ FILTER_COMPLEX="\
 [tlRB][tcRBScaled]hstack[trAll],[trAll][trRB]hstack[trBotDone],\
 [tlDone][tMid]hstack[tlMid],[tlMid][trBotDone]hstack[topComplete],\
 [botComplete][topComplete]vstack[complete],\
-[complete]v360=eac:e:interp=cubic,crop=4032:2388:x=0:y=0[v]"
+[complete]v360=eac:e:interp=bilinear,crop=4032:2388:x=0:y=0[v]"
 
 # ── Probe source duration ──────────────────────────────────────────────────────
 log ""
@@ -185,7 +185,7 @@ stdbuf -oL -eL ffmpeg -y -v info \
   -map "[v]" \
   -map "0:a:0?" \
   "${ENCODE_DUR_ARGS[@]}" \
-  -c:v libx264 -preset veryfast -b:v "${BITRATE}" -threads 0 \
+  -c:v libx264 -preset ultrafast -b:v "${BITRATE}" -threads 0 \
   -c:a aac -ac 2 -b:a 192k \
   -movflags +faststart \
   -progress "${PROGRESS}" \
