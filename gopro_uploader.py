@@ -962,6 +962,18 @@ def run():
     if not new_items:
         log.info("No new GoPro videos accepted for upload after filtering. See filter logs above for details.")
         return
+
+    # If a specific media_id was requested (scanner-driven, one video per run),
+    # filter to just that item. Ignore everything else.
+    media_id_override = os.environ.get("MEDIA_ID_OVERRIDE", "").strip()
+    if media_id_override:
+        matched = [item for item in new_items if item.get("id", "") == media_id_override]
+        if not matched:
+            log.info(f"MEDIA_ID_OVERRIDE={media_id_override} not found in accepted items — nothing to do.")
+            return
+        new_items = matched
+        log.info(f"MEDIA_ID_OVERRIDE set — restricting to single video: {media_id_override}")
+
     log.info("=" * 60)
     log.info(f"FFA GoPro -> YouTube uploader starting — {len(new_items)} new video(s)")
     yt = get_youtube_service()
