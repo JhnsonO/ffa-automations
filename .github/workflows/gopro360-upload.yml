@@ -208,92 +208,72 @@ jobs:
               print("ERROR: No matching offers found", file=sys.stderr)
               sys.exit(1)
 
-          # Sort by price per hour, take cheapest
+          # Sort by price per hour, try top 5 in order
           offers.sort(key=lambda o: float(o.get("dph_total", 999)))
-          offer = offers[0]
-          offer_id = offer["id"]
-          gpu_name = offer.get("gpu_name", "unknown")
-          price = offer.get("dph_total", "?")
-          location = offer.get("geolocation", "?")
-          print(f"Selected offer {offer_id} — {gpu_name} @ ${price:.4f}/hr ({location})")
+          candidates = offers[:5]
 
-          # ── Launch instance ──────────────────────────────────────────────────
-          print(f"Launching instance {offer_id}...")
-          result = vast_put(f"/asks/{offer_id}/", {
+          IMAGE_PAYLOAD = {
               "image": "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
               "disk": 60,
               "runtype": "ssh",
               "ssh_key": pub_key,
               "env": {"NVIDIA_VISIBLE_DEVICES": "all", "NVIDIA_DRIVER_CAPABILITIES": "all"},
-          })
-          print(f"Launch response: {result}")
+          }
 
-          instance_id = result.get("new_contract")
-          if not instance_id:
-              print(f"ERROR: No instance ID returned: {result}", file=sys.stderr)
-              sys.exit(1)
-          print(f"Instance ID: {instance_id}")
+          ip = port = instance_id = None
+          for offer in candidates:
+              offer_id = offer["id"]
+              gpu_name = offer.get("gpu_name", "unknown")
+              price = offer.get("dph_total", "?")
+              location = offer.get("geolocation", "?")
+              print(f"Trying offer {offer_id} — {gpu_name} @ ${price:.4f}/hr ({location})")
 
-          # ── Poll until running ──────────────────────────────────────────────
-          print("Waiting for instance to start...")
-          ip = port = None
-          for attempt in range(20):  # max 5 min boot wait
-              time.sleep(15)
               try:
-                  resp = vast_get("/instances/", base=BASE_V1)
-                  instances_list = resp.get("instances", [])
-                  inst = next((x for x in instances_list if x["id"] == instance_id), None)
-                  if not inst:
-                      print(f"  [{attempt+1}] instance not visible yet")
-                      continue
-              except Exception as e:
-                  print(f"  [{attempt+1}] poll error: {e}")
+                  result = vast_put(f"/asks/{offer_id}/", IMAGE_PAYLOAD)
+              except urllib.error.HTTPError as e:
+                  print(f"  launch failed: HTTP {e.code} — {e.read().decode()[:200]} — trying next offer")
                   continue
 
-              status   = inst.get("actual_status", "")
-              ssh_host = inst.get("ssh_host") or inst.get("public_ipaddr")
-              ssh_port = inst.get("ssh_port", 22)
-              print(f"  [{attempt+1}] status={status} host={ssh_host} port={ssh_port}")
+              this_instance = result.get("new_contract")
+              if not this_instance:
+                  print(f"  no instance ID returned: {result} — trying next offer")
+                  continue
+              print(f"  Instance ID: {this_instance}")
 
-              if status == "running" and ssh_host:
-                  ip = ssh_host
-                  port = str(ssh_port)
+              this_ip = this_port = None
+              for attempt in range(20):  # max 5 min boot wait
+                  time.sleep(15)
+                  try:
+                      resp = vast_get("/instances/", base=BASE_V1)
+                      inst = next((x for x in resp.get("instances", []) if x["id"] == this_instance), None)
+                      if not inst:
+                          print(f"    [{attempt+1}] instance not visible yet")
+                          continue
+                  except Exception as e:
+                      print(f"    [{attempt+1}] poll error: {e}")
+                      continue
+
+                  status   = inst.get("actual_status", "")
+                  ssh_host = inst.get("ssh_host") or inst.get("public_ipaddr")
+                  ssh_port = inst.get("ssh_port", 22)
+                  print(f"    [{attempt+1}] status={status} host={ssh_host} port={ssh_port}")
+
+                  if status == "running" and ssh_host:
+                      this_ip = ssh_host
+                      this_port = str(ssh_port)
+                      break
+
+              if this_ip:
+                  ip, port, instance_id = this_ip, this_port, this_instance
                   break
+              else:
+                  print(f"  instance {this_instance} never reached running — terminating, trying next offer")
+                  try: vast_delete(f"/instances/{this_instance}/", base=BASE_V1)
+                  except: pass
 
           if not ip:
-              print(f"ERROR: Instance {instance_id} never reached running — terminating and retrying next offer", file=sys.stderr)
-              try: vast_delete(f"/instances/{instance_id}/", base=BASE_V1)
-              except: pass
-              # Try next offer if available
-              if len(offers) > 1:
-                  offer = offers[1]
-                  offer_id = offer["id"]
-                  print(f"Retrying with offer {offer_id} — {offer.get('gpu_name')} @ ${offer.get('dph_total',0):.4f}/hr ({offer.get('geolocation','?')})")
-                  result = vast_put(f"/asks/{offer_id}/", {
-                      "image": "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
-                      "disk": 60,
-                      "runtype": "ssh",
-                      "ssh_key": pub_key,
-                      "env": {"NVIDIA_VISIBLE_DEVICES": "all", "NVIDIA_DRIVER_CAPABILITIES": "all"},
-                  })
-                  instance_id = result.get("new_contract")
-                  ip = port = None
-                  for attempt in range(20):
-                      time.sleep(15)
-                      try:
-                          resp = vast_get("/instances/", base=BASE_V1)
-                          inst = next((x for x in resp.get("instances",[]) if x["id"]==instance_id), None)
-                          if not inst: continue
-                          status = inst.get("actual_status","")
-                          ssh_host = inst.get("ssh_host") or inst.get("public_ipaddr")
-                          ssh_port = inst.get("ssh_port", 22)
-                          print(f"  retry [{attempt+1}] status={status}")
-                          if status == "running" and ssh_host:
-                              ip = ssh_host; port = str(ssh_port); break
-                      except: pass
-              if not ip:
-                  print("ERROR: All offers exhausted — giving up", file=sys.stderr)
-                  sys.exit(1)
+              print("ERROR: All candidate offers exhausted — giving up", file=sys.stderr)
+              sys.exit(1)
 
           print(f"Ready: {ip}:{port}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
