@@ -18,19 +18,7 @@ jobs:
           headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json", "Content-Type": "application/json"}
           iid = 40823599
 
-          cmd = (
-              "cd /tmp/ffa360 && "
-              "(ffprobe -v error -show_entries format=duration -of csv=p=0 output.equirect.mp4 "
-              " || (ffmpeg -y -i output.equirect.mp4 -c copy -movflags +faststart output.repaired.mp4 "
-              "      && mv output.repaired.mp4 output.equirect.mp4)) && "
-              "cp output.equirect.mp4 output.final.mp4 && "
-              "exiftool -api LargeFileSupport=1 -overwrite_original "
-              " -XMP-GSpherical:Spherical=true -XMP-GSpherical:Stitched=true "
-              " -XMP-GSpherical:StitchingSoftware=FFmpeg -XMP-GSpherical:ProjectionType=equirectangular "
-              " output.final.mp4 && "
-              "ls -la output.final.mp4 && "
-              "curl -sS -F'file=@output.final.mp4' https://0x0.st"
-          )
+          cmd = "ls -la /tmp/ffa360"
 
           body = json.dumps({"command": cmd}).encode()
           req = urllib.request.Request(f"https://console.vast.ai/api/v0/instances/command/{iid}/", data=body, method="PUT", headers=headers)
