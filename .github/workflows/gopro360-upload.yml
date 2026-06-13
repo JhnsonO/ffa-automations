@@ -303,15 +303,15 @@ jobs:
           IP="${{ steps.launch.outputs.ip }}"
           PORT="${{ steps.launch.outputs.port }}"
           echo "Waiting for SSH on ${IP}:${PORT}..."
-          for i in $(seq 1 24); do
+          for i in $(seq 1 8); do
             if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
                    -i /tmp/vastai_key -p "${PORT}" "root@${IP}" \
                    "echo SSH_OK" 2>/dev/null | grep -q SSH_OK; then
               echo "SSH is up after ${i} attempts"
               exit 0
             fi
-            echo "  [${i}/24] not ready — waiting 15s..."
-            sleep 15
+            echo "  [${i}/8] not ready — waiting 5s..."
+            sleep 5
           done
           echo "ERROR: SSH never came up"
           exit 1
