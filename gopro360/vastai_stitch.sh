@@ -173,6 +173,7 @@ log "  Benchmark speed: ${BENCH_SPEED}x (min required: ${MIN_SPEED}x)"
 BENCH_OK=$(python3 -c "print('yes' if float('${BENCH_SPEED}') >= float('${MIN_SPEED}') else 'no')")
 if [ "${BENCH_OK}" != "yes" ]; then
   log "ERROR: machine too slow (${BENCH_SPEED}x < ${MIN_SPEED}x) — aborting to retry on better offer"
+  echo "BENCHMARK_FAILED" > "${WORKDIR}/FAILED"
   exit 1
 fi
 log "  Benchmark passed — proceeding with download"
