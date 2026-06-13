@@ -253,7 +253,24 @@ while kill -0 "${FFMPEG_PID}" 2>/dev/null; do
   sp=$(grep -a "^speed=" "${PROGRESS}" | tail -1 | cut -d= -f2 || true)
   sp_num=$(echo "${sp:-0}" | tr -d 'x')
   vs_target=$(python3 -c "print(f'{${sp_num:-0}/${TARGET_SPEED}*100:.0f}%')" 2>/dev/null || echo "?")
-  log "  frame=${fr:-0} fps=${fps:-0} t=${ot:-0:00:00} speed=${sp:-0}x (${vs_target} of ${TARGET_SPEED}x target)"
+  eta_str=$(python3 -c "
+sp=float('${sp_num:-0}')
+total=float('${TOTAL_DUR:-0}')
+ot_str='${ot:-0:00:00.000000}'
+try:
+    parts=ot_str.split(':')
+    done_sec=int(parts[0])*3600+int(parts[1])*60+float(parts[2])
+except:
+    done_sec=0
+if sp>0 and total>0 and done_sec<total:
+    remaining_src=total-done_sec
+    eta_wall=remaining_src/sp
+    m=int(eta_wall//60); s=int(eta_wall%60)
+    print(f'ETA ~{m}m{s:02d}s')
+else:
+    print('ETA ?')
+" 2>/dev/null || echo "ETA ?")
+  log "  frame=${fr:-0} fps=${fps:-0} t=${ot:-0:00:00} speed=${sp:-0}x (${vs_target} of ${TARGET_SPEED}x target) ${eta_str}"
 
   if [ $((TICK % 6)) -eq 0 ]; then
     log "  -- ps snapshot --"
