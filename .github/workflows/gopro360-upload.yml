@@ -21,6 +21,11 @@ on:
         required: false
         default: ''
         type: string
+      dry_run:
+        description: 'If true, skip download/encode/upload — just boot, benchmark, write DONE, and terminate'
+        required: false
+        default: 'false'
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -377,6 +382,7 @@ jobs:
           export REPO='${{ github.repository }}'
           export TRANSCODE_BITRATE='auto'
           export TEST_DURATION_SEC='${{ github.event.inputs.test_duration_sec }}'
+          export DRY_RUN='${{ github.event.inputs.dry_run }}'
           exec bash /tmp/vastai_stitch.sh
           WRAPEOF
           chmod +x /tmp/run_stitch.sh
