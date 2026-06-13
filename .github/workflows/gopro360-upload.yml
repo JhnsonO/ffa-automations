@@ -26,6 +26,11 @@ on:
         required: false
         default: 'false'
         type: string
+      excluded_offer_ids:
+        description: 'Comma-separated offer IDs to skip (used internally on redispatch)'
+        required: false
+        default: ''
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -218,6 +223,14 @@ jobs:
           offers = [o for o in offers if not any(s in (o.get("cpu_name") or "") for s in BAD_CPU_SUBSTRINGS)]
           print(f"Filtered out {before - len(offers)} offers with weak/old CPUs, {len(offers)} remain")
 
+          # Exclude previously tried offers
+          excluded_raw = "${{ github.event.inputs.excluded_offer_ids }}".strip()
+          excluded_ids = set(int(x.strip()) for x in excluded_raw.split(",") if x.strip().isdigit())
+          if excluded_ids:
+              before_excl = len(offers)
+              offers = [o for o in offers if o["id"] not in excluded_ids]
+              print(f"Excluded {before_excl - len(offers)} previously tried offers, {len(offers)} remain")
+
           if not offers:
               print("ERROR: No matching offers found", file=sys.stderr)
               sys.exit(1)
@@ -290,10 +303,14 @@ jobs:
               sys.exit(1)
 
           print(f"Ready: {ip}:{port}")
+          # Track which offer was used so redispatch can exclude it
+          used_offer_id = next(o["id"] for o in candidates if o.get("id") and str(o["id"]) in str(instance_id) or True)
+          used_offer_id = next((o["id"] for o in offers[:5] if o.get("id")), "")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"instance_id={instance_id}\n")
               f.write(f"ip={ip}\n")
               f.write(f"port={port}\n")
+              f.write(f"used_offer_id={used_offer_id}\n")
           PY
 
       - name: Wait for SSH
@@ -448,11 +465,14 @@ jobs:
                 ;;
               BENCHMARK_FAILED)
                 echo "[poll $i] Benchmark failed — redispatching on a fresh offer..."
+                PREV_EXCLUDED="${{ github.event.inputs.excluded_offer_ids }}"
+                THIS_OFFER="${{ steps.launch.outputs.used_offer_id }}"
+                NEW_EXCLUDED="${PREV_EXCLUDED:+${PREV_EXCLUDED},}${THIS_OFFER}"
                 curl -s -X POST -H "Authorization: token ${{ secrets.GH_PAT }}" \
                   -H "Accept: application/vnd.github.v3+json" \
                   "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-upload.yml/dispatches" \
-                  -d '{"ref":"${{ github.ref_name }}","inputs":{"media_id":"${{ github.event.inputs.media_id }}","filename":"${{ github.event.inputs.filename }}","captured_at":"${{ github.event.inputs.captured_at }}","test_duration_sec":"${{ github.event.inputs.test_duration_sec }}","dry_run":"${{ github.event.inputs.dry_run }}"}}' 
-                echo "Fresh run dispatched."
+                  -d "{"ref":"${{ github.ref_name }}","inputs":{"media_id":"${{ github.event.inputs.media_id }}","filename":"${{ github.event.inputs.filename }}","captured_at":"${{ github.event.inputs.captured_at }}","test_duration_sec":"${{ github.event.inputs.test_duration_sec }}","dry_run":"${{ github.event.inputs.dry_run }}","excluded_offer_ids":"${NEW_EXCLUDED}"}}"
+                echo "Fresh run dispatched excluding offers: ${NEW_EXCLUDED}"
                 exit 1
                 ;;
               FAILED*)
