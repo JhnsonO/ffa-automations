@@ -525,11 +525,12 @@ PYEOF
 
 log ""
 log "--- Cleaning up ---"
-touch "${WORKDIR}/DONE"
+# Write marker files OUTSIDE WORKDIR so rm -rf doesn't delete them before poll sees them
+touch "/tmp/ffa360_DONE"
 YT_URL_LINE="https://www.youtube.com/watch?v=${YT_ID:-unknown}"
+echo "${YT_URL_LINE}" > "/tmp/ffa360_RESULT_URL" || true
+# Also write inside WORKDIR for compatibility
+touch "${WORKDIR}/DONE"
 echo "${YT_URL_LINE}" > "${WORKDIR}/RESULT_URL" || true
 log "Done. Instance will now terminate."
-# Note: cleanup of WORKDIR intentionally happens AFTER marker files are written
-# so the polling step can see DONE before the directory disappears.
-sleep 5
-rm -rf "${WORKDIR}"
+# Keep WORKDIR intact — instance is terminating anyway, no need to clean up
