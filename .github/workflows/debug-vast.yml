@@ -12,38 +12,38 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           cat > ~/.ssh/vast_key << 'KEYEOF'
------BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-QyNTUxOQAAACC5rULyMTgNXMMfV5ff5a11UQMV1SvhG1SDwARuFEPtGQAAAJDNKuU/zSrl
-PwAAAAtzc2gtZWQyNTUxOQAAACC5rULyMTgNXMMfV5ff5a11UQMV1SvhG1SDwARuFEPtGQ
-AAAEAZuFKcP3K4e9cSNs7G2JgluufpBAbiXhuErlh5U1q/Z7mtQvIxOA1cwx9Xl9/lrXVR
-AxXVK+EbVIPABG4UQ+0ZAAAAB3Jvb3RAdm0BAgMEBQY=
------END OPENSSH PRIVATE KEY-----
-KEYEOF
+          -----BEGIN OPENSSH PRIVATE KEY-----
+          b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+          QyNTUxOQAAACC5rULyMTgNXMMfV5ff5a11UQMV1SvhG1SDwARuFEPtGQAAAJDNKuU/zSrl
+          PwAAAAtzc2gtZWQyNTUxOQAAACC5rULyMTgNXMMfV5ff5a11UQMV1SvhG1SDwARuFEPtGQ
+          AAAEAZuFKcP3K4e9cSNs7G2JgluufpBAbiXhuErlh5U1q/Z7mtQvIxOA1cwx9Xl9/lrXVR
+          AxXVK+EbVIPABG4UQ+0ZAAAAB3Jvb3RAdm0BAgMEBQY=
+          -----END OPENSSH PRIVATE KEY-----
+          KEYEOF
           chmod 600 ~/.ssh/vast_key
 
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/vast_key -p 23598 root@ssh9.vast.ai 'bash -s' << 'REMOTE'
-            set -e
-            cd /tmp/ffa360
-            echo "--- files ---"
-            ls -la
-            echo "--- checking output ---"
-            if ! ffprobe -v error -show_entries format=duration -of csv=p=0 output.equirect.mp4 2>/dev/null; then
-              echo "repairing moov atom..."
-              ffmpeg -y -i output.equirect.mp4 -c copy -movflags +faststart output.repaired.mp4
-              mv output.repaired.mp4 output.equirect.mp4
-              ffprobe -v error -show_entries format=duration -of csv=p=0 output.equirect.mp4
-            fi
-            echo "--- injecting 360 metadata ---"
-            cp output.equirect.mp4 output.final.mp4
-            exiftool -api LargeFileSupport=1 -overwrite_original \
-              -XMP-GSpherical:Spherical=true -XMP-GSpherical:Stitched=true \
-              -XMP-GSpherical:StitchingSoftware=FFmpeg -XMP-GSpherical:ProjectionType=equirectangular \
-              output.final.mp4
-            echo "--- uploading for download link ---"
-            ls -la output.final.mp4
-            curl -s --upload-file output.final.mp4 https://transfer.sh/output.final.mp4
-            echo ""
-            curl -s --upload-file output.final.mp4 https://0x0.st
-            echo ""
-REMOTE
+          set -e
+          cd /tmp/ffa360
+          echo "--- files ---"
+          ls -la
+          echo "--- checking output ---"
+          if ! ffprobe -v error -show_entries format=duration -of csv=p=0 output.equirect.mp4 2>/dev/null; then
+            echo "repairing moov atom..."
+            ffmpeg -y -i output.equirect.mp4 -c copy -movflags +faststart output.repaired.mp4
+            mv output.repaired.mp4 output.equirect.mp4
+            ffprobe -v error -show_entries format=duration -of csv=p=0 output.equirect.mp4
+          fi
+          echo "--- injecting 360 metadata ---"
+          cp output.equirect.mp4 output.final.mp4
+          exiftool -api LargeFileSupport=1 -overwrite_original \
+            -XMP-GSpherical:Spherical=true -XMP-GSpherical:Stitched=true \
+            -XMP-GSpherical:StitchingSoftware=FFmpeg -XMP-GSpherical:ProjectionType=equirectangular \
+            output.final.mp4
+          echo "--- uploading for download link ---"
+          ls -la output.final.mp4
+          curl -s --upload-file output.final.mp4 https://transfer.sh/output.final.mp4
+          echo ""
+          curl -s --upload-file output.final.mp4 https://0x0.st
+          echo ""
+          REMOTE
