@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-BITRATE="${TRANSCODE_BITRATE:-20M}"
+BITRATE="${TRANSCODE_BITRATE:-auto}"
 WORKDIR="/tmp/ffa360"
 OUTPUT_EQUIRECT="${WORKDIR}/output.equirect.mp4"
 OUTPUT_FINAL="${WORKDIR}/output.final.mp4"
@@ -127,6 +127,17 @@ ldconfig
 log "ldconfig done"
 TOTAL_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "${SOURCE_URL}")
 log "Source duration: ${TOTAL_DUR}s"
+
+if [ "${BITRATE}" = "auto" ]; then
+  SRC_BPS=$(ffprobe -v error -show_entries format=bit_rate -of csv=p=0 "${SOURCE_URL}")
+  if [ -n "${SRC_BPS}" ] && [ "${SRC_BPS}" != "N/A" ]; then
+    BITRATE="${SRC_BPS}"
+    log "Auto bitrate: using source bitrate ${BITRATE} bps ($(python3 -c "print(round(${BITRATE}/1e6,1))")Mbps)"
+  else
+    BITRATE="20M"
+    log "Auto bitrate: source bit_rate unavailable, falling back to ${BITRATE}"
+  fi
+fi
 
 # ── Download source to local NVMe ───────────────────────────────────────────
 # Avoids N parallel remote seeks against the GoPro CDN (unreliable/slow);
