@@ -144,6 +144,14 @@ if [ "${BITRATE}" = "auto" ]; then
   fi
 fi
 
+NPROC=$(nproc)
+log "--- Core count check ---"
+log "  nproc: ${NPROC}"
+if [ "${NPROC}" -lt 16 ]; then
+  log "ERROR: only ${NPROC} cores allocated (need >=16 for target speed) — bad offer, aborting before download"
+  exit 1
+fi
+
 # ── Download source to local NVMe ───────────────────────────────────────────
 # Avoids N parallel remote seeks against the GoPro CDN (unreliable/slow);
 # local -ss seeks are instant and frame-accurate.
@@ -165,11 +173,9 @@ wait "${DL_PID}" || { log "ERROR: download failed:"; tail -20 "${WORKDIR}/downlo
 SRC_SIZE_MB=$(du -m "${LOCAL_SOURCE}" | cut -f1)
 log "Downloaded: ${SRC_SIZE_MB}MB -> ${LOCAL_SOURCE}"
 
-NPROC=$(nproc)
 TARGET_SPEED=4.0
 
 log "--- System info ---"
-log "  nproc: ${NPROC}"
 free -m | sed 's/^/  /' | while read -r l; do log "$l"; done
 log "  ffmpeg: $(ffmpeg -version | head -1)"
 log "Target: ${TARGET_SPEED}x realtime (i.e. ${TOTAL_DUR}s source in $(python3 -c "print(round(${TOTAL_DUR}/${TARGET_SPEED}))")s)"

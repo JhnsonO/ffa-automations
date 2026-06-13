@@ -202,6 +202,7 @@ jobs:
               "cpu_cores": {"gte": 24},
               "cpu_ram": {"gte": 64},
               "cpu_ghz": {"gte": 4.0},
+              "gpu_frac": {"eq": 1},
               "rentable": {"eq": True},
               "verified": {"eq": True},
               "geolocation": {"neq": "CN"},
