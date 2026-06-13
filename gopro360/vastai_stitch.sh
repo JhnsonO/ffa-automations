@@ -157,12 +157,13 @@ fi
 # (same filter chain as real encode) and checks speed= against MIN_SPEED.
 MIN_SPEED="1.5"
 log "--- CPU benchmark (10s synthetic encode, min ${MIN_SPEED}x required) ---"
-BENCH_SPEED=$(timeout 90 ffmpeg -y -v stats \
+BENCH_LOG="${WORKDIR}/bench.log"
+timeout 90 ffmpeg -y -v stats \
   -f lavfi -i "color=c=black:s=5760x2880:r=30:d=10" \
   -vf "v360=e:eac:interp=linear" \
   -c:v libx264 -preset ultrafast -threads 0 \
-  -f null /dev/null 2>&1 \
-  | grep -oP 'speed=\s*\K[0-9.]+' | tail -1)
+  -f null /dev/null > "${BENCH_LOG}" 2>&1 || true
+BENCH_SPEED=$(grep -oP 'speed=\s*\K[0-9.]+' "${BENCH_LOG}" | tail -1)
 
 if [ -z "${BENCH_SPEED}" ]; then
   log "ERROR: benchmark failed to produce speed reading (timeout or ffmpeg error) — aborting"
