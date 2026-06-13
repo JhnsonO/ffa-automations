@@ -150,9 +150,17 @@ SRC_SIZE_MB=$(du -m "${LOCAL_SOURCE}" | cut -f1)
 log "Downloaded: ${SRC_SIZE_MB}MB -> ${LOCAL_SOURCE}"
 
 NUM_CHUNKS="${NUM_CHUNKS:-12}"
-MAX_PARALLEL="${MAX_PARALLEL:-4}"
+MAX_PARALLEL="${MAX_PARALLEL:-2}"
+NPROC=$(nproc)
+THREADS_PER_CHUNK=$(( NPROC / MAX_PARALLEL ))
+[ "$THREADS_PER_CHUNK" -lt 1 ] && THREADS_PER_CHUNK=1
 CHUNK_DUR=$(python3 -c "import math; print(math.ceil(${TOTAL_DUR} / ${NUM_CHUNKS}))")
-log "Splitting into ${NUM_CHUNKS} chunks of ~${CHUNK_DUR}s, max ${MAX_PARALLEL} in parallel"
+
+log "--- System info ---"
+log "  nproc: ${NPROC}"
+free -m | sed 's/^/  /' | while read -r l; do log "$l"; done
+log "  ffmpeg: $(ffmpeg -version | head -1)"
+log "Splitting into ${NUM_CHUNKS} chunks of ~${CHUNK_DUR}s, max ${MAX_PARALLEL} in parallel, ${THREADS_PER_CHUNK} threads/chunk"
 
 CHUNKS_DIR="${WORKDIR}/chunks"
 mkdir -p "${CHUNKS_DIR}"
@@ -164,16 +172,16 @@ encode_chunk() {
   local progress="${CHUNKS_DIR}/progress_${idx}.log"
   local stdout="${CHUNKS_DIR}/stdout_${idx}.log"
 
-  stdbuf -oL -eL ffmpeg -y \
+  stdbuf -oL -eL ffmpeg -y -v info \
     -ss "${start}" -t "${CHUNK_DUR}" \
     -i "${LOCAL_SOURCE}" \
     -i "${MASK_PNG}" \
     -filter_complex "${FILTER_COMPLEX}" \
     -map "[v]" \
     -map "0:a:0?" \
-    -c:v libx264 -preset veryfast -b:v "${BITRATE}" -threads 0 \
+    -c:v libx264 -preset veryfast -b:v "${BITRATE}" -threads "${THREADS_PER_CHUNK}" \
     -c:a aac -ac 2 -b:a 192k \
-    -progress "${progress}" -nostats \
+    -progress "${progress}" \
     "${out}" > "${stdout}" 2>&1
   echo "$?" > "${CHUNKS_DIR}/exit_${idx}.code"
 }
@@ -191,7 +199,9 @@ for ((i=0; i<NUM_CHUNKS; i++)); do
 done
 
 # Heartbeat across all chunks until every pid finishes
+TICK=0
 while true; do
+  TICK=$((TICK+1))
   running=0
   for pid in "${pids[@]}"; do
     kill -0 "$pid" 2>/dev/null && running=$((running+1))
@@ -200,12 +210,23 @@ while true; do
   for ((i=0; i<NUM_CHUNKS; i++)); do
     p="${CHUNKS_DIR}/progress_${i}.log"
     if [ -f "$p" ]; then
+      fr=$(grep -a "^frame=" "$p" | tail -1 | cut -d= -f2 || true)
+      fps=$(grep -a "^fps=" "$p" | tail -1 | cut -d= -f2 || true)
       ot=$(grep -a "^out_time=" "$p" | tail -1 | cut -d= -f2 || true)
       sp=$(grep -a "^speed=" "$p" | tail -1 | cut -d= -f2 || true)
-      line="${line} [${i}]=${ot:-0:00:00}@${sp:-0}x"
+      line="${line} [${i}]frame=${fr:-0} fps=${fps:-0} t=${ot:-0:00:00} ${sp:-0}x;"
     fi
   done
-  log "  chunks running=${running}/${NUM_CHUNKS}${line}"
+  log "  running=${running}/${NUM_CHUNKS}${line}"
+
+  # Every 6th tick (~30s): process snapshot + live ffmpeg stderr tail for chunk 0
+  if [ $((TICK % 6)) -eq 0 ]; then
+    log "  -- ps snapshot (ffmpeg procs: pid %cpu nlwp cmd) --"
+    ps -eo pid,pcpu,nlwp,comm | grep -i ffmpeg | sed 's/^/    /' | while read -r l; do log "$l"; done
+    log "  -- chunk 0 ffmpeg stderr tail --"
+    tail -5 "${CHUNKS_DIR}/stdout_0.log" 2>/dev/null | sed 's/^/    /' | while read -r l; do log "$l"; done
+  fi
+
   [ "$running" -eq 0 ] && break
   sleep 5
 done
