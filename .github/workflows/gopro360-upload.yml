@@ -450,7 +450,8 @@ jobs:
             STATUS_LINE=$(echo "$OUT" | sed -n '/^__FFA_STATUS_BEGIN__$/{n;p}')
             NEW_TOTAL=$(echo "$OUT" | sed -n '/^__FFA_LINE_COUNT__$/{n;p}')
 
-            [ -n "$NEW_LOG" ] && echo "$NEW_LOG"
+            CLEAN_LOG=$(echo "$NEW_LOG" | grep -v '^__FFA_LINE_COUNT__$' | grep -v '^__FFA_STATUS_BEGIN__$' | grep -v '^RUNNING$' | grep -v '^DONE$' || true)
+            [ -n "$CLEAN_LOG" ] && echo "$CLEAN_LOG"
             LAST_LINE_COUNT="$NEW_TOTAL"
 
             case "$STATUS_LINE" in
@@ -527,4 +528,5 @@ jobs:
           else:
               print(f"WARNING: could not terminate {INSTANCE_ID} via any endpoint — terminate manually")
           PY
+
 
