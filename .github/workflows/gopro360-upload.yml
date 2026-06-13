@@ -431,7 +431,7 @@ jobs:
                       "root@${{ steps.launch.outputs.ip }}" \
                       "tail -n +\$(( $LAST_LINE_COUNT + 1 )) /tmp/ffa360_run.log 2>/dev/null; \
                        echo '__FFA_STATUS_BEGIN__'; \
-                       if [ -f /tmp/ffa360/DONE ]; then echo DONE; \
+                       if [ -f /tmp/ffa360/DONE ] || [ -f /tmp/ffa360_DONE ]; then echo DONE; \
                        elif [ -f /tmp/ffa360/FAILED ]; then cat /tmp/ffa360/FAILED; \
                        else echo RUNNING; fi; \
                        echo '__FFA_LINE_COUNT__'; \
@@ -460,7 +460,7 @@ jobs:
                 RESULT_URL=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes \
                       -i /tmp/vastai_key -p "${{ steps.launch.outputs.port }}" \
                       "root@${{ steps.launch.outputs.ip }}" \
-                      "cat /tmp/ffa360/RESULT_URL 2>/dev/null || true" 2>/dev/null)
+                      "cat /tmp/ffa360/RESULT_URL /tmp/ffa360_RESULT_URL 2>/dev/null | head -1 || true" 2>/dev/null)
                 echo "result_url=${RESULT_URL}" >> "$GITHUB_OUTPUT"
                 exit 0
                 ;;
