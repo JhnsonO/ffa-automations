@@ -42,8 +42,14 @@ jobs:
             output.final.mp4
           echo "--- uploading for download link ---"
           ls -la output.final.mp4
-          curl -s --upload-file output.final.mp4 https://transfer.sh/output.final.mp4
-          echo ""
-          curl -s --upload-file output.final.mp4 https://0x0.st
-          echo ""
+          set +e
+          for url in "https://0x0.st" "https://litterbox.catbox.moe/resources/internals/api.php" "https://transfer.sh/output.final.mp4"; do
+            echo "Trying $url ..."
+            if [[ "$url" == *catbox* ]]; then
+              curl -s -F "reqtype=fileupload" -F "time=72h" -F "fileToUpload=@output.final.mp4" "$url" --max-time 600
+            else
+              curl -s --upload-file output.final.mp4 "$url" --max-time 600
+            fi
+            echo ""
+          done
           REMOTE
