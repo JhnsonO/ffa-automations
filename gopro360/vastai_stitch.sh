@@ -522,5 +522,4 @@ echo "${YT_URL_LINE}" > "${WORKDIR}/RESULT_URL" || true
 log "Done. Instance will now terminate."
 # Note: cleanup of WORKDIR intentionally happens AFTER marker files are written
 # so the polling step can see DONE before the directory disappears.
-sleep 5
-rm -rf "${WORKDIR}"
+
