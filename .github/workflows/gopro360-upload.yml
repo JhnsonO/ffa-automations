@@ -446,6 +446,15 @@ jobs:
                 echo "result_url=${RESULT_URL}" >> "$GITHUB_OUTPUT"
                 exit 0
                 ;;
+              FAILED\ BENCHMARK_FAILED|BENCHMARK_FAILED)
+                echo "[poll $i] Benchmark failed — redispatching on a fresh offer..."
+                curl -s -X POST -H "Authorization: token ${{ secrets.GH_PAT }}" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-upload.yml/dispatches" \
+                  -d '{"ref":"${{ github.ref_name }}","inputs":{"media_id":"${{ github.event.inputs.media_id }}","filename":"${{ github.event.inputs.filename }}","captured_at":"${{ github.event.inputs.captured_at }}","test_duration_sec":"${{ github.event.inputs.test_duration_sec }}","dry_run":"${{ github.event.inputs.dry_run }}"}}' 
+                echo "Fresh run dispatched."
+                exit 1
+                ;;
               FAILED*)
                 echo "[poll $i] FAILED: $STATUS_LINE"
                 exit 1
