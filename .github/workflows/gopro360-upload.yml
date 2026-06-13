@@ -195,6 +195,7 @@ jobs:
               "disk_space": {"gte": 100},
               "cpu_cores": {"gte": 16},
               "cpu_ram": {"gte": 64},
+              "cpu_ghz": {"gte": 3.0},
               "gpu_name": {"in": ["RTX 4090", "RTX 6000Ada", "L40", "L40S"]},
               "rentable": {"eq": True},
               "verified": {"eq": True},
@@ -203,6 +204,12 @@ jobs:
           resp = vast_get("/bundles/", {"q": query})
           offers = resp.get("offers", [])
           print(f"Found {len(offers)} verified non-CN offers")
+
+          # Exclude weak/old CPUs (Xeon E5/E3, old Opteron) — filter graph is CPU-bound
+          BAD_CPU_SUBSTRINGS = ["E5-", "E3-", "Opteron", "Xeon W3", "Xeon X5"]
+          before = len(offers)
+          offers = [o for o in offers if not any(s in o.get("cpu_name", "") for s in BAD_CPU_SUBSTRINGS)]
+          print(f"Filtered out {before - len(offers)} offers with weak/old CPUs, {len(offers)} remain")
 
           if not offers:
               print("ERROR: No matching offers found", file=sys.stderr)
