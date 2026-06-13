@@ -340,7 +340,7 @@ jobs:
           REPO = "${{ github.repository }}"
 
           req = urllib.request.Request(
-              f"https://api.github.com/repos/{REPO}/contents/gopro360/vastai_stitch.sh",
+              f"https://api.github.com/repos/{REPO}/contents/gopro360/vastai_stitch.sh?ref=feature/resilient-ssh-execution",
               headers={"Authorization": f"token {PAT}", "Accept": "application/vnd.github.v3+json"}
           )
           with urllib.request.urlopen(req) as r:
