@@ -113,7 +113,7 @@ FILTER_COMPLEX="\
 [tlRB][tcRBScaled]hstack[trAll],[trAll][trRB]hstack[trBotDone],\
 [tlDone][tMid]hstack[tlMid],[tlMid][trBotDone]hstack[topComplete],\
 [botComplete][topComplete]vstack[complete],\
-[complete]v360=eac:e:interp=bilinear,crop=4032:2388:x=0:y=0[v]"
+[complete]v360=eac:e:interp=linear,crop=4032:2388:x=0:y=0[v]"
 
 # ── Probe source duration ──────────────────────────────────────────────────────
 log ""
