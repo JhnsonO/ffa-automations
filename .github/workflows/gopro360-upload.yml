@@ -16,6 +16,11 @@ on:
         required: false
         default: ''
         type: string
+      test_duration_sec:
+        description: 'If set, only process this many seconds (for quick pipeline tests)'
+        required: false
+        default: ''
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -370,6 +375,7 @@ jobs:
                GH_PAT='${GH_PAT}' \
                REPO='${{ github.repository }}' \
                TRANSCODE_BITRATE='20M' \
+               TEST_DURATION_SEC='${{ github.event.inputs.test_duration_sec }}' \
                bash /tmp/vastai_stitch.sh"
 
       - name: Terminate Vast.ai instance
