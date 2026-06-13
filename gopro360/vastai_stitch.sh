@@ -177,6 +177,14 @@ if [ "${BENCH_OK}" != "yes" ]; then
 fi
 log "  Benchmark passed — proceeding with download"
 
+# ── Dry-run exit (termination test) ─────────────────────────────────────────
+if [ "${DRY_RUN:-}" = "true" ]; then
+  log "DRY_RUN=true — skipping download/encode/upload, writing DONE now"
+  touch "${WORKDIR}/DONE"
+  log "Done. Instance will now terminate."
+  exit 0
+fi
+
 # ── Download source to local NVMe ───────────────────────────────────────────
 # Avoids N parallel remote seeks against the GoPro CDN (unreliable/slow);
 # local -ss seeks are instant and frame-accurate.
