@@ -374,7 +374,7 @@ jobs:
                YOUTUBE_TOKEN='${YOUTUBE_TOKEN}' \
                GH_PAT='${GH_PAT}' \
                REPO='${{ github.repository }}' \
-               TRANSCODE_BITRATE='20M' \
+               TRANSCODE_BITRATE='auto' \
                TEST_DURATION_SEC='${{ github.event.inputs.test_duration_sec }}' \
                bash /tmp/vastai_stitch.sh"
 
