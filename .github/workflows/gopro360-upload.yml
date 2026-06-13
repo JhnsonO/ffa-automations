@@ -196,7 +196,6 @@ jobs:
               "cpu_cores": {"gte": 16},
               "cpu_ram": {"gte": 64},
               "cpu_ghz": {"gte": 3.0},
-              "gpu_name": {"in": ["RTX 4090", "RTX 6000Ada", "L40", "L40S"]},
               "rentable": {"eq": True},
               "verified": {"eq": True},
               "geolocation": {"neq": "CN"},
