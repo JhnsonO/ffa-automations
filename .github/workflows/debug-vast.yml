@@ -20,10 +20,18 @@ jobs:
           iid = 40823599
 
           body = json.dumps({"ssh_key": pubkey}).encode()
-          req = urllib.request.Request(f"https://cloud.vast.ai/api/v1/instances/{iid}/ssh/", data=body, method="POST", headers=headers)
-          try:
-              with urllib.request.urlopen(req, timeout=15) as r:
-                  print(f"POST ssh/: HTTP {r.status} {r.read().decode()}")
-          except urllib.error.HTTPError as e:
-              print(f"POST ssh/: HTTP {e.code} {e.read().decode()}")
+          for url, method in [
+              (f"https://cloud.vast.ai/api/v1/instances/{iid}/ssh/", "POST"),
+              (f"https://console.vast.ai/api/v0/instances/{iid}/ssh/", "POST"),
+              (f"https://cloud.vast.ai/api/v0/instances/{iid}/ssh/", "POST"),
+              (f"https://cloud.vast.ai/api/v1/instances/{iid}/", "PUT"),
+          ]:
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      print(f"{method} {url}: HTTP {r.status} {r.read().decode()}")
+              except urllib.error.HTTPError as e:
+                  print(f"{method} {url}: HTTP {e.code} {e.read().decode()[:200]}")
+              except Exception as e:
+                  print(f"{method} {url}: {e}")
           PY
