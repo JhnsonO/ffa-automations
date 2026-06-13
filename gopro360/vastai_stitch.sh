@@ -152,6 +152,31 @@ if [ "${NPROC}" -lt 16 ]; then
   exit 1
 fi
 
+# ── CPU speed benchmark (abort before download if too slow) ─────────────────
+# Generates 10s of synthetic 5760x2880 blank video through v360+libx264
+# (same filter chain as real encode) and checks speed= against MIN_SPEED.
+MIN_SPEED="1.5"
+log "--- CPU benchmark (10s synthetic encode, min ${MIN_SPEED}x required) ---"
+BENCH_SPEED=$(ffmpeg -y -v quiet \
+  -f lavfi -i "color=c=black:s=5760x2880:r=30:d=10" \
+  -vf "v360=e:eac:interp=linear" \
+  -c:v libx264 -preset ultrafast -threads 0 \
+  -f null /dev/null 2>&1 \
+  | grep -oP 'speed=\K[0-9.]+' | tail -1)
+
+if [ -z "${BENCH_SPEED}" ]; then
+  log "ERROR: benchmark failed to produce speed reading — aborting"
+  exit 1
+fi
+
+log "  Benchmark speed: ${BENCH_SPEED}x (min required: ${MIN_SPEED}x)"
+BENCH_OK=$(python3 -c "print('yes' if float('${BENCH_SPEED}') >= float('${MIN_SPEED}') else 'no')")
+if [ "${BENCH_OK}" != "yes" ]; then
+  log "ERROR: machine too slow (${BENCH_SPEED}x < ${MIN_SPEED}x) — aborting to retry on better offer"
+  exit 1
+fi
+log "  Benchmark passed — proceeding with download"
+
 # ── Download source to local NVMe ───────────────────────────────────────────
 # Avoids N parallel remote seeks against the GoPro CDN (unreliable/slow);
 # local -ss seeks are instant and frame-accurate.
