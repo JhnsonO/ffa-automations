@@ -18,7 +18,7 @@ set -euo pipefail
 WORKDIR_EARLY="/tmp/ffa360"
 mkdir -p "${WORKDIR_EARLY}"
 rm -f "${WORKDIR_EARLY}/DONE" "${WORKDIR_EARLY}/FAILED"
-trap 'code=$?; if [ $code -ne 0 ]; then echo "$code" > "${WORKDIR_EARLY}/FAILED"; fi' EXIT
+trap 'code=$?; if [ $code -ne 0 ] && [ ! -s "${WORKDIR_EARLY}/FAILED" ]; then echo "$code" > "${WORKDIR_EARLY}/FAILED"; fi' EXIT
 
 BITRATE="${TRANSCODE_BITRATE:-auto}"
 WORKDIR="/tmp/ffa360"
