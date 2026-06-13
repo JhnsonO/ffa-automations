@@ -132,8 +132,13 @@ log "Source duration: ${TOTAL_DUR}s"
 # Avoids N parallel remote seeks against the GoPro CDN (unreliable/slow);
 # local -ss seeks are instant and frame-accurate.
 LOCAL_SOURCE="${WORKDIR}/source.360"
+log "--- HEAD request diagnostic ---"
+curl -sI --connect-timeout 15 --max-time 30 "${SOURCE_URL}" | head -10 || log "HEAD request failed"
+
 log "--- Downloading source to local disk ---"
-curl -L --fail --retry 3 --retry-delay 5 -o "${LOCAL_SOURCE}" "${SOURCE_URL}" > "${WORKDIR}/download.log" 2>&1 &
+curl -L --fail --retry 3 --retry-delay 5 \
+  --connect-timeout 30 --max-time 1800 --speed-time 30 --speed-limit 1024 \
+  -o "${LOCAL_SOURCE}" "${SOURCE_URL}" > "${WORKDIR}/download.log" 2>&1 &
 DL_PID=$!
 while kill -0 "${DL_PID}" 2>/dev/null; do
   sleep 5
