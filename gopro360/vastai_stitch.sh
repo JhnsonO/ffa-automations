@@ -159,10 +159,27 @@ LOCAL_SOURCE="${WORKDIR}/source.360"
 log "--- HEAD request diagnostic ---"
 curl -sI --connect-timeout 15 --max-time 30 "${SOURCE_URL}" | head -10 || log "HEAD request failed"
 
-log "--- Downloading source to local disk ---"
-curl -L --fail --retry 3 --retry-delay 5 \
-  --connect-timeout 30 --max-time 7200 --speed-time 30 --speed-limit 1024 \
-  -o "${LOCAL_SOURCE}" "${SOURCE_URL}" > "${WORKDIR}/download.log" 2>&1 &
+log "--- Installing aria2 ---"
+apt-get install -y -qq aria2 > /dev/null
+
+log "--- Downloading source to local disk (aria2c, 16 connections) ---"
+aria2c \
+  --out="source.360" \
+  --dir="${WORKDIR}" \
+  --split=16 \
+  --max-connection-per-server=16 \
+  --min-split-size=10M \
+  --connect-timeout=30 \
+  --timeout=60 \
+  --max-tries=10 \
+  --retry-wait=5 \
+  --lowest-speed-limit=512K \
+  --max-overall-download-limit=0 \
+  --file-allocation=none \
+  --allow-overwrite=true \
+  --console-log-level=warn \
+  --summary-interval=0 \
+  "${SOURCE_URL}" > "${WORKDIR}/download.log" 2>&1 &
 DL_PID=$!
 STALL_TICKS=0
 LAST_SZ=0
@@ -182,7 +199,7 @@ while kill -0 "${DL_PID}" 2>/dev/null; do
     exit 1
   fi
 done
-wait "${DL_PID}" || { log "ERROR: download failed:"; tail -20 "${WORKDIR}/download.log"; exit 1; }
+wait "${DL_PID}" || { log "ERROR: aria2c download failed:"; tail -20 "${WORKDIR}/download.log"; exit 1; }
 SRC_SIZE_MB=$(du -m "${LOCAL_SOURCE}" | cut -f1)
 log "Downloaded: ${SRC_SIZE_MB}MB -> ${LOCAL_SOURCE}"
 
