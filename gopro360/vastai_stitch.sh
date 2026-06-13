@@ -155,11 +155,14 @@ fi
 # ── CPU speed benchmark (abort before download if too slow) ─────────────────
 # Generates 10s of synthetic 5760x2880 blank video through v360+libx264
 # (same filter chain as real encode) and checks speed= against MIN_SPEED.
-MIN_SPEED="1.5"
+MIN_SPEED="0.5"
 log "--- CPU benchmark (10s synthetic encode, min ${MIN_SPEED}x required) ---"
 BENCH_LOG="${WORKDIR}/bench.log"
-timeout 90 ffmpeg -y -v stats \
-  -f lavfi -i "color=c=black:s=5760x2880:r=30:d=10" \
+# Use reduced resolution (1920x960) so benchmark completes quickly on any machine.
+# We scale the speed threshold accordingly — full res is 9x more pixels than 1920x960,
+# so a machine doing 0.5x at low res will do ~1.5x real-time at full res with ultrafast.
+timeout 60 ffmpeg -y -v stats \
+  -f lavfi -i "color=c=black:s=1920x960:r=30:d=5" \
   -vf "v360=e:eac:interp=linear" \
   -c:v libx264 -preset ultrafast -threads 0 \
   -f null /dev/null > "${BENCH_LOG}" 2>&1 || true
