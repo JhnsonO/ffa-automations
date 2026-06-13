@@ -8,29 +8,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Terminate leaked instances
+      - name: Attach SSH key to instance
         env:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
         run: |
           python3 - <<'PY'
           import os, json, urllib.request
           API_KEY = os.environ["VAST_API_KEY"]
-          headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-          for iid in [40643535, 40647270, 40647582]:
-              req = urllib.request.Request(f"https://cloud.vast.ai/api/v1/instances/{iid}/", method="DELETE", headers=headers)
-              try:
-                  with urllib.request.urlopen(req, timeout=15) as r:
-                      print(f"id={iid}: HTTP {r.status} {r.read().decode()}")
-              except urllib.error.HTTPError as e:
-                  print(f"id={iid}: HTTP {e.code} {e.read().decode()}")
+          headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json", "Content-Type": "application/json"}
+          pubkey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILmtQvIxOA1cwx9Xl9/lrXVRAxXVK+EbVIPABG4UQ+0Z root@vm"
+          iid = 40823599
 
-          # Re-list to confirm
-          import time
-          time.sleep(2)
-          req = urllib.request.Request("https://cloud.vast.ai/api/v1/instances/", headers=headers)
-          with urllib.request.urlopen(req, timeout=15) as r:
-              data = json.loads(r.read())
-          print(f"\\nRemaining instances: {data.get('total_instances')}")
-          for inst in data.get("instances", []):
-              print(f"  id={inst['id']} status={inst['actual_status']}")
+          body = json.dumps({"ssh_key": pubkey}).encode()
+          req = urllib.request.Request(f"https://cloud.vast.ai/api/v1/instances/{iid}/ssh/", data=body, method="POST", headers=headers)
+          try:
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  print(f"POST ssh/: HTTP {r.status} {r.read().decode()}")
+          except urllib.error.HTTPError as e:
+              print(f"POST ssh/: HTTP {e.code} {e.read().decode()}")
           PY
