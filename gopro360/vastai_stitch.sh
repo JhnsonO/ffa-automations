@@ -157,7 +157,11 @@ fi
 # local -ss seeks are instant and frame-accurate.
 LOCAL_SOURCE="${WORKDIR}/source.360"
 log "--- HEAD request diagnostic ---"
-curl -sI --connect-timeout 15 --max-time 30 "${SOURCE_URL}" | head -10 || log "HEAD request failed"
+HEAD_OUT=$(curl -sI --connect-timeout 15 --max-time 30 "${SOURCE_URL}" || true)
+echo "$HEAD_OUT" | head -10
+TOTAL_BYTES=$(echo "$HEAD_OUT" | grep -i '^content-length:' | tr -d '[:space:]\r' | cut -d: -f2 || echo 0)
+TOTAL_MB=$(( (${TOTAL_BYTES:-0} + 1048575) / 1048576 ))
+log "  Total file size: ${TOTAL_MB}MB"
 
 log "--- Installing aria2 ---"
 apt-get install -y -qq aria2 > /dev/null
@@ -182,10 +186,26 @@ aria2c \
 DL_PID=$!
 STALL_TICKS=0
 LAST_SZ=0
+DL_START=$(date +%s)
 while kill -0 "${DL_PID}" 2>/dev/null; do
   sleep 5
   SZ=$(du -m "${LOCAL_SOURCE}" 2>/dev/null | cut -f1 || echo 0)
-  log "  downloading... ${SZ}MB so far"
+  NOW=$(date +%s)
+  ELAPSED=$(( NOW - DL_START ))
+  if [ "${SZ}" -gt 0 ] && [ "${ELAPSED}" -gt 0 ] && [ "${TOTAL_MB:-0}" -gt 0 ]; then
+    SPEED_MBS=$(( SZ / ELAPSED ))
+    REMAINING_MB=$(( TOTAL_MB - SZ ))
+    if [ "${SPEED_MBS}" -gt 0 ]; then
+      ETA_SEC=$(( REMAINING_MB / SPEED_MBS ))
+      ETA_MIN=$(( ETA_SEC / 60 ))
+      ETA_S=$(( ETA_SEC % 60 ))
+      log "  downloading... ${SZ}/${TOTAL_MB}MB (${SPEED_MBS}MB/s, ETA ${ETA_MIN}m${ETA_S}s)"
+    else
+      log "  downloading... ${SZ}/${TOTAL_MB}MB"
+    fi
+  else
+    log "  downloading... ${SZ}MB so far"
+  fi
   if [ "${SZ}" -eq "${LAST_SZ}" ]; then
     STALL_TICKS=$((STALL_TICKS+1))
   else
