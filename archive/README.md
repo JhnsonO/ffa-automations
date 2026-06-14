@@ -29,4 +29,6 @@ Spent 360 experiments, removed to declutter. Commits remain reachable by SHA —
 | `feature/360-camera` | `ab6c45f8536c8d4e2efa2733177a24d3367c8edb` | First 360 attempt (cookies via job output) |
 | `feature/360-camera-v2` | `d98b986b2c85b71663ae72b1e62364bb72f9051d` | Temp VM benchmark workflow |
 
+| `feature/hosted-runner-split` | `6f3cc5ec8d1dafbd6d56e80e52e0092069c4da10` | Deferred runner-split refactor — 0 commits ahead of main (already superseded); split goal already achieved (uploads run on GitHub-hosted runners) |
+
 **Kept** (still useful): `feature/360-flat-crop`, `feature/360-vr180` (alternative output formats — VR180 flagged as a likely long-term direction: roughly half the pixels to encode means faster, cheaper Vast.ai runs), and `feature/hosted-runner-split` (deferred infra refactor).
