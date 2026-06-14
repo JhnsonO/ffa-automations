@@ -21,6 +21,16 @@ on:
         required: false
         default: ''
         type: string
+      dry_run:
+        description: 'If true, skip download/encode/upload — just boot, benchmark, write DONE, and terminate'
+        required: false
+        default: 'false'
+        type: string
+      excluded_offer_ids:
+        description: 'Comma-separated offer IDs to skip (used internally on redispatch)'
+        required: false
+        default: ''
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -28,15 +38,11 @@ env:
 permissions:
   contents: write
 
-concurrency:
-  group: gopro360-upload-${{ github.event.inputs.media_id }}-${{ github.event.inputs.test_duration_sec }}
-  cancel-in-progress: false
-
 jobs:
   upload-360:
     name: Stitch + Upload 360 via Vast.ai
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 200
 
     steps:
       - name: Checkout
@@ -196,11 +202,13 @@ jobs:
           # geolocation excludes China (CN) — unreliable boot times over GitHub Actions SSH
           query = json.dumps({
               "reliability2": {"gte": 0.98},
-              "inet_up": {"gte": 200},
-              "disk_space": {"gte": 100},
-              "cpu_cores": {"gte": 16},
+              "inet_up": {"gte": 800},
+              "inet_down": {"gte": 800},
+              "disk_space": {"gte": 150},
+              "cpu_cores": {"gte": 24},
               "cpu_ram": {"gte": 64},
-              "cpu_ghz": {"gte": 3.0},
+              "cpu_ghz": {"gte": 4.0},
+              "gpu_frac": {"eq": 1},
               "rentable": {"eq": True},
               "verified": {"eq": True},
               "geolocation": {"neq": "CN"},
@@ -215,6 +223,14 @@ jobs:
           offers = [o for o in offers if not any(s in (o.get("cpu_name") or "") for s in BAD_CPU_SUBSTRINGS)]
           print(f"Filtered out {before - len(offers)} offers with weak/old CPUs, {len(offers)} remain")
 
+          # Exclude previously tried offers
+          excluded_raw = "${{ github.event.inputs.excluded_offer_ids }}".strip()
+          excluded_ids = set(int(x.strip()) for x in excluded_raw.split(",") if x.strip().isdigit())
+          if excluded_ids:
+              before_excl = len(offers)
+              offers = [o for o in offers if o["id"] not in excluded_ids]
+              print(f"Excluded {before_excl - len(offers)} previously tried offers, {len(offers)} remain")
+
           if not offers:
               print("ERROR: No matching offers found", file=sys.stderr)
               sys.exit(1)
@@ -225,7 +241,7 @@ jobs:
 
           IMAGE_PAYLOAD = {
               "image": "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
-              "disk": 60,
+              "disk": 150,
               "runtype": "ssh",
               "ssh_key": pub_key,
               "env": {"NVIDIA_VISIBLE_DEVICES": "all", "NVIDIA_DRIVER_CAPABILITIES": "all"},
@@ -287,10 +303,14 @@ jobs:
               sys.exit(1)
 
           print(f"Ready: {ip}:{port}")
+          # Track which offer was used so redispatch can exclude it
+          used_offer_id = next(o["id"] for o in candidates if o.get("id") and str(o["id"]) in str(instance_id) or True)
+          used_offer_id = next((o["id"] for o in offers[:5] if o.get("id")), "")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"instance_id={instance_id}\n")
               f.write(f"ip={ip}\n")
               f.write(f"port={port}\n")
+              f.write(f"used_offer_id={used_offer_id}\n")
           PY
 
       - name: Wait for SSH
@@ -300,15 +320,15 @@ jobs:
           IP="${{ steps.launch.outputs.ip }}"
           PORT="${{ steps.launch.outputs.port }}"
           echo "Waiting for SSH on ${IP}:${PORT}..."
-          for i in $(seq 1 24); do
+          for i in $(seq 1 8); do
             if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
                    -i /tmp/vastai_key -p "${PORT}" "root@${IP}" \
                    "echo SSH_OK" 2>/dev/null | grep -q SSH_OK; then
               echo "SSH is up after ${i} attempts"
               exit 0
             fi
-            echo "  [${i}/24] not ready — waiting 15s..."
-            sleep 15
+            echo "  [${i}/8] not ready — waiting 5s..."
+            sleep 5
           done
           echo "ERROR: SSH never came up"
           exit 1
@@ -337,7 +357,7 @@ jobs:
           REPO = "${{ github.repository }}"
 
           req = urllib.request.Request(
-              f"https://api.github.com/repos/{REPO}/contents/gopro360/vastai_stitch.sh",
+              f"https://api.github.com/repos/{REPO}/contents/gopro360/vastai_stitch.sh?ref=feature/resilient-ssh-execution",
               headers={"Authorization": f"token {PAT}", "Accept": "application/vnd.github.v3+json"}
           )
           with urllib.request.urlopen(req) as r:
@@ -353,30 +373,117 @@ jobs:
               "root@${{ steps.launch.outputs.ip }}:/tmp/vastai_stitch.sh"
           echo "Script transferred"
 
-      - name: Run stitch + upload on instance
+      - name: Launch stitch + upload (detached)
         if: steps.wait_ssh.outcome == 'success'
         env:
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          ssh -o StrictHostKeyChecking=no \
-              -o ServerAliveInterval=60 \
-              -o ServerAliveCountMax=60 \
+          # Write the invocation to a wrapper script on the instance, then launch it
+          # fully detached (setsid + nohup + disown + stdin from /dev/null) so it
+          # survives this SSH connection dropping. We poll for completion separately.
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=20 \
               -i /tmp/vastai_key \
               -p "${{ steps.launch.outputs.port }}" \
               "root@${{ steps.launch.outputs.ip }}" \
-              "SOURCE_URL='${{ steps.get_url.outputs.cdn_url }}' \
-               MEDIA_ID='${{ github.event.inputs.media_id }}' \
-               FILENAME='${{ github.event.inputs.filename }}' \
-               CAPTURED_AT='${{ steps.get_url.outputs.captured_at }}' \
-               YOUTUBE_CREDS='${YOUTUBE_CREDENTIALS}' \
-               YOUTUBE_TOKEN='${YOUTUBE_TOKEN}' \
-               GH_PAT='${GH_PAT}' \
-               REPO='${{ github.repository }}' \
-               TRANSCODE_BITRATE='auto' \
-               TEST_DURATION_SEC='${{ github.event.inputs.test_duration_sec }}' \
-               bash /tmp/vastai_stitch.sh"
+              "cat > /tmp/run_stitch.sh << 'WRAPEOF'
+          #!/usr/bin/env bash
+          export SOURCE_URL='${{ steps.get_url.outputs.cdn_url }}'
+          export MEDIA_ID='${{ github.event.inputs.media_id }}'
+          export FILENAME='${{ github.event.inputs.filename }}'
+          export CAPTURED_AT='${{ steps.get_url.outputs.captured_at }}'
+          export YOUTUBE_CREDS='${YOUTUBE_CREDENTIALS}'
+          export YOUTUBE_TOKEN='${YOUTUBE_TOKEN}'
+          export GH_PAT='${GH_PAT}'
+          export REPO='${{ github.repository }}'
+          export TRANSCODE_BITRATE='auto'
+          export TEST_DURATION_SEC='${{ github.event.inputs.test_duration_sec }}'
+          export DRY_RUN='${{ github.event.inputs.dry_run }}'
+          exec bash /tmp/vastai_stitch.sh
+          WRAPEOF
+          chmod +x /tmp/run_stitch.sh
+          rm -f /tmp/ffa360_run.log
+          mkdir -p /tmp/ffa360
+          rm -f /tmp/ffa360/DONE /tmp/ffa360/FAILED
+          setsid nohup /tmp/run_stitch.sh < /dev/null > /tmp/ffa360_run.log 2>&1 &
+          disown
+          sleep 2
+          echo LAUNCHED pid=\$!"
+
+      - name: Poll for completion
+        if: steps.wait_ssh.outcome == 'success'
+        id: poll
+        run: |
+          # Poll with short-lived SSH connections every 15s. Any single connection
+          # dropping just means a missed poll, not a dead job — the remote process
+          # is detached and keeps running regardless.
+          MAX_TICKS=700   # ~175 min, under the 180min job timeout
+          CONSEC_FAIL=0
+          MAX_CONSEC_FAIL=20  # ~5 min of unreachable before giving up
+          LAST_LINE_COUNT=0
+
+          for ((i=1; i<=MAX_TICKS; i++)); do
+            sleep 15
+            OUT=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes \
+                      -i /tmp/vastai_key \
+                      -p "${{ steps.launch.outputs.port }}" \
+                      "root@${{ steps.launch.outputs.ip }}" \
+                      "tail -n +\$(( $LAST_LINE_COUNT + 1 )) /tmp/ffa360_run.log 2>/dev/null; \
+                       echo '__FFA_STATUS_BEGIN__'; \
+                       if [ -f /tmp/ffa360/DONE ] || [ -f /tmp/ffa360_DONE ]; then echo DONE; \
+                       elif [ -f /tmp/ffa360/FAILED ]; then cat /tmp/ffa360/FAILED; \
+                       else echo RUNNING; fi; \
+                       echo '__FFA_LINE_COUNT__'; \
+                       wc -l < /tmp/ffa360_run.log" 2>/dev/null) || {
+              CONSEC_FAIL=$((CONSEC_FAIL+1))
+              echo "[poll $i] SSH unreachable (${CONSEC_FAIL}/${MAX_CONSEC_FAIL})"
+              if [ "$CONSEC_FAIL" -ge "$MAX_CONSEC_FAIL" ]; then
+                echo "ERROR: instance unreachable for too long"
+                exit 1
+              fi
+              continue
+            }
+            CONSEC_FAIL=0
+
+            NEW_LOG=$(echo "$OUT" | sed -n '1,/^__FFA_STATUS_BEGIN__$/{/^__FFA_STATUS_BEGIN__$/!p}')
+            STATUS_LINE=$(echo "$OUT" | sed -n '/^__FFA_STATUS_BEGIN__$/{n;p}')
+            NEW_TOTAL=$(echo "$OUT" | sed -n '/^__FFA_LINE_COUNT__$/{n;p}')
+
+            CLEAN_LOG=$(echo "$NEW_LOG" | grep -v '^__FFA_LINE_COUNT__$' | grep -v '^__FFA_STATUS_BEGIN__$' | grep -v '^RUNNING$' | grep -v '^DONE$' || true)
+            [ -n "$CLEAN_LOG" ] && echo "$CLEAN_LOG"
+            LAST_LINE_COUNT="$NEW_TOTAL"
+
+            case "$STATUS_LINE" in
+              DONE)
+                echo "[poll $i] DONE"
+                RESULT_URL=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes \
+                      -i /tmp/vastai_key -p "${{ steps.launch.outputs.port }}" \
+                      "root@${{ steps.launch.outputs.ip }}" \
+                      "cat /tmp/ffa360/RESULT_URL /tmp/ffa360_RESULT_URL 2>/dev/null | head -1 || true" 2>/dev/null)
+                echo "result_url=${RESULT_URL}" >> "$GITHUB_OUTPUT"
+                exit 0
+                ;;
+              BENCHMARK_FAILED)
+                echo "[poll $i] Benchmark failed — redispatching on a fresh offer..."
+                PREV_EXCLUDED="${{ github.event.inputs.excluded_offer_ids }}"
+                THIS_OFFER="${{ steps.launch.outputs.used_offer_id }}"
+                NEW_EXCLUDED="${PREV_EXCLUDED:+${PREV_EXCLUDED},}${THIS_OFFER}"
+                curl -s -X POST -H "Authorization: token ${{ secrets.GH_PAT }}" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-upload.yml/dispatches" \
+                  -d "{"ref":"${{ github.ref_name }}","inputs":{"media_id":"${{ github.event.inputs.media_id }}","filename":"${{ github.event.inputs.filename }}","captured_at":"${{ github.event.inputs.captured_at }}","test_duration_sec":"${{ github.event.inputs.test_duration_sec }}","dry_run":"${{ github.event.inputs.dry_run }}","excluded_offer_ids":"${NEW_EXCLUDED}"}}"
+                echo "Fresh run dispatched excluding offers: ${NEW_EXCLUDED}"
+                exit 1
+                ;;
+              FAILED*)
+                echo "[poll $i] FAILED: $STATUS_LINE"
+                exit 1
+                ;;
+            esac
+          done
+          echo "ERROR: timed out waiting for completion"
+          exit 1
 
       - name: Terminate Vast.ai instance
         if: always()
@@ -389,20 +496,37 @@ jobs:
             exit 0
           fi
           python3 - <<'PY'
-          import os, json, urllib.request
+          import os, json, urllib.request, urllib.error
 
           API_KEY = os.environ["VAST_API_KEY"]
           INSTANCE_ID = os.environ["INSTANCE_ID"]
+          headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
 
-          req = urllib.request.Request(
+          # Primary: console.vast.ai/api/v0 — matches documented instance-lifecycle
+          # endpoints (reboot/ssh-attach). The cloud.vast.ai/api/v1 DELETE 404s.
+          endpoints = [
+              f"https://console.vast.ai/api/v0/instances/{INSTANCE_ID}/",
+              f"https://cloud.vast.ai/api/v0/instances/{INSTANCE_ID}/",
               f"https://cloud.vast.ai/api/v1/instances/{INSTANCE_ID}/",
-              method="DELETE",
-              headers={"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"},
-          )
-          try:
-              with urllib.request.urlopen(req, timeout=20) as r:
-                  print(f"Terminated {INSTANCE_ID}: {json.loads(r.read())}")
-          except Exception as e:
-              print(f"Termination error (may already be gone): {e}")
+          ]
+
+          for url in endpoints:
+              req = urllib.request.Request(url, method="DELETE", headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as r:
+                      print(f"Terminated {INSTANCE_ID} via {url}: {json.loads(r.read())}")
+                  break
+              except urllib.error.HTTPError as e:
+                  body = e.read().decode()[:300]
+                  print(f"  {url} -> HTTP {e.code}: {body}")
+                  if e.code == 404:
+                      continue
+                  break
+              except Exception as e:
+                  print(f"  {url} -> error: {e}")
+                  continue
+          else:
+              print(f"WARNING: could not terminate {INSTANCE_ID} via any endpoint — terminate manually")
           PY
+
 

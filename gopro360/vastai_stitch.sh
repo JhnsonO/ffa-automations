@@ -15,6 +15,11 @@
 
 set -euo pipefail
 
+WORKDIR_EARLY="/tmp/ffa360"
+mkdir -p "${WORKDIR_EARLY}"
+rm -f "${WORKDIR_EARLY}/DONE" "${WORKDIR_EARLY}/FAILED"
+trap 'code=$?; if [ $code -ne 0 ] && [ ! -s "${WORKDIR_EARLY}/FAILED" ]; then echo "FAILED:$code" > "${WORKDIR_EARLY}/FAILED"; fi' EXIT
+
 BITRATE="${TRANSCODE_BITRATE:-auto}"
 WORKDIR="/tmp/ffa360"
 OUTPUT_EQUIRECT="${WORKDIR}/output.equirect.mp4"
@@ -139,32 +144,87 @@ if [ "${BITRATE}" = "auto" ]; then
   fi
 fi
 
+NPROC=$(nproc)
+log "--- Core count check ---"
+log "  nproc: ${NPROC}"
+if [ "${NPROC}" -lt 16 ]; then
+  log "ERROR: only ${NPROC} cores allocated (need >=16 for target speed) — bad offer, aborting before download"
+  exit 1
+fi
+
 # ── Download source to local NVMe ───────────────────────────────────────────
 # Avoids N parallel remote seeks against the GoPro CDN (unreliable/slow);
 # local -ss seeks are instant and frame-accurate.
 LOCAL_SOURCE="${WORKDIR}/source.360"
 log "--- HEAD request diagnostic ---"
-curl -sI --connect-timeout 15 --max-time 30 "${SOURCE_URL}" | head -10 || log "HEAD request failed"
+HEAD_OUT=$(curl -sI --connect-timeout 15 --max-time 30 "${SOURCE_URL}" || true)
+echo "$HEAD_OUT" | head -10
+TOTAL_BYTES=$(echo "$HEAD_OUT" | grep -i '^content-length:' | tr -d '[:space:]\r' | cut -d: -f2 || echo 0)
+TOTAL_MB=$(( (${TOTAL_BYTES:-0} + 1048575) / 1048576 ))
+log "  Total file size: ${TOTAL_MB}MB"
 
-log "--- Downloading source to local disk ---"
-curl -L --fail --retry 3 --retry-delay 5 \
-  --connect-timeout 30 --max-time 1800 --speed-time 30 --speed-limit 1024 \
-  -o "${LOCAL_SOURCE}" "${SOURCE_URL}" > "${WORKDIR}/download.log" 2>&1 &
+log "--- Installing aria2 ---"
+apt-get install -y -qq aria2 > /dev/null
+
+log "--- Downloading source to local disk (aria2c, 16 connections) ---"
+aria2c \
+  --out="source.360" \
+  --dir="${WORKDIR}" \
+  --split=16 \
+  --max-connection-per-server=16 \
+  --min-split-size=10M \
+  --connect-timeout=30 \
+  --timeout=60 \
+  --max-tries=10 \
+  --retry-wait=5 \
+  --max-overall-download-limit=0 \
+  --file-allocation=none \
+  --allow-overwrite=true \
+  --console-log-level=warn \
+  --summary-interval=0 \
+  "${SOURCE_URL}" > "${WORKDIR}/download.log" 2>&1 &
 DL_PID=$!
+STALL_TICKS=0
+LAST_SZ=0
+DL_START=$(date +%s)
 while kill -0 "${DL_PID}" 2>/dev/null; do
   sleep 5
   SZ=$(du -m "${LOCAL_SOURCE}" 2>/dev/null | cut -f1 || echo 0)
-  log "  downloading... ${SZ}MB so far"
+  NOW=$(date +%s)
+  ELAPSED=$(( NOW - DL_START ))
+  if [ "${SZ}" -gt 0 ] && [ "${ELAPSED}" -gt 0 ] && [ "${TOTAL_MB:-0}" -gt 0 ]; then
+    SPEED_MBS=$(( SZ / ELAPSED ))
+    REMAINING_MB=$(( TOTAL_MB - SZ ))
+    if [ "${SPEED_MBS}" -gt 0 ]; then
+      ETA_SEC=$(( REMAINING_MB / SPEED_MBS ))
+      ETA_MIN=$(( ETA_SEC / 60 ))
+      ETA_S=$(( ETA_SEC % 60 ))
+      log "  downloading... ${SZ}/${TOTAL_MB}MB (${SPEED_MBS}MB/s, ETA ${ETA_MIN}m${ETA_S}s)"
+    else
+      log "  downloading... ${SZ}/${TOTAL_MB}MB"
+    fi
+  else
+    log "  downloading... ${SZ}MB so far"
+  fi
+  if [ "${SZ}" -eq "${LAST_SZ}" ]; then
+    STALL_TICKS=$((STALL_TICKS+1))
+  else
+    STALL_TICKS=0
+  fi
+  LAST_SZ="${SZ}"
+  if [ "${STALL_TICKS}" -ge 12 ]; then
+    log "ERROR: download stalled for 60s at ${SZ}MB — killing and retrying on next run"
+    kill "${DL_PID}" 2>/dev/null || true
+    exit 1
+  fi
 done
-wait "${DL_PID}" || { log "ERROR: download failed:"; tail -20 "${WORKDIR}/download.log"; exit 1; }
+wait "${DL_PID}" || { log "ERROR: aria2c download failed:"; tail -20 "${WORKDIR}/download.log"; exit 1; }
 SRC_SIZE_MB=$(du -m "${LOCAL_SOURCE}" | cut -f1)
 log "Downloaded: ${SRC_SIZE_MB}MB -> ${LOCAL_SOURCE}"
 
-NPROC=$(nproc)
 TARGET_SPEED=4.0
 
 log "--- System info ---"
-log "  nproc: ${NPROC}"
 free -m | sed 's/^/  /' | while read -r l; do log "$l"; done
 log "  ffmpeg: $(ffmpeg -version | head -1)"
 log "Target: ${TARGET_SPEED}x realtime (i.e. ${TOTAL_DUR}s source in $(python3 -c "print(round(${TOTAL_DUR}/${TARGET_SPEED}))")s)"
@@ -230,6 +290,12 @@ fi
 SIZE_MB=$(du -m "${OUTPUT_EQUIRECT}" | cut -f1)
 log "Transcode complete: ${SIZE_MB}MB"
 
+# Free up disk space — source file no longer needed, and the metadata
+# injection step used to `cp` the output (briefly doubling disk usage,
+# which caused "No space left on device" on a 60GB disk).
+rm -f "${LOCAL_SOURCE}"
+log "Removed local source (${SRC_SIZE_MB}MB freed)"
+
 if [ "${SIZE_MB}" -lt 10 ]; then
   log "ERROR: Output is suspiciously small (${SIZE_MB}MB) — transcode likely failed"
   exit 1
@@ -254,7 +320,7 @@ fi
 # ── Inject 360° metadata ──────────────────────────────────────────────────────
 log ""
 log "--- Injecting 360° XMP metadata ---"
-cp "${OUTPUT_EQUIRECT}" "${OUTPUT_FINAL}"
+mv "${OUTPUT_EQUIRECT}" "${OUTPUT_FINAL}"
 exiftool \
   -api LargeFileSupport=1 \
   -overwrite_original \
@@ -459,6 +525,12 @@ PYEOF
 
 log ""
 log "--- Cleaning up ---"
-rm -rf "${WORKDIR}"
-
+# Write marker files OUTSIDE WORKDIR so rm -rf doesn't delete them before poll sees them
+touch "/tmp/ffa360_DONE"
+YT_URL_LINE="https://www.youtube.com/watch?v=${YT_ID:-unknown}"
+echo "${YT_URL_LINE}" > "/tmp/ffa360_RESULT_URL" || true
+# Also write inside WORKDIR for compatibility
+touch "${WORKDIR}/DONE"
+echo "${YT_URL_LINE}" > "${WORKDIR}/RESULT_URL" || true
 log "Done. Instance will now terminate."
+# Keep WORKDIR intact — instance is terminating anyway, no need to clean up
