@@ -1,0 +1,30 @@
+# ─────────────────────────────────────────────────────────────
+# Credentials — these are written from GitHub secrets at runtime
+# and must NEVER be committed. (They were, historically — now ignored.)
+# ─────────────────────────────────────────────────────────────
+gopro_cookies.json
+youtube_credentials.json
+youtube_token.json
+yt_cookies.txt
+
+# Logs (written at runtime; not part of the repo)
+logs/
+*.log
+
+# Runtime scratch
+downloads/
+/tmp/
+__pycache__/
+*.pyc
+
+# Local env
+.env
+.venv/
+venv/
+
+# ─────────────────────────────────────────────────────────────
+# NOTE: state files are intentionally TRACKED — do not add them here:
+#   uploaded.db, upload_queue.json, size_check.json
+#   .ffa_sheet_id, .ffa_drive_folder_id
+# The pipeline commits these back to main as its persistent memory.
+# ─────────────────────────────────────────────────────────────
