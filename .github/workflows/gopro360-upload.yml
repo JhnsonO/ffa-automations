@@ -159,7 +159,7 @@ jobs:
           GH_PAT  = os.environ["GH_PAT"]
           pub_key = open("/tmp/vastai_key.pub").read().strip()
 
-          BASE    = "https://cloud.vast.ai/api/v0"
+          BASE    = "https://console.vast.ai/api/v0"
           BASE_V1 = "https://cloud.vast.ai/api/v1"
           headers = {
               "Authorization": f"Bearer {API_KEY}",
@@ -230,18 +230,19 @@ jobs:
           print("Searching for cheapest available offer...")
           # NOTE: geolocation filter removed from query — Vast.ai API returns 400
           # on "neq" operator for this field. CN filtering is done in Python below.
+          # Per docs: cpu_ram is in MB; geolocation uses in/notin; cpu_name not filterable via API
           query = json.dumps({
-              "reliability2": {"gte": 0.98},
+              "reliability":  {"gte": 0.98},
               "inet_up":      {"gte": 800},
               "inet_down":    {"gte": 800},
               "disk_space":   {"gte": 150},
               "cpu_cores":    {"gte": 24},
-              "cpu_ram":      {"gte": 64},
+              "cpu_ram":      {"gte": 65536},
               "cpu_ghz":      {"gte": 4.0},
-              # cpu_name: filter applied in Python below (API only supports eq/neq/in/notin)
               "gpu_frac":     {"eq": 1},
               "rentable":     {"eq": True},
               "verified":     {"eq": True},
+              "geolocation":  {"notin": ["CN"]},
           })
 
           try:
@@ -261,12 +262,7 @@ jobs:
           offers = resp.get("offers", [])
           print(f"Found {len(offers)} verified offers from API")
 
-          # Exclude China + non-Intel in Python (API does not support ilike/neq for these fields)
-          before_cn = len(offers)
-          offers = [o for o in offers if o.get("geolocation", "") != "CN"]
-          print(f"Excluded {before_cn - len(offers)} CN offers, {len(offers)} remain")
-
-          # Filter to Intel CPUs only (ilike not supported by API)
+          # Filter to Intel CPUs in Python (cpu_name not a supported API filter field)
           before_intel = len(offers)
           offers = [o for o in offers if "intel" in (o.get("cpu_name") or "").lower()]
           print(f"Filtered to Intel CPUs: {before_intel - len(offers)} excluded, {len(offers)} remain")
