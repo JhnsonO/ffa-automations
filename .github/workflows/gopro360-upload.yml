@@ -238,7 +238,7 @@ jobs:
               "cpu_cores":    {"gte": 24},
               "cpu_ram":      {"gte": 64},
               "cpu_ghz":      {"gte": 4.0},
-              "cpu_name":     {"ilike": "%intel%"},
+              # cpu_name: filter applied in Python below (API only supports eq/neq/in/notin)
               "gpu_frac":     {"eq": 1},
               "rentable":     {"eq": True},
               "verified":     {"eq": True},
@@ -261,10 +261,15 @@ jobs:
           offers = resp.get("offers", [])
           print(f"Found {len(offers)} verified offers from API")
 
-          # Exclude China in Python (API-side geolocation neq is unreliable)
+          # Exclude China + non-Intel in Python (API does not support ilike/neq for these fields)
           before_cn = len(offers)
           offers = [o for o in offers if o.get("geolocation", "") != "CN"]
           print(f"Excluded {before_cn - len(offers)} CN offers, {len(offers)} remain")
+
+          # Filter to Intel CPUs only (ilike not supported by API)
+          before_intel = len(offers)
+          offers = [o for o in offers if "intel" in (o.get("cpu_name") or "").lower()]
+          print(f"Filtered to Intel CPUs: {before_intel - len(offers)} excluded, {len(offers)} remain")
 
           # Exclude weak/old CPUs — filter graph is CPU-bound
           BAD_CPU_SUBSTRINGS = ["E5-", "E3-", "Opteron", "Xeon W3", "Xeon X5"]
