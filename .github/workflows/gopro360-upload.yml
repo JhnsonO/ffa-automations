@@ -150,14 +150,16 @@ jobs:
         id: launch
         env:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           python3 - <<'PY'
-          import os, time, json, urllib.request, urllib.parse, sys
+          import os, time, json, urllib.request, urllib.parse, urllib.error, sys
 
           API_KEY = os.environ["VAST_API_KEY"]
+          GH_PAT  = os.environ["GH_PAT"]
           pub_key = open("/tmp/vastai_key.pub").read().strip()
 
-          BASE = "https://cloud.vast.ai/api/v0"
+          BASE    = "https://cloud.vast.ai/api/v0"
           BASE_V1 = "https://cloud.vast.ai/api/v1"
           headers = {
               "Authorization": f"Bearer {API_KEY}",
@@ -190,35 +192,81 @@ jobs:
               with urllib.request.urlopen(req, timeout=20) as r:
                   return json.loads(r.read())
 
+          def redispatch():
+              """Re-dispatch this workflow so we get a fresh attempt."""
+              payload = json.dumps({
+                  "ref": "${{ github.ref_name }}",
+                  "inputs": {
+                      "media_id":            "${{ github.event.inputs.media_id }}",
+                      "filename":            "${{ github.event.inputs.filename }}",
+                      "captured_at":         "${{ github.event.inputs.captured_at }}",
+                      "test_duration_sec":   "${{ github.event.inputs.test_duration_sec }}",
+                      "dry_run":             "${{ github.event.inputs.dry_run }}",
+                      "excluded_offer_ids":  "${{ github.event.inputs.excluded_offer_ids }}",
+                  }
+              }).encode()
+              req = urllib.request.Request(
+                  "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-upload.yml/dispatches",
+                  data=payload,
+                  method="POST",
+                  headers={
+                      "Authorization": f"token {GH_PAT}",
+                      "Accept": "application/vnd.github.v3+json",
+                      "Content-Type": "application/json",
+                  }
+              )
+              try:
+                  urllib.request.urlopen(req, timeout=15)
+                  print("Redispatch successful.")
+              except Exception as e:
+                  print(f"WARNING: redispatch failed: {e}")
+
           # ── Register SSH key ────────────────────────────────────────────────
           print("Registering SSH key...")
           vast_post("/ssh/", {"ssh_key": pub_key})
           print("SSH key registered")
 
-          # ── Dynamic offer search ────────────────────────────────────────────
-          # Search for cheapest reliable single RTX 3060 with enough disk for FFmpeg
+          # ── Dynamic offer search ─────────────────────────────────────────────
           print("Searching for cheapest available offer...")
-          # verified=True excludes unverified hosts
-          # geolocation excludes China (CN) — unreliable boot times over GitHub Actions SSH
+          # NOTE: geolocation filter removed from query — Vast.ai API returns 400
+          # on "neq" operator for this field. CN filtering is done in Python below.
           query = json.dumps({
               "reliability2": {"gte": 0.98},
-              "inet_up": {"gte": 800},
-              "inet_down": {"gte": 800},
-              "disk_space": {"gte": 150},
-              "cpu_cores": {"gte": 24},
-              "cpu_ram": {"gte": 64},
-              "cpu_ghz": {"gte": 4.0},
-              "cpu_name": {"ilike": "%intel%"},
-              "gpu_frac": {"eq": 1},
-              "rentable": {"eq": True},
-              "verified": {"eq": True},
-              "geolocation": {"neq": "CN"},
+              "inet_up":      {"gte": 800},
+              "inet_down":    {"gte": 800},
+              "disk_space":   {"gte": 150},
+              "cpu_cores":    {"gte": 24},
+              "cpu_ram":      {"gte": 64},
+              "cpu_ghz":      {"gte": 4.0},
+              "cpu_name":     {"ilike": "%intel%"},
+              "gpu_frac":     {"eq": 1},
+              "rentable":     {"eq": True},
+              "verified":     {"eq": True},
           })
-          resp = vast_get("/bundles/", {"q": query})
-          offers = resp.get("offers", [])
-          print(f"Found {len(offers)} verified non-CN offers")
 
-          # Exclude weak/old CPUs (Xeon E5/E3, old Opteron) — filter graph is CPU-bound
+          try:
+              resp = vast_get("/bundles/", {"q": query})
+          except urllib.error.HTTPError as e:
+              body = e.read().decode()[:300]
+              print(f"ERROR: Vast.ai /bundles/ returned HTTP {e.code}: {body}", file=sys.stderr)
+              print("Redispatching for a retry...")
+              redispatch()
+              sys.exit(1)
+          except Exception as e:
+              print(f"ERROR: Vast.ai /bundles/ request failed: {e}", file=sys.stderr)
+              print("Redispatching for a retry...")
+              redispatch()
+              sys.exit(1)
+
+          offers = resp.get("offers", [])
+          print(f"Found {len(offers)} verified offers from API")
+
+          # Exclude China in Python (API-side geolocation neq is unreliable)
+          before_cn = len(offers)
+          offers = [o for o in offers if o.get("geolocation", "") != "CN"]
+          print(f"Excluded {before_cn - len(offers)} CN offers, {len(offers)} remain")
+
+          # Exclude weak/old CPUs — filter graph is CPU-bound
           BAD_CPU_SUBSTRINGS = ["E5-", "E3-", "Opteron", "Xeon W3", "Xeon X5"]
           before = len(offers)
           offers = [o for o in offers if not any(s in (o.get("cpu_name") or "") for s in BAD_CPU_SUBSTRINGS)]
@@ -233,7 +281,8 @@ jobs:
               print(f"Excluded {before_excl - len(offers)} previously tried offers, {len(offers)} remain")
 
           if not offers:
-              print("ERROR: No matching offers found", file=sys.stderr)
+              print("ERROR: No matching offers found after filtering", file=sys.stderr)
+              redispatch()
               sys.exit(1)
 
           # Sort by price per hour, try top 5 in order
@@ -241,25 +290,30 @@ jobs:
           candidates = offers[:5]
 
           IMAGE_PAYLOAD = {
-              "image": "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
-              "disk": 150,
+              "image":   "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
+              "disk":    150,
               "runtype": "ssh",
               "ssh_key": pub_key,
-              "env": {"NVIDIA_VISIBLE_DEVICES": "all", "NVIDIA_DRIVER_CAPABILITIES": "all"},
+              "env":     {"NVIDIA_VISIBLE_DEVICES": "all", "NVIDIA_DRIVER_CAPABILITIES": "all"},
           }
 
           ip = port = instance_id = None
           for offer in candidates:
               offer_id = offer["id"]
               gpu_name = offer.get("gpu_name", "unknown")
-              price = offer.get("dph_total", "?")
+              price    = offer.get("dph_total", "?")
               location = offer.get("geolocation", "?")
-              print(f"Trying offer {offer_id} — {gpu_name} @ ${price:.4f}/hr ({location})")
+              cpu_name = offer.get("cpu_name", "?")
+              print(f"Trying offer {offer_id} — {gpu_name} / {cpu_name} @ ${price:.4f}/hr ({location})")
 
               try:
                   result = vast_put(f"/asks/{offer_id}/", IMAGE_PAYLOAD)
               except urllib.error.HTTPError as e:
-                  print(f"  launch failed: HTTP {e.code} — {e.read().decode()[:200]} — trying next offer")
+                  body = e.read().decode()[:200]
+                  print(f"  launch failed: HTTP {e.code} — {body} — trying next offer")
+                  continue
+              except Exception as e:
+                  print(f"  launch failed: {e} — trying next offer")
                   continue
 
               this_instance = result.get("new_contract")
@@ -287,7 +341,7 @@ jobs:
                   print(f"    [{attempt+1}] status={status} host={ssh_host} port={ssh_port}")
 
                   if status == "running" and ssh_host:
-                      this_ip = ssh_host
+                      this_ip   = ssh_host
                       this_port = str(ssh_port)
                       break
 
@@ -300,13 +354,12 @@ jobs:
                   except: pass
 
           if not ip:
-              print("ERROR: All candidate offers exhausted — giving up", file=sys.stderr)
+              print("ERROR: All candidate offers exhausted — redispatching", file=sys.stderr)
+              redispatch()
               sys.exit(1)
 
           print(f"Ready: {ip}:{port}")
-          # Track which offer was used so redispatch can exclude it
-          used_offer_id = next(o["id"] for o in candidates if o.get("id") and str(o["id"]) in str(instance_id) or True)
-          used_offer_id = next((o["id"] for o in offers[:5] if o.get("id")), "")
+          used_offer_id = next((o["id"] for o in candidates if o.get("id")), "")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"instance_id={instance_id}\n")
               f.write(f"ip={ip}\n")
@@ -381,9 +434,6 @@ jobs:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          # Write the invocation to a wrapper script on the instance, then launch it
-          # fully detached (setsid + nohup + disown + stdin from /dev/null) so it
-          # survives this SSH connection dropping. We poll for completion separately.
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=20 \
               -i /tmp/vastai_key \
               -p "${{ steps.launch.outputs.port }}" \
@@ -416,12 +466,9 @@ jobs:
         if: steps.wait_ssh.outcome == 'success'
         id: poll
         run: |
-          # Poll with short-lived SSH connections every 15s. Any single connection
-          # dropping just means a missed poll, not a dead job — the remote process
-          # is detached and keeps running regardless.
-          MAX_TICKS=700   # ~175 min, under the 180min job timeout
+          MAX_TICKS=700
           CONSEC_FAIL=0
-          MAX_CONSEC_FAIL=20  # ~5 min of unreachable before giving up
+          MAX_CONSEC_FAIL=20
           LAST_LINE_COUNT=0
 
           for ((i=1; i<=MAX_TICKS; i++)); do
@@ -430,7 +477,7 @@ jobs:
                       -i /tmp/vastai_key \
                       -p "${{ steps.launch.outputs.port }}" \
                       "root@${{ steps.launch.outputs.ip }}" \
-                      "tail -n +\$(( $LAST_LINE_COUNT + 1 )) /tmp/ffa360_run.log 2>/dev/null; \
+                      "tail -n +$(( $LAST_LINE_COUNT + 1 )) /tmp/ffa360_run.log 2>/dev/null; \
                        echo '__FFA_STATUS_BEGIN__'; \
                        if [ -f /tmp/ffa360/DONE ] || [ -f /tmp/ffa360_DONE ]; then echo DONE; \
                        elif [ -f /tmp/ffa360/FAILED ]; then cat /tmp/ffa360/FAILED; \
@@ -473,7 +520,7 @@ jobs:
                 curl -s -X POST -H "Authorization: token ${{ secrets.GH_PAT }}" \
                   -H "Accept: application/vnd.github.v3+json" \
                   "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-upload.yml/dispatches" \
-                  -d "{"ref":"${{ github.ref_name }}","inputs":{"media_id":"${{ github.event.inputs.media_id }}","filename":"${{ github.event.inputs.filename }}","captured_at":"${{ github.event.inputs.captured_at }}","test_duration_sec":"${{ github.event.inputs.test_duration_sec }}","dry_run":"${{ github.event.inputs.dry_run }}","excluded_offer_ids":"${NEW_EXCLUDED}"}}"
+                  -d "{\"ref\":\"${{ github.ref_name }}\",\"inputs\":{\"media_id\":\"${{ github.event.inputs.media_id }}\",\"filename\":\"${{ github.event.inputs.filename }}\",\"captured_at\":\"${{ github.event.inputs.captured_at }}\",\"test_duration_sec\":\"${{ github.event.inputs.test_duration_sec }}\",\"dry_run\":\"${{ github.event.inputs.dry_run }}\",\"excluded_offer_ids\":\"${NEW_EXCLUDED}\"}}"
                 echo "Fresh run dispatched excluding offers: ${NEW_EXCLUDED}"
                 exit 1
                 ;;
@@ -499,12 +546,10 @@ jobs:
           python3 - <<'PY'
           import os, json, urllib.request, urllib.error
 
-          API_KEY = os.environ["VAST_API_KEY"]
+          API_KEY     = os.environ["VAST_API_KEY"]
           INSTANCE_ID = os.environ["INSTANCE_ID"]
-          headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+          headers     = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
 
-          # Primary: console.vast.ai/api/v0 — matches documented instance-lifecycle
-          # endpoints (reboot/ssh-attach). The cloud.vast.ai/api/v1 DELETE 404s.
           endpoints = [
               f"https://console.vast.ai/api/v0/instances/{INSTANCE_ID}/",
               f"https://cloud.vast.ai/api/v0/instances/{INSTANCE_ID}/",
@@ -529,5 +574,3 @@ jobs:
           else:
               print(f"WARNING: could not terminate {INSTANCE_ID} via any endpoint — terminate manually")
           PY
-
-
