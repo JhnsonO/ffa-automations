@@ -38,6 +38,10 @@ env:
 permissions:
   contents: write
 
+concurrency:
+  group: gopro360-${{ github.event.inputs.media_id }}
+  cancel-in-progress: false
+
 jobs:
   upload-360:
     name: Stitch + Upload 360 via Vast.ai
