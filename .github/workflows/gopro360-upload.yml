@@ -262,11 +262,6 @@ jobs:
           offers = resp.get("offers", [])
           print(f"Found {len(offers)} verified offers from API")
 
-          # Filter to Intel CPUs in Python (cpu_name not a supported API filter field)
-          before_intel = len(offers)
-          offers = [o for o in offers if "intel" in (o.get("cpu_name") or "").lower()]
-          print(f"Filtered to Intel CPUs: {before_intel - len(offers)} excluded, {len(offers)} remain")
-
           # Exclude weak/old CPUs — filter graph is CPU-bound
           BAD_CPU_SUBSTRINGS = ["E5-", "E3-", "Opteron", "Xeon W3", "Xeon X5"]
           before = len(offers)
