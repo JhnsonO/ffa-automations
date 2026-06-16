@@ -329,20 +329,56 @@ jobs:
 
           # Route .360 files (GoPro MAX) to gopro360-upload.yml via Vast.ai
           # All other videos go to gopro-upload.yml (GitHub runner)
+          import sqlite3, tempfile, base64 as b64, urllib.request as ureq
+
+          # Re-check uploaded.db before dispatching — the queue may contain files
+          # that were uploaded in a concurrent run (e.g. the run that just completed
+          # triggered this scanner scan before the queue was cleaned up).
+          def is_already_uploaded(media_id):
+              try:
+                  req2 = ureq.Request(
+                      f"https://api.github.com/repos/{repo}/contents/uploaded.db",
+                      headers={"Authorization": f"token {token}"}
+                  )
+                  with ureq.urlopen(req2) as r:
+                      db_bytes = b64.b64decode(json.load(r)["content"])
+                  with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+                      tf.write(db_bytes)
+                      tmp = tf.name
+                  con2 = sqlite3.connect(tmp)
+                  row = con2.execute("SELECT youtube_id FROM uploads WHERE media_id=?", (media_id,)).fetchone()
+                  con2.close()
+                  import os; os.unlink(tmp)
+                  return row is not None
+              except Exception as e:
+                  print(f"WARNING: could not check uploaded.db for {media_id}: {e} — dispatching anyway")
+                  return False
+
           triggered = 0
+          skipped = 0
+          items_to_remove = []
           for item in queue:
               filename = item.get("filename", "")
+              media_id = item["media_id"]
+
+              # Skip if already uploaded — remove from queue
+              if is_already_uploaded(media_id):
+                  print(f"SKIP (already uploaded): {filename} ({media_id}) — removing from queue")
+                  items_to_remove.append(media_id)
+                  skipped += 1
+                  continue
+
               is_360 = filename.lower().endswith(".360")
               workflow = "gopro360-upload.yml" if is_360 else "gopro-upload.yml"
 
               if is_360:
                   inputs = {
-                      "media_id": item["media_id"],
+                      "media_id": media_id,
                       "filename": filename,
                       "captured_at": item.get("captured_at", ""),
                   }
               else:
-                  inputs = {"media_id": item["media_id"]}
+                  inputs = {"media_id": media_id}
 
               payload = json.dumps({"ref": "main", "inputs": inputs}).encode()
               req = urllib.request.Request(
@@ -352,10 +388,34 @@ jobs:
               )
               urllib.request.urlopen(req)
               label = "360°" if is_360 else "MP4"
-              print(f"Triggered {label} upload for {filename} ({item['media_id']}) → {workflow}")
+              print(f"Triggered {label} upload for {filename} ({media_id}) → {workflow}")
               triggered += 1
               if triggered < len(queue):
                   time.sleep(5)
 
-          print(f"\nTriggered {triggered} upload run(s)")
+          # Remove already-uploaded items from queue and commit
+          if items_to_remove:
+              cleaned = [i for i in queue if i["media_id"] not in items_to_remove]
+              from pathlib import Path as P
+              P("upload_queue.json").write_text(json.dumps(cleaned, indent=2))
+              print(f"Removed {len(items_to_remove)} already-uploaded item(s) from queue")
+              # Push cleaned queue back to repo
+              encoded_q = b64.b64encode(P("upload_queue.json").read_bytes()).decode()
+              q_sha_req = ureq.Request(
+                  f"https://api.github.com/repos/{repo}/contents/upload_queue.json",
+                  headers={"Authorization": f"token {token}"}
+              )
+              with ureq.urlopen(q_sha_req) as r:
+                  q_sha = json.load(r)["sha"]
+              q_payload = json.dumps({"message": "chore: remove uploaded items from queue [skip ci]", "content": encoded_q, "sha": q_sha, "branch": "main"}).encode()
+              q_req = ureq.Request(
+                  f"https://api.github.com/repos/{repo}/contents/upload_queue.json",
+                  data=q_payload, method="PUT",
+                  headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
+              )
+              with ureq.urlopen(q_req) as r:
+                  print(f"Queue cleaned and committed: {json.load(r)['commit']['sha']}")
+
+          print(f"\nTriggered {triggered} upload run(s), skipped {skipped} already-uploaded")
           PY
+
