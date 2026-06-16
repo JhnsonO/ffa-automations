@@ -275,20 +275,39 @@ wait "${FFMPEG_PID}"
 FFMPEG_EXIT=$?
 set -e
 log "FFmpeg exited with code ${FFMPEG_EXIT}"
-if [ "${FFMPEG_EXIT}" != "0" ]; then
-  log "ERROR: FFmpeg failed — last 30 lines:"
-  tail -30 "${STDOUT}"
-  exit 1
-fi
 
-# Check output exists and has reasonable size
+# Always dump the last 30 lines of FFmpeg stderr so we can diagnose failures
+log "--- FFmpeg tail (last 30 lines) ---"
+tail -30 "${STDOUT}" | while IFS= read -r l; do log "  $l"; done
+
+# Don't trust exit code alone — libx264 occasionally exits non-zero on
+# successful encodes (e.g. SIGPIPE on the progress pipe, or muxing overhead
+# warnings). Check the output file exists and has a sensible duration instead.
 if [ ! -f "${OUTPUT_EQUIRECT}" ]; then
-  log "ERROR: FFmpeg produced no output file"
+  log "ERROR: FFmpeg produced no output file (exit ${FFMPEG_EXIT})"
   exit 1
 fi
 
 SIZE_MB=$(du -m "${OUTPUT_EQUIRECT}" | cut -f1)
-log "Transcode complete: ${SIZE_MB}MB"
+if [ "${SIZE_MB}" -lt 10 ]; then
+  log "ERROR: Output suspiciously small (${SIZE_MB}MB, exit ${FFMPEG_EXIT}) — transcode likely failed"
+  exit 1
+fi
+
+# Duration check against source — catches truncated encodes
+OUT_DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "${OUTPUT_EQUIRECT}" || echo "0")
+MIN_DURATION=$(python3 -c "print(${TOTAL_DUR} * 0.9)")
+DURATION_OK=$(python3 -c "exit(0 if float('${OUT_DURATION}') >= float('${MIN_DURATION}') else 1)" && echo yes || echo no)
+if [ "${DURATION_OK}" = "no" ]; then
+  log "ERROR: Output duration ${OUT_DURATION}s < 90% of source ${TOTAL_DUR}s (exit ${FFMPEG_EXIT}) — encode truncated"
+  exit 1
+fi
+
+if [ "${FFMPEG_EXIT}" != "0" ]; then
+  log "WARNING: FFmpeg exit code was ${FFMPEG_EXIT} but output looks complete (${SIZE_MB}MB, ${OUT_DURATION}s) — treating as success"
+fi
+
+log "Transcode complete: ${SIZE_MB}MB, duration ${OUT_DURATION}s"
 
 # Free up disk space — source file no longer needed, and the metadata
 # injection step used to `cp` the output (briefly doubling disk usage,
@@ -534,3 +553,4 @@ touch "${WORKDIR}/DONE"
 echo "${YT_URL_LINE}" > "${WORKDIR}/RESULT_URL" || true
 log "Done. Instance will now terminate."
 # Keep WORKDIR intact — instance is terminating anyway, no need to clean up
+
