@@ -240,9 +240,9 @@ jobs:
               "inet_up":      {"gte": 800},
               "inet_down":    {"gte": 800},
               "disk_space":   {"gte": 150},
-              "cpu_cores":    {"gte": 24},
+              "cpu_cores":    {"gte": 32},
               "cpu_ram":      {"gte": 65536},
-              "cpu_ghz":      {"gte": 4.0},
+              "cpu_ghz":      {"gte": 4.5},
               "gpu_frac":     {"eq": 1},
               "rentable":     {"eq": True},
               "verified":     {"eq": True},
@@ -574,3 +574,4 @@ jobs:
           else:
               print(f"WARNING: could not terminate {INSTANCE_ID} via any endpoint — terminate manually")
           PY
+
