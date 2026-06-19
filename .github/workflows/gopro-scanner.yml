@@ -24,7 +24,7 @@ concurrency:
 jobs:
   scan:
     name: Scan GoPro Cloud for New Videos
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
 
     steps:
@@ -418,4 +418,5 @@ jobs:
 
           print(f"\nTriggered {triggered} upload run(s), skipped {skipped} already-uploaded")
           PY
+
 
