@@ -1,12 +1,30 @@
 import json, os, sys, urllib.request
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/drive",
+]
 
 token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
-token = token_data.get("token") or token_data.get("access_token")
+creds_data = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
 
-if not token:
-    print("ERROR: No token found in YOUTUBE_TOKEN")
-    sys.exit(1)
+creds = Credentials(
+    token=token_data.get("token"),
+    refresh_token=token_data.get("refresh_token"),
+    token_uri=token_data.get("token_uri", "https://oauth2.googleapis.com/token"),
+    client_id=creds_data["installed"]["client_id"],
+    client_secret=creds_data["installed"]["client_secret"],
+    scopes=SCOPES,
+)
 
+if creds.expired and creds.refresh_token:
+    print("Refreshing access token...")
+    creds.refresh(Request())
+    print("Token refreshed")
+
+token = creds.token
 file_id = os.environ["DRIVE_FILE_ID"]
 url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
 req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
