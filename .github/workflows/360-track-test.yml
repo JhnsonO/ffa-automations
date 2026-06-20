@@ -250,7 +250,7 @@ jobs:
           echo "--- Installing apt packages (ffmpeg, libgl1) ---"
           $SSH "apt-get update -qq 2>/dev/null && apt-get install -y -qq --no-install-recommends ffmpeg libgl1 libglib2.0-0 > /dev/null && echo 'apt done'"
           echo "--- Installing Python packages ---"
-          $SSH "pip install -q --break-system-packages gdown ultralytics supervision pandas numpy opencv-python-headless 2>/dev/null || pip install -q gdown ultralytics supervision pandas numpy opencv-python-headless"
+          $SSH "pip install -q --break-system-packages 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless 2>/dev/null || pip install -q 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless"
           echo "--- Verifying installs ---"
           $SSH "python3 -c \"import cv2, supervision, ultralytics, pandas; print('All imports OK')\""
 
@@ -291,7 +291,7 @@ jobs:
           $SSH "echo 'ffmpeg path:' && which ffmpeg && ffmpeg -encoders 2>/dev/null | grep libx264 || echo 'WARNING: libx264 not found'"
           $SSH "/usr/bin/ffmpeg -y -i /tmp/ffa_track/sample.mp4 \
               -vf 'v360=equirect:rectilinear:ih_fov=360:iv_fov=180:h_fov=120:v_fov=80:yaw=0:pitch=0:roll=0:w=1280:h=720' \
-              -c:v libx264 -preset ultrafast -crf 23 -an \
+              -c:v libx264 -preset ultrafast -crf 23 -an -movflags +faststart \
               /tmp/ffa_track/flat.mp4 2>&1 | tail -5"
           echo "--- Flatten complete ---"
           $SSH "du -sh /tmp/ffa_track/flat.mp4"
@@ -315,7 +315,7 @@ jobs:
 
           print("Loading YOLOv8x model (downloads ~130MB on first run)...")
           model   = YOLO("yolov8x.pt")
-          tracker = sv.ByteTrack()
+          tracker = sv.ByteTrack()  # supervision >=0.28 uses sv.ByteTrack() still but warns; acceptable
           box_ann   = sv.BoxAnnotator(thickness=2)
           label_ann = sv.LabelAnnotator(text_scale=0.5)
           trace_ann = sv.TraceAnnotator(thickness=2, trace_length=30)
