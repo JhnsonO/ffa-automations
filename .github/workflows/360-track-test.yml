@@ -317,16 +317,8 @@ jobs:
           # The GoPro MAX EAC -> equirectangular filter chain (from vastai_stitch.sh)
           FILTER_COMPLEX="[1:v]format=gray,split=4[mask1][mask2][mask3][mask4],[0:0]crop=624:1344:x=0:y=0,format=yuvj420p[left],[0:0]crop=624:1344:x=752:y=0,format=yuvj420p[right],[0:0]crop=64:1344:x=624:y=0,format=yuvj420p[segA],[0:0]crop=64:1344:x=688:y=0,format=yuvj420p[segB],[segA][segB][mask1]maskedmerge[crop],[crop]scale=96:1344[cropScaled],[left][cropScaled]hstack[leftAll],[leftAll][right]hstack[leftDone],[0:0]crop=1344:1344:1376:0[middle],[0:0]crop=624:1344:x=2720:y=0,format=yuvj420p[lRB],[0:0]crop=624:1344:x=3472:y=0,format=yuvj420p[rRB],[0:0]crop=64:1344:x=3344:y=0,format=yuvj420p[segARB],[0:0]crop=64:1344:x=3408:y=0,format=yuvj420p[segBRB],[segARB][segBRB][mask2]maskedmerge[cropRB],[cropRB]scale=96:1344[cropRBScaled],[lRB][cropRBScaled]hstack[rAll],[rAll][rRB]hstack[rBotDone],[leftDone][middle]hstack[lMid],[lMid][rBotDone]hstack[botComplete],[0:1]crop=624:1344:x=0:y=0,format=yuvj420p[flt],[0:1]crop=624:1344:x=752:y=0,format=yuvj420p[frt],[0:1]crop=64:1344:x=624:y=0,format=yuvj420p[segC],[0:1]crop=64:1344:x=688:y=0,format=yuvj420p[segD],[segC][segD][mask3]maskedmerge[ltc],[ltc]scale=96:1344[ltcScaled],[flt][ltcScaled]hstack[tlh],[tlh][frt]hstack[tlDone],[0:1]crop=1344:1344:1376:0[tMid],[0:1]crop=624:1344:x=2720:y=0,format=yuvj420p[tlRB],[0:1]crop=624:1344:x=3472:y=0,format=yuvj420p[trRB],[0:1]crop=64:1344:x=3344:y=0,format=yuvj420p[segE],[0:1]crop=64:1344:x=3408:y=0,format=yuvj420p[segF],[segE][segF][mask4]maskedmerge[tcRB],[tcRB]scale=96:1344[tcRBScaled],[tlRB][tcRBScaled]hstack[trAll],[trAll][trRB]hstack[trBotDone],[tlDone][tMid]hstack[tlMid],[tlMid][trBotDone]hstack[topComplete],[botComplete][topComplete]vstack[complete],[complete]v360=eac:e:interp=linear,crop=4032:2388:x=0:y=0[v]"
 
-          echo "--- Generating seam blend mask ---"
-          $SSH "python3 -c \"
-from PIL import Image
-w, h = 64, 1344
-img = Image.new('L', (w, h))
-row = bytes(int(x * 255 / (w - 1)) for x in range(w))
-img.putdata(list(row * h))
-img.save('/tmp/ffa_track/seam_mask.png')
-print('Seam mask generated')
-\""
+          echo "--- Generating seam blend mask via ffmpeg ---"
+          $SSH "/usr/bin/ffmpeg -y -f lavfi -i \"color=black:size=64x1344,format=gray,geq=lum='X/W*255':cb=128:cr=128\" -frames:v 1 /tmp/ffa_track/seam_mask.png && echo 'Seam mask generated'"
 
           echo "--- Stitching TRIM (ss=$TRIM_START t=$CLIP_DURATION) ---"
           $SSH "/usr/bin/ffmpeg -y -ss $TRIM_START -i /tmp/ffa_track/source.360 -t $CLIP_DURATION \
