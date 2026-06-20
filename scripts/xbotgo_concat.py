@@ -151,12 +151,13 @@ def list_all_inbox_clips(drive, inbox_id):
 
 def filter_clips_by_prefix(all_clips, group_prefix):
     """
-    Filter clips whose filename starts with group_prefix.
+    Filter clips whose filename contains group_prefix.
+    Uses 'in' not 'startswith' to handle Drive adding 'Copy of ' prefix.
     group_prefix can be:
       - YYYY-MM-DD       -> matches all clips from that date
       - YYYY-MM-DD-HH    -> matches only clips from that hour
     """
-    matched = [c for c in all_clips if c["name"].startswith(group_prefix)]
+    matched = [c for c in all_clips if group_prefix in c["name"]]
     log.info(f"Prefix '{group_prefix}' matched {len(matched)}/{len(all_clips)} clips in Inbox")
     return matched
 
