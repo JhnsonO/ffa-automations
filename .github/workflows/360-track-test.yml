@@ -1,4 +1,4 @@
-name: 360 Ball Tracker — Test Run
+name: 360 Ball Tracker - Test Run
 
 on:
   workflow_dispatch:
