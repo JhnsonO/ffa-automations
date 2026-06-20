@@ -1,0 +1,80 @@
+name: XbotGo Drive Debug
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: pip install google-auth google-auth-oauthlib google-api-python-client -q
+      - name: Write creds
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: |
+          echo "$YOUTUBE_CREDENTIALS" > youtube_credentials.json
+          echo "$YOUTUBE_TOKEN" > youtube_token.json
+      - name: Dump Drive structure
+        run: |
+          python3 - <<'PY'
+          from google.auth.transport.requests import Request
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from pathlib import Path
+
+          YT_SCOPES = [
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube.readonly",
+            "https://www.googleapis.com/auth/drive",
+          ]
+          creds = Credentials.from_authorized_user_file("youtube_token.json", YT_SCOPES)
+          if creds.expired and creds.refresh_token:
+              creds.refresh(Request())
+          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+          XBOTGO_ID = "1Mnzix8CV_mdGxim_s2four6s_4Vx3fSs"
+
+          # List everything directly inside XbotGo folder
+          print("=== Contents of XbotGo folder ===")
+          res = drive.files().list(
+              q=f"'{XBOTGO_ID}' in parents and trashed=false",
+              fields="files(id,name,mimeType)",
+              pageSize=50,
+              supportsAllDrives=True,
+              includeItemsFromAllDrives=True
+          ).execute()
+          for f in res["files"]:
+              print(f"  {f['name']} | {f['mimeType']} | {f['id']}")
+          if not res["files"]:
+              print("  (empty)")
+
+          # Also check if Inbox exists
+          print("\n=== Searching for Inbox folder ===")
+          res2 = drive.files().list(
+              q=f"name='Inbox' and mimeType='application/vnd.google-apps.folder' and trashed=false and '{XBOTGO_ID}' in parents",
+              fields="files(id,name)",
+              supportsAllDrives=True,
+              includeItemsFromAllDrives=True
+          ).execute()
+          print(f"Inbox folders found: {res2['files']}")
+
+          if res2["files"]:
+              inbox_id = res2["files"][0]["id"]
+              print(f"\n=== Contents of Inbox ({inbox_id}) ===")
+              res3 = drive.files().list(
+                  q=f"'{inbox_id}' in parents and trashed=false",
+                  fields="files(id,name,mimeType,size)",
+                  pageSize=50,
+                  supportsAllDrives=True,
+                  includeItemsFromAllDrives=True
+              ).execute()
+              for f in res3["files"]:
+                  print(f"  {f['name']} | {f['mimeType']} | {f.get('size','?')} bytes | {f['id']}")
+              if not res3["files"]:
+                  print("  (empty)")
+          PY
