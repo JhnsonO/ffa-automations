@@ -3,10 +3,10 @@ name: 360 Ball Tracker - Test Run
 on:
   workflow_dispatch:
     inputs:
-      cdn_url:
-        description: 'Direct CDN URL of the .360 file to download'
+      drive_file_id:
+        description: 'Google Drive file ID of the .360 source file'
         required: true
-        default: ''
+        default: '1J5rJcbPh5Xx8allwUybS7EqlnM9aXFn7'
         type: string
       trim_start_sec:
         description: 'Start time for trim (seconds into the file)'
@@ -258,15 +258,40 @@ jobs:
           echo "--- Verifying installs ---"
           $SSH "python3 -c \"import cv2, supervision, ultralytics, pandas; print('All imports OK')\""
 
-      - name: Download .360 from CDN
+      - name: Download .360 from Google Drive
         env:
-          IP:      ${{ steps.launch.outputs.ip }}
-          PORT:    ${{ steps.launch.outputs.port }}
-          CDN_URL: ${{ github.event.inputs.cdn_url }}
+          IP:              ${{ steps.launch.outputs.ip }}
+          PORT:            ${{ steps.launch.outputs.port }}
+          DRIVE_FILE_ID:   ${{ github.event.inputs.drive_file_id }}
+          YOUTUBE_TOKEN:   ${{ secrets.YOUTUBE_TOKEN }}
         run: |
+          pip install -q google-auth google-auth-oauthlib google-api-python-client
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          echo "--- Downloading .360 file from CDN ---"
-          $SSH "mkdir -p /tmp/ffa_track && aria2c -x 8 -s 8 --file-allocation=none -o /tmp/ffa_track/source.360 \"$CDN_URL\" 2>&1 | tail -5"
+          echo "--- Generating signed Drive download URL ---"
+          python3 - << 'PY'
+          import os, json
+          from google.oauth2.credentials import Credentials
+          from google.auth.transport.requests import Request
+          from googleapiclient.discovery import build
+
+          SCOPES = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/youtube"]
+          creds = Credentials.from_authorized_user_file("/tmp/youtube_token.json", SCOPES)
+          if creds.expired and creds.refresh_token:
+              creds.refresh(Request())
+
+          # Write access token to file for use in shell
+          with open("/tmp/drive_token.txt", "w") as f:
+              f.write(creds.token)
+          print(f"Access token obtained (expires: {creds.expiry})")
+          PY
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          FILE_ID="$DRIVE_FILE_ID"
+          echo "--- Downloading source.360 from Drive to instance via aria2c ---"
+          $SSH "mkdir -p /tmp/ffa_track && aria2c -x 8 -s 8 --file-allocation=none \
+            --header='Authorization: Bearer $ACCESS_TOKEN' \
+            -o /tmp/ffa_track/source.360 \
+            'https://www.googleapis.com/drive/v3/files/$FILE_ID?alt=media' 2>&1 | tail -10"
           echo "--- Download complete ---"
           $SSH "du -sh /tmp/ffa_track/source.360"
 
