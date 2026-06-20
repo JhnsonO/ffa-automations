@@ -377,6 +377,7 @@ CAPTURED_AT = "${CAPTURED_AT}"
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/drive",
 ]
 
 creds_data = json.loads(CREDS_PATH.read_text())
