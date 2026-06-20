@@ -1,0 +1,129 @@
+name: XbotGo Concat + Upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      group_prefix:
+        description: 'Session prefix to process e.g. 2026-06-19-18'
+        required: true
+        type: string
+      force:
+        description: 'Skip stability check (manual trigger when you know uploads are done)'
+        required: false
+        default: 'false'
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xbotgo-concat-${{ github.event.inputs.group_prefix }}
+  cancel-in-progress: false
+
+jobs:
+  concat-upload:
+    name: Concat + Upload ${{ github.event.inputs.group_prefix }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install google-auth google-auth-oauthlib google-api-python-client
+          sudo apt-get install -y ffmpeg
+
+      - name: Write YouTube/Drive credentials
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: |
+          echo "$YOUTUBE_CREDENTIALS" > youtube_credentials.json
+          echo "$YOUTUBE_TOKEN" > youtube_token.json
+
+      - name: Pull xbotgo.db from repo
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os, json, base64, urllib.request
+          from pathlib import Path
+
+          token = os.environ["GH_PAT"]
+          repo  = os.environ["REPO"]
+
+          try:
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/contents/xbotgo.db",
+                  headers={"Authorization": f"token {token}"}
+              )
+              with urllib.request.urlopen(req) as r:
+                  data = json.loads(r.read())
+              Path("xbotgo.db").write_bytes(base64.b64decode(data["content"]))
+              print("xbotgo.db pulled from repo")
+          except Exception:
+              print("xbotgo.db not found — will create fresh")
+          PY
+
+      - name: Run concat + upload
+        env:
+          GROUP_PREFIX: ${{ github.event.inputs.group_prefix }}
+          FORCE: ${{ github.event.inputs.force }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+          ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+          ALERT_EMAIL_KEY: ${{ secrets.ALERT_EMAIL_KEY }}
+        run: python3 scripts/xbotgo_concat.py
+
+      - name: Commit xbotgo.db back to repo
+        if: always()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os, json, base64, urllib.request
+          from pathlib import Path
+
+          token = os.environ["GH_PAT"]
+          repo  = os.environ["REPO"]
+          p = Path("xbotgo.db")
+          if not p.exists():
+              print("No xbotgo.db to commit")
+              exit(0)
+
+          encoded = base64.b64encode(p.read_bytes()).decode()
+          try:
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/contents/xbotgo.db",
+                  headers={"Authorization": f"token {token}"}
+              )
+              with urllib.request.urlopen(req) as r:
+                  sha = json.loads(r.read())["sha"]
+              payload = json.dumps({"message": "chore: update xbotgo.db [skip ci]", "content": encoded, "sha": sha, "branch": "main"}).encode()
+          except Exception:
+              payload = json.dumps({"message": "chore: create xbotgo.db [skip ci]", "content": encoded, "branch": "main"}).encode()
+
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/contents/xbotgo.db",
+              data=payload, method="PUT",
+              headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
+          )
+          with urllib.request.urlopen(req) as r:
+              result = json.loads(r.read())
+          print(f"xbotgo.db committed: {result['commit']['sha']}")
+          PY
