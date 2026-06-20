@@ -136,10 +136,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
         run: |
-          python3 - <<'PY'
+          python3 - << 'PYEOF'
           import os, json, urllib.request, base64
           from datetime import datetime, timezone, timedelta
-          from pathlib import Path
           from nacl import encoding, public as nacl_public
           from base64 import b64encode
 
@@ -148,47 +147,36 @@ jobs:
           gh_token   = os.environ["GH_TOKEN"]
           repo       = os.environ["REPO"]
 
-          refresh_token  = token_json["refresh_token"]
-          client_id      = creds_json["installed"]["client_id"]
-          client_secret  = creds_json["installed"]["client_secret"]
+          refresh_token = token_json["refresh_token"]
+          client_id     = creds_json["installed"]["client_id"]
+          client_secret = creds_json["installed"]["client_secret"]
 
           payload = json.dumps({
-              "client_id":     client_id,
-              "client_secret": client_secret,
-              "refresh_token": refresh_token,
-              "grant_type":    "refresh_token",
+              "client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token",
           }).encode()
-
-          req = urllib.request.Request(
-              "https://oauth2.googleapis.com/token",
-              data=payload,
-              headers={"Content-Type": "application/json"}
-          )
+          req = urllib.request.Request("https://oauth2.googleapis.com/token",
+              data=payload, headers={"Content-Type": "application/json"})
           with urllib.request.urlopen(req) as r:
               result = json.loads(r.read())
 
-          new_token = {
-              **token_json,
-              "token":   result["access_token"],
-              "expiry":  (datetime.now(timezone.utc) + timedelta(seconds=result["expires_in"])).isoformat(),
+          new_token = {**token_json,
+              "token":  result["access_token"],
+              "expiry": (datetime.now(timezone.utc) + timedelta(seconds=result["expires_in"])).isoformat(),
           }
           new_token_str = json.dumps(new_token)
           print(f"Token refreshed, expires: {new_token['expiry']}")
 
-          # Update youtube_token.json in repo
-          file_resp = json.loads(urllib.request.urlopen(
-              urllib.request.Request(
-                  f"https://api.github.com/repos/{repo}/contents/youtube_token.json",
-                  headers={"Authorization": f"token {gh_token}"}
-              )
-          ).read())
-          file_sha = file_resp["sha"]
+          file_resp = json.loads(urllib.request.urlopen(urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/contents/youtube_token.json",
+              headers={"Authorization": f"token {gh_token}"}
+          )).read())
+          fresh_sha = file_resp["sha"]
 
           put_payload = json.dumps({
               "message": "chore: refresh YouTube token [skip ci]",
-              "content":  base64.b64encode(new_token_str.encode()).decode(),
-              "sha":      file_sha,
-              "branch":   "main",
+              "content": base64.b64encode(new_token_str.encode()).decode(),
+              "sha": fresh_sha, "branch": "main",
           }).encode()
           urllib.request.urlopen(urllib.request.Request(
               f"https://api.github.com/repos/{repo}/contents/youtube_token.json",
@@ -197,13 +185,10 @@ jobs:
           ))
           print("youtube_token.json updated in repo")
 
-          # Update YOUTUBE_TOKEN secret
-          key_resp = json.loads(urllib.request.urlopen(
-              urllib.request.Request(
-                  f"https://api.github.com/repos/{repo}/actions/secrets/public-key",
-                  headers={"Authorization": f"Bearer {gh_token}"}
-              )
-          ).read())
+          key_resp = json.loads(urllib.request.urlopen(urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/secrets/public-key",
+              headers={"Authorization": f"Bearer {gh_token}"}
+          )).read())
           pub_key   = nacl_public.PublicKey(key_resp["key"].encode(), encoding.Base64Encoder())
           encrypted = b64encode(nacl_public.SealedBox(pub_key).encrypt(new_token_str.encode())).decode()
           urllib.request.urlopen(urllib.request.Request(
@@ -213,7 +198,7 @@ jobs:
               headers={"Authorization": f"Bearer {gh_token}", "Content-Type": "application/json"}
           ))
           print("YOUTUBE_TOKEN secret updated")
-          PY
+          PYEOF
 
       - name: Re-trigger scanner after cookie refresh
         if: success()
