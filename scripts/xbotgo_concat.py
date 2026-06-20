@@ -127,12 +127,13 @@ def get_xbotgo_root(drive):
 
 
 def list_all_inbox_clips(drive, inbox_id):
-    """List ALL MP4s in Inbox, sorted by filename (chronological)."""
-    q = f"'{inbox_id}' in parents and mimeType='video/mp4' and trashed=false"
+    """List ALL files in Inbox (no MIME filter — let filename suffix decide), sorted by name."""
+    q = f"'{inbox_id}' in parents and trashed=false"
     results = []
     page_token = None
     while True:
-        params = dict(q=q, fields="nextPageToken,files(id,name)", pageSize=100, supportsAllDrives=True, includeItemsFromAllDrives=True)
+        params = dict(q=q, fields="nextPageToken,files(id,name,mimeType)", pageSize=100,
+                      supportsAllDrives=True, includeItemsFromAllDrives=True)
         if page_token:
             params["pageToken"] = page_token
         res = drive.files().list(**params).execute()
@@ -140,7 +141,12 @@ def list_all_inbox_clips(drive, inbox_id):
         page_token = res.get("nextPageToken")
         if not page_token:
             break
-    return sorted(results, key=lambda f: f["name"])
+    for f in results:
+        log.info(f"  Inbox file: {f['name']} | {f['mimeType']}")
+    # Keep only files with .mp4 extension
+    mp4s = [f for f in results if f["name"].lower().endswith(".mp4")]
+    log.info(f"Total in Inbox: {len(results)}, MP4s: {len(mp4s)}")
+    return sorted(mp4s, key=lambda f: f["name"])
 
 
 def filter_clips_by_prefix(all_clips, group_prefix):
