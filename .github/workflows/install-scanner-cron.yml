@@ -1,0 +1,34 @@
+name: Install Scanner Crontab on VM
+
+on:
+  workflow_dispatch:
+
+jobs:
+  install-cron:
+    name: Install hourly scanner cron on self-hosted VM
+    runs-on: self-hosted
+    timeout-minutes: 5
+
+    steps:
+      - name: Write dispatch script and install crontab
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          # Write a persistent script that cron will call
+          cat > /home/ffa/scan_dispatch.sh << SCRIPT
+#!/bin/bash
+curl -s -X POST \
+  https://api.github.com/repos/JhnsonO/ffa-automations/actions/workflows/gopro-scanner.yml/dispatches \
+  -H "Authorization: token ${GH_PAT}" \
+  -H "Content-Type: application/json" \
+  -d '{"ref":"main"}' >> /tmp/scanner-cron.log 2>&1
+SCRIPT
+          chmod +x /home/ffa/scan_dispatch.sh
+
+          # Install cron entry — remove old if exists, add fresh
+          (crontab -l 2>/dev/null | grep -v "scan_dispatch.sh"; echo "0 * * * * /home/ffa/scan_dispatch.sh") | crontab -
+
+          echo "=== Installed crontab ==="
+          crontab -l
+          echo "=== Script contents ==="
+          cat /home/ffa/scan_dispatch.sh
