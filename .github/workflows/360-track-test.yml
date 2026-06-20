@@ -249,9 +249,9 @@ jobs:
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=10 root@$IP"
           echo "--- Waiting for SSH key auth (retry up to 60s) ---"
-          for i in $(seq 1 12); do
+          for i in $(seq 1 24); do
             NPROC=$($SSH "nproc" 2>/dev/null) && break
-            echo "  SSH auth not ready yet ($i/12), retrying in 5s..."
+            echo "  SSH auth not ready yet ($i/24), retrying in 5s..."
             sleep 5
           done
           if [ -z "$NPROC" ]; then echo "ERROR: SSH auth never succeeded"; exit 1; fi
