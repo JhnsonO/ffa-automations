@@ -252,6 +252,10 @@ stdbuf -oL -eL ffmpeg -y -v info \
   "${OUTPUT_EQUIRECT}" > "${STDOUT}" 2>&1 &
 FFMPEG_PID=$!
 
+MIN_SPEED=1.7          # below this → reject instance and redispatch
+SPEED_CHECK_TICK=9    # check at tick 9 = 45s in (speed stable by then)
+SPEED_CHECKED=0
+
 TICK=0
 while kill -0 "${FFMPEG_PID}" 2>/dev/null; do
   TICK=$((TICK+1))
@@ -263,6 +267,33 @@ while kill -0 "${FFMPEG_PID}" 2>/dev/null; do
   sp_num=$(echo "${sp:-0}" | tr -d 'x')
   vs_target=$(python3 -c "print(f'{${sp_num:-0}/${TARGET_SPEED}*100:.0f}%')" 2>/dev/null || echo "?")
   log "  frame=${fr:-0} fps=${fps:-0} t=${ot:-0:00:00} speed=${sp:-0}x (${vs_target} of ${TARGET_SPEED}x target)"
+
+  # ── Speed check at 45s — kill and redispatch if below floor ──────────────
+  if [ "${SPEED_CHECKED}" = "0" ] && [ "${TICK}" -ge "${SPEED_CHECK_TICK}" ]; then
+    SPEED_CHECKED=1
+    SPEED_OK=$(python3 -c "
+sp = '${sp_num}'
+try:
+    v = float(sp)
+    print('yes' if v >= ${MIN_SPEED} else 'no')
+except:
+    print('unknown')
+" 2>/dev/null || echo "unknown")
+
+    if [ "${SPEED_OK}" = "no" ]; then
+      log "SPEED CHECK FAILED: ${sp:-0}x is below ${MIN_SPEED}x floor — killing encode and redispatching"
+      kill "${FFMPEG_PID}" 2>/dev/null || true
+      wait "${FFMPEG_PID}" 2>/dev/null || true
+      echo "BENCHMARK_FAILED" > "${WORKDIR}/FAILED"
+      cp "${WORKDIR}/FAILED" /tmp/ffa360/FAILED 2>/dev/null || true
+      exit 1
+    elif [ "${SPEED_OK}" = "unknown" ]; then
+      log "SPEED CHECK: could not read speed (sp='${sp:-}') — continuing without check"
+    else
+      log "SPEED CHECK PASSED: ${sp:-0}x >= ${MIN_SPEED}x — continuing full encode"
+    fi
+  fi
+  # ─────────────────────────────────────────────────────────────────────────
 
   if [ $((TICK % 6)) -eq 0 ]; then
     log "  -- ps snapshot --"
