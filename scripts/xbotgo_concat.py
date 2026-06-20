@@ -2,6 +2,7 @@
 """
 XbotGo Concat + Upload
 - Downloads all clips for a group_prefix from Google Drive XbotGo/Inbox/
+- group_prefix can be YYYY-MM-DD (date) or YYYY-MM-DD-HH (hour) — both supported
 - Concatenates with FFmpeg (stream copy, no re-encode)
 - Uploads concatenated file to Google Drive XbotGo/Done/
 - Uploads to YouTube
@@ -11,6 +12,7 @@ XbotGo Concat + Upload
 
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -121,9 +123,9 @@ def get_xbotgo_root(drive):
     return drive.files().create(body=meta, fields="id").execute()["id"]
 
 
-def list_inbox_clips(drive, inbox_id, group_prefix):
-    """Return MP4s in Inbox matching the group_prefix, sorted by name."""
-    q = f"'{inbox_id}' in parents and mimeType='video/mp4' and trashed=false and name contains '{group_prefix}'"
+def list_all_inbox_clips(drive, inbox_id):
+    """List ALL MP4s in Inbox, sorted by filename (chronological)."""
+    q = f"'{inbox_id}' in parents and mimeType='video/mp4' and trashed=false"
     results = []
     page_token = None
     while True:
@@ -138,8 +140,19 @@ def list_inbox_clips(drive, inbox_id, group_prefix):
     return sorted(results, key=lambda f: f["name"])
 
 
+def filter_clips_by_prefix(all_clips, group_prefix):
+    """
+    Filter clips whose filename starts with group_prefix.
+    group_prefix can be:
+      - YYYY-MM-DD       -> matches all clips from that date
+      - YYYY-MM-DD-HH    -> matches only clips from that hour
+    """
+    matched = [c for c in all_clips if c["name"].startswith(group_prefix)]
+    log.info(f"Prefix '{group_prefix}' matched {len(matched)}/{len(all_clips)} clips in Inbox")
+    return matched
+
+
 def download_clip(drive, file_id, dest_path):
-    """Download a Drive file to disk."""
     import io
     from googleapiclient.http import MediaIoBaseDownload
 
@@ -155,8 +168,7 @@ def download_clip(drive, file_id, dest_path):
 
 
 def upload_to_drive(drive, local_path, parent_id, filename):
-    """Upload a file to a Drive folder."""
-    log.info(f"Uploading {filename} to Drive...")
+    log.info(f"Uploading {filename} to Drive Done/...")
     media = MediaFileUpload(str(local_path), mimetype="video/mp4", resumable=True)
     file_meta = {"name": filename, "parents": [parent_id]}
     uploaded = drive.files().create(body=file_meta, media_body=media, fields="id").execute()
@@ -175,7 +187,6 @@ def delete_drive_file(drive, file_id, name):
 # ── FFmpeg concat ─────────────────────────────────────────────────────────────
 
 def concatenate_clips(clip_paths, output_path):
-    """Concat MP4s using FFmpeg concat demuxer — no re-encode, stream copy."""
     concat_list = WORK_DIR / "concat_list.txt"
     with open(concat_list, "w") as f:
         for p in clip_paths:
@@ -192,7 +203,7 @@ def concatenate_clips(clip_paths, output_path):
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        log.error(f"FFmpeg concat failed:\n{result.stderr}")
+        log.error(f"FFmpeg concat failed:\n{result.stderr[-2000:]}")
         raise RuntimeError(f"FFmpeg concat failed with exit code {result.returncode}")
 
     size_mb = output_path.stat().st_size / 1e6
@@ -200,34 +211,39 @@ def concatenate_clips(clip_paths, output_path):
     return output_path
 
 
-# ── YouTube ───────────────────────────────────────────────────────────────────
+# ── Title / description ───────────────────────────────────────────────────────
+
+def parse_prefix_dt(group_prefix):
+    """Parse YYYY-MM-DD or YYYY-MM-DD-HH into a datetime."""
+    for fmt in ["%Y-%m-%d-%H", "%Y-%m-%d"]:
+        try:
+            return datetime.strptime(group_prefix, fmt)
+        except ValueError:
+            continue
+    return None
+
 
 def make_title(group_prefix):
-    """
-    group_prefix e.g. 2026-06-19-18
-    -> 'Friday Session | 19th June 2026 | FFA Leicester | XbotGo'
-    """
-    try:
-        dt = datetime.strptime(group_prefix, "%Y-%m-%d-%H")
-        day_name = dt.strftime("%A")
-        day = dt.day
-        suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
-        date_str = f"{day}{suffix} {dt.strftime('%B %Y')}"
-        return f"{day_name} Session | {date_str} | FFA Leicester | XbotGo"
-    except Exception:
+    dt = parse_prefix_dt(group_prefix)
+    if not dt:
         return f"Session {group_prefix} | FFA Leicester | XbotGo"
+    day_name = dt.strftime("%A")
+    day = dt.day
+    suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    date_str = f"{day}{suffix} {dt.strftime('%B %Y')}"
+    return f"{day_name} Session | {date_str} | FFA Leicester | XbotGo"
 
 
 def make_description(group_prefix):
-    try:
-        dt = datetime.strptime(group_prefix, "%Y-%m-%d-%H")
+    dt = parse_prefix_dt(group_prefix)
+    if not dt:
+        day_name, date_str, is_monday = "Session", group_prefix, False
+    else:
         day_name = dt.strftime("%A")
         day = dt.day
         suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
         date_str = f"{day}{suffix} {dt.strftime('%B %Y')}"
         is_monday = dt.weekday() == 0
-    except Exception:
-        day_name, date_str, is_monday = "Session", group_prefix, False
 
     monday_section = (
         "\n\nThis is part of the FFA Monday League — our weekly competitive kickabout with individual player standings.\n"
@@ -245,6 +261,8 @@ def make_description(group_prefix):
         f"#FFA #FFALeicester #FootballForAll #Leicester #GrassrootsFootball #5aside #XbotGo"
     )
 
+
+# ── YouTube ───────────────────────────────────────────────────────────────────
 
 def upload_to_youtube(yt, video_path, title, description, max_retries=3):
     log.info(f"Uploading to YouTube: {title}")
@@ -270,9 +288,7 @@ def upload_to_youtube(yt, video_path, title, description, max_retries=3):
             while response is None:
                 status, response = request.next_chunk()
                 if status:
-                    pct = int(status.progress() * 100)
-                    elapsed = time.time() - start
-                    log.info(f"  YouTube upload: {pct}% ({elapsed:.0f}s)")
+                    log.info(f"  YouTube upload: {int(status.progress() * 100)}% ({time.time()-start:.0f}s)")
             vid_id = response.get("id")
             log.info(f"YouTube upload complete: https://youtu.be/{vid_id}")
             return vid_id
@@ -286,12 +302,11 @@ def upload_to_youtube(yt, video_path, title, description, max_retries=3):
 # ── Alert ─────────────────────────────────────────────────────────────────────
 
 def send_alert(subject, body):
-    """Send email alert via SendGrid (same pattern as existing pipeline)."""
     try:
-        import urllib.request as ureq
-        api_key = os.environ.get("ALERT_EMAIL_KEY", "")
+        import json, urllib.request as ureq
+        api_key    = os.environ.get("ALERT_EMAIL_KEY", "")
         from_email = os.environ.get("ALERT_EMAIL_FROM", "")
-        to_email = os.environ.get("ALERT_EMAIL_TO", "")
+        to_email   = os.environ.get("ALERT_EMAIL_TO", "")
         if not all([api_key, from_email, to_email]):
             log.warning("Alert email secrets not set — skipping alert")
             return
@@ -301,11 +316,9 @@ def send_alert(subject, body):
             "subject": subject,
             "content": [{"type": "text/plain", "value": body}],
         }
-        import json
         req = ureq.Request(
             "https://api.sendgrid.com/v3/mail/send",
-            data=json.dumps(payload).encode(),
-            method="POST",
+            data=json.dumps(payload).encode(), method="POST",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         )
         ureq.urlopen(req, timeout=15)
@@ -342,13 +355,17 @@ def run():
     inbox_id = find_or_create_folder(drive, "Inbox", root_id)
     done_id  = find_or_create_folder(drive, "Done", root_id)
 
-    # Get clips
-    clips = list_inbox_clips(drive, inbox_id, group_prefix)
+    # List ALL clips in Inbox, then filter by prefix in Python
+    all_clips = list_all_inbox_clips(drive, inbox_id)
+    clips = filter_clips_by_prefix(all_clips, group_prefix)
+
     if not clips:
-        log.error(f"No clips found in Inbox for prefix {group_prefix}")
+        log.error(f"No clips found in Inbox matching prefix '{group_prefix}'")
+        log.info(f"All files in Inbox: {[c['name'] for c in all_clips]}")
         send_alert(
             f"[FFA XbotGo] No clips found for {group_prefix}",
-            f"xbotgo-concat.yml ran for {group_prefix} but found no matching clips in Drive Inbox."
+            f"xbotgo-concat.yml ran for {group_prefix} but found no matching clips.\n"
+            f"Files in Inbox: {[c['name'] for c in all_clips]}"
         )
         sys.exit(1)
 
@@ -373,7 +390,7 @@ def run():
         log.error(f"Concat failed: {e}")
         send_alert(
             f"[FFA XbotGo] Concat failed for {group_prefix}",
-            f"FFmpeg concat failed for {group_prefix}.\n\nError: {e}"
+            f"FFmpeg concat failed.\n\nError: {e}"
         )
         sys.exit(1)
 
@@ -392,8 +409,8 @@ def run():
         log.error("YouTube upload failed")
         send_alert(
             f"[FFA XbotGo] YouTube upload failed for {group_prefix}",
-            f"Concat succeeded but YouTube upload failed for {group_prefix}.\n"
-            f"Concatenated file is saved in Drive XbotGo/Done/{output_name}"
+            f"Concat succeeded but YouTube upload failed.\n"
+            f"Concatenated file saved in Drive XbotGo/Done/{output_name}"
         )
         sys.exit(1)
 
