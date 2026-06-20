@@ -286,15 +286,22 @@ jobs:
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+          echo "--- Confirming /usr/bin/ffmpeg has v360 + libx264 ---"
+          $SSH "/usr/bin/ffmpeg -filters 2>/dev/null | grep v360 && echo 'v360 OK' || echo 'WARNING: v360 not in /usr/bin/ffmpeg'"
+          $SSH "/usr/bin/ffmpeg -encoders 2>/dev/null | grep libx264 && echo 'libx264 OK' || echo 'WARNING: libx264 not in /usr/bin/ffmpeg'"
           echo "--- Flattening equirectangular -> 120deg rectilinear crop ---"
-          echo "    yaw=0 pitch=0 (front-facing), output 1280x720"
-          $SSH "echo 'ffmpeg path:' && which ffmpeg && ffmpeg -encoders 2>/dev/null | grep libx264 || echo 'WARNING: libx264 not found'"
-          $SSH "/usr/bin/ffmpeg -y -i /tmp/ffa_track/sample.mp4 \
+          $SSH "PATH=/usr/bin:$PATH /usr/bin/ffmpeg -y -i /tmp/ffa_track/sample.mp4 \
               -vf 'v360=equirect:rectilinear:ih_fov=360:iv_fov=180:h_fov=120:v_fov=80:yaw=0:pitch=0:roll=0:w=1280:h=720' \
               -c:v libx264 -preset ultrafast -crf 23 -an -movflags +faststart \
               /tmp/ffa_track/flat.mp4 2>&1 | tail -5"
-          echo "--- Flatten complete ---"
-          $SSH "du -sh /tmp/ffa_track/flat.mp4"
+          echo "--- Flatten size check ---"
+          FLAT_SIZE=$($SSH "stat -c%s /tmp/ffa_track/flat.mp4 2>/dev/null || echo 0")
+          echo "flat.mp4 size: $FLAT_SIZE bytes"
+          if [ "$FLAT_SIZE" -lt 100000 ]; then
+            echo "ERROR: flat.mp4 too small ($FLAT_SIZE bytes) — flatten failed"
+            exit 1
+          fi
+          echo "--- Flatten complete ($FLAT_SIZE bytes) ---"
 
       - name: Run YOLOv8 detection + ByteTrack
         env:
