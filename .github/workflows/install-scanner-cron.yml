@@ -14,10 +14,13 @@ jobs:
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          printf '#!/bin/bash\ncurl -s -X POST https://api.github.com/repos/JhnsonO/ffa-automations/actions/workflows/gopro-scanner.yml/dispatches -H "Authorization: token %s" -H "Content-Type: application/json" -d '{"ref":"main"}' >> /tmp/scanner-cron.log 2>&1\n' "$GH_PAT" > /home/ffa/scan_dispatch.sh
-          chmod +x /home/ffa/scan_dispatch.sh
-          (crontab -l 2>/dev/null | grep -v "scan_dispatch.sh"; echo "0 * * * * /home/ffa/scan_dispatch.sh") | crontab -
+          SCRIPT_PATH="$HOME/scan_dispatch.sh"
+          printf '#!/bin/bash\ncurl -s -X POST https://api.github.com/repos/JhnsonO/ffa-automations/actions/workflows/gopro-scanner.yml/dispatches -H "Authorization: token %s" -H "Content-Type: application/json" -d '"'"'{"ref":"main"}'"'"' >> /tmp/scanner-cron.log 2>&1\n' "$GH_PAT" > "$SCRIPT_PATH"
+          chmod +x "$SCRIPT_PATH"
+          (crontab -l 2>/dev/null | grep -v "scan_dispatch.sh"; echo "0 * * * * $SCRIPT_PATH") | crontab -
+          echo "=== Runner user: $(whoami) ==="
+          echo "=== Home: $HOME ==="
           echo "=== Installed crontab ==="
           crontab -l
           echo "=== Script contents ==="
-          cat /home/ffa/scan_dispatch.sh
+          cat "$SCRIPT_PATH"
