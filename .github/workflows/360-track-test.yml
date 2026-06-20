@@ -23,26 +23,16 @@ on:
         required: false
         default: ''
         type: string
-      pitch:
-        description: 'Camera pitch in degrees (negative = tilt down toward pitch)'
+      prep_only:
+        description: 'If true, only stitch equirect MP4s and save to Drive (no tracking)'
         required: false
-        default: '-20'
-        type: string
-      v_fov:
-        description: 'Vertical field of view in degrees'
-        required: false
-        default: '100'
-        type: string
-      h_fov:
-        description: 'Horizontal field of view in degrees'
-        required: false
-        default: '160'
+        default: 'false'
         type: string
 
 jobs:
   track:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
@@ -106,7 +96,7 @@ jobs:
               "cpu_cores":    {"gte": 32},
               "cpu_ram":      {"gte": 65536},
               "cpu_ghz":      {"gte": 4.5},
-              "disk_space":   {"gte": 50},
+              "disk_space":   {"gte": 80},
               "inet_down":    {"gte": 800},
               "gpu_frac":     {"eq": 1},
               "num_gpus":     {"eq": 1},
@@ -179,7 +169,7 @@ jobs:
           result = vast_put(f"/asks/{offer_id}/", {
               "client_id": "me",
               "image": "pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime",
-              "disk": 30,
+              "disk": 60,
               "onstart": "",
               "runtype": "ssh",
               "ssh_key": pub_key,
@@ -272,10 +262,10 @@ jobs:
             exit 1
           fi
           echo "  Core count OK ($NPROC cores)"
-          echo "--- Installing apt packages (ffmpeg, libgl1) ---"
-          $SSH "apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends software-properties-common aria2 > /dev/null && add-apt-repository -y ppa:savoury1/ffmpeg4 2>/dev/null && apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends ffmpeg libgl1 libglib2.0-0 && /usr/bin/ffmpeg -filters 2>/dev/null | grep -q v360 && echo 'v360 OK' || echo 'WARNING: v360 missing'"
+          echo "--- Installing apt packages (ffmpeg via savoury1 PPA, aria2, exiftool) ---"
+          $SSH "apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends software-properties-common aria2 libimage-exiftool-perl python3-pil > /dev/null && add-apt-repository -y ppa:savoury1/ffmpeg4 2>/dev/null && apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends ffmpeg libgl1 libglib2.0-0 && /usr/bin/ffmpeg -filters 2>/dev/null | grep -q v360 && echo 'v360 OK' || echo 'WARNING: v360 missing'"
           echo "--- Installing Python packages ---"
-          $SSH "pip install -q --break-system-packages 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless 2>/dev/null || pip install -q 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless"
+          $SSH "pip install -q --break-system-packages 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless google-auth google-auth-oauthlib google-api-python-client 2>/dev/null || pip install -q 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless google-auth google-auth-oauthlib google-api-python-client"
           echo "--- Verifying installs ---"
           $SSH "python3 -c \"import cv2, supervision, ultralytics, pandas; print('All imports OK')\""
 
@@ -301,7 +291,6 @@ jobs:
           if creds.expired and creds.refresh_token:
               creds.refresh(Request())
 
-          # Write access token to file for use in shell
           with open("/tmp/drive_token.txt", "w") as f:
               f.write(creds.token)
           print(f"Access token obtained (expires: {creds.expiry})")
@@ -316,37 +305,142 @@ jobs:
           echo "--- Download complete ---"
           $SSH "du -sh /tmp/ffa_track/source.360"
 
-
-
-      - name: Flatten .360 to rectilinear crop
+      - name: Stitch equirectangular MP4s (trim + full)
         env:
           IP:            ${{ steps.launch.outputs.ip }}
           PORT:          ${{ steps.launch.outputs.port }}
           TRIM_START:    ${{ github.event.inputs.trim_start_sec }}
           CLIP_DURATION: ${{ github.event.inputs.clip_duration_sec }}
-          PITCH:         ${{ github.event.inputs.pitch }}
-          V_FOV:         ${{ github.event.inputs.v_fov }}
-          H_FOV:         ${{ github.event.inputs.h_fov }}
         run: |
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          echo "--- Source info ---"
-          $SSH "ls -lh /tmp/ffa_track/source.360; /usr/bin/ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1 /tmp/ffa_track/source.360 2>&1"
-          echo "--- Flattening .360 directly -> 120deg rectilinear crop (ss=$TRIM_START t=$CLIP_DURATION) ---"
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 root@$IP"
+
+          # The GoPro MAX EAC -> equirectangular filter chain (from vastai_stitch.sh)
+          FILTER_COMPLEX="[1:v]format=gray,split=4[mask1][mask2][mask3][mask4],[0:0]crop=624:1344:x=0:y=0,format=yuvj420p[left],[0:0]crop=624:1344:x=752:y=0,format=yuvj420p[right],[0:0]crop=64:1344:x=624:y=0,format=yuvj420p[segA],[0:0]crop=64:1344:x=688:y=0,format=yuvj420p[segB],[segA][segB][mask1]maskedmerge[crop],[crop]scale=96:1344[cropScaled],[left][cropScaled]hstack[leftAll],[leftAll][right]hstack[leftDone],[0:0]crop=1344:1344:1376:0[middle],[0:0]crop=624:1344:x=2720:y=0,format=yuvj420p[lRB],[0:0]crop=624:1344:x=3472:y=0,format=yuvj420p[rRB],[0:0]crop=64:1344:x=3344:y=0,format=yuvj420p[segARB],[0:0]crop=64:1344:x=3408:y=0,format=yuvj420p[segBRB],[segARB][segBRB][mask2]maskedmerge[cropRB],[cropRB]scale=96:1344[cropRBScaled],[lRB][cropRBScaled]hstack[rAll],[rAll][rRB]hstack[rBotDone],[leftDone][middle]hstack[lMid],[lMid][rBotDone]hstack[botComplete],[0:1]crop=624:1344:x=0:y=0,format=yuvj420p[flt],[0:1]crop=624:1344:x=752:y=0,format=yuvj420p[frt],[0:1]crop=64:1344:x=624:y=0,format=yuvj420p[segC],[0:1]crop=64:1344:x=688:y=0,format=yuvj420p[segD],[segC][segD][mask3]maskedmerge[ltc],[ltc]scale=96:1344[ltcScaled],[flt][ltcScaled]hstack[tlh],[tlh][frt]hstack[tlDone],[0:1]crop=1344:1344:1376:0[tMid],[0:1]crop=624:1344:x=2720:y=0,format=yuvj420p[tlRB],[0:1]crop=624:1344:x=3472:y=0,format=yuvj420p[trRB],[0:1]crop=64:1344:x=3344:y=0,format=yuvj420p[segE],[0:1]crop=64:1344:x=3408:y=0,format=yuvj420p[segF],[segE][segF][mask4]maskedmerge[tcRB],[tcRB]scale=96:1344[tcRBScaled],[tlRB][tcRBScaled]hstack[trAll],[trAll][trRB]hstack[trBotDone],[tlDone][tMid]hstack[tlMid],[tlMid][trBotDone]hstack[topComplete],[botComplete][topComplete]vstack[complete],[complete]v360=eac:e:interp=linear,crop=4032:2388:x=0:y=0[v]"
+
+          echo "--- Generating seam blend mask ---"
+          $SSH "python3 -c \"
+from PIL import Image
+w, h = 64, 1344
+img = Image.new('L', (w, h))
+row = bytes(int(x * 255 / (w - 1)) for x in range(w))
+img.putdata(list(row * h))
+img.save('/tmp/ffa_track/seam_mask.png')
+print('Seam mask generated')
+\""
+
+          echo "--- Stitching TRIM (ss=$TRIM_START t=$CLIP_DURATION) ---"
           $SSH "/usr/bin/ffmpeg -y -ss $TRIM_START -i /tmp/ffa_track/source.360 -t $CLIP_DURATION \
-              -map 0:v:0 \
-              -vf "v360=equirect:rectilinear:ih_fov=360:iv_fov=180:h_fov=$H_FOV:v_fov=$V_FOV:yaw=0:pitch=$PITCH:roll=0:w=1280:h=720" \
-              -c:v libx264 -preset ultrafast -crf 23 -an -movflags +faststart \
-              /tmp/ffa_track/flat.mp4 2>&1 | tail -5"
-          echo "--- Flatten size check ---"
-          FLAT_SIZE=$($SSH "stat -c%s /tmp/ffa_track/flat.mp4 2>/dev/null || echo 0")
-          echo "flat.mp4 size: $FLAT_SIZE bytes"
-          if [ "$FLAT_SIZE" -lt 100000 ]; then
-            echo "ERROR: flat.mp4 too small ($FLAT_SIZE bytes) -- flatten failed"
+            -i /tmp/ffa_track/seam_mask.png \
+            -filter_complex \"$FILTER_COMPLEX\" \
+            -map '[v]' -map '0:a:0?' \
+            -c:v libx264 -preset ultrafast -crf 18 -threads 0 \
+            -c:a aac -ac 2 -b:a 192k -movflags +faststart \
+            /tmp/ffa_track/equirect_trim.mp4 2>&1 | tail -5"
+
+          TRIM_SIZE=$($SSH "stat -c%s /tmp/ffa_track/equirect_trim.mp4 2>/dev/null || echo 0")
+          echo "equirect_trim.mp4 size: $TRIM_SIZE bytes"
+          if [ "$TRIM_SIZE" -lt 100000 ]; then
+            echo "ERROR: equirect_trim.mp4 too small ($TRIM_SIZE bytes) -- stitch failed"
             exit 1
           fi
-          echo "--- Flatten complete ($FLAT_SIZE bytes) ---"
+          echo "--- Trim stitch complete ---"
+
+          echo "--- Stitching FULL file (this will take a while) ---"
+          $SSH "stdbuf -oL -eL /usr/bin/ffmpeg -y -i /tmp/ffa_track/source.360 \
+            -i /tmp/ffa_track/seam_mask.png \
+            -filter_complex \"$FILTER_COMPLEX\" \
+            -map '[v]' -map '0:a:0?' \
+            -c:v libx264 -preset ultrafast -crf 18 -threads 0 \
+            -c:a aac -ac 2 -b:a 192k -movflags +faststart \
+            /tmp/ffa_track/equirect_full.mp4 2>&1 | grep -E 'frame=|speed=|time=' | tail -20"
+
+          FULL_SIZE=$($SSH "stat -c%s /tmp/ffa_track/equirect_full.mp4 2>/dev/null || echo 0")
+          echo "equirect_full.mp4 size: $FULL_SIZE bytes"
+          if [ "$FULL_SIZE" -lt 1000000 ]; then
+            echo "ERROR: equirect_full.mp4 too small ($FULL_SIZE bytes) -- full stitch failed"
+            exit 1
+          fi
+          echo "--- Full stitch complete ---"
+
+      - name: Upload stitched files to Google Drive
+        env:
+          IP:                  ${{ steps.launch.outputs.ip }}
+          PORT:                ${{ steps.launch.outputs.port }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
+        run: |
+          pip install -q google-auth google-auth-oauthlib google-api-python-client
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token_local.json
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+
+          echo "--- Pulling stitched files from instance ---"
+          mkdir -p /tmp/equirect_out
+          scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
+            root@$IP:/tmp/ffa_track/equirect_trim.mp4 /tmp/equirect_out/ && echo "equirect_trim.mp4 pulled OK"
+          scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
+            root@$IP:/tmp/ffa_track/equirect_full.mp4 /tmp/equirect_out/ && echo "equirect_full.mp4 pulled OK"
+          ls -lh /tmp/equirect_out/
+
+          echo "--- Uploading to Drive (FFA/Clips/equirect_source/) ---"
+          python3 - << 'PY'
+          import os, json
+          from google.oauth2.credentials import Credentials
+          from google.auth.transport.requests import Request
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          SCOPES    = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/youtube"]
+          CLIPS_FOLDER_ID = "1gHW29JbvUWnbvJTCC0J8O7r-O1IPZAd8"  # FFA/Clips
+
+          creds = Credentials.from_authorized_user_file("/tmp/youtube_token_local.json", SCOPES)
+          if creds.expired and creds.refresh_token:
+              creds.refresh(Request())
+          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+          # Create or reuse equirect_source subfolder
+          existing = drive.files().list(
+              q=f"name='equirect_source' and '{CLIPS_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+              fields="files(id,name)"
+          ).execute().get("files", [])
+
+          if existing:
+              subfolder_id = existing[0]["id"]
+              print(f"Reusing existing Drive folder: equirect_source  id={subfolder_id}")
+          else:
+              folder = drive.files().create(
+                  body={"name": "equirect_source", "mimeType": "application/vnd.google-apps.folder", "parents": [CLIPS_FOLDER_ID]},
+                  fields="id"
+              ).execute()
+              subfolder_id = folder["id"]
+              print(f"Created Drive subfolder: equirect_source  id={subfolder_id}")
+
+          output_dir = "/tmp/equirect_out"
+          for fname in sorted(os.listdir(output_dir)):
+              fpath = os.path.join(output_dir, fname)
+              if not os.path.isfile(fpath): continue
+              # Remove existing file with same name to avoid duplicates
+              existing_files = drive.files().list(
+                  q=f"name='{fname}' and '{subfolder_id}' in parents and trashed=false",
+                  fields="files(id,name)"
+              ).execute().get("files", [])
+              for ef in existing_files:
+                  drive.files().delete(fileId=ef["id"]).execute()
+                  print(f"  Removed old: {ef['name']}")
+              media    = MediaFileUpload(fpath, mimetype="video/mp4", resumable=True)
+              uploaded = drive.files().create(
+                  body={"name": fname, "parents": [subfolder_id]},
+                  media_body=media, fields="id,name,size"
+              ).execute()
+              size_mb = int(uploaded.get("size", 0)) // (1024*1024)
+              print(f"  Uploaded: {uploaded['name']} ({size_mb}MB)  id={uploaded['id']}")
+
+          print(f"\nAll files at: https://drive.google.com/drive/folders/{subfolder_id}")
+          print(f"EQUIRECT_FOLDER_ID={subfolder_id}")
+          PY
 
       - name: Run YOLOv8 detection + ByteTrack
+        if: ${{ github.event.inputs.prep_only != 'true' }}
         env:
           IP:   ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
@@ -359,7 +453,7 @@ jobs:
           from collections import defaultdict
 
           WORKDIR  = "/tmp/ffa_track"
-          INPUT    = f"{WORKDIR}/flat.mp4"
+          INPUT    = f"{WORKDIR}/equirect_trim.mp4"
           OUT_VID  = f"{WORKDIR}/tracked.mp4"
           OUT_JSON = f"{WORKDIR}/tracking.json"
 
@@ -453,22 +547,6 @@ jobs:
                           interp_count += 1
               print(f"Interpolated ball position for {interp_count} frames")
 
-          history = defaultdict(dict)
-          for entry in log_frames:
-              for p in entry["players"]:
-                  history[p["track_id"]][entry["frame"]] = (p["cx"], p["cy"])
-          facing_count = 0
-          for entry in log_frames:
-              for p in entry["players"]:
-                  tid, fr = p["track_id"], entry["frame"]
-                  past   = history[tid].get(fr - 6)
-                  future = history[tid].get(fr + 6)
-                  if past and future:
-                      dx, dy = future[0]-past[0], future[1]-past[1]
-                      p["facing_deg"] = round(float(np.degrees(np.arctan2(-dy, dx))), 1)
-                      facing_count += 1
-          print(f"Player facing computed for {facing_count} player-frames")
-
           with open(OUT_JSON, "w") as f:
               json.dump({
                   "meta": {
@@ -484,35 +562,35 @@ jobs:
           print(f"  tracked.mp4   : {os.path.getsize(OUT_VID)//1024}KB")
           print(f"  tracking.json : {os.path.getsize(OUT_JSON)//1024}KB")
           PYEOF
-          echo "--- Running tracker (YOLOv8x model download + inference) ---"
+          echo "--- Running tracker ---"
           $SSH "cd /tmp/ffa_track && python3 run_tracker.py"
 
-      - name: Pull results from instance
+      - name: Pull and upload tracking results
+        if: ${{ github.event.inputs.prep_only != 'true' }}
         env:
-          IP:   ${{ steps.launch.outputs.ip }}
-          PORT: ${{ steps.launch.outputs.port }}
+          IP:                  ${{ steps.launch.outputs.ip }}
+          PORT:                ${{ steps.launch.outputs.port }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
         run: |
           mkdir -p tracking_output
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          echo "--- Checking output files on instance ---"
-          $SSH "ls -lh /tmp/ffa_track/tracked.mp4 /tmp/ffa_track/tracking.json 2>/dev/null || echo 'WARNING: some outputs missing'"
-          echo "--- Pulling tracked.mp4 ---"
           scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
               root@$IP:/tmp/ffa_track/tracked.mp4 tracking_output/ && echo "tracked.mp4 pulled OK" || echo "WARNING: tracked.mp4 pull failed"
-          echo "--- Pulling tracking.json ---"
           scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
               root@$IP:/tmp/ffa_track/tracking.json tracking_output/ && echo "tracking.json pulled OK" || echo "WARNING: tracking.json pull failed"
-          echo "--- Local outputs ---"
           ls -lh tracking_output/
 
-      - name: Upload results as artifact
+      - name: Upload tracking results as artifact
+        if: ${{ github.event.inputs.prep_only != 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: tracking-results-${{ github.run_id }}
           path: tracking_output/
           retention-days: 7
 
-      - name: Upload results to Google Drive
+      - name: Upload tracking results to Google Drive
+        if: ${{ github.event.inputs.prep_only != 'true' }}
         env:
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
           YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
@@ -547,7 +625,7 @@ jobs:
           for fname in sorted(os.listdir(output_dir)):
               fpath = os.path.join(output_dir, fname)
               if not os.path.isfile(fpath): continue
-              mime = "video/mp4" if fname.endswith(".mp4") else "application/json"
+              mime    = "video/mp4" if fname.endswith(".mp4") else "application/json"
               media    = MediaFileUpload(fpath, mimetype=mime, resumable=True)
               uploaded = drive.files().create(
                   body={"name": fname, "parents": [subfolder_id]},
