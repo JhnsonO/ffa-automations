@@ -295,19 +295,7 @@ jobs:
           echo "--- Download complete ---"
           $SSH "du -sh /tmp/ffa_track/source.360"
 
-      - name: Convert .360 to equirectangular mp4
-        env:
-          IP:   ${{ steps.launch.outputs.ip }}
-          PORT: ${{ steps.launch.outputs.port }}
-        run: |
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          echo "--- Source file info ---"
-          $SSH "/usr/bin/ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1 /tmp/ffa_track/source.360 2>&1; ls -lh /tmp/ffa_track/source.360"
-          echo "--- Converting .360 -> equirectangular mp4 (full file, map video only) ---"
-          $SSH "/usr/bin/ffmpeg -y -i /tmp/ffa_track/source.360 -map 0:v:0 -c:v libx264 -preset ultrafast -crf 20 -movflags +faststart /tmp/ffa_track/sample.mp4 2>&1 | tail -5 && echo 'Convert done'"
-          $SSH "du -sh /tmp/ffa_track/sample.mp4"
-          echo "--- Video info ---"
-          $SSH "/usr/bin/ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,duration -of default=noprint_wrappers=1 /tmp/ffa_track/sample.mp4"
+
 
       - name: Save source and clip to Google Drive
         env:
@@ -366,14 +354,19 @@ jobs:
           print(f"\nSaved at: https://drive.google.com/drive/folders/{subfolder_id}")
           PY
 
-      - name: Flatten equirectangular to front crop
+      - name: Flatten .360 to rectilinear crop
         env:
-          IP:   ${{ steps.launch.outputs.ip }}
-          PORT: ${{ steps.launch.outputs.port }}
+          IP:            ${{ steps.launch.outputs.ip }}
+          PORT:          ${{ steps.launch.outputs.port }}
+          TRIM_START:    ${{ github.event.inputs.trim_start_sec }}
+          CLIP_DURATION: ${{ github.event.inputs.clip_duration_sec }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          echo "--- Flattening equirectangular -> 120deg rectilinear crop ---"
-          $SSH "/usr/bin/ffmpeg -y -i /tmp/ffa_track/sample.mp4 \
+          echo "--- Source info ---"
+          $SSH "ls -lh /tmp/ffa_track/source.360; /usr/bin/ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1 /tmp/ffa_track/source.360 2>&1"
+          echo "--- Flattening .360 directly -> 120deg rectilinear crop (ss=$TRIM_START t=$CLIP_DURATION) ---"
+          $SSH "/usr/bin/ffmpeg -y -ss $TRIM_START -i /tmp/ffa_track/source.360 -t $CLIP_DURATION \
+              -map 0:v:0 \
               -vf 'v360=equirect:rectilinear:ih_fov=360:iv_fov=180:h_fov=120:v_fov=80:yaw=0:pitch=0:roll=0:w=1280:h=720' \
               -c:v libx264 -preset ultrafast -crf 23 -an -movflags +faststart \
               /tmp/ffa_track/flat.mp4 2>&1 | tail -5"
