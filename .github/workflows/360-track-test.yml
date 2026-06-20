@@ -295,18 +295,16 @@ jobs:
           echo "--- Download complete ---"
           $SSH "du -sh /tmp/ffa_track/source.360"
 
-      - name: Trim and convert .360 to mp4
+      - name: Convert .360 to equirectangular mp4
         env:
-          IP:            ${{ steps.launch.outputs.ip }}
-          PORT:          ${{ steps.launch.outputs.port }}
-          TRIM_START:    ${{ github.event.inputs.trim_start_sec }}
-          CLIP_DURATION: ${{ github.event.inputs.clip_duration_sec }}
+          IP:   ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          echo "--- Diagnostics ---"
-          $SSH "which ffmpeg; /usr/bin/ffmpeg -version 2>&1 | head -2; /usr/bin/ffprobe -v error -show_entries format=format_name,duration -of default=noprint_wrappers=1 /tmp/ffa_track/source.360 2>&1 | head -10; ls -lh /tmp/ffa_track/source.360"
-          echo "--- Trimming .360 and converting to equirectangular mp4 in one pass ---"
-          $SSH "/usr/bin/ffmpeg -y -ss $TRIM_START -i /tmp/ffa_track/source.360 -t $CLIP_DURATION -map 0:v:0 -c:v libx264 -preset ultrafast -crf 20 -movflags +faststart /tmp/ffa_track/sample.mp4 2>&1 | tail -5 && echo 'Convert done'"
+          echo "--- Source file info ---"
+          $SSH "/usr/bin/ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1 /tmp/ffa_track/source.360 2>&1; ls -lh /tmp/ffa_track/source.360"
+          echo "--- Converting .360 -> equirectangular mp4 (full file, map video only) ---"
+          $SSH "/usr/bin/ffmpeg -y -i /tmp/ffa_track/source.360 -map 0:v:0 -c:v libx264 -preset ultrafast -crf 20 -movflags +faststart /tmp/ffa_track/sample.mp4 2>&1 | tail -5 && echo 'Convert done'"
           $SSH "du -sh /tmp/ffa_track/sample.mp4"
           echo "--- Video info ---"
           $SSH "/usr/bin/ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,duration -of default=noprint_wrappers=1 /tmp/ffa_track/sample.mp4"
