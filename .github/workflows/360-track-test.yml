@@ -89,6 +89,7 @@ jobs:
               "disk_space":   {"gte": 50},
               "inet_down":    {"gte": 800},
               "gpu_frac":     {"eq": 1},
+              "num_gpus":     {"eq": 1},
           }
           print(f"Query: {json.dumps(query)}")
           resp   = vast_get("/bundles/", {"q": json.dumps(query)})
@@ -238,6 +239,14 @@ jobs:
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+          echo "--- Core count check ---"
+          NPROC=$($SSH "nproc")
+          echo "  nproc: $NPROC"
+          if [ "$NPROC" -lt 16 ]; then
+            echo "ERROR: only $NPROC cores allocated (need >=16) — bad offer, aborting"
+            exit 1
+          fi
+          echo "  Core count OK ($NPROC cores)"
           echo "--- Installing apt packages (ffmpeg, libgl1) ---"
           $SSH "apt-get update -qq 2>/dev/null && apt-get install -y -qq --no-install-recommends ffmpeg libgl1 libglib2.0-0 > /dev/null && echo 'apt done'"
           echo "--- Installing Python packages ---"
