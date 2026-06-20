@@ -290,7 +290,7 @@ jobs:
           echo "--- Downloading source.360 from Drive to instance via aria2c ---"
           $SSH "mkdir -p /tmp/ffa_track && aria2c -x 8 -s 8 --file-allocation=none \
             --header='Authorization: Bearer $ACCESS_TOKEN' \
-            -o /tmp/ffa_track/source.360 \
+            --dir=/tmp/ffa_track --out=source.360 \
             'https://www.googleapis.com/drive/v3/files/$FILE_ID?alt=media' 2>&1 | tail -10"
           echo "--- Download complete ---"
           $SSH "du -sh /tmp/ffa_track/source.360"
