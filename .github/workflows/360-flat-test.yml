@@ -56,6 +56,7 @@ jobs:
       - name: Download source from Google Drive
         env:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
           DRIVE_FILE_ID: ${{ inputs.drive_file_id }}
         run: python3 scripts/drive_download.py
 
