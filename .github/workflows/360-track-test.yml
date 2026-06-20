@@ -23,6 +23,16 @@ on:
         required: false
         default: ''
         type: string
+      pitch:
+        description: 'Camera pitch in degrees (negative = tilt down toward pitch)'
+        required: false
+        default: '-20'
+        type: string
+      v_fov:
+        description: 'Vertical field of view in degrees'
+        required: false
+        default: '100'
+        type: string
 
 jobs:
   track:
@@ -309,6 +319,8 @@ jobs:
           PORT:          ${{ steps.launch.outputs.port }}
           TRIM_START:    ${{ github.event.inputs.trim_start_sec }}
           CLIP_DURATION: ${{ github.event.inputs.clip_duration_sec }}
+          PITCH:         ${{ github.event.inputs.pitch }}
+          V_FOV:         ${{ github.event.inputs.v_fov }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
           echo "--- Source info ---"
@@ -316,7 +328,7 @@ jobs:
           echo "--- Flattening .360 directly -> 120deg rectilinear crop (ss=$TRIM_START t=$CLIP_DURATION) ---"
           $SSH "/usr/bin/ffmpeg -y -ss $TRIM_START -i /tmp/ffa_track/source.360 -t $CLIP_DURATION \
               -map 0:v:0 \
-              -vf 'v360=equirect:rectilinear:ih_fov=360:iv_fov=180:h_fov=120:v_fov=80:yaw=0:pitch=0:roll=0:w=1280:h=720' \
+              -vf "v360=equirect:rectilinear:ih_fov=360:iv_fov=180:h_fov=120:v_fov=$V_FOV:yaw=0:pitch=$PITCH:roll=0:w=1280:h=720" \
               -c:v libx264 -preset ultrafast -crf 23 -an -movflags +faststart \
               /tmp/ffa_track/flat.mp4 2>&1 | tail -5"
           echo "--- Flatten size check ---"
