@@ -44,6 +44,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Python deps
+        run: pip install google-auth google-auth-oauthlib google-api-python-client requests
+
       - name: Install FFmpeg with v360 support
         run: |
           sudo add-apt-repository -y ppa:savoury1/ffmpeg4
