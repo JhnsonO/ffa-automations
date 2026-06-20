@@ -362,7 +362,6 @@ from datetime import datetime, timezone
 sys.path.insert(0, "${WORKDIR}")
 
 from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
@@ -380,26 +379,47 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+import urllib.request as _urllib_req
+
 creds_data = json.loads(CREDS_PATH.read_text())
 token_data = json.loads(TOKEN_PATH.read_text())
 
+# Determine client_id / client_secret — prefer token file, fall back to creds file
+_client_id = token_data.get("client_id") or creds_data["installed"]["client_id"]
+_client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+_refresh_token = token_data["refresh_token"]
+_token_uri = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+
+# Always do a live token refresh — never rely on stored access token
+print(f"[{datetime.now().strftime('%H:%M:%S')}] Refreshing YouTube access token...")
+_refresh_payload = json.dumps({
+    "client_id": _client_id,
+    "client_secret": _client_secret,
+    "refresh_token": _refresh_token,
+    "grant_type": "refresh_token",
+}).encode()
+_req = _urllib_req.Request(
+    _token_uri,
+    data=_refresh_payload,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with _urllib_req.urlopen(_req) as _resp:
+    _tok = json.loads(_resp.read())
+
+if "access_token" not in _tok:
+    raise RuntimeError(f"Token refresh failed: {_tok}")
+
+print(f"[{datetime.now().strftime('%H:%M:%S')}] Token refreshed OK (expires_in={_tok.get('expires_in')}s)")
+
 creds = Credentials(
-    token=token_data.get("token"),
-    refresh_token=token_data.get("refresh_token"),
-    token_uri=token_data.get("token_uri", "https://oauth2.googleapis.com/token"),
-    client_id=creds_data["installed"]["client_id"],
-    client_secret=creds_data["installed"]["client_secret"],
+    token=_tok["access_token"],
+    refresh_token=_refresh_token,
+    token_uri=_token_uri,
+    client_id=_client_id,
+    client_secret=_client_secret,
     scopes=SCOPES,
 )
-
-if creds.expired and creds.refresh_token:
-    creds.refresh(Request())
-    TOKEN_PATH.write_text(json.dumps({
-        "token": creds.token,
-        "refresh_token": creds.refresh_token,
-        "token_uri": creds.token_uri,
-    }))
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Token refreshed")
 
 yt = build("youtube", "v3", credentials=creds)
 
