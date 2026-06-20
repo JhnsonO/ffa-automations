@@ -4,33 +4,33 @@ on:
   workflow_dispatch:
     inputs:
       drive_file_id:
-        description: 'Google Drive file ID of the .360 source'
+        description: "Google Drive file ID of the .360 source"
         required: true
-        default: '1J5rJcbPh5Xx8allwUybS7EqlnM9aXFn7'
+        default: "1J5rJcbPh5Xx8allwUybS7EqlnM9aXFn7"
       trim_start_sec:
-        description: 'Start trim in seconds'
+        description: "Start trim in seconds"
         required: false
-        default: '120'
+        default: "120"
       clip_duration_sec:
-        description: 'Clip duration in seconds'
+        description: "Clip duration in seconds"
         required: false
-        default: '60'
+        default: "60"
       yaw:
-        description: 'Yaw (0 = front, 180 = rear)'
+        description: "Yaw (0=front, 180=rear)"
         required: false
-        default: '0'
+        default: "0"
       pitch:
-        description: 'Pitch (negative = tilt down)'
+        description: "Pitch (negative=tilt down)"
         required: false
-        default: '-5'
+        default: "-5"
       h_fov:
-        description: 'Horizontal FOV degrees'
+        description: "Horizontal FOV degrees"
         required: false
-        default: '120'
+        default: "120"
       v_fov:
-        description: 'Vertical FOV degrees'
+        description: "Vertical FOV degrees"
         required: false
-        default: '80'
+        default: "80"
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -41,6 +41,9 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Install FFmpeg with v360 support
         run: |
           sudo add-apt-repository -y ppa:savoury1/ffmpeg4
@@ -50,31 +53,11 @@ jobs:
           /usr/bin/ffmpeg -version | head -2
           /usr/bin/ffmpeg -filters 2>/dev/null | grep v360 && echo "v360 OK" || (echo "v360 MISSING" && exit 1)
 
-      - name: Install Python deps
-        run: pip install requests google-auth google-auth-oauthlib google-api-python-client
-
       - name: Download source from Google Drive
         env:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
-        run: |
-          python3 - <<'PY'
-          import json, os, urllib.request
-
-          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
-          token = token_data.get("token") or token_data.get("access_token")
-
-          file_id = "${{ inputs.drive_file_id }}"
-          url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
-          req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-          print(f"Downloading {file_id} from Drive...")
-          with urllib.request.urlopen(req) as resp, open("/tmp/source.360", "wb") as out:
-              total = 0
-              while chunk := resp.read(4 * 1024 * 1024):
-                  out.write(chunk)
-                  total += len(chunk)
-                  print(f"  {total / 1024 / 1024:.0f} MB downloaded", flush=True)
-          print(f"Download complete: {total / 1024 / 1024:.1f} MB")
-          PY'
+          DRIVE_FILE_ID: ${{ inputs.drive_file_id }}
+        run: python3 scripts/drive_download.py
 
       - name: Convert 360 to flat
         run: |
@@ -86,8 +69,7 @@ jobs:
             -vf "v360=equirect:rectilinear:yaw=${{ inputs.yaw }}:pitch=${{ inputs.pitch }}:h_fov=${{ inputs.h_fov }}:v_fov=${{ inputs.v_fov }}:w=1920:h=1080" \
             -c:v libx264 -preset fast -crf 18 -an \
             "$OUTPUT"
-          echo "Output size: $(du -sh $OUTPUT)"
-          echo "OUTPUT_FILE=$OUTPUT" >> $GITHUB_ENV
+          echo "Output: $(du -sh $OUTPUT)"
 
       - name: Upload as artifact
         uses: actions/upload-artifact@v4
