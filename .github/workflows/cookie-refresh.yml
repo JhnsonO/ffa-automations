@@ -137,7 +137,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           python3 - << 'PYEOF'
-          import os, json, urllib.request, base64
+          import os, json, urllib.request, base64, time
           from datetime import datetime, timezone, timedelta
           from nacl import encoding, public as nacl_public
           from base64 import b64encode
@@ -151,13 +151,15 @@ jobs:
           client_id     = creds_json["installed"]["client_id"]
           client_secret = creds_json["installed"]["client_secret"]
 
+          # Get fresh access token from Google
           payload = json.dumps({
               "client_id": client_id, "client_secret": client_secret,
               "refresh_token": refresh_token, "grant_type": "refresh_token",
           }).encode()
-          req = urllib.request.Request("https://oauth2.googleapis.com/token",
-              data=payload, headers={"Content-Type": "application/json"})
-          with urllib.request.urlopen(req) as r:
+          with urllib.request.urlopen(urllib.request.Request(
+              "https://oauth2.googleapis.com/token",
+              data=payload, headers={"Content-Type": "application/json"}
+          )) as r:
               result = json.loads(r.read())
 
           new_token = {**token_json,
@@ -167,24 +169,37 @@ jobs:
           new_token_str = json.dumps(new_token)
           print(f"Token refreshed, expires: {new_token['expiry']}")
 
-          file_resp = json.loads(urllib.request.urlopen(urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/contents/youtube_token.json",
-              headers={"Authorization": f"token {gh_token}"}
-          )).read())
-          fresh_sha = file_resp["sha"]
+          # Retry loop: fetch fresh SHA immediately before each PUT attempt
+          for attempt in range(5):
+              if attempt > 0:
+                  time.sleep(3)
+              file_resp = json.loads(urllib.request.urlopen(urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/contents/youtube_token.json",
+                  headers={"Authorization": f"token {gh_token}"}
+              )).read())
+              fresh_sha = file_resp["sha"]
+              put_payload = json.dumps({
+                  "message": "chore: refresh YouTube token [skip ci]",
+                  "content": base64.b64encode(new_token_str.encode()).decode(),
+                  "sha": fresh_sha, "branch": "main",
+              }).encode()
+              try:
+                  urllib.request.urlopen(urllib.request.Request(
+                      f"https://api.github.com/repos/{repo}/contents/youtube_token.json",
+                      data=put_payload, method="PUT",
+                      headers={"Authorization": f"token {gh_token}", "Content-Type": "application/json"}
+                  ))
+                  print(f"youtube_token.json updated (attempt {attempt+1})")
+                  break
+              except urllib.error.HTTPError as e:
+                  if e.code == 409 and attempt < 4:
+                      print(f"409 conflict on attempt {attempt+1}, retrying...")
+                      continue
+                  raise
+          else:
+              raise RuntimeError("Failed to commit youtube_token.json after 5 attempts")
 
-          put_payload = json.dumps({
-              "message": "chore: refresh YouTube token [skip ci]",
-              "content": base64.b64encode(new_token_str.encode()).decode(),
-              "sha": fresh_sha, "branch": "main",
-          }).encode()
-          urllib.request.urlopen(urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/contents/youtube_token.json",
-              data=put_payload, method="PUT",
-              headers={"Authorization": f"token {gh_token}", "Content-Type": "application/json"}
-          ))
-          print("youtube_token.json updated in repo")
-
+          # Update YOUTUBE_TOKEN secret
           key_resp = json.loads(urllib.request.urlopen(urllib.request.Request(
               f"https://api.github.com/repos/{repo}/actions/secrets/public-key",
               headers={"Authorization": f"Bearer {gh_token}"}
