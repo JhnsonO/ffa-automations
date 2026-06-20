@@ -401,7 +401,7 @@ jobs:
                   "players": players
               })
 
-              labels = [f"P{int(t)}" for t in (player_dets.tracker_id or [])]
+              labels = [f"P{int(t)}" for t in (player_dets.tracker_id if player_dets.tracker_id is not None else [])]
               frame  = trace_ann.annotate(frame, player_dets)
               frame  = box_ann.annotate(frame, player_dets)
               frame  = label_ann.annotate(frame, player_dets, labels=labels)
