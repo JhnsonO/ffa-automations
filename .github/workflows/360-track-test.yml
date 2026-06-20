@@ -1,0 +1,418 @@
+name: 360 Ball Tracker — Test Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      drive_file_id:
+        description: 'Google Drive file ID of the 360 clip to process'
+        required: true
+        default: '150lN5bQzPbgdCR1mnKWG5gMmSIBrgEPb'
+        type: string
+      clip_duration_sec:
+        description: 'Seconds of clip to process (0 = full clip)'
+        required: false
+        default: '60'
+        type: string
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Generate SSH key
+        id: keygen
+        run: |
+          python3 - << 'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+          key = Ed25519PrivateKey.generate()
+          priv = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
+          pub  = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+          os.makedirs("/tmp", exist_ok=True)
+          with open("/tmp/vastai_key", "wb") as f: f.write(priv)
+          with open("/tmp/vastai_key.pub", "wb") as f: f.write(pub + b" ffa-track\n")
+          os.chmod("/tmp/vastai_key", 0o600)
+          print("pub_key=" + pub.decode() + " ffa-track")
+          PY
+          echo "pub_key=$(cat /tmp/vastai_key.pub)" >> $GITHUB_OUTPUT
+
+      - name: Launch Vast.ai instance
+        id: launch
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 - << 'PY'
+          import os, json, urllib.request, urllib.parse, time, sys
+
+          API_KEY = os.environ["VAST_API_KEY"]
+          BASE    = "https://console.vast.ai/api/v0"
+          BASE_V1 = "https://cloud.vast.ai/api/v1"
+          headers = {
+              "Authorization": f"Bearer {API_KEY}",
+              "Content-Type": "application/json",
+              "Accept": "application/json",
+          }
+
+          def vast_get(path, params=None, base=None):
+              url = f"{(base or BASE)}{path}"
+              if params: url += "?" + urllib.parse.urlencode(params)
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  return json.loads(r.read())
+
+          def vast_put(path, data):
+              req = urllib.request.Request(f"{BASE}{path}",
+                  data=json.dumps(data).encode(), method="PUT", headers=headers)
+              with urllib.request.urlopen(req) as r:
+                  return json.loads(r.read())
+
+          def vast_post(path, data):
+              req = urllib.request.Request(f"{BASE}{path}",
+                  data=json.dumps(data).encode(), method="POST", headers=headers)
+              with urllib.request.urlopen(req) as r:
+                  return json.loads(r.read())
+
+          pub_key = open("/tmp/vastai_key.pub").read().strip()
+          print("Registering SSH key...")
+          vast_post("/ssh/", {"ssh_key": pub_key})
+
+          query = {
+              "verified":   {"eq": True},
+              "rentable":   {"eq": True},
+              "cpu_cores":  {"gte": 8},
+              "cpu_ram":    {"gte": 16384},
+              "disk_space": {"gte": 30},
+              "inet_down":  {"gte": 300},
+          }
+          resp = vast_get("/bundles/", {"q": json.dumps(query)})
+          offers = resp.get("offers", [])
+          print(f"Found {len(offers)} offers")
+
+          BAD_CPU = ["silver", "atom", "celeron", "pentium"]
+          offers = [o for o in offers if not any(s in (o.get("cpu_name") or "").lower() for s in BAD_CPU)]
+          offers.sort(key=lambda o: float(o.get("dph_total", 999)))
+
+          print("Top 3 candidates:")
+          for o in offers[:3]:
+              print(f"  id={o['id']} cpu={o.get('cpu_name','?')} cores={o.get('cpu_cores','?')} dph=${o.get('dph_total','?')}")
+
+          ip = port = instance_id = None
+          for offer in offers[:5]:
+              print(f"\nTrying offer {offer['id']}...")
+              try:
+                  result = vast_put(f"/asks/{offer['id']}/", {
+                      "client_id": "me",
+                      "image": "pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime",
+                      "disk": 30,
+                      "onstart": "",
+                      "runtype": "ssh",
+                      "ssh_key": pub_key,
+                      "env": {},
+                  })
+              except Exception as e:
+                  print(f"  offer failed: {e} — trying next")
+                  continue
+
+              this_instance = result.get("new_contract")
+              if not this_instance:
+                  print(f"  no instance ID — trying next")
+                  continue
+              print(f"  Instance ID: {this_instance}")
+
+              for attempt in range(24):
+                  time.sleep(10)
+                  resp = vast_get("/instances/", base=BASE_V1)
+                  inst = next((x for x in resp.get("instances", []) if x["id"] == this_instance), None)
+                  if not inst:
+                      print(f"    [{attempt+1}] not visible yet")
+                      continue
+                  status = inst.get("actual_status", "?")
+                  this_ip   = inst.get("ssh_host") or inst.get("public_ipaddr")
+                  this_port = inst.get("ssh_port", 22)
+                  print(f"    [{attempt+1}] status={status} ip={this_ip} port={this_port}")
+                  if status == "running" and this_ip:
+                      ip, port, instance_id = this_ip, this_port, this_instance
+                      break
+              if instance_id:
+                  break
+              print(f"  Instance {this_instance} never came up — trying next offer")
+              try:
+                  req = urllib.request.Request(f"{BASE_V1}/instances/{this_instance}/",
+                      method="DELETE", headers=headers)
+                  urllib.request.urlopen(req, timeout=10)
+              except:
+                  pass
+
+          if not instance_id:
+              print("ERROR: no instance started", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"\nINSTANCE READY: {ip}:{port}  id={instance_id}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"ip={ip}\nport={port}\ninstance_id={instance_id}\n")
+          PY
+
+      - name: Copy and run tracking script
+        env:
+          IP:               ${{ steps.launch.outputs.ip }}
+          PORT:             ${{ steps.launch.outputs.port }}
+          DRIVE_FILE_ID:    ${{ github.event.inputs.drive_file_id }}
+          CLIP_DURATION:    ${{ github.event.inputs.clip_duration_sec }}
+        run: |
+          pip install cryptography -q
+
+          # Wait for SSH to be ready
+          python3 - << 'PY'
+          import os, socket, time
+          ip, port = os.environ["IP"], int(os.environ["PORT"])
+          print(f"Waiting for SSH on {ip}:{port}...")
+          for i in range(30):
+              try:
+                  s = socket.create_connection((ip, port), timeout=5)
+                  s.close()
+                  print("SSH port open")
+                  break
+              except:
+                  print(f"  [{i+1}] not ready yet")
+                  time.sleep(5)
+          PY
+
+          # Install sshpass equivalent — use SSH with StrictHostKeyChecking=no
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$IP"
+
+          # Extra wait for SSH daemon to be fully ready
+          sleep 15
+
+          # Copy tracking script
+          scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
+              goal_detector/track_360.sh root@$IP:/tmp/track_360.sh 2>/dev/null || true
+
+          # Run inline (pipe the script directly to avoid scp dep issues)
+          $SSH "bash -s" << REMOTE
+          #!/usr/bin/env bash
+          set -euo pipefail
+          WORKDIR="/tmp/ffa_track"
+          mkdir -p "\$WORKDIR"
+          cd "\$WORKDIR"
+
+          log() { echo "[\$(date -u +%H:%M:%S)] \$*"; }
+          log "=== FFA 360 Ball Tracker ==="
+
+          log "--- Installing deps ---"
+          apt-get update -qq 2>/dev/null
+          apt-get install -y -qq --no-install-recommends ffmpeg libgl1 libglib2.0-0 > /dev/null
+          pip install -q --break-system-packages gdown ultralytics supervision pandas numpy opencv-python-headless 2>/dev/null || \
+          pip install -q gdown ultralytics supervision pandas numpy opencv-python-headless 2>/dev/null
+          log "Deps done"
+
+          log "--- Downloading clip from Drive ---"
+          python3 -c "import gdown; gdown.download(id='${DRIVE_FILE_ID}', output='\$WORKDIR/sample.mp4', quiet=False)"
+          log "Downloaded: \$(du -sh \$WORKDIR/sample.mp4 | cut -f1)"
+
+          # Trim if requested
+          DURATION_ARG=""
+          if [ "${CLIP_DURATION}" != "0" ] && [ -n "${CLIP_DURATION}" ]; then
+              log "Trimming to first ${CLIP_DURATION}s"
+              ffmpeg -y -i \$WORKDIR/sample.mp4 -t ${CLIP_DURATION} -c copy \$WORKDIR/sample_trim.mp4 -loglevel quiet
+              mv \$WORKDIR/sample_trim.mp4 \$WORKDIR/sample.mp4
+          fi
+
+          log "--- Video info ---"
+          ffprobe -v quiet -print_format json -show_streams \$WORKDIR/sample.mp4 2>/dev/null | \
+              python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          v=[s for s in d['streams'] if s['codec_type']=='video'][0]
+          print(f'  Resolution : {v[\"width\"]}x{v[\"height\"]}')
+          print(f'  Duration   : {float(v.get(\"duration\",0)):.1f}s')
+          print(f'  FPS        : {v.get(\"r_frame_rate\",\"?\")}')
+          "
+
+          log "--- Flattening equirectangular -> 120deg front crop ---"
+          ffmpeg -y -i \$WORKDIR/sample.mp4 \
+              -vf "v360=equirect:rectilinear:ih_fov=360:iv_fov=180:h_fov=120:v_fov=80:yaw=0:pitch=0:roll=0:w=1280:h=720" \
+              -c:v libx264 -preset ultrafast -crf 23 -an \
+              \$WORKDIR/flat.mp4 2>&1 | grep -E "time=|Error" | tail -3
+          log "Flat crop: \$(du -sh \$WORKDIR/flat.mp4 | cut -f1)"
+
+          log "--- Running YOLOv8 + ByteTrack ---"
+          python3 << 'PY_INNER'
+          import cv2, json, numpy as np, supervision as sv, pandas as pd
+          from ultralytics import YOLO
+          from collections import defaultdict
+
+          WORKDIR = "/tmp/ffa_track"
+          INPUT   = f"{WORKDIR}/flat.mp4"
+          OUT_VID = f"{WORKDIR}/tracked.mp4"
+          OUT_JSON= f"{WORKDIR}/tracking.json"
+
+          print("Loading YOLOv8x...")
+          model   = YOLO("yolov8x.pt")
+          tracker = sv.ByteTrack()
+          box_ann   = sv.BoxAnnotator(thickness=2)
+          label_ann = sv.LabelAnnotator(text_scale=0.5)
+          trace_ann = sv.TraceAnnotator(thickness=2, trace_length=30)
+
+          cap    = cv2.VideoCapture(INPUT)
+          fps    = cap.get(cv2.CAP_PROP_FPS)
+          W      = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+          H      = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+          total  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+          print(f"Video: {W}x{H} @ {fps:.1f}fps  {total} frames")
+
+          out = cv2.VideoWriter(OUT_VID, cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
+          log_frames = []
+          ball_raw   = {}  # frame -> (cx, cy, conf)
+          frame_id   = 0
+
+          while True:
+              ret, frame = cap.read()
+              if not ret: break
+
+              results    = model(frame, verbose=False, conf=0.25, classes=[0, 32])[0]
+              detections = sv.Detections.from_ultralytics(results)
+
+              ball_dets   = detections[detections.class_id == 32]
+              player_dets = detections[detections.class_id == 0]
+              player_dets = tracker.update_with_detections(player_dets)
+
+              # Ball: highest-conf detection
+              ball_pos = None
+              if len(ball_dets) > 0:
+                  best = int(np.argmax(ball_dets.confidence))
+                  x1,y1,x2,y2 = ball_dets.xyxy[best]
+                  cx,cy = (x1+x2)/2, (y1+y2)/2
+                  ball_pos = (float(cx), float(cy), float(ball_dets.confidence[best]))
+                  ball_raw[frame_id] = ball_pos
+
+              # Players
+              players = []
+              for i in range(len(player_dets)):
+                  x1,y1,x2,y2 = player_dets.xyxy[i]
+                  tid = int(player_dets.tracker_id[i]) if player_dets.tracker_id is not None else -1
+                  players.append({"track_id": tid,
+                                  "cx": round(float((x1+x2)/2), 1),
+                                  "cy": round(float((y1+y2)/2), 1),
+                                  "conf": round(float(player_dets.confidence[i]), 3)})
+
+              log_frames.append({"frame": frame_id, "time_s": round(frame_id/fps, 3),
+                                 "ball": list(ball_pos) if ball_pos else None,
+                                 "players": players})
+
+              # Annotate
+              labels = [f"P{int(t)}" for t in (player_dets.tracker_id or [])]
+              frame  = trace_ann.annotate(frame, player_dets)
+              frame  = box_ann.annotate(frame, player_dets)
+              frame  = label_ann.annotate(frame, player_dets, labels=labels)
+              if ball_pos:
+                  frame = box_ann.annotate(frame, ball_dets)
+                  cv2.circle(frame, (int(ball_pos[0]), int(ball_pos[1])), 10, (0,255,0), -1)
+
+              out.write(frame)
+              frame_id += 1
+              if frame_id % 50 == 0:
+                  pct = 100*frame_id//total
+                  print(f"  {frame_id}/{total} ({pct}%) ball_seen={len(ball_raw)}")
+
+          cap.release(); out.release()
+
+          # Interpolate missing ball positions (look forward + back)
+          print(f"\nBall detected in {len(ball_raw)}/{total} frames ({100*len(ball_raw)//total}%)")
+          detected = sorted(ball_raw.keys())
+          if detected:
+              cx_s = pd.Series({f: ball_raw[f][0] for f in detected})
+              cy_s = pd.Series({f: ball_raw[f][1] for f in detected})
+              idx  = pd.RangeIndex(total)
+              cx_i = cx_s.reindex(idx).interpolate("linear", limit=90)
+              cy_i = cy_s.reindex(idx).interpolate("linear", limit=90)
+
+              for entry in log_frames:
+                  fr = entry["frame"]
+                  if entry["ball"] is None:
+                      cx_v = cx_i.get(fr)
+                      cy_v = cy_i.get(fr)
+                      if cx_v is not None and not np.isnan(float(cx_v)):
+                          entry["ball_interp"] = [round(float(cx_v),1), round(float(cy_v),1)]
+
+          # Compute player facing direction from motion vectors
+          history = defaultdict(dict)
+          for entry in log_frames:
+              for p in entry["players"]:
+                  history[p["track_id"]][entry["frame"]] = (p["cx"], p["cy"])
+
+          for entry in log_frames:
+              for p in entry["players"]:
+                  tid = p["track_id"]
+                  fr  = entry["frame"]
+                  pos = history[tid]
+                  past   = pos.get(fr - 6)
+                  future = pos.get(fr + 6)
+                  if past and future:
+                      dx = future[0] - past[0]
+                      dy = future[1] - past[1]
+                      p["facing_deg"] = round(float(np.degrees(np.arctan2(-dy, dx))), 1)
+
+          with open(OUT_JSON, "w") as f:
+              json.dump({
+                  "meta": {"total_frames": total, "fps": fps, "resolution": [W, H],
+                           "ball_detected_frames": len(ball_raw),
+                           "ball_detection_rate": round(len(ball_raw)/total, 3)},
+                  "frames": log_frames
+              }, f, indent=2)
+
+          print(f"\nDone.")
+          print(f"  Tracked video : {OUT_VID}  ({__import__('os').path.getsize(OUT_VID)//1024}KB)")
+          print(f"  Tracking JSON : {OUT_JSON}  ({__import__('os').path.getsize(OUT_JSON)//1024}KB)")
+          PY_INNER
+
+          log "=== Tracking complete ==="
+          ls -lh \$WORKDIR/
+          REMOTE
+
+      - name: Pull results back
+        env:
+          IP:   ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          mkdir -p tracking_output
+          scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
+              root@$IP:/tmp/ffa_track/tracked.mp4 tracking_output/ 2>/dev/null || echo "video pull failed"
+          scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
+              root@$IP:/tmp/ffa_track/tracking.json tracking_output/ 2>/dev/null || echo "json pull failed"
+          ls -lh tracking_output/
+
+      - name: Upload results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracking-results-${{ github.run_id }}
+          path: tracking_output/
+          retention-days: 7
+
+      - name: Terminate Vast.ai instance
+        if: always()
+        env:
+          VAST_API_KEY:  ${{ secrets.VASTAI_API_KEY }}
+          INSTANCE_ID:   ${{ steps.launch.outputs.instance_id }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, json
+          API_KEY     = os.environ["VAST_API_KEY"]
+          instance_id = os.environ.get("INSTANCE_ID", "")
+          if not instance_id:
+              print("No instance ID — nothing to terminate")
+              exit(0)
+          headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+          req = urllib.request.Request(
+              f"https://cloud.vast.ai/api/v1/instances/{instance_id}/",
+              method="DELETE", headers=headers)
+          try:
+              urllib.request.urlopen(req, timeout=15)
+              print(f"Instance {instance_id} terminated")
+          except Exception as e:
+              print(f"Terminate failed (may already be gone): {e}")
+          PY
