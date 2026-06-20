@@ -83,17 +83,17 @@ jobs:
           query = {
               "verified":   {"eq": True},
               "rentable":   {"eq": True},
-              "cpu_cores":  {"gte": 8},
-              "cpu_ram":    {"gte": 16384},
+              "cpu_cores":  {"gte": 16},
+              "cpu_ram":    {"gte": 32768},
               "disk_space": {"gte": 30},
-              "inet_down":  {"gte": 300},
+              "inet_down":  {"gte": 500},
           }
           print(f"Query: {json.dumps(query)}")
           resp   = vast_get("/bundles/", {"q": json.dumps(query)})
           offers = resp.get("offers", [])
           print(f"Raw offers from API: {len(offers)}")
 
-          BAD_CPU = ["silver", "atom", "celeron", "pentium"]
+          BAD_CPU = ["silver", "atom", "celeron", "pentium", "e5-2", "e5-4", "e7-", "xeon e5", "xeon e7"]
           before = len(offers)
           offers = [o for o in offers if not any(s in (o.get("cpu_name") or "").lower() for s in BAD_CPU)]
           print(f"After CPU filter: {len(offers)} (removed {before - len(offers)} weak CPUs)")
@@ -513,7 +513,7 @@ jobs:
               exit(0)
           headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
           req = urllib.request.Request(
-              f"https://cloud.vast.ai/api/v1/instances/{instance_id}/",
+              f"https://console.vast.ai/api/v0/instances/{instance_id}/",
               method="DELETE", headers=headers)
           try:
               urllib.request.urlopen(req, timeout=15)

@@ -2,6 +2,12 @@ name: Vast Cleanup
 
 on:
   workflow_dispatch:
+    inputs:
+      keep_instance_id:
+        description: 'Instance ID to keep alive (active run). Leave blank to kill all.'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   cleanup:
@@ -11,13 +17,16 @@ jobs:
       - name: List and kill all vast instances
         env:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+          KEEP_INSTANCE_ID: ${{ github.event.inputs.keep_instance_id }}
         run: |
           python3 - << 'PY'
-          import urllib.request, json, sys
+          import urllib.request, json, sys, os
 
-          API_KEY = os.environ["VAST_API_KEY"] if False else __import__('os').environ["VAST_API_KEY"]
-          BASE_V1 = "https://cloud.vast.ai/api/v1"
-          headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+          API_KEY  = os.environ["VAST_API_KEY"]
+          KEEP_ID  = os.environ.get("KEEP_INSTANCE_ID", "").strip()
+          BASE     = "https://console.vast.ai/api/v0"
+          BASE_V1  = "https://cloud.vast.ai/api/v1"
+          headers  = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
           def vast_get(url):
               with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as r:
@@ -25,20 +34,23 @@ jobs:
 
           resp = vast_get(f"{BASE_V1}/instances/")
           instances = resp.get("instances", [])
-          print(f"Found {len(instances)} instances on account:")
+          print(f"Found {len(instances)} instance(s) on account:")
           for inst in instances:
               print(f"  id={inst['id']} status={inst.get('actual_status')} cpu={inst.get('cpu_name','?')} dph=${inst.get('dph_total','?')} started={inst.get('start_date','?')}")
 
           if not instances:
-              print("No instances to clean up.")
+              print("No instances — nothing to clean up.")
           else:
-              print(f"\nTerminating all {len(instances)} instances...")
-              for inst in instances:
+              if KEEP_ID:
+                  print(f"\nKeeping instance {KEEP_ID} (active run)")
+              to_kill = [i for i in instances if str(i['id']) != KEEP_ID]
+              print(f"Terminating {len(to_kill)} instance(s)...")
+              for inst in to_kill:
                   iid = inst['id']
                   try:
-                      req = urllib.request.Request(f"{BASE_V1}/instances/{iid}/", method="DELETE", headers=headers)
+                      req = urllib.request.Request(f"{BASE}/instances/{iid}/", method="DELETE", headers=headers)
                       urllib.request.urlopen(req, timeout=10)
-                      print(f"  Terminated {iid}")
+                      print(f"  ✅ Terminated {iid} ({inst.get('cpu_name','?')})")
                   except Exception as e:
-                      print(f"  Failed to terminate {iid}: {e}")
+                      print(f"  ❌ Failed to terminate {iid}: {e}")
           PY
