@@ -248,7 +248,7 @@ jobs:
           fi
           echo "  Core count OK ($NPROC cores)"
           echo "--- Installing apt packages (ffmpeg, libgl1) ---"
-          $SSH "apt-get update -qq 2>/dev/null && apt-get install -y -qq --no-install-recommends ffmpeg libgl1 libglib2.0-0 > /dev/null && echo 'apt done'"
+          $SSH "apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends software-properties-common > /dev/null && add-apt-repository -y ppa:savoury1/ffmpeg4 2>/dev/null && apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends ffmpeg libgl1 libglib2.0-0 && /usr/bin/ffmpeg -filters 2>/dev/null | grep -q v360 && echo 'v360 OK' || echo 'WARNING: v360 missing'"
           echo "--- Installing Python packages ---"
           $SSH "pip install -q --break-system-packages 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless 2>/dev/null || pip install -q 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless"
           echo "--- Verifying installs ---"
@@ -286,11 +286,8 @@ jobs:
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          echo "--- Confirming /usr/bin/ffmpeg has v360 + libx264 ---"
-          $SSH "/usr/bin/ffmpeg -filters 2>/dev/null | grep v360 && echo 'v360 OK' || echo 'WARNING: v360 not in /usr/bin/ffmpeg'"
-          $SSH "/usr/bin/ffmpeg -encoders 2>/dev/null | grep libx264 && echo 'libx264 OK' || echo 'WARNING: libx264 not in /usr/bin/ffmpeg'"
           echo "--- Flattening equirectangular -> 120deg rectilinear crop ---"
-          $SSH "PATH=/usr/bin:$PATH /usr/bin/ffmpeg -y -i /tmp/ffa_track/sample.mp4 \
+          $SSH "/usr/bin/ffmpeg -y -i /tmp/ffa_track/sample.mp4 \
               -vf 'v360=equirect:rectilinear:ih_fov=360:iv_fov=180:h_fov=120:v_fov=80:yaw=0:pitch=0:roll=0:w=1280:h=720' \
               -c:v libx264 -preset ultrafast -crf 23 -an -movflags +faststart \
               /tmp/ffa_track/flat.mp4 2>&1 | tail -5"
