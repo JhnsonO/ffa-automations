@@ -55,25 +55,25 @@ jobs:
 
           excluded = set(x.strip() for x in "${{ inputs.excluded_offer_ids }}".split(",") if x.strip())
 
-          payload = {
-            "q": {
-              "verified": {"eq": True},
-              "num_gpus": {"eq": 0},
-              "cpu_cores_effective": {"gte": 16},
-              "cpu_ram": {"gte": 61440},
-              "inet_up": {"gte": 300},
-              "reliability2": {"gte": 0.9},
-              "rentable": {"eq": True},
-              "order": [["dph_total", "asc"]]
-            }
-          }
-
-          r = requests.post(
-            "https://console.vast.ai/api/v0/bundles/",
-            headers={"Authorization": f"Bearer {os.environ['VASTAI_API_KEY']}"},
-            json=payload
+          # Use /instances endpoint for CPU-only offers
+          r = requests.get(
+            "https://console.vast.ai/api/v0/instances/",
+            params={
+              "q": json.dumps({
+                "verified": {"eq": True},
+                "num_gpus": {"eq": 0},
+                "cpu_cores_effective": {"gte": 8},
+                "cpu_ram": {"gte": 32768},
+                "inet_up": {"gte": 200},
+                "rentable": {"eq": True},
+                "order": [["dph_total", "asc"]],
+                "type": "ask"
+              })
+            },
+            headers={"Authorization": f"Bearer {os.environ['VASTAI_API_KEY']}"}
           )
-          offers = r.json().get("offers", [])
+          resp = r.json()
+          offers = resp.get("offers", resp.get("asks", []))
           offers = [o for o in offers if str(o["id"]) not in excluded]
 
           if not offers:
