@@ -290,35 +290,12 @@ jobs:
               redispatch()
               sys.exit(1)
 
-          # Cap price — CPU-only workload, don't pay GPU premium
-          MAX_DPH = 0.30
-          before_cap = len(offers)
-          offers = [o for o in offers if float(o.get("dph_total", 999)) <= MAX_DPH]
-          print(f"Price cap ${MAX_DPH}/hr: {len(offers)} offers remain (excluded {before_cap - len(offers)} expensive instances)")
-
-          if not offers:
-              print(f"ERROR: No offers under ${MAX_DPH}/hr — relaxing cap to $0.45/hr", file=sys.stderr)
-              offers_relaxed = [o for o in [o for o in resp.get("offers", []) if any(s in (o.get("cpu_name") or "") for s in GOOD_CPU_SUBSTRINGS)] if float(o.get("dph_total", 999)) <= 0.45]
-              if not offers_relaxed:
-                  print("ERROR: Still no offers — redispatching", file=sys.stderr)
-                  redispatch()
-                  sys.exit(1)
-              offers = offers_relaxed
-              print(f"Relaxed cap: {len(offers)} offers found")
-
-          # Sort by CPU performance-per-dollar: (cpu_cores * cpu_ghz) / dph_total
-          # This avoids grabbing expensive GPU machines where CPU is incidental
-          def perf_score(o):
-              cores = float(o.get("cpu_cores", 1))
-              ghz   = float(o.get("cpu_ghz", 1))
-              dph   = float(o.get("dph_total", 999))
-              return (cores * ghz) / dph if dph > 0 else 0
-
-          offers.sort(key=perf_score, reverse=True)
+          # Sort by cheapest — speed gate in vastai_stitch.sh enforces 1.7x floor
+          offers.sort(key=lambda o: float(o.get("dph_total", 999)))
           candidates = offers[:5]
-          print("Top candidates by CPU perf/dollar:")
+          print("Top candidates by price:")
           for o in candidates:
-              print(f"  offer {o['id']} — {o.get('cpu_name','?')} {o.get('cpu_cores','?')}c @ {o.get('cpu_ghz','?')}GHz — ${o.get('dph_total','?'):.4f}/hr — score {perf_score(o):.1f}")
+              print(f"  offer {o['id']} — {o.get('cpu_name','?')} {o.get('cpu_cores','?')}c @ {o.get('cpu_ghz','?')}GHz — ${o.get('dph_total', 0):.4f}/hr")
 
           IMAGE_PAYLOAD = {
               "image":   "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
