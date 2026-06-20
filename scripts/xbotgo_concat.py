@@ -115,10 +115,13 @@ def find_or_create_folder(drive, name, parent_id):
 
 
 def get_xbotgo_root(drive):
-    q = "name='XbotGo' and mimeType='application/vnd.google-apps.folder' and trashed=false and 'root' in parents"
-    res = drive.files().list(q=q, fields="files(id)").execute()
+    # Search without 'root' constraint first — user may have created folder inside a subfolder
+    q = "name='XbotGo' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    res = drive.files().list(q=q, fields="files(id,name,parents)", pageSize=10).execute()
+    log.info(f"XbotGo folder search results: {res['files']}")
     if res["files"]:
         return res["files"][0]["id"]
+    log.info("XbotGo folder not found — creating it")
     meta = {"name": "XbotGo", "mimeType": "application/vnd.google-apps.folder"}
     return drive.files().create(body=meta, fields="id").execute()["id"]
 
@@ -129,7 +132,7 @@ def list_all_inbox_clips(drive, inbox_id):
     results = []
     page_token = None
     while True:
-        params = dict(q=q, fields="nextPageToken,files(id,name)", pageSize=100)
+        params = dict(q=q, fields="nextPageToken,files(id,name)", pageSize=100, supportsAllDrives=True, includeItemsFromAllDrives=True)
         if page_token:
             params["pageToken"] = page_token
         res = drive.files().list(**params).execute()
