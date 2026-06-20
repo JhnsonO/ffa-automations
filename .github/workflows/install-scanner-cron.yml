@@ -14,20 +14,9 @@ jobs:
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          # Write a persistent script that cron will call
-          cat > /home/ffa/scan_dispatch.sh << SCRIPT
-#!/bin/bash
-curl -s -X POST \
-  https://api.github.com/repos/JhnsonO/ffa-automations/actions/workflows/gopro-scanner.yml/dispatches \
-  -H "Authorization: token ${GH_PAT}" \
-  -H "Content-Type: application/json" \
-  -d '{"ref":"main"}' >> /tmp/scanner-cron.log 2>&1
-SCRIPT
+          printf '#!/bin/bash\ncurl -s -X POST https://api.github.com/repos/JhnsonO/ffa-automations/actions/workflows/gopro-scanner.yml/dispatches -H "Authorization: token %s" -H "Content-Type: application/json" -d '{"ref":"main"}' >> /tmp/scanner-cron.log 2>&1\n' "$GH_PAT" > /home/ffa/scan_dispatch.sh
           chmod +x /home/ffa/scan_dispatch.sh
-
-          # Install cron entry — remove old if exists, add fresh
           (crontab -l 2>/dev/null | grep -v "scan_dispatch.sh"; echo "0 * * * * /home/ffa/scan_dispatch.sh") | crontab -
-
           echo "=== Installed crontab ==="
           crontab -l
           echo "=== Script contents ==="
