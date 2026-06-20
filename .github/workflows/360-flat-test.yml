@@ -16,25 +16,24 @@ on:
         required: false
         default: '60'
       yaw:
-        description: 'Yaw angle (0 = front of camera, 180 = rear)'
+        description: 'Yaw (0 = front, 180 = rear)'
         required: false
         default: '0'
       pitch:
-        description: 'Pitch angle (negative = tilt down toward pitch)'
+        description: 'Pitch (negative = tilt down)'
         required: false
         default: '-5'
       h_fov:
-        description: 'Horizontal FOV in degrees (wider = more zoomed out)'
+        description: 'Horizontal FOV degrees'
         required: false
         default: '120'
       v_fov:
-        description: 'Vertical FOV in degrees'
+        description: 'Vertical FOV degrees'
         required: false
         default: '80'
-      excluded_offer_ids:
-        description: 'Comma-separated vast.ai offer IDs to skip'
-        required: false
-        default: '36492149'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   flat-test:
@@ -42,224 +41,57 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Find vast.ai offer
-        id: find_offer
-        env:
-          VASTAI_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+      - name: Install FFmpeg with v360 support
         run: |
-          python3 - <<'PYEOF'
-          import requests, json, os, sys
+          sudo add-apt-repository -y ppa:savoury1/ffmpeg4
+          sudo add-apt-repository -y ppa:savoury1/ffmpeg5
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          /usr/bin/ffmpeg -version | head -2
+          /usr/bin/ffmpeg -filters 2>/dev/null | grep v360 && echo "v360 OK" || (echo "v360 MISSING" && exit 1)
 
-          excluded = set(x.strip() for x in "${{ inputs.excluded_offer_ids }}".split(",") if x.strip())
+      - name: Install Python deps
+        run: pip install requests google-auth google-auth-oauthlib google-api-python-client
 
-          # Use /instances endpoint for CPU-only offers
-          r = requests.get(
-            "https://console.vast.ai/api/v0/instances/",
-            params={
-              "q": json.dumps({
-                "verified": {"eq": True},
-                "num_gpus": {"eq": 0},
-                "cpu_cores_effective": {"gte": 8},
-                "cpu_ram": {"gte": 32768},
-                "inet_up": {"gte": 200},
-                "rentable": {"eq": True},
-                "order": [["dph_total", "asc"]],
-                "type": "ask"
-              })
-            },
-            headers={"Authorization": f"Bearer {os.environ['VASTAI_API_KEY']}"}
-          )
-          resp = r.json()
-          offers = resp.get("offers", resp.get("asks", []))
-          offers = [o for o in offers if str(o["id"]) not in excluded]
-
-          if not offers:
-            print("No offers found")
-            sys.exit(1)
-
-          best = offers[0]
-          print(f"Selected offer: {best['id']} | {best.get('cpu_name','?')} | ${best['dph_total']:.4f}/hr")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            f.write(f"offer_id={best['id']}\n")
-          PYEOF
-
-      - name: Launch vast.ai instance
-        id: launch
+      - name: Download source from Google Drive
         env:
-          VASTAI_API_KEY: ${{ secrets.VASTAI_API_KEY }}
-        run: |
-          python3 - <<'PYEOF'
-          import requests, json, os, sys
-
-          offer_id = "${{ steps.find_offer.outputs.offer_id }}"
-          ssh_key = """${{ secrets.VASTAI_SSH_PUBLIC_KEY }}"""
-
-          payload = {
-            "client_id": "me",
-            "image": "ubuntu:22.04",
-            "disk": 20,
-            "onstart": f"echo '{ssh_key}' >> /root/.ssh/authorized_keys && service ssh start",
-            "runtype": "ssh"
-          }
-
-          r = requests.put(
-            f"https://console.vast.ai/api/v0/asks/{offer_id}/",
-            headers={"Authorization": f"Bearer {os.environ['VASTAI_API_KEY']}"},
-            json=payload
-          )
-          data = r.json()
-          instance_id = data.get("new_contract")
-          if not instance_id:
-            print("Launch failed:", data)
-            sys.exit(1)
-
-          print(f"Instance launched: {instance_id}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            f.write(f"instance_id={instance_id}\n")
-          PYEOF
-
-      - name: Wait for SSH
-        id: ssh_ready
-        env:
-          VASTAI_API_KEY: ${{ secrets.VASTAI_API_KEY }}
-        run: |
-          python3 - <<'PYEOF'
-          import requests, os, time, sys
-
-          instance_id = "${{ steps.launch.outputs.instance_id }}"
-          headers = {"Authorization": f"Bearer {os.environ['VASTAI_API_KEY']}"}
-
-          for attempt in range(24):  # up to 2 min
-            r = requests.get("https://cloud.vast.ai/api/v1/instances/", headers=headers)
-            instances = r.json().get("instances", [])
-            inst = next((i for i in instances if str(i["id"]) == instance_id), None)
-            if inst and inst.get("actual_status") == "running" and inst.get("ssh_host"):
-              host = inst["ssh_host"]
-              port = inst["ssh_port"]
-              print(f"SSH ready: {host}:{port}")
-              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                f.write(f"ssh_host={host}\n")
-                f.write(f"ssh_port={port}\n")
-              sys.exit(0)
-            print(f"Waiting... ({attempt+1}/24)")
-            time.sleep(5)
-
-          print("Timed out waiting for SSH")
-          sys.exit(1)
-          PYEOF
-
-      - name: Run flat conversion on instance
-        env:
-          VASTAI_SSH_KEY: ${{ secrets.VASTAI_SSH_PRIVATE_KEY }}
-          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
         run: |
-          mkdir -p ~/.ssh
-          echo "$VASTAI_SSH_KEY" > ~/.ssh/vast_key
-          chmod 600 ~/.ssh/vast_key
-
-          SSH="ssh -i ~/.ssh/vast_key -p ${{ steps.ssh_ready.outputs.ssh_port }} \
-            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-            root@${{ steps.ssh_ready.outputs.ssh_host }}"
-
-          # Auth retry loop
-          for i in $(seq 1 12); do
-            $SSH "echo ok" && break
-            echo "SSH not ready yet ($i/12)..."
-            sleep 5
-          done
-
-          # Install dependencies
-          $SSH bash <<'REMOTE'
-          set -e
-          apt-get update -qq
-          apt-get install -y -qq software-properties-common aria2
-          add-apt-repository -y ppa:savoury1/ffmpeg4
-          add-apt-repository -y ppa:savoury1/ffmpeg5
-          apt-get update -qq
-          apt-get install -y -qq ffmpeg
-          echo "FFmpeg version:"
-          /usr/bin/ffmpeg -version | head -2
-          /usr/bin/ffmpeg -filters 2>/dev/null | grep v360 && echo "v360 OK" || echo "v360 MISSING"
-          REMOTE
-
-          # Write OAuth token files
-          echo "$YOUTUBE_CREDENTIALS" > /tmp/credentials.json
-          echo "$YOUTUBE_TOKEN" > /tmp/token.json
-          scp -i ~/.ssh/vast_key -P ${{ steps.ssh_ready.outputs.ssh_port }} \
-            -o StrictHostKeyChecking=no \
-            /tmp/credentials.json /tmp/token.json \
-            root@${{ steps.ssh_ready.outputs.ssh_host }}:/tmp/
-
-          # Download source file from Drive
-          $SSH bash <<'REMOTE'
-          set -e
-          mkdir -p /tmp/ffa_flat
-
-          python3 - <<'PYEOF'
+          python3 - <<'PY'
           import json, os, urllib.request
 
-          with open("/tmp/token.json") as f:
-            token_data = json.load(f)
+          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
           token = token_data.get("token") or token_data.get("access_token")
 
           file_id = "${{ inputs.drive_file_id }}"
           url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
           req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-          print(f"Downloading Drive file {file_id}...")
-          with urllib.request.urlopen(req) as resp, open("/tmp/ffa_flat/source.360", "wb") as out:
-            while chunk := resp.read(1024*1024):
-              out.write(chunk)
-          print("Download complete")
-          PYEOF
-          REMOTE
+          print(f"Downloading {file_id} from Drive...")
+          with urllib.request.urlopen(req) as resp, open("/tmp/source.360", "wb") as out:
+              total = 0
+              while chunk := resp.read(4 * 1024 * 1024):
+                  out.write(chunk)
+                  total += len(chunk)
+                  print(f"  {total / 1024 / 1024:.0f} MB downloaded", flush=True)
+          print(f"Download complete: {total / 1024 / 1024:.1f} MB")
+          PY'
 
-          # Run FFmpeg: 360 → flat
-          $SSH bash <<REMOTE
-          set -e
+      - name: Convert 360 to flat
+        run: |
+          OUTPUT="flat_y${{ inputs.yaw }}_p${{ inputs.pitch }}_h${{ inputs.h_fov }}.mp4"
           /usr/bin/ffmpeg -y \
             -ss ${{ inputs.trim_start_sec }} \
-            -i /tmp/ffa_flat/source.360 \
+            -i /tmp/source.360 \
             -t ${{ inputs.clip_duration_sec }} \
             -vf "v360=equirect:rectilinear:yaw=${{ inputs.yaw }}:pitch=${{ inputs.pitch }}:h_fov=${{ inputs.h_fov }}:v_fov=${{ inputs.v_fov }}:w=1920:h=1080" \
-            -c:v libx264 -preset fast -crf 18 \
-            -an \
-            /tmp/ffa_flat/flat_yaw${{ inputs.yaw }}_pitch${{ inputs.pitch }}_hfov${{ inputs.h_fov }}.mp4
+            -c:v libx264 -preset fast -crf 18 -an \
+            "$OUTPUT"
+          echo "Output size: $(du -sh $OUTPUT)"
+          echo "OUTPUT_FILE=$OUTPUT" >> $GITHUB_ENV
 
-          echo "Flat output size:"
-          ls -lh /tmp/ffa_flat/flat_*.mp4
-          REMOTE
-
-          # Pull flat.mp4 back to runner
-          scp -i ~/.ssh/vast_key -P ${{ steps.ssh_ready.outputs.ssh_port }} \
-            -o StrictHostKeyChecking=no \
-            "root@${{ steps.ssh_ready.outputs.ssh_host }}:/tmp/ffa_flat/flat_*.mp4" \
-            ./
-
-      - name: Upload flat output as artifact
+      - name: Upload as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flat-output-yaw${{ inputs.yaw }}-pitch${{ inputs.pitch }}-hfov${{ inputs.h_fov }}
+          name: flat-y${{ inputs.yaw }}-p${{ inputs.pitch }}-h${{ inputs.h_fov }}
           path: flat_*.mp4
           retention-days: 3
-
-      - name: Terminate instance
-        if: always()
-        env:
-          VASTAI_API_KEY: ${{ secrets.VASTAI_API_KEY }}
-        run: |
-          python3 - <<'PYEOF'
-          import requests, os
-          instance_id = "${{ steps.launch.outputs.instance_id }}"
-          if not instance_id:
-            print("No instance to terminate")
-            exit(0)
-          r = requests.delete(
-            f"https://console.vast.ai/api/v0/instances/{instance_id}/",
-            headers={"Authorization": f"Bearer {os.environ['VASTAI_API_KEY']}"}
-          )
-          print(f"Terminated {instance_id}: {r.status_code}")
-          PYEOF
