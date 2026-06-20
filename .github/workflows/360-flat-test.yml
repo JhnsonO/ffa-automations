@@ -58,7 +58,7 @@ jobs:
           payload = {
             "q": {
               "verified": {"eq": True},
-              "num_gpus": {"eq": 1},
+              "num_gpus": {"eq": 0},
               "cpu_cores_effective": {"gte": 16},
               "cpu_ram": {"gte": 61440},
               "inet_up": {"gte": 300},
