@@ -274,26 +274,38 @@ jobs:
           IP:              ${{ steps.launch.outputs.ip }}
           PORT:            ${{ steps.launch.outputs.port }}
           DRIVE_FILE_ID:   ${{ github.event.inputs.drive_file_id }}
-          YOUTUBE_TOKEN:   ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_TOKEN:        ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
         run: |
           pip install -q google-auth google-auth-oauthlib google-api-python-client
-          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          echo "--- Generating signed Drive download URL ---"
+          echo "--- Getting fresh Drive access token via live refresh ---"
           python3 - << 'PY'
-          import os, json
-          from google.oauth2.credentials import Credentials
-          from google.auth.transport.requests import Request
-          from googleapiclient.discovery import build
+          import os, json, urllib.request as _req
 
-          SCOPES = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/youtube"]
-          creds = Credentials.from_authorized_user_file("/tmp/youtube_token.json", SCOPES)
-          if creds.expired and creds.refresh_token:
-              creds.refresh(Request())
+          token_data = json.loads(open("/tmp/youtube_token.json").read())
+          creds_data = json.loads(open("/tmp/youtube_credentials.json").read())
 
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+
+          payload = json.dumps({
+              "client_id":     client_id,
+              "client_secret": client_secret,
+              "refresh_token": refresh_token,
+              "grant_type":    "refresh_token",
+          }).encode()
+          r = _req.urlopen(_req.Request(token_uri, data=payload, headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
           with open("/tmp/drive_token.txt", "w") as f:
-              f.write(creds.token)
-          print(f"Access token obtained (expires: {creds.expiry})")
+              f.write(tok["access_token"])
+          print(f"Access token obtained (expires_in={tok.get('expires_in')}s)")
           PY
           ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
           FILE_ID="$DRIVE_FILE_ID"
