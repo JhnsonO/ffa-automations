@@ -4,12 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       media_id:
-        description: 'GoPro media ID for the .360 file'
-        required: true
+        description: 'GoPro media ID for the .360 file (leave blank if using drive_link)'
+        required: false
+        default: ''
         type: string
       filename:
-        description: 'GoPro filename e.g. GS010404.360'
-        required: true
+        description: 'GoPro filename e.g. GS010404.360 (leave blank if using drive_link)'
+        required: false
+        default: ''
+        type: string
+      drive_link:
+        description: 'Google Drive share link to a .360 file (use instead of media_id/filename)'
+        required: false
+        default: ''
         type: string
       captured_at:
         description: 'Capture timestamp (ISO8601) — leave blank to auto-detect'
@@ -39,7 +46,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: gopro360-drive-${{ github.event.inputs.media_id }}
+  group: gopro360-drive-${{ github.event.inputs.media_id || github.event.inputs.drive_link }}
   cancel-in-progress: false
 
 jobs:
@@ -75,73 +82,114 @@ jobs:
           print('GoPro cookies written')
           "
 
-      - name: Get GoPro CDN URL for .360 file
+      - name: Resolve source — Drive link or GoPro CDN
         id: get_url
         env:
           MEDIA_ID: ${{ github.event.inputs.media_id }}
           FILENAME: ${{ github.event.inputs.filename }}
           CAPTURED_AT: ${{ github.event.inputs.captured_at }}
+          DRIVE_LINK: ${{ github.event.inputs.drive_link }}
         run: |
           python3 - <<'PY'
-          import os, sys
-          import gopro_uploader as u
+          import os, sys, re
 
-          media_id = os.environ["MEDIA_ID"]
-          filename  = os.environ["FILENAME"]
+          media_id    = os.environ.get("MEDIA_ID", "").strip()
+          filename    = os.environ.get("FILENAME", "").strip()
           captured_at = os.environ.get("CAPTURED_AT", "").strip()
+          drive_link  = os.environ.get("DRIVE_LINK", "").strip()
 
-          session = u.make_session(u.load_cookies_from_file())
+          out = open(os.environ["GITHUB_OUTPUT"], "a")
 
-          # Fetch download variants for this media item
-          try:
-              resp = u.gopro_get(session, f"/media/{media_id}/download")
-              variations = resp.get("_embedded", {}).get("variations", [])
-          except Exception as e:
-              print(f"ERROR fetching variants: {e}")
-              sys.exit(1)
+          # ── Path A: Drive link supplied ──────────────────────────────────────
+          if drive_link:
+              print(f"Source mode: Google Drive link")
+              # Extract file ID from various Drive URL formats:
+              # https://drive.google.com/file/d/FILE_ID/view
+              # https://drive.google.com/open?id=FILE_ID
+              # https://drive.google.com/uc?id=FILE_ID
+              match = re.search(r'/d/([a-zA-Z0-9_-]+)|[?&]id=([a-zA-Z0-9_-]+)', drive_link)
+              if not match:
+                  print(f"ERROR: Could not extract file ID from Drive link: {drive_link}")
+                  sys.exit(1)
+              file_id = match.group(1) or match.group(2)
+              print(f"Drive file ID: {file_id}")
 
-          # Prefer concat (full-length dual-fisheye), then proxy (capped ~15min)
-          cdn_url = None
-          variant_used = None
-          for label in ["concat", "high_res_proxy_mp4"]:
-              for v in variations:
-                  if v.get("label") == label and v.get("url"):
-                      cdn_url = v["url"]
-                      variant_used = label
-                      break
-              if cdn_url:
-                  break
+              # Build direct download URL (gdown-style, bypasses large-file warning)
+              cdn_url = f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t"
 
-          if not cdn_url:
-              for v in sorted(variations, key=lambda x: int(x.get("width", 0)), reverse=True):
-                  if v.get("url"):
-                      cdn_url = v["url"]
-                      variant_used = v.get("label", "unknown")
-                      break
+              # Use file_id as the media_id for uploaded.db tracking
+              effective_media_id = file_id
+              effective_filename  = filename or f"{file_id}.360"
 
-          if not cdn_url:
-              print(f"ERROR: No downloadable variant found for {filename}")
-              sys.exit(1)
+              out.write(f"cdn_url={cdn_url}\n")
+              out.write(f"captured_at={captured_at}\n")
+              out.write(f"variant=drive_direct\n")
+              out.write(f"effective_media_id={effective_media_id}\n")
+              out.write(f"effective_filename={effective_filename}\n")
+              out.write(f"source_mode=drive\n")
+              print(f"CDN URL: {cdn_url}")
 
-          print(f"Variant: {variant_used}")
-          print(f"URL: {cdn_url[:80]}...")
+          # ── Path B: GoPro media_id supplied ──────────────────────────────────
+          elif media_id:
+              print(f"Source mode: GoPro CDN (media_id={media_id})")
+              import gopro_uploader as u
 
-          # Auto-detect captured_at if not supplied
-          if not captured_at:
+              session = u.make_session(u.load_cookies_from_file())
+
               try:
-                  pages = u.fetch_recent_media(u.get_authenticated_gopro_session())
-                  for item in pages:
-                      if item.get("id") == media_id:
-                          captured_at = item.get("captured_at", "")
-                          print(f"Auto-detected captured_at: {captured_at}")
-                          break
-              except Exception as ex:
-                  print(f"Warning: could not auto-detect captured_at: {ex}")
+                  resp = u.gopro_get(session, f"/media/{media_id}/download")
+                  variations = resp.get("_embedded", {}).get("variations", [])
+              except Exception as e:
+                  print(f"ERROR fetching variants: {e}")
+                  sys.exit(1)
 
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"cdn_url={cdn_url}\n")
-              f.write(f"captured_at={captured_at}\n")
-              f.write(f"variant={variant_used}\n")
+              cdn_url = None
+              variant_used = None
+              for label in ["concat", "high_res_proxy_mp4"]:
+                  for v in variations:
+                      if v.get("label") == label and v.get("url"):
+                          cdn_url = v["url"]
+                          variant_used = label
+                          break
+                  if cdn_url:
+                      break
+
+              if not cdn_url:
+                  for v in sorted(variations, key=lambda x: int(x.get("width", 0)), reverse=True):
+                      if v.get("url"):
+                          cdn_url = v["url"]
+                          variant_used = v.get("label", "unknown")
+                          break
+
+              if not cdn_url:
+                  print(f"ERROR: No downloadable variant found for {filename}")
+                  sys.exit(1)
+
+              print(f"Variant: {variant_used}")
+
+              if not captured_at:
+                  try:
+                      pages = u.fetch_recent_media(u.get_authenticated_gopro_session())
+                      for item in pages:
+                          if item.get("id") == media_id:
+                              captured_at = item.get("captured_at", "")
+                              print(f"Auto-detected captured_at: {captured_at}")
+                              break
+                  except Exception as ex:
+                      print(f"Warning: could not auto-detect captured_at: {ex}")
+
+              out.write(f"cdn_url={cdn_url}\n")
+              out.write(f"captured_at={captured_at}\n")
+              out.write(f"variant={variant_used}\n")
+              out.write(f"effective_media_id={media_id}\n")
+              out.write(f"effective_filename={filename}\n")
+              out.write(f"source_mode=gopro\n")
+
+          else:
+              print("ERROR: Must supply either drive_link or media_id")
+              sys.exit(1)
+
+          out.close()
           PY
 
       - name: Generate SSH key pair for this run
@@ -197,12 +245,12 @@ jobs:
                   return json.loads(r.read())
 
           def redispatch():
-              """Re-dispatch this workflow so we get a fresh attempt."""
               payload = json.dumps({
                   "ref": "${{ github.ref_name }}",
                   "inputs": {
                       "media_id":            "${{ github.event.inputs.media_id }}",
                       "filename":            "${{ github.event.inputs.filename }}",
+                      "drive_link":          "${{ github.event.inputs.drive_link }}",
                       "captured_at":         "${{ github.event.inputs.captured_at }}",
                       "test_duration_sec":   "${{ github.event.inputs.test_duration_sec }}",
                       "dry_run":             "${{ github.event.inputs.dry_run }}",
@@ -210,7 +258,7 @@ jobs:
                   }
               }).encode()
               req = urllib.request.Request(
-                  "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-upload.yml/dispatches",
+                  "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-drive-upload.yml/dispatches",
                   data=payload,
                   method="POST",
                   headers={
@@ -225,16 +273,11 @@ jobs:
               except Exception as e:
                   print(f"WARNING: redispatch failed: {e}")
 
-          # ── Register SSH key ────────────────────────────────────────────────
           print("Registering SSH key...")
           vast_post("/ssh/", {"ssh_key": pub_key})
           print("SSH key registered")
 
-          # ── Dynamic offer search ─────────────────────────────────────────────
           print("Searching for cheapest available offer...")
-          # NOTE: geolocation filter removed from query — Vast.ai API returns 400
-          # on "neq" operator for this field. CN filtering is done in Python below.
-          # Per docs: cpu_ram is in MB; geolocation uses in/notin; cpu_name not filterable via API
           query = json.dumps({
               "reliability":  {"gte": 0.98},
               "inet_up":      {"gte": 800},
@@ -254,20 +297,16 @@ jobs:
           except urllib.error.HTTPError as e:
               body = e.read().decode()[:300]
               print(f"ERROR: Vast.ai /bundles/ returned HTTP {e.code}: {body}", file=sys.stderr)
-              print("Redispatching for a retry...")
               redispatch()
               sys.exit(1)
           except Exception as e:
               print(f"ERROR: Vast.ai /bundles/ request failed: {e}", file=sys.stderr)
-              print("Redispatching for a retry...")
               redispatch()
               sys.exit(1)
 
           offers = resp.get("offers", [])
           print(f"Found {len(offers)} verified offers from API")
 
-          # Whitelist high-IPC modern CPUs only — filter graph is single-threaded so IPC matters more than core count
-          # Ryzen 9 9950X3D = 2.4x realtime, 7950X = 1.62x realtime, i9-10980XE = 0.98x (too slow)
           GOOD_CPU_SUBSTRINGS = [
               "Ryzen 9 9950X", "Ryzen 9 7950X", "Ryzen 9 5950X",
               "Ryzen 9 9900X", "Ryzen 9 7900X", "Ryzen 9 5900X",
@@ -277,7 +316,6 @@ jobs:
           offers = [o for o in offers if any(s in (o.get("cpu_name") or "") for s in GOOD_CPU_SUBSTRINGS)]
           print(f"Filtered to {len(offers)} offers with known fast CPUs (excluded {before - len(offers)} others)")
 
-          # Exclude previously tried offers
           excluded_raw = "${{ github.event.inputs.excluded_offer_ids }}".strip()
           excluded_ids = set(int(x.strip()) for x in excluded_raw.split(",") if x.strip().isdigit())
           if excluded_ids:
@@ -290,7 +328,6 @@ jobs:
               redispatch()
               sys.exit(1)
 
-          # Sort by cheapest — speed gate in vastai_stitch.sh enforces 1.7x floor
           offers.sort(key=lambda o: float(o.get("dph_total", 999)))
           candidates = offers[:5]
           print("Top candidates by price:")
@@ -331,7 +368,7 @@ jobs:
               print(f"  Instance ID: {this_instance}")
 
               this_ip = this_port = None
-              for attempt in range(20):  # max 5 min boot wait
+              for attempt in range(20):
                   time.sleep(15)
                   try:
                       resp = vast_get("/instances/", base=BASE_V1)
@@ -400,12 +437,11 @@ jobs:
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          echo "SSH never came up on this host — instance was a dud. Re-dispatching a fresh run with the same inputs..."
+          echo "SSH never came up — redispatching..."
           curl -s -X POST -H "Authorization: token ${GH_PAT}" \
             -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-upload.yml/dispatches" \
-            -d '{"ref":"${{ github.ref_name }}","inputs":{"media_id":"${{ github.event.inputs.media_id }}","filename":"${{ github.event.inputs.filename }}","captured_at":"${{ github.event.inputs.captured_at }}"}}'
-          echo "Fresh run dispatched. Failing this run (dud host already terminated below)."
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-drive-upload.yml/dispatches" \
+            -d '{"ref":"${{ github.ref_name }}","inputs":{"media_id":"${{ github.event.inputs.media_id }}","filename":"${{ github.event.inputs.filename }}","drive_link":"${{ github.event.inputs.drive_link }}","captured_at":"${{ github.event.inputs.captured_at }}"}}'
           exit 1
 
       - name: Copy stitch script to instance
@@ -449,8 +485,9 @@ jobs:
               "cat > /tmp/run_stitch.sh << 'WRAPEOF'
           #!/usr/bin/env bash
           export SOURCE_URL='${{ steps.get_url.outputs.cdn_url }}'
-          export MEDIA_ID='${{ github.event.inputs.media_id }}'
-          export FILENAME='${{ github.event.inputs.filename }}'
+          export SOURCE_MODE='${{ steps.get_url.outputs.source_mode }}'
+          export MEDIA_ID='${{ steps.get_url.outputs.effective_media_id }}'
+          export FILENAME='${{ steps.get_url.outputs.effective_filename }}'
           export CAPTURED_AT='${{ steps.get_url.outputs.captured_at }}'
           export YOUTUBE_CREDS='${YOUTUBE_CREDENTIALS}'
           export YOUTUBE_TOKEN='${YOUTUBE_TOKEN}'
@@ -528,8 +565,8 @@ jobs:
                 NEW_EXCLUDED="${PREV_EXCLUDED:+${PREV_EXCLUDED},}${THIS_OFFER}"
                 curl -s -X POST -H "Authorization: token ${{ secrets.GH_PAT }}" \
                   -H "Accept: application/vnd.github.v3+json" \
-                  "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-upload.yml/dispatches" \
-                  -d "{\"ref\":\"${{ github.ref_name }}\",\"inputs\":{\"media_id\":\"${{ github.event.inputs.media_id }}\",\"filename\":\"${{ github.event.inputs.filename }}\",\"captured_at\":\"${{ github.event.inputs.captured_at }}\",\"test_duration_sec\":\"${{ github.event.inputs.test_duration_sec }}\",\"dry_run\":\"${{ github.event.inputs.dry_run }}\",\"excluded_offer_ids\":\"${NEW_EXCLUDED}\"}}"
+                  "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-drive-upload.yml/dispatches" \
+                  -d "{\"ref\":\"${{ github.ref_name }}\",\"inputs\":{\"media_id\":\"${{ github.event.inputs.media_id }}\",\"filename\":\"${{ github.event.inputs.filename }}\",\"drive_link\":\"${{ github.event.inputs.drive_link }}\",\"captured_at\":\"${{ github.event.inputs.captured_at }}\",\"test_duration_sec\":\"${{ github.event.inputs.test_duration_sec }}\",\"dry_run\":\"${{ github.event.inputs.dry_run }}\",\"excluded_offer_ids\":\"${NEW_EXCLUDED}\"}}"
                 echo "Fresh run dispatched excluding offers: ${NEW_EXCLUDED}"
                 exit 1
                 ;;
@@ -583,5 +620,3 @@ jobs:
           else:
               print(f"WARNING: could not terminate {INSTANCE_ID} via any endpoint — terminate manually")
           PY
-
-
