@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FFA 360 Ball Tracker — v8 (Kalman Init Fix)
+FFA 360 Ball Tracker — v9 (Pitch Plausibility Scoring)
 =============================================
 Input:  equirect_trim.mp4
 Output: tracking.json  (always)
@@ -59,8 +59,9 @@ LEAD_DEG         = 3.0
 # ---------------------------------------------------------------------------
 # Config — candidate scoring weights (unchanged from v6)
 # ---------------------------------------------------------------------------
-W_CONF   = 0.25
-W_POS    = 0.35
+W_CONF   = 0.20
+W_POS    = 0.25
+W_PITCH  = 0.15   # v9: pitch plausibility
 W_SIZE   = 0.20
 W_MOTION = 0.10
 W_EDGE   = 0.10
@@ -94,6 +95,13 @@ EMA_ALPHA_TRACKING      = 0.18
 EMA_ALPHA_LOSS          = 0.08
 MAX_EXTRAP_VELOCITY_DEG = 3.0
 EDGE_PENALTY_ZONE       = 80
+
+# ---------------------------------------------------------------------------
+# Config — v9 pitch plausibility
+# ---------------------------------------------------------------------------
+PITCH_SOFT_MIN = -30.0   # degrees — real ball is almost never above this pitch
+PITCH_SOFT_MAX =  10.0   # degrees — real ball rarely goes above this on a football pitch
+PITCH_PLAUSIBILITY_DECAY = 15.0  # degrees outside range for score to reach 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -312,9 +320,14 @@ def build_warmup_tracklets(warmup_frames):
                     size_sim = math.exp(-size_ratio * 2)
                 else:
                     size_sim = 0.5
-                # Link score: confidence + proximity + size similarity
-                prox_score = max(0.0, 1.0 - dist / WARMUP_DIST_THRESH_DEG)
-                link_score = 0.4 * conf + 0.4 * prox_score + 0.2 * size_sim
+                # Link score: confidence + proximity + size similarity + pitch plausibility
+                prox_score   = max(0.0, 1.0 - dist / WARMUP_DIST_THRESH_DEG)
+                pitch_score  = pitch_plausibility(pitch)
+                if pitch_score == 0.0:
+                    # Hard-exclude impossible pitch in warm-up chain
+                    print(f"[v9 warmup] excluding candidate pitch={pitch:.1f}° (plausibility=0)")
+                    continue
+                link_score = 0.35 * conf + 0.35 * prox_score + 0.15 * size_sim + 0.15 * pitch_score
                 if link_score > best_link_score:
                     best_link_score = link_score
                     best_next = (fi, 0, yaw, pitch, conf, area)
@@ -357,7 +370,20 @@ def build_warmup_tracklets(warmup_frames):
 
 
 # ---------------------------------------------------------------------------
-# Candidate scorer — v8: no hard cap
+# v9: Pitch plausibility scorer
+# ---------------------------------------------------------------------------
+def pitch_plausibility(pitch_deg):
+    """Soft pitch penalty. Returns 1.0 inside [PITCH_SOFT_MIN, PITCH_SOFT_MAX],
+    decays linearly to 0.0 at PITCH_PLAUSIBILITY_DECAY degrees outside the range.
+    Candidates at pitch=48.8° → 0.0 (the v8 failure case)."""
+    if PITCH_SOFT_MIN <= pitch_deg <= PITCH_SOFT_MAX:
+        return 1.0
+    distance = max(PITCH_SOFT_MIN - pitch_deg, pitch_deg - PITCH_SOFT_MAX)
+    return max(0.0, 1.0 - distance / PITCH_PLAUSIBILITY_DECAY)
+
+
+# ---------------------------------------------------------------------------
+# Candidate scorer — v9: pitch plausibility added
 # ---------------------------------------------------------------------------
 def score_candidate(candidate, kf, kf_initialised, ball_size_tracker, vel_tracker,
                     last_yaw, last_pitch, crop_yaw_deg, tracker_state):
@@ -402,8 +428,17 @@ def score_candidate(candidate, kf, kf_initialised, ball_size_tracker, vel_tracke
     edge_score = min(1.0, edge_dist / EDGE_PENALTY_ZONE)
     components["edge"] = edge_score
 
+    # v9: pitch plausibility
+    p_score = pitch_plausibility(pitch)
+    components["pitch_plausibility"] = p_score
+    if p_score < 1.0:
+        # Log any candidate outside the plausible pitch range
+        print(f"[v9] pitch_plausibility warning: pitch={pitch:.1f}° score={p_score:.3f} "
+              f"conf={conf:.3f} total_pre_pitch={(W_CONF*float(conf) + W_POS*components['pos'] + W_SIZE*components['size'] + W_MOTION*components['motion'] + W_EDGE*edge_score):.3f}")
+
     total = (W_CONF   * components["conf"] +
              W_POS    * components["pos"] +
+             W_PITCH  * components["pitch_plausibility"] +
              W_SIZE   * components["size"] +
              W_MOTION * components["motion"] +
              W_EDGE   * components["edge"])
@@ -430,14 +465,15 @@ def run_tracker(equirect_path, output_path, json_path,
     person_model.to(device)
 
     print("=" * 70)
-    print("[v8 KALMAN INIT FIX — tracklet warm-up, state machine, no hard cap]")
+    print("[v9 PITCH PLAUSIBILITY — soft pitch scorer, warmup pitch gate, per-candidate logging]")
     print(f"  ball_model    : {ball_model_path}  names={ball_model.names}")
     print(f"  device        : {device}")
     print(f"  crop res      : {CROP_W}x{CROP_H}  fov={CROP_FOV_DEG}  yaws={CROP_YAWS_DEG}")
     print(f"  imgsz         : {YOLO_IMGSZ}   conf={YOLO_CONF}")
     print(f"  metrics_only  : {metrics_only}")
     print(f"  kalman_init   : {KALMAN_INIT_FRAMES} frames, min chain {WARMUP_MIN_CHAIN_LEN}")
-    print(f"  scoring       : conf={W_CONF} pos={W_POS} size={W_SIZE} motion={W_MOTION} edge={W_EDGE}")
+    print(f"  scoring       : conf={W_CONF} pos={W_POS} pitch={W_PITCH} size={W_SIZE} motion={W_MOTION} edge={W_EDGE}")
+    print(f"  pitch_range   : [{PITCH_SOFT_MIN}, {PITCH_SOFT_MAX}] decay={PITCH_PLAUSIBILITY_DECAY}°")
     print(f"  min_score     : {MIN_CANDIDATE_SCORE}   hysteresis={HYSTERESIS_MARGIN}")
     print(f"  hard_cap      : REMOVED (v8)")
     print("=" * 70)
@@ -888,7 +924,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "frames_in_lost":            state_transition_counts.get(TrackerState.LOST, 0),
     }
     metadata = {
-        "version": "v8",
+        "version": "v9",
         "metrics_only": metrics_only,
         "config": {
             "ball_model":           ball_model_path,
@@ -896,8 +932,8 @@ def run_tracker(equirect_path, output_path, json_path,
             "device":               device,
             "crop_w": CROP_W, "crop_h": CROP_H, "crop_fov_deg": CROP_FOV_DEG,
             "imgsz": YOLO_IMGSZ, "conf": YOLO_CONF,
-            "scoring_weights": {"conf": W_CONF, "pos": W_POS, "size": W_SIZE,
-                                "motion": W_MOTION, "edge": W_EDGE},
+            "scoring_weights": {"conf": W_CONF, "pos": W_POS, "pitch": W_PITCH,
+                                "size": W_SIZE, "motion": W_MOTION, "edge": W_EDGE},
             "min_candidate_score":   MIN_CANDIDATE_SCORE,
             "hysteresis_margin":     HYSTERESIS_MARGIN,
             "max_frame_delta_deg":   "REMOVED_v8",
