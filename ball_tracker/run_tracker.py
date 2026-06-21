@@ -478,7 +478,10 @@ def run_tracker(equirect_path, output_path, json_path,
     print(f"  hard_cap      : REMOVED (v8)")
     print("=" * 70)
 
-    cap = cv2.VideoCapture(equirect_path)
+    # Raise OpenCV's packet-read attempt limit — equirect MP4s may have
+    # multiple streams (audio/metadata) that exhaust the default 4096 limit.
+    os.environ["OPENCV_FFMPEG_READ_ATTEMPTS"] = "65536"
+    cap = cv2.VideoCapture(equirect_path, cv2.CAP_FFMPEG)
     fps          = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f"[video] {total_frames} frames @ {fps:.2f} fps")
@@ -933,7 +936,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "frames_in_lost":            state_transition_counts.get(TrackerState.LOST, 0),
     }
     metadata = {
-        "version": "v10",
+        "version": "v10a",
         "metrics_only": metrics_only,
         "config": {
             "ball_model":           ball_model_path,
