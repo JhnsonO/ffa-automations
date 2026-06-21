@@ -356,8 +356,10 @@ jobs:
 
           echo "--- Pulling stitched files from instance ---"
           mkdir -p /tmp/equirect_out
+          echo "equirect_trim.mp4 size on instance: $($SSH "du -sh /tmp/ffa_track/equirect_trim.mp4" | cut -f1)"
           scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
             root@$IP:/tmp/ffa_track/equirect_trim.mp4 /tmp/equirect_out/ && echo "equirect_trim.mp4 pulled OK"
+          echo "equirect_full.mp4 size on instance: $($SSH "du -sh /tmp/ffa_track/equirect_full.mp4" | cut -f1)"
           scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
             root@$IP:/tmp/ffa_track/equirect_full.mp4 /tmp/equirect_out/ && echo "equirect_full.mp4 pulled OK"
           ls -lh /tmp/equirect_out/
