@@ -232,9 +232,12 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
 
     # EMA state — initialise from frame at start_frame
     ema_yaw, ema_pitch = None, None
+    ema_yaw_ref = 0.0   # yaw-unwrap reference
     EMA_ALPHA = 0.18
 
     rendered = 0
+    prev_loss_state = None
+    snap_event = False
     for frame_idx in range(start_frame, end_frame):
         ret, equirect = cap.read()
         if not ret:
@@ -247,11 +250,28 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
         ball_pitch = smoothed.get("pitch", 0.0)
         loss_state = frame_data.get("loss_state", "tracking")
 
-        # EMA smoothing (matches tracker behaviour)
+        # EMA smoothing — snap on reacquisition after hold
         alpha = EMA_ALPHA if "tracking" in str(loss_state).lower() else 0.08
+        tracker_state = frame_data.get("tracker_state", "")
+        is_confirmed  = (tracker_state == "TRACKING" and frame_data.get("best_score") is not None)
+        was_hold      = prev_loss_state in {"holding", "hold"} or (
+                            prev_loss_state and prev_loss_state.startswith("holding"))
         if ema_yaw is None:
             ema_yaw, ema_pitch = ball_yaw, ball_pitch
+            ema_yaw_ref = ball_yaw  # yaw-unwrap reference
+        elif was_hold and is_confirmed:
+            # Snap EMA to confirmed position — don't interpolate through bad held state
+            ema_yaw, ema_pitch = ball_yaw, ball_pitch
+            ema_yaw_ref = ball_yaw  # reset unwrap reference too
+            snap_event = True
         else:
+            # Yaw-unwrap to avoid taking the long way round the 360° seam
+            dyaw = ball_yaw - ema_yaw_ref
+            if dyaw > 180:
+                ball_yaw -= 360
+            elif dyaw < -180:
+                ball_yaw += 360
+            ema_yaw_ref = ball_yaw
             ema_yaw   = alpha * ball_yaw   + (1 - alpha) * ema_yaw
             ema_pitch = alpha * ball_pitch + (1 - alpha) * ema_pitch
 
@@ -264,6 +284,11 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
 
         # --- Debug render ---
         debug_frame = draw_hud(clean_frame, frame_data, frame_idx, fps, cam_yaw, cam_pitch)
+        if snap_event:
+            draw_text_shadowed(debug_frame, "*** REACQUIRE: EMA RESET ***",
+                               (OUTPUT_W // 2 - 200, OUTPUT_H // 2),
+                               HUD_SCALE * 1.3, (0, 255, 255), HUD_THICK + 1)
+            snap_event = False
 
         # Equirect inset (bottom-left)
         inset = draw_equirect_inset(equirect, frame_data, INSET_W, INSET_H)
@@ -272,6 +297,8 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
 
         writer_debug.stdin.write(debug_frame.tobytes())
 
+        prev_loss_state = loss_state
+        snap_event = False  # reset if not set this frame
         rendered += 1
         if rendered % 50 == 0:
             print(f"[render] frame {frame_idx}  cam_yaw={cam_yaw:.1f}°  state={loss_state}")
