@@ -157,9 +157,45 @@ SOURCE_MODE="${SOURCE_MODE:-gopro}"
 log "Source mode: ${SOURCE_MODE}"
 
 if [ "${SOURCE_MODE}" = "drive" ]; then
-  log "--- Downloading from Google Drive (gdown) ---"
-  pip install -q --break-system-packages gdown 2>/dev/null || pip install -q gdown
-  gdown "${SOURCE_URL}" -O "${LOCAL_SOURCE}" --no-cookies
+  log "--- Downloading from Google Drive (aria2c, large-file safe) ---"
+  apt-get install -y -qq aria2 > /dev/null
+  # Extract the file ID from the SOURCE_URL query string
+  DRIVE_FILE_ID=$(echo "${SOURCE_URL}" | grep -oP '(?<=id=)[^&]+')
+  log "Drive file ID: ${DRIVE_FILE_ID}"
+  # Step 1: hit the uc endpoint to get the confirm token for large files
+  CONFIRM=$(curl -sc /tmp/drive_cookies.txt     "https://drive.google.com/uc?export=download&id=${DRIVE_FILE_ID}"     | grep -oP '(?<=confirm=)[^&"]+' | head -1 || echo "t")
+  log "Confirm token: ${CONFIRM}"
+  # Step 2: download with the confirm token and cookies (bypasses large-file warning)
+  DRIVE_DL_URL="https://drive.google.com/uc?export=download&id=${DRIVE_FILE_ID}&confirm=${CONFIRM}"
+  aria2c     --out="source.360"     --dir="${WORKDIR}"     --split=16     --max-connection-per-server=16     --min-split-size=10M     --connect-timeout=30     --timeout=60     --max-tries=10     --retry-wait=5     --max-overall-download-limit=0     --file-allocation=none     --allow-overwrite=true     --console-log-level=warn     --summary-interval=0     --load-cookies=/tmp/drive_cookies.txt     "${DRIVE_DL_URL}" > "${WORKDIR}/download.log" 2>&1 &
+  DL_PID=$!
+  STALL_TICKS=0
+  LAST_SZ=0
+  DL_START=$(date +%s)
+  while kill -0 "${DL_PID}" 2>/dev/null; do
+    sleep 5
+    SZ=$(du -m "${LOCAL_SOURCE}" 2>/dev/null | cut -f1 || echo 0)
+    NOW=$(date +%s)
+    ELAPSED=$(( NOW - DL_START ))
+    if [ "${SZ}" -gt 0 ] && [ "${ELAPSED}" -gt 0 ]; then
+      SPEED_MBS=$(( SZ / ELAPSED ))
+      log "  downloading... ${SZ}MB (${SPEED_MBS}MB/s)"
+    else
+      log "  downloading... ${SZ}MB so far"
+    fi
+    if [ "${SZ}" -eq "${LAST_SZ}" ]; then
+      STALL_TICKS=$((STALL_TICKS+1))
+    else
+      STALL_TICKS=0
+    fi
+    LAST_SZ="${SZ}"
+    if [ "${STALL_TICKS}" -ge 12 ]; then
+      log "ERROR: Drive download stalled for 60s at ${SZ}MB"
+      kill "${DL_PID}" 2>/dev/null || true
+      exit 1
+    fi
+  done
+  wait "${DL_PID}" || { log "ERROR: aria2c Drive download failed:"; tail -20 "${WORKDIR}/download.log"; exit 1; }
   log "Drive download complete: $(du -m "${LOCAL_SOURCE}" | cut -f1)MB"
 else
   log "--- Installing aria2 ---"
