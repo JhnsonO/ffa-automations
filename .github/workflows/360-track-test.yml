@@ -405,7 +405,7 @@ jobs:
             else echo 'football model already present'; fi && \
             ls -lh /tmp/ffa_track/models/football-ball-detection.pt"
           echo "--- Running 360 ball tracker (v5 detection baseline) ---"
-          $SSH "cd /tmp/ffa_track && python3 run_tracker.py --input equirect_trim.mp4 --output tracked.mp4 --json tracking.json --ball-model models/football-ball-detection.pt --person-model yolov8s.pt"
+          $SSH "cd /tmp/ffa_track && python3 run_tracker.py --input equirect_trim.mp4 --output tracked.mp4 --json tracking.json --ball-model models/football-ball-detection.pt --person-model yolov8s.pt --metrics-only"
       - name: Pull and upload tracking results
         if: ${{ github.event.inputs.prep_only != 'true' }}
         env:
