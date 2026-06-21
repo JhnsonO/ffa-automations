@@ -554,6 +554,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "mahalanobis_accepted":        [],
         "mahalanobis_rejected":        [],
         "large_yaw_jump_count":        0,   # yaw delta > 30° (informational only, no reject)
+        "accepted_pitches":            [],  # v9: pitch of every confirmed-ball frame
     }
 
     frame_idx = 0
@@ -745,6 +746,7 @@ def run_tracker(equirect_path, output_path, json_path,
                 instr["best_candidate_scores"].append(best_score)
                 instr["frames_confirmed_ball"] += 1
                 instr["accepted_size_scores"].append(ball_size_tracker.size_score(area_meas))
+                instr["accepted_pitches"].append(pitch_meas)  # v9
 
                 vel_tracker.update(yaw_meas - float(kf.x[0, 0]),
                                    pitch_meas - float(kf.x[1, 0]))
@@ -912,6 +914,13 @@ def run_tracker(equirect_path, output_path, json_path,
         "mean_mahalanobis_rejected":        _mean(instr["mahalanobis_rejected"]),
         "large_yaw_jump_count":             instr["large_yaw_jump_count"],
         "swap_event_count":                 len(swap_events),
+        # v9: accepted pitch distribution
+        "accepted_pitch_median":            _median(instr["accepted_pitches"]),
+        "accepted_pitch_p90":               _pct(instr["accepted_pitches"], 90),
+        "accepted_pitch_p95":               _pct(instr["accepted_pitches"], 95),
+        "accepted_pitch_above_10":          sum(1 for p in instr["accepted_pitches"] if p > 10.0),
+        "accepted_pitch_above_20":          sum(1 for p in instr["accepted_pitches"] if p > 20.0),
+        "accepted_pitch_above_30":          sum(1 for p in instr["accepted_pitches"] if p > 30.0),
     }
     v8_init_metrics = {
         "kalman_init_frame":         kalman_init_frame,
