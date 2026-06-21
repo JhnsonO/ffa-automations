@@ -265,7 +265,7 @@ jobs:
           echo "--- Installing apt packages (ffmpeg via savoury1 PPA, aria2, exiftool) ---"
           $SSH "apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends software-properties-common aria2 libimage-exiftool-perl python3-pil > /dev/null && add-apt-repository -y ppa:savoury1/ffmpeg4 2>/dev/null && apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends ffmpeg libgl1 libglib2.0-0 && /usr/bin/ffmpeg -filters 2>/dev/null | grep -q v360 && echo 'v360 OK' || echo 'WARNING: v360 missing'"
           echo "--- Installing Python packages ---"
-          $SSH "pip install -q --break-system-packages 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless google-auth google-auth-oauthlib google-api-python-client 2>/dev/null || pip install -q 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless google-auth google-auth-oauthlib google-api-python-client"
+          $SSH "pip install -q --break-system-packages 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless google-auth google-auth-oauthlib google-api-python-client filterpy 2>/dev/null || pip install -q 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless google-auth google-auth-oauthlib google-api-python-client filterpy"
           echo "--- Verifying installs ---"
           $SSH "python3 -c \"import cv2, supervision, ultralytics, pandas; print('All imports OK')\""
 
@@ -429,132 +429,21 @@ jobs:
           print(f"EQUIRECT_FOLDER_ID={subfolder_id}")
           PY
 
-      - name: Run YOLOv8 detection + ByteTrack
+      - name: Run 360 ball tracker
         if: ${{ github.event.inputs.prep_only != 'true' }}
         env:
           IP:   ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          echo "--- Uploading tracking script ---"
-          cat << 'PYEOF' | $SSH "cat > /tmp/ffa_track/run_tracker.py"
-          import cv2, json, numpy as np, supervision as sv, pandas as pd
-          from ultralytics import YOLO
-          from collections import defaultdict
-
-          WORKDIR  = "/tmp/ffa_track"
-          INPUT    = f"{WORKDIR}/equirect_trim.mp4"
-          OUT_VID  = f"{WORKDIR}/tracked.mp4"
-          OUT_JSON = f"{WORKDIR}/tracking.json"
-
-          print("Loading YOLOv8x model (downloads ~130MB on first run)...")
-          model   = YOLO("yolov8x.pt")
-          tracker = sv.ByteTrack()
-          box_ann   = sv.BoxAnnotator(thickness=2)
-          label_ann = sv.LabelAnnotator(text_scale=0.5)
-          trace_ann = sv.TraceAnnotator(thickness=2, trace_length=30)
-
-          cap   = cv2.VideoCapture(INPUT)
-          fps   = cap.get(cv2.CAP_PROP_FPS)
-          W     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-          H     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-          total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-          print(f"Input: {W}x{H} @ {fps:.1f}fps  {total} frames ({total/fps:.1f}s)")
-
-          out = cv2.VideoWriter(OUT_VID, cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
-          log_frames = []
-          ball_raw   = {}
-          frame_id   = 0
-
-          print("Processing frames...")
-          while True:
-              ret, frame = cap.read()
-              if not ret: break
-
-              results    = model(frame, verbose=False, conf=0.25, classes=[0, 32])[0]
-              detections = sv.Detections.from_ultralytics(results)
-
-              ball_dets   = detections[detections.class_id == 32]
-              player_dets = detections[detections.class_id == 0]
-              player_dets = tracker.update_with_detections(player_dets)
-
-              ball_pos = None
-              if len(ball_dets) > 0:
-                  best = int(np.argmax(ball_dets.confidence))
-                  x1,y1,x2,y2 = ball_dets.xyxy[best]
-                  cx,cy = (x1+x2)/2, (y1+y2)/2
-                  ball_pos = (float(cx), float(cy), float(ball_dets.confidence[best]))
-                  ball_raw[frame_id] = ball_pos
-
-              players = []
-              for i in range(len(player_dets)):
-                  x1,y1,x2,y2 = player_dets.xyxy[i]
-                  tid = int(player_dets.tracker_id[i]) if player_dets.tracker_id is not None else -1
-                  players.append({
-                      "track_id": tid,
-                      "cx": round(float((x1+x2)/2), 1),
-                      "cy": round(float((y1+y2)/2), 1),
-                      "conf": round(float(player_dets.confidence[i]), 3)
-                  })
-
-              log_frames.append({
-                  "frame": frame_id, "time_s": round(frame_id/fps, 3),
-                  "ball": list(ball_pos) if ball_pos else None,
-                  "players": players
-              })
-
-              labels = [f"P{int(t)}" for t in (player_dets.tracker_id if player_dets.tracker_id is not None else [])]
-              frame  = trace_ann.annotate(frame, player_dets)
-              frame  = box_ann.annotate(frame, player_dets)
-              frame  = label_ann.annotate(frame, player_dets, labels=labels)
-              if ball_pos:
-                  frame = box_ann.annotate(frame, ball_dets)
-                  cv2.circle(frame, (int(ball_pos[0]), int(ball_pos[1])), 10, (0,255,0), -1)
-
-              out.write(frame)
-              frame_id += 1
-              if frame_id % 50 == 0:
-                  print(f"  frame {frame_id}/{total} ({100*frame_id//total}%)  ball_detections={len(ball_raw)}")
-
-          cap.release(); out.release()
-          print(f"\nDetection complete: ball seen in {len(ball_raw)}/{total} frames ({100*len(ball_raw)//total}%)")
-
-          if ball_raw:
-              detected = sorted(ball_raw.keys())
-              cx_s = pd.Series({f: ball_raw[f][0] for f in detected})
-              cy_s = pd.Series({f: ball_raw[f][1] for f in detected})
-              idx  = pd.RangeIndex(total)
-              cx_i = cx_s.reindex(idx).interpolate("linear", limit=90)
-              cy_i = cy_s.reindex(idx).interpolate("linear", limit=90)
-              interp_count = 0
-              for entry in log_frames:
-                  fr = entry["frame"]
-                  if entry["ball"] is None:
-                      cx_v = cx_i.get(fr)
-                      cy_v = cy_i.get(fr)
-                      if cx_v is not None and not np.isnan(float(cx_v)):
-                          entry["ball_interp"] = [round(float(cx_v),1), round(float(cy_v),1)]
-                          interp_count += 1
-              print(f"Interpolated ball position for {interp_count} frames")
-
-          with open(OUT_JSON, "w") as f:
-              json.dump({
-                  "meta": {
-                      "total_frames": total, "fps": fps, "resolution": [W, H],
-                      "ball_detected_frames": len(ball_raw),
-                      "ball_detection_rate": round(len(ball_raw)/total, 3)
-                  },
-                  "frames": log_frames
-              }, f, indent=2)
-
-          import os
-          print(f"\nOutputs:")
-          print(f"  tracked.mp4   : {os.path.getsize(OUT_VID)//1024}KB")
-          print(f"  tracking.json : {os.path.getsize(OUT_JSON)//1024}KB")
-          PYEOF
-          echo "--- Running tracker ---"
-          $SSH "cd /tmp/ffa_track && python3 run_tracker.py"
-
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 root@$IP"
+          SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no"
+          echo "--- Encoding run_tracker.py as base64 ---"
+          python3 -c "import base64; open('/tmp/run_tracker_b64.txt','w').write(base64.b64encode(open('ball_tracker/run_tracker.py','rb').read()).decode())"
+          B64=$(cat /tmp/run_tracker_b64.txt)
+          echo "--- Uploading run_tracker.py to instance ---"
+          $SSH "echo '$B64' | base64 -d > /tmp/ffa_track/run_tracker.py && echo 'run_tracker.py uploaded OK'"
+          echo "--- Running 360 ball tracker ---"
+          $SSH "cd /tmp/ffa_track && python3 run_tracker.py --input equirect_trim.mp4 --output tracked.mp4 --json tracking.json"
       - name: Pull and upload tracking results
         if: ${{ github.event.inputs.prep_only != 'true' }}
         env:
