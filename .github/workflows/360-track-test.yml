@@ -111,15 +111,13 @@ jobs:
           offers = resp.get("offers", [])
           print(f"Raw offers from API: {len(offers)}")
 
-          # Whitelist high-IPC modern CPUs only (same as gopro360-upload.yml)
-          GOOD_CPU_SUBSTRINGS = [
-              "Ryzen 9 9950X", "Ryzen 9 7950X", "Ryzen 9 5950X",
-              "Ryzen 9 9900X", "Ryzen 9 7900X", "Ryzen 9 5900X",
-              "Core i9-14", "Core i9-13", "Core i9-12",
-          ]
+          # v4: GPU-priority selection — prefer offers with good GPU (RTX 3080+)
+          # No CPU whitelist — GPU handles YOLO; CPU just needs to not bottleneck SCP/ffmpeg
+          # Exclude known-bad offers
+          BAD_CPU_SUBSTRINGS = ["E5-", "E3-", "Opteron", "Xeon W3", "Xeon X5"]
           before = len(offers)
-          offers = [o for o in offers if any(s in (o.get("cpu_name") or "") for s in GOOD_CPU_SUBSTRINGS)]
-          print(f"After CPU whitelist: {len(offers)} fast-CPU offers (excluded {before - len(offers)} others)")
+          offers = [o for o in offers if not any(s in (o.get("cpu_name") or "") for s in BAD_CPU_SUBSTRINGS)]
+          print(f"After CPU blacklist: {len(offers)} offers (excluded {before - len(offers)} ancient CPUs)")
 
           if excluded:
               before = len(offers)
@@ -130,13 +128,26 @@ jobs:
               print("ERROR: No matching offers found", file=sys.stderr)
               sys.exit(1)
 
-          offers.sort(key=lambda o: float(o.get("dph_total", 999)))
-          print(f"\nTop 5 candidates:")
+          # Score: prefer lower price, mildly prefer GPU VRAM >= 8GB
+          def offer_score(o):
+              dph = float(o.get("dph_total", 999))
+              vram_mb = float(o.get("gpu_mem_bw", 0) or 0)  # proxy for VRAM
+              gpu_name = (o.get("gpu_name") or "").lower()
+              # Bonus for known good GPUs for YOLO inference
+              gpu_bonus = 0.0
+              for gpu in ["3090", "3080", "4090", "4080", "4070", "a100", "a40", "a10"]:
+                  if gpu in gpu_name:
+                      gpu_bonus = 0.05  # $0.05/hr credit for good GPU
+                      break
+              return dph - gpu_bonus
+
+          offers.sort(key=offer_score)
+          print(f"\nTop 5 candidates (GPU-priority scoring):")
           for o in offers[:5]:
-              print(f"  id={o['id']} cpu={o.get('cpu_name','?')!r} cores={o.get('cpu_cores','?')} ram={o.get('cpu_ram',0)//1024}GB dph=${o.get('dph_total','?')}")
+              print(f"  id={o['id']} gpu={o.get('gpu_name','?')!r} cpu={o.get('cpu_name','?')!r} dph=${o.get('dph_total','?')}")
 
           best = offers[0]
-          print(f"\nSelected: id={best['id']} cpu={best.get('cpu_name')} dph=${best.get('dph_total')}")
+          print(f"\nSelected: id={best['id']} gpu={best.get('gpu_name')} cpu={best.get('cpu_name')} dph=${best.get('dph_total')}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"offer_id={best['id']}\n")
               f.write(f"offer_cpu={best.get('cpu_name','unknown')}\n")
