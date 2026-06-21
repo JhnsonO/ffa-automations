@@ -397,8 +397,15 @@ jobs:
           B64=$(cat /tmp/run_tracker_b64.txt)
           echo "--- Uploading run_tracker.py to instance ---"
           $SSH "echo '$B64' | base64 -d > /tmp/ffa_track/run_tracker.py && echo 'run_tracker.py uploaded OK'"
-          echo "--- Running 360 ball tracker ---"
-          $SSH "cd /tmp/ffa_track && python3 run_tracker.py --input equirect_trim.mp4 --output tracked.mp4 --json tracking.json"
+          echo "--- Downloading football ball model (if missing) ---"
+          $SSH "mkdir -p /tmp/ffa_track/models && \
+            if [ ! -f /tmp/ffa_track/models/football-ball-detection.pt ]; then \
+              pip install -q gdown && \
+              gdown -O /tmp/ffa_track/models/football-ball-detection.pt 'https://drive.google.com/uc?id=1isw4wx-MK9h9LMr36VvIWlJD6ppUvw7V' ; \
+            else echo 'football model already present'; fi && \
+            ls -lh /tmp/ffa_track/models/football-ball-detection.pt"
+          echo "--- Running 360 ball tracker (v5 detection baseline) ---"
+          $SSH "cd /tmp/ffa_track && python3 run_tracker.py --input equirect_trim.mp4 --output tracked.mp4 --json tracking.json --ball-model models/football-ball-detection.pt --person-model yolov8s.pt"
       - name: Pull and upload tracking results
         if: ${{ github.event.inputs.prep_only != 'true' }}
         env:
