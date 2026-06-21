@@ -433,18 +433,46 @@ jobs:
           echo "$YOUTUBE_CREDENTIALS" > youtube_credentials.json
           echo "$YOUTUBE_TOKEN"       > youtube_token.json
           python3 - << 'PY'
-          import os
+          import os, json, urllib.request as _req, datetime
           from google.oauth2.credentials import Credentials
-          from google.auth.transport.requests import Request
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
 
-          SCOPES    = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/youtube"]
           FOLDER_ID = "1gHW29JbvUWnbvJTCC0J8O7r-O1IPZAd8"
 
-          creds = Credentials.from_authorized_user_file("youtube_token.json", SCOPES)
-          if creds.expired and creds.refresh_token:
-              creds.refresh(Request())
+          # Refresh token via direct POST (same pattern as download steps — avoids invalid_scope)
+          token_data = json.loads(open("youtube_token.json").read())
+          creds_data = json.loads(open("youtube_credentials.json").read())
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+
+          payload = json.dumps({
+              "client_id":     client_id,
+              "client_secret": client_secret,
+              "refresh_token": refresh_token,
+              "grant_type":    "refresh_token",
+          }).encode()
+          r = _req.urlopen(_req.Request(token_uri, data=payload,
+                           headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
+          print(f"Access token obtained (expires_in={tok.get('expires_in')}s)")
+
+          # Build Credentials object from the fresh token (no scope re-check)
+          creds = Credentials(
+              token=tok["access_token"],
+              refresh_token=refresh_token,
+              token_uri=token_uri,
+              client_id=client_id,
+              client_secret=client_secret,
+              scopes=["https://www.googleapis.com/auth/drive"],
+          )
+          # Set expiry so google-auth doesn't think it's expired
+          creds.expiry = datetime.datetime.utcnow() + datetime.timedelta(seconds=int(tok.get("expires_in", 3600)))
+
           drive = build("drive", "v3", credentials=creds, cache_discovery=False)
 
           run_id = os.environ.get("GITHUB_RUN_ID", "unknown")
@@ -459,8 +487,8 @@ jobs:
           for fname in sorted(os.listdir(output_dir)):
               fpath = os.path.join(output_dir, fname)
               if not os.path.isfile(fpath): continue
-              mime    = "video/mp4" if fname.endswith(".mp4") else "application/json"
-              media    = MediaFileUpload(fpath, mimetype=mime, resumable=True)
+              mime  = "video/mp4" if fname.endswith(".mp4") else "application/json"
+              media = MediaFileUpload(fpath, mimetype=mime, resumable=True)
               uploaded = drive.files().create(
                   body={"name": fname, "parents": [subfolder_id]},
                   media_body=media, fields="id,name,size"
