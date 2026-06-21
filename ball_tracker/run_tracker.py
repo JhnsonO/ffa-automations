@@ -102,6 +102,7 @@ EDGE_PENALTY_ZONE       = 80
 PITCH_SOFT_MIN = -30.0   # degrees — real ball is almost never above this pitch
 PITCH_SOFT_MAX =  10.0   # degrees — real ball rarely goes above this on a football pitch
 PITCH_PLAUSIBILITY_DECAY = 8.0  # degrees outside range for score to reach 0.0
+PITCH_HARD_MAX           = 18.0 # v10b: hard ceiling — candidates above this are rejected before scoring
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +559,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "mahalanobis_rejected":        [],
         "large_yaw_jump_count":        0,   # yaw delta > 30° (informational only, no reject)
         "accepted_pitches":            [],  # v9: pitch of every confirmed-ball frame
+        "pitch_hard_rejections":       0,   # v10b: candidates above PITCH_HARD_MAX
     }
 
     frame_idx = 0
@@ -634,6 +636,10 @@ def run_tracker(equirect_path, output_path, json_path,
                 # Collect this frame's candidates (yaw, pitch, conf, area)
                 frame_candidates = []
                 for yaw_d, pitch_d, conf_d in deduped_balls:
+                    # v10b: hard pitch ceiling — exclude before warm-up chain building
+                    if pitch_d > PITCH_HARD_MAX:
+                        instr["pitch_hard_rejections"] += 1
+                        continue
                     raw = find_raw(yaw_d, pitch_d)
                     if raw:
                         frame_candidates.append((yaw_d, pitch_d, conf_d, raw[3]))
@@ -703,6 +709,12 @@ def run_tracker(equirect_path, output_path, json_path,
             ball_seen_this_frame = False
 
             for yaw_d, pitch_d, conf_d in deduped_balls:
+                # v10b: hard pitch ceiling — reject before scoring or Kalman update
+                if pitch_d > PITCH_HARD_MAX:
+                    instr["pitch_hard_rejections"] += 1
+                    instr["rejection_reasons"]["pitch_hard_max"] = \
+                        instr["rejection_reasons"].get("pitch_hard_max", 0) + 1
+                    continue
                 raw = find_raw(yaw_d, pitch_d)
                 if raw is None:
                     continue
@@ -924,6 +936,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "accepted_pitch_above_10":          sum(1 for p in instr["accepted_pitches"] if p > 10.0),
         "accepted_pitch_above_20":          sum(1 for p in instr["accepted_pitches"] if p > 20.0),
         "accepted_pitch_above_30":          sum(1 for p in instr["accepted_pitches"] if p > 30.0),
+        "pitch_hard_rejection_count":       instr["pitch_hard_rejections"],  # v10b
     }
     v8_init_metrics = {
         "kalman_init_frame":         kalman_init_frame,
@@ -936,7 +949,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "frames_in_lost":            state_transition_counts.get(TrackerState.LOST, 0),
     }
     metadata = {
-        "version": "v10a",
+        "version": "v10b",
         "metrics_only": metrics_only,
         "config": {
             "ball_model":           ball_model_path,
@@ -948,6 +961,7 @@ def run_tracker(equirect_path, output_path, json_path,
                                 "size": W_SIZE, "motion": W_MOTION, "edge": W_EDGE},
             "min_candidate_score":   MIN_CANDIDATE_SCORE,
             "hysteresis_margin":     HYSTERESIS_MARGIN,
+            "pitch_hard_max":        PITCH_HARD_MAX,  # v10b
             "max_frame_delta_deg":   "REMOVED_v8",
             "kalman_init_frames":    KALMAN_INIT_FRAMES,
             "warmup_min_chain_len":  WARMUP_MIN_CHAIN_LEN,
