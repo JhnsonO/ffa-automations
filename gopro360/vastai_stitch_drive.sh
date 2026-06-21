@@ -122,17 +122,28 @@ log "--- Removing CUDA forward-compat libs (use host driver instead) ---"
 rm -rf /usr/local/cuda/compat 2>/dev/null || true
 ldconfig
 log "ldconfig done"
-TOTAL_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "${SOURCE_URL}")
-log "Source duration: ${TOTAL_DUR}s"
+SOURCE_MODE_EARLY="${SOURCE_MODE:-gopro}"
+if [ "${SOURCE_MODE_EARLY}" = "drive" ]; then
+  log "Drive mode: skipping remote ffprobe — duration will be detected after download"
+  TOTAL_DUR="0"
+else
+  TOTAL_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "${SOURCE_URL}")
+  log "Source duration: ${TOTAL_DUR}s"
+fi
 
 if [ "${BITRATE}" = "auto" ]; then
-  SRC_BPS=$(ffprobe -v error -show_entries format=bit_rate -of csv=p=0 "${SOURCE_URL}")
-  if [ -n "${SRC_BPS}" ] && [ "${SRC_BPS}" != "N/A" ]; then
-    BITRATE="${SRC_BPS}"
-    log "Auto bitrate: using source bitrate ${BITRATE} bps ($(python3 -c "print(round(${BITRATE}/1e6,1))")Mbps)"
-  else
+  if [ "${SOURCE_MODE_EARLY}" = "drive" ]; then
     BITRATE="20M"
-    log "Auto bitrate: source bit_rate unavailable, falling back to ${BITRATE}"
+    log "Auto bitrate: Drive mode — defaulting to ${BITRATE} (will re-probe after download)"
+  else
+    SRC_BPS=$(ffprobe -v error -show_entries format=bit_rate -of csv=p=0 "${SOURCE_URL}")
+    if [ -n "${SRC_BPS}" ] && [ "${SRC_BPS}" != "N/A" ]; then
+      BITRATE="${SRC_BPS}"
+      log "Auto bitrate: using source bitrate ${BITRATE} bps ($(python3 -c "print(round(${BITRATE}/1e6,1))")Mbps)"
+    else
+      BITRATE="20M"
+      log "Auto bitrate: source bit_rate unavailable, falling back to ${BITRATE}"
+    fi
   fi
 fi
 
@@ -216,6 +227,16 @@ with urllib.request.urlopen(req) as r, open(OUT_PATH, "wb") as f:
 print(f"[{datetime.now().strftime('%H:%M:%S')}] Download complete: {downloaded/1e6:.0f}MB")
 DRIVEEOF
   log "Drive download complete: $(du -m "${LOCAL_SOURCE}" | cut -f1)MB"
+  # Now probe the local file for duration and bitrate
+  TOTAL_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "${LOCAL_SOURCE}" || echo "0")
+  log "Source duration (post-download): ${TOTAL_DUR}s"
+  if [ "${BITRATE}" = "20M" ]; then
+    SRC_BPS=$(ffprobe -v error -show_entries format=bit_rate -of csv=p=0 "${LOCAL_SOURCE}" || echo "")
+    if [ -n "${SRC_BPS}" ] && [ "${SRC_BPS}" != "N/A" ] && [ "${SRC_BPS}" != "0" ]; then
+      BITRATE="${SRC_BPS}"
+      log "Auto bitrate (post-download): ${BITRATE} bps"
+    fi
+  fi
 else
   log "--- Installing aria2 ---"
   apt-get install -y -qq aria2 > /dev/null
