@@ -206,10 +206,8 @@ def run_tracker(equirect_path, output_path, json_path,
                 model_path="yolov8n.pt"):
 
     work_dir = Path(output_path).parent
-    trimmed_path = str(work_dir / "equirect_trim.mp4")
-
-    # 1. Trim
-    trim_video(equirect_path, trimmed_path, trim_start, trim_duration)
+    # Input is already equirect_trim.mp4 from stitch step — no re-trim needed
+    trimmed_path = equirect_path
 
     # 2. Load YOLO
     print(f"[yolo] loading {model_path}")
