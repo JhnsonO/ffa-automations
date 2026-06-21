@@ -363,32 +363,14 @@ jobs:
           echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
           echo "--- Getting Drive access token ---"
-          python3 - << 'PY'
-import os, json, urllib.request as _req
-token_data = json.loads(open("/tmp/youtube_token.json").read())
-creds_data = json.loads(open("/tmp/youtube_credentials.json").read())
-client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
-client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
-refresh_token = token_data["refresh_token"]
-token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
-payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
-                      "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
-r = _req.urlopen(_req.Request(token_uri, data=payload, headers={"Content-Type": "application/json"}, method="POST"))
-tok = json.loads(r.read())
-if "access_token" not in tok:
-    raise RuntimeError(f"Token refresh failed: {tok}")
-with open("/tmp/drive_token.txt", "w") as f:
-    f.write(tok["access_token"])
-print(f"Access token obtained (expires_in={tok.get('expires_in')}s)")
-PY
+          python3 -c "import base64; exec(base64.b64decode('aW1wb3J0IG9zLCBqc29uLCB1cmxsaWIucmVxdWVzdCBhcyBfcmVxCnRva2VuX2RhdGEgPSBqc29uLmxvYWRzKG9wZW4oIi90bXAveW91dHViZV90b2tlbi5qc29uIikucmVhZCgpKQpjcmVkc19kYXRhID0ganNvbi5sb2FkcyhvcGVuKCIvdG1wL3lvdXR1YmVfY3JlZGVudGlhbHMuanNvbiIpLnJlYWQoKSkKY2xpZW50X2lkICAgICA9IHRva2VuX2RhdGEuZ2V0KCJjbGllbnRfaWQiKSBvciBjcmVkc19kYXRhWyJpbnN0YWxsZWQiXVsiY2xpZW50X2lkIl0KY2xpZW50X3NlY3JldCA9IHRva2VuX2RhdGEuZ2V0KCJjbGllbnRfc2VjcmV0Iikgb3IgY3JlZHNfZGF0YVsiaW5zdGFsbGVkIl1bImNsaWVudF9zZWNyZXQiXQpyZWZyZXNoX3Rva2VuID0gdG9rZW5fZGF0YVsicmVmcmVzaF90b2tlbiJdCnRva2VuX3VyaSAgICAgPSB0b2tlbl9kYXRhLmdldCgidG9rZW5fdXJpIiwgImh0dHBzOi8vb2F1dGgyLmdvb2dsZWFwaXMuY29tL3Rva2VuIikKcGF5bG9hZCA9IGpzb24uZHVtcHMoeyJjbGllbnRfaWQiOiBjbGllbnRfaWQsICJjbGllbnRfc2VjcmV0IjogY2xpZW50X3NlY3JldCwKICAgICAgICAgICAgICAgICAgICAgICJyZWZyZXNoX3Rva2VuIjogcmVmcmVzaF90b2tlbiwgImdyYW50X3R5cGUiOiAicmVmcmVzaF90b2tlbiJ9KS5lbmNvZGUoKQpyID0gX3JlcS51cmxvcGVuKF9yZXEuUmVxdWVzdCh0b2tlbl91cmksIGRhdGE9cGF5bG9hZCwgaGVhZGVycz17IkNvbnRlbnQtVHlwZSI6ICJhcHBsaWNhdGlvbi9qc29uIn0sIG1ldGhvZD0iUE9TVCIpKQp0b2sgPSBqc29uLmxvYWRzKHIucmVhZCgpKQppZiAiYWNjZXNzX3Rva2VuIiBub3QgaW4gdG9rOgogICAgcmFpc2UgUnVudGltZUVycm9yKGYiVG9rZW4gcmVmcmVzaCBmYWlsZWQ6IHt0b2t9IikKd2l0aCBvcGVuKCIvdG1wL2RyaXZlX3Rva2VuLnR4dCIsICJ3IikgYXMgZjoKICAgIGYud3JpdGUodG9rWyJhY2Nlc3NfdG9rZW4iXSkKcHJpbnQoZiJBY2Nlc3MgdG9rZW4gb2J0YWluZWQgKGV4cGlyZXNfaW49e3Rvay5nZXQoJ2V4cGlyZXNfaW4nKX1zKSIpCg==').decode())"
           ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
           FILE_ID="$EQUIRECT_FILE_ID"
           echo "--- Downloading equirect_trim.mp4 from Drive (id=$FILE_ID) ---"
-          $SSH "mkdir -p /tmp/ffa_track && du -sh /tmp/ffa_track/ && aria2c -x 8 -s 8 --file-allocation=none \
-            --header='Authorization: Bearer $ACCESS_TOKEN' \
-            --dir=/tmp/ffa_track --out=equirect_trim.mp4 \
+          $SSH "mkdir -p /tmp/ffa_track && aria2c -x 8 -s 8 --file-allocation=none \\
+            --header='Authorization: Bearer $ACCESS_TOKEN' \\
+            --dir=/tmp/ffa_track --out=equirect_trim.mp4 \\
             'https://www.googleapis.com/drive/v3/files/$FILE_ID?alt=media' 2>&1 | tail -5"
-          echo "--- Download complete ---"
           $SSH "du -sh /tmp/ffa_track/equirect_trim.mp4"
 
       - name: Run 360 ball tracker
