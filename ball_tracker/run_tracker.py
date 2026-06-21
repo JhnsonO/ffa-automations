@@ -77,7 +77,7 @@ W_MOTION = 0.10   # short-term motion consistency
 W_EDGE   = 0.10   # crop-edge penalty (inverted — close to edge = lower score)
 
 MIN_CANDIDATE_SCORE   = 0.35   # below this → treat as miss
-MAX_FRAME_DELTA_DEG   = 15.0   # hard cap: reject if yaw/pitch jumps > this
+MAX_FRAME_DELTA_DEG   = 35.0   # hard cap: reject if yaw/pitch jumps > this
 HYSTERESIS_MARGIN     = 0.08   # only switch incumbent if new score is this much better
 MAHAL_SOFT_THRESH     = 4.0    # normal Mahalanobis accept
 MAHAL_FAST_THRESH     = 8.0    # looser thresh when ball is moving fast
@@ -286,6 +286,8 @@ def score_candidate(candidate, kf, kf_initialised, ball_size_tracker, vel_tracke
 
         # Hard cap: reject outright if delta exceeds MAX_FRAME_DELTA_DEG
         delta = angular_distance(yaw, pitch, pred_yaw, pred_pitch)
+        # delta is returned so caller can log it before rejection
+        components["_raw_delta_deg"] = delta
         if delta > MAX_FRAME_DELTA_DEG:
             return 0.0, components, "hard_cap"
 
@@ -418,6 +420,7 @@ def run_tracker(equirect_path, output_path, json_path,
             "hard_cap":  0,
             "hysteresis": 0,
         },
+        "raw_frame_deltas_deg": [],   # v7: all candidate deltas before hard-cap
     }
 
     frame_idx = 0
@@ -498,6 +501,8 @@ def run_tracker(equirect_path, output_path, json_path,
                 candidate, kf, kf_initialised, ball_size_tracker, vel_tracker,
                 last_yaw, last_pitch, crop_yaw)
 
+            if "_raw_delta_deg" in components:
+                instr["raw_frame_deltas_deg"].append(components["_raw_delta_deg"])
             if hard_reject == "hard_cap":
                 instr["rejection_reasons"]["hard_cap"] += 1
                 instr["continuous_gate_rejected"] += 1
@@ -666,7 +671,15 @@ def run_tracker(equirect_path, output_path, json_path,
         "median_candidate_conf":            _median(instr["all_candidate_confs"]),
         "median_accepted_size_score":       _median(instr["accepted_size_scores"]),
     }
+    deltas = instr["raw_frame_deltas_deg"]
+    delta_percentiles = {
+        "p50": round(float(np.percentile(deltas, 50)), 2) if deltas else None,
+        "p90": round(float(np.percentile(deltas, 90)), 2) if deltas else None,
+        "p95": round(float(np.percentile(deltas, 95)), 2) if deltas else None,
+        "p99": round(float(np.percentile(deltas, 99)), 2) if deltas else None,
+    }
     association_metrics = {
+        "raw_frame_delta_deg_percentiles":  delta_percentiles,
         "continuous_gate_rejected_count":   instr["continuous_gate_rejected"],
         "candidate_switch_count":           instr["candidate_switch_count"],
         "mean_best_candidate_score":        _mean(instr["best_candidate_scores"]),
@@ -674,7 +687,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "swap_event_count":                 len(swap_events),
     }
     metadata = {
-        "version": "v6-data-association",
+        "version": "v7-delta35",
         "metrics_only": metrics_only,
         "config": {
             "ball_model":   ball_model_path, "ball_names": ball_model.names,
