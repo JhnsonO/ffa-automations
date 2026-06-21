@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
 """
-FFA 360 Ball Tracker — v2
+FFA 360 Ball Tracker — v3
 ==========================
 Input:  equirect_trim.mp4  (equirectangular MP4 from GoPro stitch pipeline)
 Output: tracked.mp4        (16:9 virtual follow-cam centred on ball)
         tracking.json      (per-frame yaw/pitch detections + smoothed track)
 
-v2 changes vs v1:
-  - Loss handling: Kalman predicts for up to LOSS_EXTRAPOLATE_FRAMES (45),
-    then camera holds last confirmed ball position.
-  - Player centroid fallback: when ball lost beyond hold window, YOLO person
-    detections drive a slow camera drift toward the player centroid.
-  - Ball reacquisition scoring: new detections during loss are scored by
-    Mahalanobis distance + size consistency before being accepted.
-    Ball-swap events logged to tracking.json.
+v3 changes vs v2:
+  - Model upgraded from yolov8n → yolov8s (much higher detection rate)
+  - Confidence threshold raised 0.25 → 0.40 (fewer false positives / snap jitter)
+  - Kalman process noise tightened Q *= 0.01 (smoother trajectory between detections)
+  - EMA smoothing on final render yaw/pitch (camera eases to new position over ~8 frames)
 
 Pipeline:
   equirect_trim.mp4
     → per frame: 4 perspective crops at yaw 0/90/180/270° (110° FOV)
-    → YOLOv8 ball + person detection on each crop
+    → YOLOv8s ball + person detection on each crop
     → map crop-pixel → yaw/pitch on sphere
     → dedupe overlapping detections
     → Kalman smoother on global yaw/pitch (with loss handling)
+    → EMA render smoothing
     → ffmpeg render: virtual 16:9 cam centred on smoothed position
     → tracked.mp4 + tracking.json
 """
@@ -31,8 +29,6 @@ import json
 import math
 import os
 import subprocess
-import sys
-import tempfile
 from pathlib import Path
 
 import cv2
@@ -44,26 +40,29 @@ from ultralytics import YOLO
 # Config
 # ---------------------------------------------------------------------------
 FFMPEG = os.environ.get("FFMPEG_BIN", "/usr/bin/ffmpeg")
-CROP_YAWS_DEG    = [0, 90, 180, 270]   # centre yaw of each crop
-CROP_FOV_DEG     = 110                  # horizontal FOV per crop
+CROP_YAWS_DEG    = [0, 90, 180, 270]
+CROP_FOV_DEG     = 110
 CROP_W           = 1280
 CROP_H           = 720
-DEDUP_THRESH_DEG = 15                   # angular distance to merge detections
-CONF_THRESHOLD   = 0.25                 # YOLO confidence floor
-BALL_CLASS_ID    = 32                   # COCO class 32 = sports ball
-PERSON_CLASS_ID  = 0                    # COCO class 0  = person
+DEDUP_THRESH_DEG = 15
+CONF_THRESHOLD   = 0.40          # v3: raised from 0.25 — fewer false positives
+BALL_CLASS_ID    = 32
+PERSON_CLASS_ID  = 0
 OUTPUT_W         = 1920
 OUTPUT_H         = 1080
-OUTPUT_FOV_DEG   = 90                   # virtual cam horizontal FOV
-LEAD_DEG         = 3.0                  # look slightly ahead of ball (yaw)
+OUTPUT_FOV_DEG   = 90
+LEAD_DEG         = 3.0
 
 # Loss handling
-LOSS_EXTRAPOLATE_FRAMES = 45            # frames to trust Kalman prediction after last detection
-LOSS_HOLD_FRAMES        = 90            # frames to hold last-confirmed position after that
-PLAYER_DRIFT_SPEED_DEG  = 0.5          # degrees/frame drift toward player centroid when fully lost
-REACQ_LERP_FRAMES       = 15           # frames to smoothly re-lock after reacquisition
-BALL_SIZE_HISTORY        = 30           # frames of ball bbox size to track for swap detection
-MAHAL_ACCEPT_THRESH      = 6.0         # Mahalanobis distance to accept reacquisition candidate
+LOSS_EXTRAPOLATE_FRAMES = 45
+LOSS_HOLD_FRAMES        = 90
+PLAYER_DRIFT_SPEED_DEG  = 0.5
+REACQ_LERP_FRAMES       = 15
+BALL_SIZE_HISTORY        = 30
+MAHAL_ACCEPT_THRESH      = 6.0
+
+# v3: EMA smoothing on render output
+EMA_ALPHA = 0.18    # lower = smoother/slower camera, higher = snappier. 0.18 ≈ 8-frame ease
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +78,7 @@ def build_kalman():
     kf.H = np.array([[1, 0, 0, 0],
                      [0, 1, 0, 0]], dtype=float)
     kf.R *= 5.0
-    kf.Q *= 0.1
+    kf.Q *= 0.01     # v3: tightened from 0.1 — trusts model more between detections
     kf.P *= 10.0
     return kf
 
@@ -124,11 +123,6 @@ def dedupe_detections(detections, thresh_deg=DEDUP_THRESH_DEG):
 
 
 def player_centroid_from_detections(person_detections):
-    """
-    Compute weighted centroid of person detections (weighted by confidence).
-    person_detections: list of (yaw, pitch, conf)
-    Returns (yaw, pitch) or None.
-    """
     if not person_detections:
         return None
     total_conf = sum(d[2] for d in person_detections)
@@ -140,7 +134,7 @@ def player_centroid_from_detections(person_detections):
 
 
 # ---------------------------------------------------------------------------
-# FFmpeg helpers
+# Frame extraction helpers
 # ---------------------------------------------------------------------------
 
 def extract_crop_frame(equirect_frame, crop_yaw_deg, fov_deg, out_w, out_h):
@@ -160,7 +154,7 @@ def extract_crop_frame(equirect_frame, crop_yaw_deg, fov_deg, out_w, out_h):
     wz = -math.sin(cy) * rx + math.cos(cy) * rz
     yaw_map   = np.arctan2(wx, wz)
     pitch_map = np.arcsin(np.clip(wy, -1, 1))
-    map_x = ((yaw_map   / (2 * math.pi)) + 0.5) * w_eq
+    map_x = ((yaw_map / (2 * math.pi)) + 0.5) * w_eq
     map_y = (0.5 - pitch_map / math.pi) * h_eq
     return cv2.remap(equirect_frame, map_x.astype(np.float32), map_y.astype(np.float32),
                      interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
@@ -171,7 +165,7 @@ def render_virtual_cam_frame(equirect_frame, yaw_deg, pitch_deg, fov_deg, out_w,
 
 
 # ---------------------------------------------------------------------------
-# Ball size tracker (for swap detection)
+# Ball size tracker
 # ---------------------------------------------------------------------------
 
 class BallSizeTracker:
@@ -188,12 +182,10 @@ class BallSizeTracker:
         return float(np.mean(self._sizes)) if self._sizes else None
 
     def size_score(self, bbox_area):
-        """1.0 if matches expected size, 0.0 if wildly different."""
         exp = self.expected_size()
         if exp is None or exp == 0:
             return 1.0
         ratio = bbox_area / exp
-        # Score drops off if ratio is far from 1.0
         return math.exp(-abs(math.log(ratio)) * 2)
 
 
@@ -203,15 +195,15 @@ class BallSizeTracker:
 
 def run_tracker(equirect_path, output_path, json_path,
                 trim_start=120, trim_duration=120,
-                model_path="yolov8n.pt"):
+                model_path="yolov8s.pt"):   # v3: default upgraded to yolov8s
 
-    trimmed_path = equirect_path  # input is already trimmed
+    trimmed_path = equirect_path
 
     print(f"[yolo] loading {model_path}")
     model = YOLO(model_path)
 
     cap = cv2.VideoCapture(trimmed_path)
-    fps         = cap.get(cv2.CAP_PROP_FPS)
+    fps          = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f"[video] {total_frames} frames @ {fps:.2f} fps")
 
@@ -230,25 +222,28 @@ def run_tracker(equirect_path, output_path, json_path,
         output_path
     ], stdin=subprocess.PIPE)
 
-    kf            = build_kalman()
+    kf             = build_kalman()
     kf_initialised = False
     last_yaw, last_pitch = 0.0, 0.0
 
-    # --- Loss state ---
-    frames_since_detection = 0           # 0 means ball seen this frame
+    frames_since_detection = 0
     confirmed_yaw   = 0.0
     confirmed_pitch = 0.0
-    # Reacquisition lerp
+
     reacq_lerp_remaining = 0
     reacq_target_yaw     = 0.0
     reacq_target_pitch   = 0.0
-    # Camera position (what actually gets rendered)
+
+    # v3: EMA state for render output
+    ema_yaw   = None
+    ema_pitch = None
+
     cam_yaw   = 0.0
     cam_pitch = 0.0
 
     ball_size_tracker = BallSizeTracker()
-    tracking_data  = []
-    swap_events    = []
+    tracking_data = []
+    swap_events   = []
 
     frame_idx = 0
     while True:
@@ -272,7 +267,6 @@ def run_tracker(equirect_path, output_path, json_path,
                 yaw_d, pitch_d = crop_pixel_to_yaw_pitch(
                     cx, cy_, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
                 if cls == BALL_CLASS_ID:
-                    # Track bbox area for size consistency
                     w_box = float(box.xyxy[0][2] - box.xyxy[0][0])
                     h_box = float(box.xyxy[0][3] - box.xyxy[0][1])
                     ball_detections.append((yaw_d, pitch_d, conf, w_box * h_box))
@@ -289,7 +283,6 @@ def run_tracker(equirect_path, output_path, json_path,
             "loss_state": None,
         }
 
-        # ---- Kalman update / loss handling ----
         ball_seen_this_frame = bool(deduped_balls)
 
         if ball_seen_this_frame:
@@ -297,25 +290,20 @@ def run_tracker(equirect_path, output_path, json_path,
             yaw_meas, pitch_meas = best_ball[0], best_ball[1]
             ball_area = ball_detections[0][3] if ball_detections else None
 
-            # --- Reacquisition scoring when previously lost ---
             if frames_since_detection > 0 and kf_initialised:
-                # Mahalanobis distance from Kalman prediction
-                z = np.array([[yaw_meas], [pitch_meas]])
+                z     = np.array([[yaw_meas], [pitch_meas]])
                 innov = z - kf.H @ kf.x
-                S = kf.H @ kf.P @ kf.H.T + kf.R
+                S     = kf.H @ kf.P @ kf.H.T + kf.R
                 try:
                     mahal = float(np.sqrt(innov.T @ np.linalg.inv(S) @ innov))
                 except np.linalg.LinAlgError:
                     mahal = 0.0
 
-                # Size consistency
                 size_score = ball_size_tracker.size_score(ball_area) if ball_area else 1.0
-
                 accept = mahal < MAHAL_ACCEPT_THRESH or size_score > 0.5
 
                 if accept:
                     if frames_since_detection > LOSS_EXTRAPOLATE_FRAMES:
-                        # Log potential ball swap
                         swap_events.append({
                             "frame": frame_idx,
                             "frames_lost": frames_since_detection,
@@ -324,19 +312,16 @@ def run_tracker(equirect_path, output_path, json_path,
                             "new_yaw": round(yaw_meas, 2),
                             "new_pitch": round(pitch_meas, 2),
                         })
-                        print(f"[reacq] frame {frame_idx}: ball reacquired after "
+                        print(f"[reacq] frame {frame_idx}: reacquired after "
                               f"{frames_since_detection} lost frames "
-                              f"(mahal={mahal:.1f}, size_score={size_score:.2f}) "
-                              f"— possible swap logged")
-                        # Lerp to new position
+                              f"(mahal={mahal:.1f}, size={size_score:.2f})")
                         reacq_lerp_remaining = REACQ_LERP_FRAMES
                         reacq_target_yaw     = yaw_meas
                         reacq_target_pitch   = pitch_meas
                 else:
-                    # Reject this detection — keep predicting
                     ball_seen_this_frame = False
-                    print(f"[reacq] frame {frame_idx}: rejected detection "
-                          f"(mahal={mahal:.1f}, size_score={size_score:.2f})")
+                    print(f"[reject] frame {frame_idx}: detection rejected "
+                          f"(mahal={mahal:.1f}, size={size_score:.2f})")
 
             if ball_seen_this_frame:
                 if not kf_initialised:
@@ -355,7 +340,6 @@ def run_tracker(equirect_path, output_path, json_path,
                 frames_since_detection = 0
 
         else:
-            # ---- Ball not seen ----
             frames_since_detection += 1
             if kf_initialised:
                 kf.predict()
@@ -366,66 +350,69 @@ def run_tracker(equirect_path, output_path, json_path,
             loss_state = "uninitialised"
 
         elif frames_since_detection == 0:
-            # Ball confirmed this frame
             target_yaw   = confirmed_yaw
-            target_pitch  = confirmed_pitch
-            loss_state    = "tracking"
+            target_pitch = confirmed_pitch
+            loss_state   = "tracking"
 
         elif frames_since_detection <= LOSS_EXTRAPOLATE_FRAMES:
-            # Short loss — trust Kalman extrapolation
             target_yaw   = float(kf.x[0])
-            target_pitch  = float(kf.x[1])
-            loss_state    = f"extrapolating ({frames_since_detection})"
+            target_pitch = float(kf.x[1])
+            loss_state   = f"extrapolating ({frames_since_detection})"
 
         elif frames_since_detection <= LOSS_EXTRAPOLATE_FRAMES + LOSS_HOLD_FRAMES:
-            # Medium loss — hold last confirmed position
             target_yaw   = confirmed_yaw
-            target_pitch  = confirmed_pitch
-            loss_state    = f"holding ({frames_since_detection})"
+            target_pitch = confirmed_pitch
+            loss_state   = f"holding ({frames_since_detection})"
 
         else:
-            # Long loss — drift slowly toward player centroid
             centroid = player_centroid_from_detections(deduped_persons)
             if centroid:
-                dy = centroid[0] - cam_yaw
-                dp = centroid[1] - cam_pitch
+                dy   = centroid[0] - cam_yaw
+                dp   = centroid[1] - cam_pitch
                 dist = math.sqrt(dy**2 + dp**2)
                 if dist > PLAYER_DRIFT_SPEED_DEG:
                     target_yaw   = cam_yaw   + PLAYER_DRIFT_SPEED_DEG * dy / dist
-                    target_pitch  = cam_pitch  + PLAYER_DRIFT_SPEED_DEG * dp / dist
+                    target_pitch = cam_pitch + PLAYER_DRIFT_SPEED_DEG * dp / dist
                 else:
                     target_yaw, target_pitch = centroid
             else:
-                target_yaw, target_pitch = cam_yaw, cam_pitch  # freeze
+                target_yaw, target_pitch = cam_yaw, cam_pitch
             loss_state = f"player_drift ({frames_since_detection})"
 
-        # ---- Apply reacquisition lerp if active ----
+        # ---- Reacquisition lerp ----
         if reacq_lerp_remaining > 0:
             t = 1.0 - (reacq_lerp_remaining / REACQ_LERP_FRAMES)
-            target_yaw   = cam_yaw   + t * (reacq_target_yaw   - cam_yaw)
-            target_pitch  = cam_pitch  + t * (reacq_target_pitch  - cam_pitch)
+            target_yaw   = cam_yaw + t * (reacq_target_yaw   - cam_yaw)
+            target_pitch = cam_pitch + t * (reacq_target_pitch - cam_pitch)
             reacq_lerp_remaining -= 1
 
         cam_yaw, cam_pitch = target_yaw, target_pitch
         last_yaw, last_pitch = cam_yaw, cam_pitch
 
+        # ---- v3: EMA smoothing on render output ----
+        if ema_yaw is None:
+            ema_yaw, ema_pitch = cam_yaw, cam_pitch
+        else:
+            ema_yaw   = EMA_ALPHA * cam_yaw   + (1 - EMA_ALPHA) * ema_yaw
+            ema_pitch = EMA_ALPHA * cam_pitch + (1 - EMA_ALPHA) * ema_pitch
+
         frame_record["detections"] = [
             {"yaw": d[0], "pitch": d[1], "conf": d[2]} for d in deduped_balls
         ]
-        frame_record["smoothed"]   = {"yaw": round(cam_yaw, 2), "pitch": round(cam_pitch, 2)}
+        frame_record["smoothed"]   = {"yaw": round(ema_yaw, 2), "pitch": round(ema_pitch, 2)}
         frame_record["loss_state"] = loss_state
         tracking_data.append(frame_record)
 
         # ---- Render ----
-        render_yaw = cam_yaw + LEAD_DEG
+        render_yaw = ema_yaw + LEAD_DEG
         out_frame  = render_virtual_cam_frame(
-            frame, render_yaw, cam_pitch, OUTPUT_FOV_DEG, OUTPUT_W, OUTPUT_H)
+            frame, render_yaw, ema_pitch, OUTPUT_FOV_DEG, OUTPUT_W, OUTPUT_H)
         ffmpeg_writer.stdin.write(out_frame.tobytes())
 
         frame_idx += 1
         if frame_idx % 100 == 0:
             print(f"[tracker] frame {frame_idx}/{total_frames} | "
-                  f"yaw={cam_yaw:.1f}° pitch={cam_pitch:.1f}° | {loss_state}")
+                  f"ema_yaw={ema_yaw:.1f}° ema_pitch={ema_pitch:.1f}° | {loss_state}")
 
     cap.release()
     ffmpeg_writer.stdin.close()
@@ -452,7 +439,7 @@ if __name__ == "__main__":
     parser.add_argument("--json",          default="tracking.json")
     parser.add_argument("--trim-start",    type=int, default=120)
     parser.add_argument("--trim-duration", type=int, default=120)
-    parser.add_argument("--model",         default="yolov8n.pt")
+    parser.add_argument("--model",         default="yolov8s.pt")  # v3: upgraded from nano
     args = parser.parse_args()
 
     run_tracker(
