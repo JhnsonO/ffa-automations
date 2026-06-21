@@ -1,40 +1,29 @@
 #!/usr/bin/env python3
 """
-FFA 360 Ball Tracker — v6 (Data Association)
+FFA 360 Ball Tracker — v8 (Kalman Init Fix)
 =============================================
 Input:  equirect_trim.mp4
 Output: tracking.json  (always)
         tracked.mp4    (only if --metrics-only is NOT set)
 
-v5 result: 99.86% raw detection, 99.83% confirmed — detector is solved.
-Problem:   mean 3.58 candidates/frame, gate fired only once (runs after loss only).
-           Camera snapped chaotically between ~3 equally-confident "ball" candidates.
+v7 diagnosis: hard angular cap (MAX_FRAME_DELTA_DEG) is the wrong discriminator.
+  - Raw candidate delta p50=76°, p90=139° — real ball detections are genuinely
+    far from the Kalman prediction because the Kalman was poisoned at frame 1.
+  - Tracker initialises from the first accepted candidate. If that's junk, every
+    subsequent real detection looks geometrically distant → cap rejects them →
+    tracker locks onto junk indefinitely.
 
-v6 fix: DATA ASSOCIATION via per-frame candidate scoring.
-  Every frame with candidates:
-    1. Predict next ball position from Kalman state.
-    2. Score every deduped candidate:
-         score = w_conf    * conf_score
-               + w_pos     * position_score   (Mahalanobis vs Kalman prediction)
-               + w_size    * size_score        (vs rolling median box area)
-               + w_motion  * motion_score      (vs recent velocity)
-               + w_edge    * edge_penalty      (penalise near crop boundary)
-    3. Accept only the best candidate IF it clears MIN_CANDIDATE_SCORE.
-    4. Apply hard cap: reject if yaw/pitch delta > MAX_FRAME_DELTA_DEG.
-    5. Apply hysteresis: only switch candidate if new score is materially
-       better than incumbent (HYSTERESIS_MARGIN).
-    6. Otherwise: treat as miss, fall through to extrapolate/hold logic.
-
-Instrumentation additions vs v5:
-  continuous_gate_rejected_count  — candidates scored but below threshold
-  candidate_switch_count          — times best candidate diverged from incumbent
-  mean_best_candidate_score       — average score of accepted candidates
-  rejection_reason_counts         — breakdown: low_score / hard_cap / hysteresis
-  All written to tracking.json["metadata"]["association_metrics"]
+v8 fixes:
+  1. REMOVE MAX_FRAME_DELTA_DEG entirely. Mahalanobis handles temporal gating.
+  2. TRACKLET WARM-UP: collect KALMAN_INIT_FRAMES=5 frames before committing
+     Kalman state. Build candidate tracklets across those frames using spherical
+     distance + size similarity + confidence. Initialise from the strongest chain.
+  3. STATE MACHINE: UNINITIALIZED → WARMING_UP → TRACKING → UNCERTAIN → LOST
+  4. NumPy deprecation fixes: kf.x[N] → kf.x[N, 0] throughout.
+  5. Extended diagnostics in tracking.json.
 
 --metrics-only flag:
-  Skips render entirely. Produces tracking.json only. ~5x faster.
-  Use for all association logic experiments. Render only when association looks stable.
+  Skips render. Produces tracking.json only. ~5x faster. Use for all experiments.
 """
 
 import argparse
@@ -68,20 +57,30 @@ OUTPUT_FOV_DEG   = 90
 LEAD_DEG         = 3.0
 
 # ---------------------------------------------------------------------------
-# Config — candidate scoring weights
+# Config — candidate scoring weights (unchanged from v6)
 # ---------------------------------------------------------------------------
-W_CONF   = 0.25   # raw detection confidence
-W_POS    = 0.35   # predicted-position consistency (Mahalanobis-based)
-W_SIZE   = 0.20   # size consistency vs rolling median
-W_MOTION = 0.10   # short-term motion consistency
-W_EDGE   = 0.10   # crop-edge penalty (inverted — close to edge = lower score)
+W_CONF   = 0.25
+W_POS    = 0.35
+W_SIZE   = 0.20
+W_MOTION = 0.10
+W_EDGE   = 0.10
 
-MIN_CANDIDATE_SCORE   = 0.35   # below this → treat as miss
-MAX_FRAME_DELTA_DEG   = 35.0   # hard cap: reject if yaw/pitch jumps > this
-HYSTERESIS_MARGIN     = 0.08   # only switch incumbent if new score is this much better
-MAHAL_SOFT_THRESH     = 4.0    # normal Mahalanobis accept
-MAHAL_FAST_THRESH     = 8.0    # looser thresh when ball is moving fast
-FAST_MOVEMENT_DEG     = 5.0    # velocity above which we use the looser Mahal thresh
+MIN_CANDIDATE_SCORE   = 0.35
+# MAX_FRAME_DELTA_DEG removed in v8 — Mahalanobis handles temporal gating
+HYSTERESIS_MARGIN     = 0.08
+MAHAL_SOFT_THRESH     = 4.0
+MAHAL_FAST_THRESH     = 8.0
+FAST_MOVEMENT_DEG     = 5.0
+
+# ---------------------------------------------------------------------------
+# Config — v8 warm-up / state machine
+# ---------------------------------------------------------------------------
+KALMAN_INIT_FRAMES       = 5     # collect this many frames before committing Kalman
+WARMUP_MIN_CHAIN_LEN     = 3     # minimum tracklet length to consider valid
+WARMUP_SIZE_RATIO_THRESH = 0.3   # max log-ratio difference for size consistency
+WARMUP_DIST_THRESH_DEG   = 18.0  # max spherical distance between consecutive frames in chain
+UNCERTAIN_STREAK         = 3     # frames with score < UNCERTAIN_SCORE_THRESH → UNCERTAIN
+UNCERTAIN_SCORE_THRESH   = 0.50
 
 # ---------------------------------------------------------------------------
 # Config — loss handling (unchanged from v4/v5)
@@ -94,9 +93,18 @@ BALL_SIZE_HISTORY        = 30
 EMA_ALPHA_TRACKING      = 0.18
 EMA_ALPHA_LOSS          = 0.08
 MAX_EXTRAP_VELOCITY_DEG = 3.0
+EDGE_PENALTY_ZONE       = 80
 
-# Crop-edge penalty zone (pixels from edge)
-EDGE_PENALTY_ZONE = 80
+
+# ---------------------------------------------------------------------------
+# State machine
+# ---------------------------------------------------------------------------
+class TrackerState:
+    UNINITIALIZED = "UNINITIALIZED"
+    WARMING_UP    = "WARMING_UP"
+    TRACKING      = "TRACKING"
+    UNCERTAIN     = "UNCERTAIN"
+    LOST          = "LOST"
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +125,7 @@ def get_device():
 
 
 # ---------------------------------------------------------------------------
-# Kalman filter (unchanged)
+# Kalman filter
 # ---------------------------------------------------------------------------
 def build_kalman():
     kf = KalmanFilter(dim_x=4, dim_z=2)
@@ -135,7 +143,7 @@ def build_kalman():
 
 
 # ---------------------------------------------------------------------------
-# Geometry (unchanged)
+# Geometry
 # ---------------------------------------------------------------------------
 def crop_pixel_to_yaw_pitch(px, py, crop_yaw_deg, fov_deg, w, h):
     nx = (px - w / 2.0) / (w / 2.0)
@@ -183,7 +191,7 @@ def player_centroid_from_detections(person_detections):
 
 
 # ---------------------------------------------------------------------------
-# Frame extraction (unchanged)
+# Frame extraction
 # ---------------------------------------------------------------------------
 def extract_crop_frame(equirect_frame, crop_yaw_deg, fov_deg, out_w, out_h):
     h_eq, w_eq = equirect_frame.shape[:2]
@@ -209,7 +217,7 @@ def extract_crop_frame(equirect_frame, crop_yaw_deg, fov_deg, out_w, out_h):
 
 
 # ---------------------------------------------------------------------------
-# Ball size tracker (unchanged)
+# Ball size tracker
 # ---------------------------------------------------------------------------
 class BallSizeTracker:
     def __init__(self, history=BALL_SIZE_HISTORY):
@@ -233,10 +241,9 @@ class BallSizeTracker:
 
 
 # ---------------------------------------------------------------------------
-# Velocity tracker (short-term motion consistency)
+# Velocity tracker
 # ---------------------------------------------------------------------------
 class VelocityTracker:
-    """Rolling mean of recent yaw/pitch deltas — used to score motion consistency."""
     def __init__(self, history=8):
         self._history = history
         self._dyaws   = []
@@ -256,42 +263,119 @@ class VelocityTracker:
 
     def motion_score(self, dyaw, dpitch):
         edy, edp = self.expected_velocity()
-        # similarity between candidate velocity and recent mean velocity
         diff = math.sqrt((dyaw - edy)**2 + (dpitch - edp)**2)
         return math.exp(-diff * 0.3)
 
 
 # ---------------------------------------------------------------------------
-# Candidate scorer
+# v8: Tracklet warm-up builder
+# ---------------------------------------------------------------------------
+def build_warmup_tracklets(warmup_frames):
+    """
+    warmup_frames: list of lists, each inner list is the deduped candidates
+    for that frame: [(yaw, pitch, conf, area), ...]
+
+    Returns (best_chain, consistency_score) where best_chain is a list of
+    (frame_idx, yaw, pitch, conf, area) tuples from the winning tracklet,
+    or (None, 0.0) if no valid chain found.
+    """
+    n = len(warmup_frames)
+    if n == 0:
+        return None, 0.0
+
+    # Each node: (frame_idx, candidate_idx, yaw, pitch, conf, area)
+    nodes = []
+    for fi, candidates in enumerate(warmup_frames):
+        for ci, (yaw, pitch, conf, area) in enumerate(candidates):
+            nodes.append((fi, ci, yaw, pitch, conf, area))
+
+    # Build chains greedily: for each node as chain start, extend forward
+    best_chain = None
+    best_score = -1.0
+
+    for start_node in nodes:
+        chain = [start_node]
+        for fi in range(start_node[0] + 1, n):
+            last = chain[-1]
+            best_next = None
+            best_link_score = -1.0
+            for candidate in warmup_frames[fi]:
+                yaw, pitch, conf, area = candidate
+                dist = angular_distance(last[2], last[3], yaw, pitch)
+                if dist > WARMUP_DIST_THRESH_DEG:
+                    continue
+                # Size consistency
+                if last[5] > 0 and area > 0:
+                    size_ratio = abs(math.log(area / last[5]))
+                    if size_ratio > WARMUP_SIZE_RATIO_THRESH * 3:
+                        continue
+                    size_sim = math.exp(-size_ratio * 2)
+                else:
+                    size_sim = 0.5
+                # Link score: confidence + proximity + size similarity
+                prox_score = max(0.0, 1.0 - dist / WARMUP_DIST_THRESH_DEG)
+                link_score = 0.4 * conf + 0.4 * prox_score + 0.2 * size_sim
+                if link_score > best_link_score:
+                    best_link_score = link_score
+                    best_next = (fi, 0, yaw, pitch, conf, area)
+
+            if best_next is not None:
+                chain.append(best_next)
+
+        if len(chain) < WARMUP_MIN_CHAIN_LEN:
+            continue
+
+        # Score the chain
+        frame_coverage = len(chain) / n
+        mean_conf = sum(c[4] for c in chain) / len(chain)
+        # Size consistency across chain
+        areas = [c[5] for c in chain if c[5] > 0]
+        if len(areas) >= 2:
+            log_areas = [math.log(a) for a in areas]
+            size_consistency = math.exp(-float(np.std(log_areas)))
+        else:
+            size_consistency = 0.5
+        # Motion smoothness: variance of frame-to-frame angular deltas
+        if len(chain) >= 2:
+            deltas = [angular_distance(chain[i][2], chain[i][3],
+                                       chain[i+1][2], chain[i+1][3])
+                      for i in range(len(chain)-1)]
+            smoothness = math.exp(-float(np.std(deltas)) * 0.1)
+        else:
+            smoothness = 0.5
+
+        chain_score = (0.35 * mean_conf +
+                       0.25 * frame_coverage +
+                       0.20 * size_consistency +
+                       0.20 * smoothness)
+
+        if chain_score > best_score:
+            best_score = chain_score
+            best_chain = chain
+
+    return best_chain, best_score
+
+
+# ---------------------------------------------------------------------------
+# Candidate scorer — v8: no hard cap
 # ---------------------------------------------------------------------------
 def score_candidate(candidate, kf, kf_initialised, ball_size_tracker, vel_tracker,
-                    prev_yaw, prev_pitch, crop_yaw_deg):
+                    last_yaw, last_pitch, crop_yaw_deg, tracker_state):
     """
-    Returns (total_score, component_dict, rejection_reason_or_None).
-    rejection_reason is set only for hard rejects (hard_cap).
-    Score below MIN_CANDIDATE_SCORE is a soft reject — caller decides.
+    Returns (total_score, component_dict).
+    No hard rejects in v8 — Mahalanobis handles temporal discrimination.
     """
-    yaw, pitch, conf, area, px, py = candidate  # px/py = pixel coords in crop
+    yaw, pitch, conf, area, px, py = candidate
 
     components = {}
-
-    # 1. Confidence score (normalised — model outputs 0.12–1.0 range)
     components["conf"] = float(conf)
 
-    # 2. Position consistency vs Kalman prediction
-    if kf_initialised:
-        pred_yaw   = float(kf.x[0])
-        pred_pitch = float(kf.x[1])
-        vel_mag    = math.sqrt(float(kf.x[2])**2 + float(kf.x[3])**2)
+    # Position consistency vs Kalman prediction
+    if kf_initialised and tracker_state in (TrackerState.TRACKING, TrackerState.UNCERTAIN):
+        pred_yaw   = float(kf.x[0, 0])
+        pred_pitch = float(kf.x[1, 0])
+        vel_mag    = math.sqrt(float(kf.x[2, 0])**2 + float(kf.x[3, 0])**2)
 
-        # Hard cap: reject outright if delta exceeds MAX_FRAME_DELTA_DEG
-        delta = angular_distance(yaw, pitch, pred_yaw, pred_pitch)
-        # delta is returned so caller can log it before rejection
-        components["_raw_delta_deg"] = delta
-        if delta > MAX_FRAME_DELTA_DEG:
-            return 0.0, components, "hard_cap"
-
-        # Mahalanobis — looser when ball is moving fast
         mahal_thresh = MAHAL_FAST_THRESH if vel_mag > FAST_MOVEMENT_DEG else MAHAL_SOFT_THRESH
         z     = np.array([[yaw], [pitch]])
         innov = z - kf.H @ kf.x
@@ -300,21 +384,20 @@ def score_candidate(candidate, kf, kf_initialised, ball_size_tracker, vel_tracke
             mahal = float(np.sqrt(innov.T @ np.linalg.inv(S) @ innov))
         except np.linalg.LinAlgError:
             mahal = 0.0
-        # Convert to 0-1 score (lower Mahal = better)
-        components["pos"] = max(0.0, 1.0 - mahal / (mahal_thresh * 2))
+        components["pos"]    = max(0.0, 1.0 - mahal / (mahal_thresh * 2))
+        components["_mahal"] = mahal
 
-        # Motion consistency
-        dyaw   = yaw   - prev_yaw
-        dpitch = pitch - prev_pitch
+        dyaw   = yaw   - last_yaw
+        dpitch = pitch - last_pitch
         components["motion"] = vel_tracker.motion_score(dyaw, dpitch)
     else:
+        # Warming up or uninitialised: position and motion scores are neutral
         components["pos"]    = 1.0
         components["motion"] = 1.0
+        components["_mahal"] = 0.0
 
-    # 3. Size consistency
     components["size"] = ball_size_tracker.size_score(area) if area else 1.0
 
-    # 4. Crop-edge penalty (candidates near crop edges are often seam artefacts)
     edge_dist = min(px, CROP_W - px, py, CROP_H - py)
     edge_score = min(1.0, edge_dist / EDGE_PENALTY_ZONE)
     components["edge"] = edge_score
@@ -325,7 +408,7 @@ def score_candidate(candidate, kf, kf_initialised, ball_size_tracker, vel_tracke
              W_MOTION * components["motion"] +
              W_EDGE   * components["edge"])
 
-    return total, components, None
+    return total, components
 
 
 # ---------------------------------------------------------------------------
@@ -347,16 +430,16 @@ def run_tracker(equirect_path, output_path, json_path,
     person_model.to(device)
 
     print("=" * 70)
-    print("[v6 DATA ASSOCIATION]")
+    print("[v8 KALMAN INIT FIX — tracklet warm-up, state machine, no hard cap]")
     print(f"  ball_model    : {ball_model_path}  names={ball_model.names}")
-    print(f"  person_model  : {person_model_path}")
     print(f"  device        : {device}")
     print(f"  crop res      : {CROP_W}x{CROP_H}  fov={CROP_FOV_DEG}  yaws={CROP_YAWS_DEG}")
     print(f"  imgsz         : {YOLO_IMGSZ}   conf={YOLO_CONF}")
     print(f"  metrics_only  : {metrics_only}")
+    print(f"  kalman_init   : {KALMAN_INIT_FRAMES} frames, min chain {WARMUP_MIN_CHAIN_LEN}")
     print(f"  scoring       : conf={W_CONF} pos={W_POS} size={W_SIZE} motion={W_MOTION} edge={W_EDGE}")
     print(f"  min_score     : {MIN_CANDIDATE_SCORE}   hysteresis={HYSTERESIS_MARGIN}")
-    print(f"  hard_cap_deg  : {MAX_FRAME_DELTA_DEG}")
+    print(f"  hard_cap      : REMOVED (v8)")
     print("=" * 70)
 
     cap = cv2.VideoCapture(equirect_path)
@@ -382,11 +465,24 @@ def run_tracker(equirect_path, output_path, json_path,
 
     kf             = build_kalman()
     kf_initialised = False
+    tracker_state  = TrackerState.UNINITIALIZED
+
+    # Warm-up buffer: list of per-frame candidate lists
+    warmup_buffer  = []   # each entry: [(yaw, pitch, conf, area), ...]
+    # v8 diagnostics
+    kalman_init_frame       = None
+    warmup_candidate_count  = 0
+    warmup_consistency_score = 0.0
+    reinitialisation_count  = 0
+    state_transition_counts = {s: 0 for s in [
+        TrackerState.WARMING_UP, TrackerState.TRACKING,
+        TrackerState.UNCERTAIN, TrackerState.LOST]}
 
     frames_since_detection     = 0
     confirmed_yaw, confirmed_pitch = 0.0, 0.0
     prev_loss_state_was_hold   = False
-    incumbent_yaw, incumbent_pitch = None, None   # v6: hysteresis tracking
+    incumbent_yaw, incumbent_pitch = None, None
+    uncertain_streak           = 0
 
     reacq_lerp_remaining = 0
     reacq_target_yaw     = 0.0
@@ -416,11 +512,12 @@ def run_tracker(equirect_path, output_path, json_path,
         "continuous_gate_rejected":    0,
         "candidate_switch_count":      0,
         "rejection_reasons": {
-            "low_score": 0,
-            "hard_cap":  0,
+            "low_score":  0,
             "hysteresis": 0,
         },
-        "raw_frame_deltas_deg": [],   # v7: all candidate deltas before hard-cap
+        "mahalanobis_accepted":        [],
+        "mahalanobis_rejected":        [],
+        "large_yaw_jump_count":        0,   # yaw delta > 30° (informational only, no reject)
     }
 
     frame_idx = 0
@@ -430,8 +527,8 @@ def run_tracker(equirect_path, output_path, json_path,
             break
 
         # ---- Detection ----
-        raw_ball_detections  = []   # (yaw, pitch, conf, area, px, py, crop_yaw)
-        person_detections    = []
+        raw_ball_detections = []
+        person_detections   = []
 
         for crop_yaw in CROP_YAWS_DEG:
             crop = extract_crop_frame(frame, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
@@ -440,9 +537,9 @@ def run_tracker(equirect_path, output_path, json_path,
                                   verbose=False, classes=[BALL_CLASS_ID], device=device)
             for box in ball_res[0].boxes:
                 x1, y1, x2, y2 = [float(v) for v in box.xyxy[0]]
-                px, py   = (x1 + x2) / 2, (y1 + y2) / 2
-                conf     = float(box.conf[0])
-                area     = (x2 - x1) * (y2 - y1)
+                px, py = (x1 + x2) / 2, (y1 + y2) / 2
+                conf   = float(box.conf[0])
+                area   = (x2 - x1) * (y2 - y1)
                 yaw_d, pitch_d = crop_pixel_to_yaw_pitch(
                     px, py, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
                 raw_ball_detections.append((yaw_d, pitch_d, conf, area, px, py, crop_yaw))
@@ -453,13 +550,12 @@ def run_tracker(equirect_path, output_path, json_path,
                                       verbose=False, classes=[PERSON_CLASS_ID], device=device)
             for box in person_res[0].boxes:
                 x1, y1, x2, y2 = [float(v) for v in box.xyxy[0]]
-                px, py   = (x1 + x2) / 2, (y1 + y2) / 2
-                conf     = float(box.conf[0])
+                px, py = (x1 + x2) / 2, (y1 + y2) / 2
+                conf   = float(box.conf[0])
                 yaw_d, pitch_d = crop_pixel_to_yaw_pitch(
                     px, py, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
                 person_detections.append((yaw_d, pitch_d, conf))
 
-        # Dedupe on sphere coords (use first 3 fields)
         deduped_balls   = dedupe_detections(
             [(d[0], d[1], d[2]) for d in raw_ball_detections])
         deduped_persons = dedupe_detections(person_detections)
@@ -470,102 +566,200 @@ def run_tracker(equirect_path, output_path, json_path,
         if raw_ball_detections:
             instr["frames_with_raw_ball"] += 1
 
-        # ---- v6: Candidate scoring (runs EVERY frame with detections) ----
-        # Build full candidate list with pixel coords for edge penalty
-        # Match deduped spherical coords back to raw detections for area/px/py
+        # Helper: match deduped coords back to raw for area/px/py
         def find_raw(yaw, pitch):
             best, best_d = None, 999
             for r in raw_ball_detections:
                 d = angular_distance(yaw, pitch, r[0], r[1])
                 if d < best_d:
                     best_d, best = d, r
-            return best  # (yaw, pitch, conf, area, px, py, crop_yaw)
+            return best
 
-        best_candidate   = None
-        best_score       = -1.0
-        frame_record     = {"frame": frame_idx, "detections": [],
-                            "smoothed": None, "loss_state": None,
-                            "best_score": None, "rejection_reason": None}
+        frame_record = {
+            "frame": frame_idx, "detections": [],
+            "smoothed": None, "loss_state": None,
+            "tracker_state": None, "best_score": None,
+        }
 
-        if kf_initialised:
-            kf.predict()
+        # ================================================================
+        # STATE: UNINITIALIZED / WARMING_UP
+        # ================================================================
+        if tracker_state in (TrackerState.UNINITIALIZED, TrackerState.WARMING_UP):
 
-        for yaw_d, pitch_d, conf_d in deduped_balls:
-            raw = find_raw(yaw_d, pitch_d)
-            if raw is None:
-                continue
-            area, px, py, crop_yaw = raw[3], raw[4], raw[5], raw[6]
-            candidate = (yaw_d, pitch_d, conf_d, area, px, py)
+            if tracker_state == TrackerState.UNINITIALIZED and deduped_balls:
+                tracker_state = TrackerState.WARMING_UP
+                state_transition_counts[TrackerState.WARMING_UP] += 1
 
-            score, components, hard_reject = score_candidate(
-                candidate, kf, kf_initialised, ball_size_tracker, vel_tracker,
-                last_yaw, last_pitch, crop_yaw)
+            if tracker_state == TrackerState.WARMING_UP:
+                # Collect this frame's candidates (yaw, pitch, conf, area)
+                frame_candidates = []
+                for yaw_d, pitch_d, conf_d in deduped_balls:
+                    raw = find_raw(yaw_d, pitch_d)
+                    if raw:
+                        frame_candidates.append((yaw_d, pitch_d, conf_d, raw[3]))
+                warmup_buffer.append(frame_candidates)
+                warmup_candidate_count += len(frame_candidates)
 
-            if "_raw_delta_deg" in components:
-                instr["raw_frame_deltas_deg"].append(components["_raw_delta_deg"])
-            if hard_reject == "hard_cap":
-                instr["rejection_reasons"]["hard_cap"] += 1
-                instr["continuous_gate_rejected"] += 1
-                continue
+                if len(warmup_buffer) >= KALMAN_INIT_FRAMES:
+                    # Build tracklets and pick winner
+                    best_chain, chain_score = build_warmup_tracklets(warmup_buffer)
 
-            if score < MIN_CANDIDATE_SCORE:
-                instr["rejection_reasons"]["low_score"] += 1
-                instr["continuous_gate_rejected"] += 1
-                continue
+                    if best_chain is not None:
+                        # Initialise Kalman from chain mean position + estimated velocity
+                        init_yaw   = sum(c[2] for c in best_chain) / len(best_chain)
+                        init_pitch = sum(c[3] for c in best_chain) / len(best_chain)
+                        if len(best_chain) >= 2:
+                            total_dyaw   = best_chain[-1][2] - best_chain[0][2]
+                            total_dpitch = best_chain[-1][3] - best_chain[0][3]
+                            n_steps = best_chain[-1][0] - best_chain[0][0]
+                            if n_steps > 0:
+                                init_dyaw   = total_dyaw   / n_steps
+                                init_dpitch = total_dpitch / n_steps
+                            else:
+                                init_dyaw, init_dpitch = 0.0, 0.0
+                        else:
+                            init_dyaw, init_dpitch = 0.0, 0.0
 
-            if score > best_score:
-                best_score, best_candidate = score, candidate
+                        kf.x = np.array([[init_yaw], [init_pitch],
+                                          [init_dyaw], [init_dpitch]])
+                        kf_initialised = True
+                        kalman_init_frame = frame_idx
+                        warmup_consistency_score = chain_score
+                        confirmed_yaw, confirmed_pitch = init_yaw, init_pitch
+                        incumbent_yaw, incumbent_pitch = init_yaw, init_pitch
+                        cam_yaw, cam_pitch = init_yaw, init_pitch
 
-        ball_seen_this_frame = False
-        if best_candidate is not None:
-            yaw_meas, pitch_meas, conf_meas, area_meas = best_candidate[:4]
+                        # Seed size tracker from chain
+                        for c in best_chain:
+                            if c[5] > 0:
+                                ball_size_tracker.update(c[5])
 
-            # Hysteresis: only switch if materially better than incumbent
-            if (incumbent_yaw is not None and
-                    angular_distance(yaw_meas, pitch_meas, incumbent_yaw, incumbent_pitch) > DEDUP_THRESH_DEG):
-                # This is a candidate switch
-                if best_score < (instr["best_candidate_scores"][-1]
-                                 if instr["best_candidate_scores"] else 0) + HYSTERESIS_MARGIN:
-                    instr["rejection_reasons"]["hysteresis"] += 1
+                        tracker_state = TrackerState.TRACKING
+                        state_transition_counts[TrackerState.TRACKING] += 1
+                        frames_since_detection = 0
+                        print(f"[v8] Kalman initialised at frame {frame_idx} "
+                              f"from chain len={len(best_chain)} score={chain_score:.3f} "
+                              f"init_pos=({init_yaw:.1f}°, {init_pitch:.1f}°)")
+                    else:
+                        # No valid chain — reset buffer and try again
+                        print(f"[v8] Warm-up failed at frame {frame_idx} "
+                              f"(no chain ≥{WARMUP_MIN_CHAIN_LEN} frames) — resetting buffer")
+                        warmup_buffer = []
+                        reinitialisation_count += 1
+
+            ball_seen_this_frame = False
+            best_candidate = None
+            best_score = 0.0
+
+        # ================================================================
+        # STATE: TRACKING / UNCERTAIN
+        # ================================================================
+        else:
+            if kf_initialised:
+                kf.predict()
+
+            best_candidate = None
+            best_score     = -1.0
+            ball_seen_this_frame = False
+
+            for yaw_d, pitch_d, conf_d in deduped_balls:
+                raw = find_raw(yaw_d, pitch_d)
+                if raw is None:
+                    continue
+                area, px, py = raw[3], raw[4], raw[5]
+                candidate = (yaw_d, pitch_d, conf_d, area, px, py)
+
+                score, components = score_candidate(
+                    candidate, kf, kf_initialised, ball_size_tracker, vel_tracker,
+                    last_yaw, last_pitch, raw[6], tracker_state)
+
+                mahal = components.get("_mahal", 0.0)
+
+                # Large yaw jump counter (informational — no reject)
+                if abs(yaw_d - last_yaw) > 30.0:
+                    instr["large_yaw_jump_count"] += 1
+
+                if score < MIN_CANDIDATE_SCORE:
+                    instr["rejection_reasons"]["low_score"] += 1
                     instr["continuous_gate_rejected"] += 1
-                    best_candidate = None
-                else:
-                    instr["candidate_switch_count"] += 1
+                    instr["mahalanobis_rejected"].append(mahal)
+                    continue
 
-        if best_candidate is not None:
-            yaw_meas, pitch_meas, conf_meas, area_meas = best_candidate[:4]
-            ball_seen_this_frame = True
-            instr["best_candidate_scores"].append(best_score)
-            instr["frames_confirmed_ball"] += 1
-            instr["accepted_size_scores"].append(ball_size_tracker.size_score(area_meas))
+                instr["mahalanobis_accepted"].append(mahal)
+                if score > best_score:
+                    best_score, best_candidate = score, candidate
 
-            if not kf_initialised:
-                kf.x = np.array([[yaw_meas], [pitch_meas], [0.], [0.]])
-                kf_initialised = True
-                cam_yaw, cam_pitch = yaw_meas, pitch_meas
-                incumbent_yaw, incumbent_pitch = yaw_meas, pitch_meas
-            else:
-                # Update velocity tracker before Kalman update
-                vel_tracker.update(yaw_meas - float(kf.x[0]),
-                                   pitch_meas - float(kf.x[1]))
+            # Hysteresis
+            if best_candidate is not None:
+                yaw_meas, pitch_meas = best_candidate[0], best_candidate[1]
+                if (incumbent_yaw is not None and
+                        angular_distance(yaw_meas, pitch_meas,
+                                         incumbent_yaw, incumbent_pitch) > DEDUP_THRESH_DEG):
+                    prev_best = instr["best_candidate_scores"][-1] if instr["best_candidate_scores"] else 0
+                    if best_score < prev_best + HYSTERESIS_MARGIN:
+                        instr["rejection_reasons"]["hysteresis"] += 1
+                        instr["continuous_gate_rejected"] += 1
+                        best_candidate = None
+                    else:
+                        instr["candidate_switch_count"] += 1
+
+            if best_candidate is not None:
+                yaw_meas, pitch_meas, conf_meas, area_meas = best_candidate[:4]
+                ball_seen_this_frame = True
+                instr["best_candidate_scores"].append(best_score)
+                instr["frames_confirmed_ball"] += 1
+                instr["accepted_size_scores"].append(ball_size_tracker.size_score(area_meas))
+
+                vel_tracker.update(yaw_meas - float(kf.x[0, 0]),
+                                   pitch_meas - float(kf.x[1, 0]))
                 kf.update(np.array([[yaw_meas], [pitch_meas]]))
 
-            ball_size_tracker.update(area_meas)
-            confirmed_yaw, confirmed_pitch = float(kf.x[0]), float(kf.x[1])
-            incumbent_yaw, incumbent_pitch = yaw_meas, pitch_meas
-            frames_since_detection       = 0
-            prev_loss_state_was_hold     = False
+                ball_size_tracker.update(area_meas)
+                confirmed_yaw, confirmed_pitch = float(kf.x[0, 0]), float(kf.x[1, 0])
+                incumbent_yaw, incumbent_pitch = yaw_meas, pitch_meas
+                frames_since_detection = 0
+                prev_loss_state_was_hold = False
 
-            frame_record["best_score"] = round(best_score, 3)
-        else:
-            # No acceptable candidate — miss
-            frames_since_detection += 1
-            # kf.predict() already called above
+                # State transitions
+                uncertain_streak = 0
+                if tracker_state == TrackerState.UNCERTAIN:
+                    tracker_state = TrackerState.TRACKING
+                    state_transition_counts[TrackerState.TRACKING] += 1
+                elif tracker_state == TrackerState.LOST:
+                    tracker_state = TrackerState.TRACKING
+                    state_transition_counts[TrackerState.TRACKING] += 1
+                    reinitialisation_count += 1
 
-        # ---- Camera target (unchanged loss logic from v4) ----
-        if not kf_initialised:
+                frame_record["best_score"] = round(best_score, 3)
+
+            else:
+                frames_since_detection += 1
+                if best_score > 0 and best_score < UNCERTAIN_SCORE_THRESH:
+                    uncertain_streak += 1
+                else:
+                    uncertain_streak = 0
+
+                # State transitions
+                if frames_since_detection > LOSS_EXTRAPOLATE_FRAMES + LOSS_HOLD_FRAMES:
+                    if tracker_state != TrackerState.LOST:
+                        tracker_state = TrackerState.LOST
+                        state_transition_counts[TrackerState.LOST] += 1
+                elif uncertain_streak >= UNCERTAIN_STREAK:
+                    if tracker_state == TrackerState.TRACKING:
+                        tracker_state = TrackerState.UNCERTAIN
+                        state_transition_counts[TrackerState.UNCERTAIN] += 1
+
+        # ================================================================
+        # Camera target — unchanged loss logic
+        # ================================================================
+        if not kf_initialised or tracker_state == TrackerState.UNINITIALIZED:
             target_yaw, target_pitch = last_yaw, last_pitch
             loss_state = "uninitialised"
+            ema_alpha  = EMA_ALPHA_LOSS
+
+        elif tracker_state == TrackerState.WARMING_UP:
+            target_yaw, target_pitch = last_yaw, last_pitch
+            loss_state = f"warming_up ({len(warmup_buffer)}/{KALMAN_INIT_FRAMES})"
             ema_alpha  = EMA_ALPHA_LOSS
 
         elif frames_since_detection == 0:
@@ -576,11 +770,11 @@ def run_tracker(equirect_path, output_path, json_path,
 
         elif frames_since_detection <= LOSS_EXTRAPOLATE_FRAMES:
             if prev_loss_state_was_hold:
-                kf.x[2] = 0.0
-                kf.x[3] = 0.0
+                kf.x[2, 0] = 0.0
+                kf.x[3, 0] = 0.0
                 prev_loss_state_was_hold = False
-            raw_yaw   = float(kf.x[0])
-            raw_pitch = float(kf.x[1])
+            raw_yaw   = float(kf.x[0, 0])
+            raw_pitch = float(kf.x[1, 0])
             if cam_yaw is not None:
                 delta_yaw   = raw_yaw   - cam_yaw
                 delta_pitch = raw_pitch - cam_pitch
@@ -630,10 +824,11 @@ def run_tracker(equirect_path, output_path, json_path,
             ema_yaw   = ema_alpha * cam_yaw   + (1 - ema_alpha) * ema_yaw
             ema_pitch = ema_alpha * cam_pitch + (1 - ema_alpha) * ema_pitch
 
-        frame_record["detections"] = [
-            {"yaw": d[0], "pitch": d[1], "conf": d[2]} for d in deduped_balls]
-        frame_record["smoothed"]   = {"yaw": round(ema_yaw, 2), "pitch": round(ema_pitch, 2)}
-        frame_record["loss_state"] = loss_state
+        frame_record["detections"]    = [{"yaw": d[0], "pitch": d[1], "conf": d[2]}
+                                          for d in deduped_balls]
+        frame_record["smoothed"]      = {"yaw": round(ema_yaw, 2), "pitch": round(ema_pitch, 2)}
+        frame_record["loss_state"]    = loss_state
+        frame_record["tracker_state"] = tracker_state
         tracking_data.append(frame_record)
 
         if not metrics_only and ffmpeg_writer:
@@ -645,7 +840,7 @@ def run_tracker(equirect_path, output_path, json_path,
         if frame_idx % 200 == 0:
             cg_pct = 100 * instr["frames_confirmed_ball"] / max(instr["frames_total"], 1)
             print(f"[tracker] frame {frame_idx}/{total_frames} | "
-                  f"yaw={ema_yaw:.1f}° | {loss_state} | "
+                  f"state={tracker_state} yaw={ema_yaw:.1f}° | {loss_state} | "
                   f"confirmed={cg_pct:.1f}% gate_rej={instr['continuous_gate_rejected']}")
 
     cap.release()
@@ -658,6 +853,7 @@ def run_tracker(equirect_path, output_path, json_path,
     ft = max(instr["frames_total"], 1)
     def _median(x): return round(float(np.median(x)), 4) if x else None
     def _mean(x):   return round(float(np.mean(x)), 4)   if x else None
+    def _pct(x, p): return round(float(np.percentile(x, p)), 2) if x else None
 
     detection_metrics = {
         "frames_total":                     instr["frames_total"],
@@ -671,46 +867,58 @@ def run_tracker(equirect_path, output_path, json_path,
         "median_candidate_conf":            _median(instr["all_candidate_confs"]),
         "median_accepted_size_score":       _median(instr["accepted_size_scores"]),
     }
-    deltas = instr["raw_frame_deltas_deg"]
-    delta_percentiles = {
-        "p50": round(float(np.percentile(deltas, 50)), 2) if deltas else None,
-        "p90": round(float(np.percentile(deltas, 90)), 2) if deltas else None,
-        "p95": round(float(np.percentile(deltas, 95)), 2) if deltas else None,
-        "p99": round(float(np.percentile(deltas, 99)), 2) if deltas else None,
-    }
     association_metrics = {
-        "raw_frame_delta_deg_percentiles":  delta_percentiles,
         "continuous_gate_rejected_count":   instr["continuous_gate_rejected"],
         "candidate_switch_count":           instr["candidate_switch_count"],
         "mean_best_candidate_score":        _mean(instr["best_candidate_scores"]),
         "rejection_reason_counts":          instr["rejection_reasons"],
+        "mean_mahalanobis_accepted":        _mean(instr["mahalanobis_accepted"]),
+        "mean_mahalanobis_rejected":        _mean(instr["mahalanobis_rejected"]),
+        "large_yaw_jump_count":             instr["large_yaw_jump_count"],
         "swap_event_count":                 len(swap_events),
     }
+    v8_init_metrics = {
+        "kalman_init_frame":         kalman_init_frame,
+        "warmup_candidate_count":    warmup_candidate_count,
+        "warmup_consistency_score":  round(warmup_consistency_score, 4),
+        "reinitialisation_count":    reinitialisation_count,
+        "state_transition_counts":   state_transition_counts,
+        "frames_in_tracking":        state_transition_counts.get(TrackerState.TRACKING, 0),
+        "frames_in_uncertain":       state_transition_counts.get(TrackerState.UNCERTAIN, 0),
+        "frames_in_lost":            state_transition_counts.get(TrackerState.LOST, 0),
+    }
     metadata = {
-        "version": "v7-delta35",
+        "version": "v8",
         "metrics_only": metrics_only,
         "config": {
-            "ball_model":   ball_model_path, "ball_names": ball_model.names,
-            "person_model": person_model_path, "device": device,
+            "ball_model":           ball_model_path,
+            "ball_names":           ball_model.names,
+            "device":               device,
             "crop_w": CROP_W, "crop_h": CROP_H, "crop_fov_deg": CROP_FOV_DEG,
             "imgsz": YOLO_IMGSZ, "conf": YOLO_CONF,
             "scoring_weights": {"conf": W_CONF, "pos": W_POS, "size": W_SIZE,
                                 "motion": W_MOTION, "edge": W_EDGE},
-            "min_candidate_score": MIN_CANDIDATE_SCORE,
-            "hysteresis_margin":   HYSTERESIS_MARGIN,
-            "max_frame_delta_deg": MAX_FRAME_DELTA_DEG,
+            "min_candidate_score":   MIN_CANDIDATE_SCORE,
+            "hysteresis_margin":     HYSTERESIS_MARGIN,
+            "max_frame_delta_deg":   "REMOVED_v8",
+            "kalman_init_frames":    KALMAN_INIT_FRAMES,
+            "warmup_min_chain_len":  WARMUP_MIN_CHAIN_LEN,
         },
         "detection_metrics":   detection_metrics,
         "association_metrics": association_metrics,
+        "v8_init_metrics":     v8_init_metrics,
     }
 
     print("=" * 70)
-    print("[v6 DETECTION METRICS]")
+    print("[v8 DETECTION METRICS]")
     for k, v in detection_metrics.items():
-        print(f"  {k:40s}: {v}")
-    print("[v6 ASSOCIATION METRICS]")
+        print(f"  {k:44s}: {v}")
+    print("[v8 ASSOCIATION METRICS]")
     for k, v in association_metrics.items():
-        print(f"  {k:40s}: {v}")
+        print(f"  {k:44s}: {v}")
+    print("[v8 INIT METRICS]")
+    for k, v in v8_init_metrics.items():
+        print(f"  {k:44s}: {v}")
     print("=" * 70)
 
     with open(json_path, "w") as f:
