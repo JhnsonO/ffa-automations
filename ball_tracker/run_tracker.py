@@ -104,6 +104,15 @@ PITCH_SOFT_MAX =  10.0   # degrees — real ball rarely goes above this on a foo
 PITCH_PLAUSIBILITY_DECAY = 8.0  # degrees outside range for score to reach 0.0
 PITCH_HARD_MAX           = 18.0 # v10b: hard ceiling — candidates above this are rejected before scoring
 
+# ---------------------------------------------------------------------------
+# Config — v10c static-lock breaker
+# ---------------------------------------------------------------------------
+STATIC_LOCK_WINDOW      = 90    # frames: rolling window to measure position spread
+STATIC_LOCK_STD_MAX     = 0.4   # degrees: max std-dev of yaw OR pitch to flag static lock
+STATIC_LOCK_GRACE       = 45    # frames: confirmed-ball frames before lock can trigger (real ball can pause briefly)
+STATIC_BLACKLIST_RADIUS = 2.0   # degrees: exclusion zone around a detected static lock
+STATIC_BLACKLIST_FRAMES = 300   # frames: how long the blacklist entry persists
+
 
 # ---------------------------------------------------------------------------
 # State machine
@@ -538,6 +547,15 @@ def run_tracker(equirect_path, output_path, json_path,
     tracking_data = []
     swap_events   = []
 
+    # v10c: static-lock breaker state
+    static_lock_yaw_history   = []   # rolling window of accepted yaw values
+    static_lock_pitch_history = []   # rolling window of accepted pitch values
+    static_lock_events        = []   # list of {start_frame, end_frame, yaw, pitch}
+    static_lock_active        = False
+    static_lock_start_frame   = None
+    static_blacklist          = []   # list of {yaw, pitch, expires_frame}
+    confirmed_ball_count      = 0    # tracks frames with confirmed ball (for grace period)
+
     # ---- Instrumentation ----
     instr = {
         "frames_total":                0,
@@ -560,6 +578,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "large_yaw_jump_count":        0,   # yaw delta > 30° (informational only, no reject)
         "accepted_pitches":            [],  # v9: pitch of every confirmed-ball frame
         "pitch_hard_rejections":       0,   # v10b: candidates above PITCH_HARD_MAX
+        "static_blacklist_hits":        0,   # v10c: candidates rejected by blacklist
     }
 
     frame_idx = 0
@@ -636,7 +655,7 @@ def run_tracker(equirect_path, output_path, json_path,
                 # Collect this frame's candidates (yaw, pitch, conf, area)
                 frame_candidates = []
                 for yaw_d, pitch_d, conf_d in deduped_balls:
-                    # v10b: hard pitch ceiling — exclude before warm-up chain building
+                    # v10b/v10c: hard pitch ceiling and blacklist — exclude before warm-up chain building
                     if pitch_d > PITCH_HARD_MAX:
                         instr["pitch_hard_rejections"] += 1
                         continue
@@ -712,8 +731,17 @@ def run_tracker(equirect_path, output_path, json_path,
                 # v10b: hard pitch ceiling — reject before scoring or Kalman update
                 if pitch_d > PITCH_HARD_MAX:
                     instr["pitch_hard_rejections"] += 1
-                    instr["rejection_reasons"]["pitch_hard_max"] = \
-                        instr["rejection_reasons"].get("pitch_hard_max", 0) + 1
+                    instr["rejection_reasons"]["pitch_hard_max"] =                         instr["rejection_reasons"].get("pitch_hard_max", 0) + 1
+                    continue
+                # v10c: blacklist check — reject candidates near a known static-lock location
+                blacklisted = False
+                for bl in static_blacklist:
+                    if bl["expires_frame"] > frame_idx and                             angular_distance(yaw_d, pitch_d, bl["yaw"], bl["pitch"]) < STATIC_BLACKLIST_RADIUS:
+                        blacklisted = True
+                        instr["static_blacklist_hits"] += 1
+                        instr["rejection_reasons"]["static_blacklist"] =                             instr["rejection_reasons"].get("static_blacklist", 0) + 1
+                        break
+                if blacklisted:
                     continue
                 raw = find_raw(yaw_d, pitch_d)
                 if raw is None:
@@ -773,6 +801,57 @@ def run_tracker(equirect_path, output_path, json_path,
                 frames_since_detection = 0
                 prev_loss_state_was_hold = False
 
+                # v10c: update static-lock rolling window
+                confirmed_ball_count += 1
+                static_lock_yaw_history.append(yaw_meas)
+                static_lock_pitch_history.append(pitch_meas)
+                if len(static_lock_yaw_history) > STATIC_LOCK_WINDOW:
+                    static_lock_yaw_history.pop(0)
+                    static_lock_pitch_history.pop(0)
+
+                # Check for static lock (only after grace period and full window)
+                if (confirmed_ball_count >= STATIC_LOCK_GRACE and
+                        len(static_lock_yaw_history) == STATIC_LOCK_WINDOW):
+                    yaw_mean = sum(static_lock_yaw_history) / STATIC_LOCK_WINDOW
+                    pitch_mean = sum(static_lock_pitch_history) / STATIC_LOCK_WINDOW
+                    yaw_std = (sum((y - yaw_mean)**2 for y in static_lock_yaw_history) / STATIC_LOCK_WINDOW) ** 0.5
+                    pitch_std = (sum((p - pitch_mean)**2 for p in static_lock_pitch_history) / STATIC_LOCK_WINDOW) ** 0.5
+                    if yaw_std < STATIC_LOCK_STD_MAX and pitch_std < STATIC_LOCK_STD_MAX:
+                        if not static_lock_active:
+                            static_lock_active = True
+                            static_lock_start_frame = frame_idx - STATIC_LOCK_WINDOW + 1
+                            lock_yaw = round(yaw_mean, 2)
+                            lock_pitch = round(pitch_mean, 2)
+                            print(f"[v10c] STATIC LOCK detected at frame {frame_idx}: "
+                                  f"yaw={lock_yaw:.2f} pitch={lock_pitch:.2f} "
+                                  f"yaw_std={yaw_std:.3f} pitch_std={pitch_std:.3f}")
+                            # Log event
+                            static_lock_events.append({
+                                "start_frame": static_lock_start_frame,
+                                "end_frame": frame_idx,
+                                "yaw": lock_yaw,
+                                "pitch": lock_pitch,
+                                "yaw_std": round(yaw_std, 4),
+                                "pitch_std": round(pitch_std, 4),
+                            })
+                            # Add to blacklist
+                            static_blacklist.append({
+                                "yaw": lock_yaw,
+                                "pitch": lock_pitch,
+                                "expires_frame": frame_idx + STATIC_BLACKLIST_FRAMES,
+                            })
+                            # Invalidate Kalman — transition to UNCERTAIN
+                            kf_initialised = False
+                            kf = build_kalman()
+                            incumbent_yaw, incumbent_pitch = None, None
+                            tracker_state = TrackerState.UNCERTAIN
+                            state_transition_counts[TrackerState.UNCERTAIN] += 1
+                            static_lock_yaw_history.clear()
+                            static_lock_pitch_history.clear()
+                            confirmed_ball_count = 0
+                    else:
+                        static_lock_active = False
+
                 # State transitions
                 uncertain_streak = 0
                 if tracker_state == TrackerState.UNCERTAIN:
@@ -801,6 +880,9 @@ def run_tracker(equirect_path, output_path, json_path,
                     if tracker_state == TrackerState.TRACKING:
                         tracker_state = TrackerState.UNCERTAIN
                         state_transition_counts[TrackerState.UNCERTAIN] += 1
+
+        # v10c: expire old blacklist entries
+        static_blacklist = [bl for bl in static_blacklist if bl["expires_frame"] > frame_idx]
 
         # ================================================================
         # Camera target — unchanged loss logic
@@ -937,6 +1019,10 @@ def run_tracker(equirect_path, output_path, json_path,
         "accepted_pitch_above_20":          sum(1 for p in instr["accepted_pitches"] if p > 20.0),
         "accepted_pitch_above_30":          sum(1 for p in instr["accepted_pitches"] if p > 30.0),
         "pitch_hard_rejection_count":       instr["pitch_hard_rejections"],  # v10b
+        # v10c: static lock breaker
+        "static_lock_event_count":          len(static_lock_events),
+        "static_lock_events":               static_lock_events,
+        "static_blacklist_hit_count":       instr["static_blacklist_hits"],
     }
     v8_init_metrics = {
         "kalman_init_frame":         kalman_init_frame,
@@ -949,7 +1035,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "frames_in_lost":            state_transition_counts.get(TrackerState.LOST, 0),
     }
     metadata = {
-        "version": "v10b",
+        "version": "v10c",
         "metrics_only": metrics_only,
         "config": {
             "ball_model":           ball_model_path,
@@ -962,6 +1048,11 @@ def run_tracker(equirect_path, output_path, json_path,
             "min_candidate_score":   MIN_CANDIDATE_SCORE,
             "hysteresis_margin":     HYSTERESIS_MARGIN,
             "pitch_hard_max":        PITCH_HARD_MAX,  # v10b
+            "static_lock_window":    STATIC_LOCK_WINDOW,   # v10c
+            "static_lock_std_max":   STATIC_LOCK_STD_MAX,  # v10c
+            "static_lock_grace":     STATIC_LOCK_GRACE,    # v10c
+            "static_blacklist_radius": STATIC_BLACKLIST_RADIUS,  # v10c
+            "static_blacklist_frames": STATIC_BLACKLIST_FRAMES,  # v10c
             "max_frame_delta_deg":   "REMOVED_v8",
             "kalman_init_frames":    KALMAN_INIT_FRAMES,
             "warmup_min_chain_len":  WARMUP_MIN_CHAIN_LEN,
