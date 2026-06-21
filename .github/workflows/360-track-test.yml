@@ -106,10 +106,15 @@ jobs:
           offers = resp.get("offers", [])
           print(f"Raw offers from API: {len(offers)}")
 
-          BAD_CPU_SUBSTRINGS = ["E5-", "E3-", "Opteron", "Xeon W3", "Xeon X5"]
+          # Whitelist high-IPC modern CPUs only (same as gopro360-upload.yml)
+          GOOD_CPU_SUBSTRINGS = [
+              "Ryzen 9 9950X", "Ryzen 9 7950X", "Ryzen 9 5950X",
+              "Ryzen 9 9900X", "Ryzen 9 7900X", "Ryzen 9 5900X",
+              "Core i9-14", "Core i9-13", "Core i9-12",
+          ]
           before = len(offers)
-          offers = [o for o in offers if not any(s in (o.get("cpu_name") or "") for s in BAD_CPU_SUBSTRINGS)]
-          print(f"After CPU filter: {len(offers)} (removed {before - len(offers)} weak CPUs)")
+          offers = [o for o in offers if any(s in (o.get("cpu_name") or "") for s in GOOD_CPU_SUBSTRINGS)]
+          print(f"After CPU whitelist: {len(offers)} fast-CPU offers (excluded {before - len(offers)} others)")
 
           if excluded:
               before = len(offers)
