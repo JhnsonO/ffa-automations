@@ -101,7 +101,7 @@ EDGE_PENALTY_ZONE       = 80
 # ---------------------------------------------------------------------------
 PITCH_SOFT_MIN = -30.0   # degrees — real ball is almost never above this pitch
 PITCH_SOFT_MAX =  10.0   # degrees — real ball rarely goes above this on a football pitch
-PITCH_PLAUSIBILITY_DECAY = 15.0  # degrees outside range for score to reach 0.0
+PITCH_PLAUSIBILITY_DECAY = 8.0  # degrees outside range for score to reach 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -933,7 +933,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "frames_in_lost":            state_transition_counts.get(TrackerState.LOST, 0),
     }
     metadata = {
-        "version": "v9",
+        "version": "v10",
         "metrics_only": metrics_only,
         "config": {
             "ball_model":           ball_model_path,
