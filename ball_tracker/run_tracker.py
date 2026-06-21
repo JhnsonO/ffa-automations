@@ -1,17 +1,36 @@
 #!/usr/bin/env python3
 """
-FFA 360 Ball Tracker — v4
-==========================
+FFA 360 Ball Tracker — v5 (Detection Baseline)
+==============================================
 Input:  equirect_trim.mp4
 Output: tracked.mp4 + tracking.json
 
-v4 changes vs v3:
-  - GPU: YOLO now runs on CUDA if available (device='cuda'), falls back to CPU
-  - Track B snap fixes:
-      1. Kalman velocity cap: max 3°/frame during extrapolation (stops racing camera)
-      2. Kalman velocity reset to zero on hold→extrapolating transition (stops stale velocity jumps)
-      3. EMA alpha drops to 0.08 during loss states (slower/smoother camera when ball missing)
-  - Model default still yolov8s; GPU makes this much faster
+v5 is a DETECTION BASELINE TEST, not a visual tweak. Three changes vs v4,
+made together because they constitute the correct detector setup:
+
+  1. Ball model: stock yolov8s.pt (COCO class 32) -> Roboflow
+     football-ball-detection.pt (single-class {0: 'ball'}).
+  2. Confidence: 0.40 -> 0.12. The detector is now biased toward RECALL;
+     the downstream motion/size gate does false-positive rejection.
+  3. Inference resolution: imgsz=1280 (was default 640). The 1280x720 crops
+     were being downscaled to 640 before inference, roughly halving ball pixels.
+
+IMPORTANT model architecture note:
+  The football model is single-class — class 0 is the BALL, not a person.
+  Stock YOLO used class 0 = person, class 32 = ball. So v5 loads TWO models:
+    - football model  -> ball detection (class 0)
+    - yolov8s.pt      -> person detection (class 0) for player-centroid fallback
+  Running only the football model would silently kill the player-drift fallback.
+
+Instrumentation (printed live + written to tracking.json["metadata"]):
+  model paths, model.names, device, crop resolution, imgsz, conf,
+  per-frame raw ball candidates, post-dedupe candidates, gate-accepted
+  candidates, confirmed-ball %, median candidate box area, median candidate
+  confidence, gate-rejection count (FP proxy), median accepted size_score.
+
+Tracker/Kalman/loss-handling logic is UNCHANGED from v4 so the comparison
+isolates detection. Compare v5 vs v4 on the same 2-min clip using
+confirmed_ball_pct and gate_rejected_count — not whether the camera "looks smoother".
 """
 
 import argparse
@@ -34,15 +53,19 @@ CROP_FOV_DEG     = 110
 CROP_W           = 1280
 CROP_H           = 720
 DEDUP_THRESH_DEG = 15
-CONF_THRESHOLD   = 0.40
-BALL_CLASS_ID    = 32
-PERSON_CLASS_ID  = 0
+
+# v5: detection baseline parameters
+YOLO_CONF        = 0.12     # was 0.40 — bias detector toward recall
+YOLO_IMGSZ       = 1280     # was default 640 — stop discarding ball pixels
+BALL_CLASS_ID    = 0        # football model: class 0 == ball
+PERSON_CLASS_ID  = 0        # yolov8s.pt: class 0 == person
+
 OUTPUT_W         = 1920
 OUTPUT_H         = 1080
 OUTPUT_FOV_DEG   = 90
 LEAD_DEG         = 3.0
 
-# Loss handling
+# Loss handling (unchanged from v4)
 LOSS_EXTRAPOLATE_FRAMES = 45
 LOSS_HOLD_FRAMES        = 90
 PLAYER_DRIFT_SPEED_DEG  = 0.5
@@ -50,12 +73,9 @@ REACQ_LERP_FRAMES       = 15
 BALL_SIZE_HISTORY        = 30
 MAHAL_ACCEPT_THRESH      = 6.0
 
-# v4: EMA — different alphas for tracking vs loss
-EMA_ALPHA_TRACKING = 0.18   # snappier when ball is found
-EMA_ALPHA_LOSS     = 0.08   # slower/smoother when ball is missing
-
-# v4: Kalman velocity cap during extrapolation
-MAX_EXTRAP_VELOCITY_DEG = 3.0   # degrees/frame max
+EMA_ALPHA_TRACKING = 0.18
+EMA_ALPHA_LOSS     = 0.08
+MAX_EXTRAP_VELOCITY_DEG = 3.0
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +96,7 @@ def get_device():
 
 
 # ---------------------------------------------------------------------------
-# Kalman filter
+# Kalman filter (unchanged from v4)
 # ---------------------------------------------------------------------------
 def build_kalman():
     kf = KalmanFilter(dim_x=4, dim_z=2)
@@ -94,9 +114,8 @@ def build_kalman():
 
 
 # ---------------------------------------------------------------------------
-# Geometry helpers
+# Geometry helpers (unchanged from v4)
 # ---------------------------------------------------------------------------
-
 def crop_pixel_to_yaw_pitch(px, py, crop_yaw_deg, fov_deg, w, h):
     nx = (px - w / 2.0) / (w / 2.0)
     ny = (py - h / 2.0) / (h / 2.0)
@@ -143,9 +162,8 @@ def player_centroid_from_detections(person_detections):
 
 
 # ---------------------------------------------------------------------------
-# Frame extraction
+# Frame extraction (unchanged from v4)
 # ---------------------------------------------------------------------------
-
 def extract_crop_frame(equirect_frame, crop_yaw_deg, fov_deg, out_w, out_h):
     h_eq, w_eq = equirect_frame.shape[:2]
     f = (out_w / 2.0) / math.tan(math.radians(fov_deg / 2.0))
@@ -170,9 +188,8 @@ def extract_crop_frame(equirect_frame, crop_yaw_deg, fov_deg, out_w, out_h):
 
 
 # ---------------------------------------------------------------------------
-# Ball size tracker
+# Ball size tracker (unchanged from v4)
 # ---------------------------------------------------------------------------
-
 class BallSizeTracker:
     def __init__(self, history=BALL_SIZE_HISTORY):
         self._sizes = []
@@ -197,17 +214,35 @@ class BallSizeTracker:
 # ---------------------------------------------------------------------------
 # Main tracking loop
 # ---------------------------------------------------------------------------
-
 def run_tracker(equirect_path, output_path, json_path,
                 trim_start=120, trim_duration=120,
-                model_path="yolov8s.pt"):
+                ball_model_path="models/football-ball-detection.pt",
+                person_model_path="yolov8s.pt"):
 
     device = get_device()
 
-    print(f"[yolo] loading {model_path} on {device}")
-    model = YOLO(model_path)
-    # Warm up model on device
-    model.to(device)
+    # ---- Load both models ----
+    print(f"[yolo] loading BALL model {ball_model_path} on {device}")
+    ball_model = YOLO(ball_model_path)
+    ball_model.to(device)
+    print(f"[yolo] ball model.names = {ball_model.names}")
+
+    print(f"[yolo] loading PERSON model {person_model_path} on {device}")
+    person_model = YOLO(person_model_path)
+    person_model.to(device)
+    print(f"[yolo] person model.names = {person_model.names}")
+
+    # ---- Detection-baseline run header ----
+    print("=" * 70)
+    print("[v5 DETECTION BASELINE]")
+    print(f"  ball_model   : {ball_model_path}  names={ball_model.names}")
+    print(f"  person_model : {person_model_path}")
+    print(f"  device       : {device}")
+    print(f"  crop res     : {CROP_W}x{CROP_H}  fov={CROP_FOV_DEG}  yaws={CROP_YAWS_DEG}")
+    print(f"  imgsz        : {YOLO_IMGSZ}")
+    print(f"  conf         : {YOLO_CONF}")
+    print(f"  ball_class   : {BALL_CLASS_ID}  person_class : {PERSON_CLASS_ID}")
+    print("=" * 70)
 
     cap = cv2.VideoCapture(equirect_path)
     fps          = cap.get(cv2.CAP_PROP_FPS)
@@ -236,7 +271,7 @@ def run_tracker(equirect_path, output_path, json_path,
     frames_since_detection = 0
     confirmed_yaw   = 0.0
     confirmed_pitch = 0.0
-    prev_loss_state_was_hold = False   # v4: track hold→extrap transition
+    prev_loss_state_was_hold = False
 
     reacq_lerp_remaining = 0
     reacq_target_yaw     = 0.0
@@ -244,13 +279,25 @@ def run_tracker(equirect_path, output_path, json_path,
 
     ema_yaw   = None
     ema_pitch = None
-
     cam_yaw   = 0.0
     cam_pitch = 0.0
 
     ball_size_tracker = BallSizeTracker()
     tracking_data = []
     swap_events   = []
+
+    # ---- Instrumentation accumulators ----
+    instr = {
+        "frames_total":            0,
+        "frames_with_raw_ball":    0,   # >=1 raw ball candidate before dedupe
+        "frames_confirmed_ball":   0,   # ball accepted into tracker this frame
+        "raw_ball_candidates":     [],  # per-frame count
+        "deduped_ball_candidates": [],  # per-frame count
+        "all_candidate_areas":     [],  # box areas of every raw ball candidate
+        "all_candidate_confs":     [],  # confs of every raw ball candidate
+        "accepted_size_scores":    [],  # size_score of gate-accepted balls
+        "gate_rejected_count":     0,   # detections rejected by motion/size gate (FP proxy)
+    }
 
     frame_idx = 0
     while True:
@@ -264,28 +311,44 @@ def run_tracker(equirect_path, output_path, json_path,
 
         for crop_yaw in CROP_YAWS_DEG:
             crop = extract_crop_frame(frame, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
-            results = model(crop, verbose=False, conf=CONF_THRESHOLD,
-                            classes=[BALL_CLASS_ID, PERSON_CLASS_ID],
-                            device=device)
-            for box in results[0].boxes:
-                cls  = int(box.cls[0])
+
+            # Ball: football-specific model, recall-biased
+            ball_res = ball_model(crop, imgsz=YOLO_IMGSZ, conf=YOLO_CONF,
+                                  verbose=False, classes=[BALL_CLASS_ID], device=device)
+            for box in ball_res[0].boxes:
+                cx   = float((box.xyxy[0][0] + box.xyxy[0][2]) / 2)
+                cy_  = float((box.xyxy[0][1] + box.xyxy[0][3]) / 2)
+                conf = float(box.conf[0])
+                w_box = float(box.xyxy[0][2] - box.xyxy[0][0])
+                h_box = float(box.xyxy[0][3] - box.xyxy[0][1])
+                yaw_d, pitch_d = crop_pixel_to_yaw_pitch(
+                    cx, cy_, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
+                ball_detections.append((yaw_d, pitch_d, conf, w_box * h_box))
+                instr["all_candidate_areas"].append(w_box * h_box)
+                instr["all_candidate_confs"].append(conf)
+
+            # Person: stock YOLOv8s for player-centroid fallback
+            person_res = person_model(crop, imgsz=YOLO_IMGSZ, conf=0.40,
+                                      verbose=False, classes=[PERSON_CLASS_ID], device=device)
+            for box in person_res[0].boxes:
                 cx   = float((box.xyxy[0][0] + box.xyxy[0][2]) / 2)
                 cy_  = float((box.xyxy[0][1] + box.xyxy[0][3]) / 2)
                 conf = float(box.conf[0])
                 yaw_d, pitch_d = crop_pixel_to_yaw_pitch(
                     cx, cy_, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
-                if cls == BALL_CLASS_ID:
-                    w_box = float(box.xyxy[0][2] - box.xyxy[0][0])
-                    h_box = float(box.xyxy[0][3] - box.xyxy[0][1])
-                    ball_detections.append((yaw_d, pitch_d, conf, w_box * h_box))
-                elif cls == PERSON_CLASS_ID:
-                    person_detections.append((yaw_d, pitch_d, conf))
+                person_detections.append((yaw_d, pitch_d, conf))
 
         deduped_balls   = dedupe_detections([(d[0], d[1], d[2]) for d in ball_detections])
         deduped_persons = dedupe_detections(person_detections)
 
-        frame_record = {"frame": frame_idx, "detections": [], "smoothed": None, "loss_state": None}
+        # ---- Per-frame instrumentation ----
+        instr["frames_total"]            += 1
+        instr["raw_ball_candidates"].append(len(ball_detections))
+        instr["deduped_ball_candidates"].append(len(deduped_balls))
+        if ball_detections:
+            instr["frames_with_raw_ball"] += 1
 
+        frame_record = {"frame": frame_idx, "detections": [], "smoothed": None, "loss_state": None}
         ball_seen_this_frame = bool(deduped_balls)
 
         if ball_seen_this_frame:
@@ -306,6 +369,7 @@ def run_tracker(equirect_path, output_path, json_path,
                 accept = mahal < MAHAL_ACCEPT_THRESH or size_score > 0.5
 
                 if accept:
+                    instr["accepted_size_scores"].append(size_score)
                     if frames_since_detection > LOSS_EXTRAPOLATE_FRAMES:
                         swap_events.append({
                             "frame": frame_idx,
@@ -322,8 +386,14 @@ def run_tracker(equirect_path, output_path, json_path,
                               f"(mahal={mahal:.1f} size={size_score:.2f})")
                 else:
                     ball_seen_this_frame = False
+                    instr["gate_rejected_count"] += 1
                     print(f"[reject] frame {frame_idx}: detection rejected "
                           f"(mahal={mahal:.1f} size={size_score:.2f})")
+            else:
+                # Gate only runs after a loss; track accepts unfiltered while tracking
+                if ball_area is not None and ball_size_tracker.expected_size():
+                    instr["accepted_size_scores"].append(
+                        ball_size_tracker.size_score(ball_area))
 
             if ball_seen_this_frame:
                 if not kf_initialised:
@@ -339,13 +409,14 @@ def run_tracker(equirect_path, output_path, json_path,
                 confirmed_pitch = float(kf.x[1])
                 frames_since_detection       = 0
                 prev_loss_state_was_hold     = False
+                instr["frames_confirmed_ball"] += 1
 
         else:
             frames_since_detection += 1
             if kf_initialised:
                 kf.predict()
 
-        # ---- Camera target ----
+        # ---- Camera target (unchanged from v4) ----
         if not kf_initialised:
             target_yaw, target_pitch = last_yaw, last_pitch
             loss_state = "uninitialised"
@@ -358,7 +429,6 @@ def run_tracker(equirect_path, output_path, json_path,
             ema_alpha    = EMA_ALPHA_TRACKING
 
         elif frames_since_detection <= LOSS_EXTRAPOLATE_FRAMES:
-            # v4: if we just left the hold state, reset Kalman velocity to zero
             if prev_loss_state_was_hold:
                 kf.x[2] = 0.0
                 kf.x[3] = 0.0
@@ -368,7 +438,6 @@ def run_tracker(equirect_path, output_path, json_path,
             raw_yaw   = float(kf.x[0])
             raw_pitch = float(kf.x[1])
 
-            # v4: velocity cap — clamp per-frame movement to MAX_EXTRAP_VELOCITY_DEG
             if cam_yaw is not None:
                 delta_yaw   = raw_yaw   - cam_yaw
                 delta_pitch = raw_pitch - cam_pitch
@@ -416,7 +485,7 @@ def run_tracker(equirect_path, output_path, json_path,
         cam_yaw, cam_pitch = target_yaw, target_pitch
         last_yaw, last_pitch = cam_yaw, cam_pitch
 
-        # ---- EMA render smoothing (variable alpha) ----
+        # ---- EMA render smoothing ----
         if ema_yaw is None:
             ema_yaw, ema_pitch = cam_yaw, cam_pitch
         else:
@@ -437,23 +506,70 @@ def run_tracker(equirect_path, output_path, json_path,
 
         frame_idx += 1
         if frame_idx % 100 == 0:
+            recent_raw = instr["raw_ball_candidates"][-100:]
             print(f"[tracker] frame {frame_idx}/{total_frames} | "
-                  f"yaw={ema_yaw:.1f}° pitch={ema_pitch:.1f}° | {loss_state}")
+                  f"yaw={ema_yaw:.1f}° pitch={ema_pitch:.1f}° | {loss_state} | "
+                  f"raw_balls/100f avg={np.mean(recent_raw):.2f}")
 
     cap.release()
     ffmpeg_writer.stdin.close()
     ffmpeg_writer.wait()
     print(f"[done] tracked.mp4 → {output_path}")
 
+    # ---- Compute summary metrics ----
+    ft = max(instr["frames_total"], 1)
+    def _median(x): return float(np.median(x)) if x else None
+
+    metadata = {
+        "version": "v5-detection-baseline",
+        "config": {
+            "ball_model":   ball_model_path,
+            "ball_names":   ball_model.names,
+            "person_model": person_model_path,
+            "device":       device,
+            "crop_w":       CROP_W,
+            "crop_h":       CROP_H,
+            "crop_fov_deg": CROP_FOV_DEG,
+            "crop_yaws":    CROP_YAWS_DEG,
+            "imgsz":        YOLO_IMGSZ,
+            "conf":         YOLO_CONF,
+            "ball_class":   BALL_CLASS_ID,
+            "dedup_thresh_deg": DEDUP_THRESH_DEG,
+        },
+        "detection_metrics": {
+            "frames_total":              instr["frames_total"],
+            "frames_with_raw_ball":      instr["frames_with_raw_ball"],
+            "frames_with_raw_ball_pct":  round(100.0 * instr["frames_with_raw_ball"] / ft, 2),
+            "frames_confirmed_ball":     instr["frames_confirmed_ball"],
+            "confirmed_ball_pct":        round(100.0 * instr["frames_confirmed_ball"] / ft, 2),
+            "gate_rejected_count":       instr["gate_rejected_count"],
+            "mean_raw_candidates_per_frame":     round(float(np.mean(instr["raw_ball_candidates"])), 3),
+            "mean_deduped_candidates_per_frame": round(float(np.mean(instr["deduped_ball_candidates"])), 3),
+            "median_candidate_box_area": _median(instr["all_candidate_areas"]),
+            "median_candidate_conf":     _median(instr["all_candidate_confs"]),
+            "median_accepted_size_score": _median(instr["accepted_size_scores"]),
+        },
+        "swap_event_count": len(swap_events),
+    }
+
+    print("=" * 70)
+    print("[v5 DETECTION METRICS]")
+    for k, v in metadata["detection_metrics"].items():
+        print(f"  {k:36s}: {v}")
+    print("=" * 70)
+
     with open(json_path, "w") as f:
-        json.dump({"fps": fps, "frames": tracking_data, "swap_events": swap_events}, f, indent=2)
-    print(f"[done] tracking.json → {json_path} ({len(swap_events)} swap events)")
+        json.dump({"fps": fps, "metadata": metadata,
+                   "frames": tracking_data, "swap_events": swap_events}, f, indent=2)
+    print(f"[done] tracking.json → {json_path} "
+          f"(confirmed_ball={metadata['detection_metrics']['confirmed_ball_pct']}% "
+          f"raw_ball={metadata['detection_metrics']['frames_with_raw_ball_pct']}% "
+          f"gate_rejected={instr['gate_rejected_count']})")
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input",         default="equirect.mp4")
@@ -461,7 +577,8 @@ if __name__ == "__main__":
     parser.add_argument("--json",          default="tracking.json")
     parser.add_argument("--trim-start",    type=int, default=120)
     parser.add_argument("--trim-duration", type=int, default=120)
-    parser.add_argument("--model",         default="yolov8s.pt")
+    parser.add_argument("--ball-model",    default="models/football-ball-detection.pt")
+    parser.add_argument("--person-model",  default="yolov8s.pt")
     args = parser.parse_args()
 
     run_tracker(
@@ -470,5 +587,6 @@ if __name__ == "__main__":
         json_path=args.json,
         trim_start=args.trim_start,
         trim_duration=args.trim_duration,
-        model_path=args.model,
+        ball_model_path=args.ball_model,
+        person_model_path=args.person_model,
     )
