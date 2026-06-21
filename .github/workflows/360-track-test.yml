@@ -333,7 +333,7 @@ jobs:
           SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no"
 
           echo "--- Writing stitch script to runner ---"
-          python3 -c "import base64; open('/tmp/stitch_equirect.sh','wb').write(base64.b64decode('IyEvdXNyL2Jpbi9lbnYgYmFzaApzZXQgLWV1byBwaXBlZmFpbApXT1JLRElSPSIvdG1wL2ZmYV90cmFjayIKU09VUkNFPSIke1dPUktESVJ9L3NvdXJjZS4zNjAiCk1BU0s9IiR7V09SS0RJUn0vc2VhbV9tYXNrLnBuZyIKVFJJTV9PVVQ9IiR7V09SS0RJUn0vZXF1aXJlY3RfdHJpbS5tcDQiCkZVTExfT1VUPSIke1dPUktESVJ9L2VxdWlyZWN0X2Z1bGwubXA0IgpUUklNX1NUQVJUPSIkezE6LTEyMH0iCkNMSVBfRFVSQVRJT049IiR7MjotMTIwfSIKCmxvZygpIHsgZWNobyAiWyQoZGF0ZSAtdSArJUg6JU06JVMpXSAkKiI7IH0KCmxvZyAiPT09IEVxdWlyZWN0YW5ndWxhciBzdGl0Y2ggPT09Igpsb2cgIlNvdXJjZTogJHtTT1VSQ0V9ICgkKGR1IC1zaCAke1NPVVJDRX0gfCBjdXQgLWYxKSkiCmxvZyAiVHJpbTogc3M9JHtUUklNX1NUQVJUfSB0PSR7Q0xJUF9EVVJBVElPTn0iCgpsb2cgIi0tLSBHZW5lcmF0aW5nIHNlYW0gYmxlbmQgbWFzayAoUElMIGdyYWRpZW50KSAtLS0iCnB5dGhvbjMgLSA8PCAnUFkyJwpmcm9tIFBJTCBpbXBvcnQgSW1hZ2UKdywgaCA9IDY0LCAxMzQ0CmltZyA9IEltYWdlLm5ldygiTCIsICh3LCBoKSkKcm93ID0gYnl0ZXMoaW50KHggKiAyNTUgLyAodyAtIDEpKSBmb3IgeCBpbiByYW5nZSh3KSkKaW1nLnB1dGRhdGEobGlzdChyb3cgKiBoKSkKaW1nLnNhdmUoIi90bXAvZmZhX3RyYWNrL3NlYW1fbWFzay5wbmciKQpwcmludCgiU2VhbSBtYXNrOiA2NHgxMzQ0IGdyYWRpZW50IFBORyBnZW5lcmF0ZWQiKQpQWTIKCkZJTFRFUj0nWzE6dl1mb3JtYXQ9Z3JheSxzcGxpdD00W21hc2sxXVttYXNrMl1bbWFzazNdW21hc2s0XSxbMDp2OjBdY3JvcD02MjQ6MTM0NDp4PTA6eT0wLGZvcm1hdD15dXZqNDIwcFtsZWZ0XSxbMDp2OjBdY3JvcD02MjQ6MTM0NDp4PTc1Mjp5PTAsZm9ybWF0PXl1dmo0MjBwW3JpZ2h0XSxbMDp2OjBdY3JvcD02NDoxMzQ0Ong9NjI0Onk9MCxmb3JtYXQ9eXV2ajQyMHBbc2VnQV0sWzA6djowXWNyb3A9NjQ6MTM0NDp4PTY4ODp5PTAsZm9ybWF0PXl1dmo0MjBwW3NlZ0JdLFtzZWdBXVtzZWdCXVttYXNrMV1tYXNrZWRtZXJnZVtjcm9wXSxbY3JvcF1zY2FsZT05NjoxMzQ0W2Nyb3BTY2FsZWRdLFtsZWZ0XVtjcm9wU2NhbGVkXWhzdGFja1tsZWZ0QWxsXSxbbGVmdEFsbF1bcmlnaHRdaHN0YWNrW2xlZnREb25lXSxbMDp2OjBdY3JvcD0xMzQ0OjEzNDQ6MTM3NjowW21pZGRsZV0sWzA6djowXWNyb3A9NjI0OjEzNDQ6eD0yNzIwOnk9MCxmb3JtYXQ9eXV2ajQyMHBbbFJCXSxbMDp2OjBdY3JvcD02MjQ6MTM0NDp4PTM0NzI6eT0wLGZvcm1hdD15dXZqNDIwcFtyUkJdLFswOnY6MF1jcm9wPTY0OjEzNDQ6eD0zMzQ0Onk9MCxmb3JtYXQ9eXV2ajQyMHBbc2VnQVJCXSxbMDp2OjBdY3JvcD02NDoxMzQ0Ong9MzQwODp5PTAsZm9ybWF0PXl1dmo0MjBwW3NlZ0JSQl0sW3NlZ0FSQl1bc2VnQlJCXVttYXNrMl1tYXNrZWRtZXJnZVtjcm9wUkJdLFtjcm9wUkJdc2NhbGU9OTY6MTM0NFtjcm9wUkJTY2FsZWRdLFtsUkJdW2Nyb3BSQlNjYWxlZF1oc3RhY2tbckFsbF0sW3JBbGxdW3JSQl1oc3RhY2tbckJvdERvbmVdLFtsZWZ0RG9uZV1bbWlkZGxlXWhzdGFja1tsTWlkXSxbbE1pZF1bckJvdERvbmVdaHN0YWNrW2JvdENvbXBsZXRlXSxbMDp2OjFdY3JvcD02MjQ6MTM0NDp4PTA6eT0wLGZvcm1hdD15dXZqNDIwcFtmbHRdLFswOnY6MV1jcm9wPTYyNDoxMzQ0Ong9NzUyOnk9MCxmb3JtYXQ9eXV2ajQyMHBbZnJ0XSxbMDp2OjFdY3JvcD02NDoxMzQ0Ong9NjI0Onk9MCxmb3JtYXQ9eXV2ajQyMHBbc2VnQ10sWzA6djoxXWNyb3A9NjQ6MTM0NDp4PTY4ODp5PTAsZm9ybWF0PXl1dmo0MjBwW3NlZ0RdLFtzZWdDXVtzZWdEXVttYXNrM11tYXNrZWRtZXJnZVtsdGNdLFtsdGNdc2NhbGU9OTY6MTM0NFtsdGNTY2FsZWRdLFtmbHRdW2x0Y1NjYWxlZF1oc3RhY2tbdGxoXSxbdGxoXVtmcnRdaHN0YWNrW3RsRG9uZV0sWzA6djoxXWNyb3A9MTM0NDoxMzQ0OjEzNzY6MFt0TWlkXSxbMDp2OjFdY3JvcD02MjQ6MTM0NDp4PTI3MjA6eT0wLGZvcm1hdD15dXZqNDIwcFt0bFJCXSxbMDp2OjFdY3JvcD02MjQ6MTM0NDp4PTM0NzI6eT0wLGZvcm1hdD15dXZqNDIwcFt0clJCXSxbMDp2OjFdY3JvcD02NDoxMzQ0Ong9MzM0NDp5PTAsZm9ybWF0PXl1dmo0MjBwW3NlZ0VdLFswOnY6MV1jcm9wPTY0OjEzNDQ6eD0zNDA4Onk9MCxmb3JtYXQ9eXV2ajQyMHBbc2VnRl0sW3NlZ0VdW3NlZ0ZdW21hc2s0XW1hc2tlZG1lcmdlW3RjUkJdLFt0Y1JCXXNjYWxlPTk2OjEzNDRbdGNSQlNjYWxlZF0sW3RsUkJdW3RjUkJTY2FsZWRdaHN0YWNrW3RyQWxsXSxbdHJBbGxdW3RyUkJdaHN0YWNrW3RyQm90RG9uZV0sW3RsRG9uZV1bdE1pZF1oc3RhY2tbdGxNaWRdLFt0bE1pZF1bdHJCb3REb25lXWhzdGFja1t0b3BDb21wbGV0ZV0sW2JvdENvbXBsZXRlXVt0b3BDb21wbGV0ZV12c3RhY2tbY29tcGxldGVdLFtjb21wbGV0ZV12MzYwPWVhYzplOmludGVycD1saW5lYXIsY3JvcD00MDMyOjIzODg6eD0wOnk9MFt2XScKCmxvZyAiLS0tIFN0aXRjaGluZyBUUklNIChzcz0ke1RSSU1fU1RBUlR9IHQ9JHtDTElQX0RVUkFUSU9OfSkgLS0tIgpsb2cgImZmbXBlZyBwYXRoOiAkKHdoaWNoIC91c3IvYmluL2ZmbXBlZyAmJiBlY2hvIE9LIHx8IGVjaG8gTUlTU0lORykiCi91c3IvYmluL2ZmbXBlZyAtdmVyc2lvbiAyPiYxIHwgaGVhZCAtMSB8fCB0cnVlCmxvZyAiUnVubmluZyB0cmltIGZmbXBlZy4uLiIKL3Vzci9iaW4vZmZtcGVnIC15IC1zcyAiJHtUUklNX1NUQVJUfSIgICAtaSAiJHtTT1VSQ0V9IiAgIC1pICIke01BU0t9IiAgIC1maWx0ZXJfY29tcGxleCAiJHtGSUxURVJ9IiAgIC1tYXAgIlt2XSIgLW1hcCAiMDphOjA/IiAgIC1jOnYgbGlieDI2NCAtcHJlc2V0IHVsdHJhZmFzdCAtY3JmIDE4IC10aHJlYWRzIDAgICAtYzphIGFhYyAtYWMgMiAtYjphIDE5MmsgLW1vdmZsYWdzICtmYXN0c3RhcnQgICAtdCAiJHtDTElQX0RVUkFUSU9OfSIgICAiJHtUUklNX09VVH0iIDI+JjEgfCB0YWlsIC0yMAoKVFJJTV9TSVpFPSQoc3RhdCAtYyVzICIke1RSSU1fT1VUfSIgMj4vZGV2L251bGwgfHwgZWNobyAwKQpsb2cgImVxdWlyZWN0X3RyaW0ubXA0OiAke1RSSU1fU0laRX0gYnl0ZXMiCmlmIFsgIiR7VFJJTV9TSVpFfSIgLWx0IDEwMDAwMCBdOyB0aGVuCiAgbG9nICJFUlJPUjogdHJpbSB0b28gc21hbGwgKCR7VFJJTV9TSVpFfWIpIgogIGV4aXQgMQpmaQpsb2cgIlRyaW0gc3RpdGNoIE9LIgoKbG9nICItLS0gU3RpdGNoaW5nIEZVTEwgZmlsZSAtLS0iCi91c3IvYmluL2ZmbXBlZyAteSBcCiAgLWkgIiR7U09VUkNFfSIgXAogIC1pICIke01BU0t9IiBcCiAgLWZpbHRlcl9jb21wbGV4ICIke0ZJTFRFUn0iIFwKICAtbWFwICdbdl0nIC1tYXAgJzA6YTowPycgXAogIC1jOnYgbGlieDI2NCAtcHJlc2V0IHVsdHJhZmFzdCAtY3JmIDE4IC10aHJlYWRzIDAgXAogIC1jOmEgYWFjIC1hYyAyIC1iOmEgMTkyayAtbW92ZmxhZ3MgK2Zhc3RzdGFydCBcCiAgIiR7RlVMTF9PVVR9IiAyPiYxIHwgZ3JlcCAtRSAnZnJhbWU9fHNwZWVkPXxFcnJvcnxlcnJvcicgfCB0YWlsIC0yMAoKRlVMTF9TSVpFPSQoc3RhdCAtYyVzICIke0ZVTExfT1VUfSIgMj4vZGV2L251bGwgfHwgZWNobyAwKQpsb2cgImVxdWlyZWN0X2Z1bGwubXA0OiAke0ZVTExfU0laRX0gYnl0ZXMiCmlmIFsgIiR7RlVMTF9TSVpFfSIgLWx0IDEwMDAwMDAgXTsgdGhlbgogIGxvZyAiRVJST1I6IGZ1bGwgdG9vIHNtYWxsICgke0ZVTExfU0laRX1iKSIKICBleGl0IDEKZmkKbG9nICI9PT0gU3RpdGNoIGNvbXBsZXRlID09PSIK'))"
+          python3 -c "import base64; open('/tmp/stitch_equirect.sh','wb').write(base64.b64decode('IyEvdXNyL2Jpbi9lbnYgYmFzaApzZXQgLWV1byBwaXBlZmFpbApXT1JLRElSPSIvdG1wL2ZmYV90cmFjayIKU09VUkNFPSIke1dPUktESVJ9L3NvdXJjZS4zNjAiCk1BU0s9IiR7V09SS0RJUn0vc2VhbV9tYXNrLnBuZyIKVFJJTV9PVVQ9IiR7V09SS0RJUn0vZXF1aXJlY3RfdHJpbS5tcDQiCkZVTExfT1VUPSIke1dPUktESVJ9L2VxdWlyZWN0X2Z1bGwubXA0IgpUUklNX1NUQVJUPSIkezE6LTEyMH0iCkNMSVBfRFVSQVRJT049IiR7MjotMTIwfSIKCmxvZygpIHsgZWNobyAiWyQoZGF0ZSAtdSArJUg6JU06JVMpXSAkKiI7IH0KCmxvZyAiPT09IEVxdWlyZWN0YW5ndWxhciBzdGl0Y2ggPT09Igpsb2cgIlNvdXJjZTogJHtTT1VSQ0V9ICgkKGR1IC1zaCAke1NPVVJDRX0gfCBjdXQgLWYxKSkiCmxvZyAiVHJpbTogc3M9JHtUUklNX1NUQVJUfSB0PSR7Q0xJUF9EVVJBVElPTn0iCgpsb2cgIi0tLSBHZW5lcmF0aW5nIHNlYW0gYmxlbmQgbWFzayAoUElMIGdyYWRpZW50KSAtLS0iCnB5dGhvbjMgLSA8PCAnUFkyJwpmcm9tIFBJTCBpbXBvcnQgSW1hZ2UKdywgaCA9IDY0LCAxMzQ0CmltZyA9IEltYWdlLm5ldygiTCIsICh3LCBoKSkKcm93ID0gYnl0ZXMoaW50KHggKiAyNTUgLyAodyAtIDEpKSBmb3IgeCBpbiByYW5nZSh3KSkKaW1nLnB1dGRhdGEobGlzdChyb3cgKiBoKSkKaW1nLnNhdmUoIi90bXAvZmZhX3RyYWNrL3NlYW1fbWFzay5wbmciKQpwcmludCgiU2VhbSBtYXNrOiA2NHgxMzQ0IGdyYWRpZW50IFBORyBnZW5lcmF0ZWQiKQpQWTIKCkZJTFRFUj0nWzE6dl1mb3JtYXQ9Z3JheSxzcGxpdD00W21hc2sxXVttYXNrMl1bbWFzazNdW21hc2s0XSxbMDp2OjBdY3JvcD02MjQ6MTM0NDp4PTA6eT0wLGZvcm1hdD15dXZqNDIwcFtsZWZ0XSxbMDp2OjBdY3JvcD02MjQ6MTM0NDp4PTc1Mjp5PTAsZm9ybWF0PXl1dmo0MjBwW3JpZ2h0XSxbMDp2OjBdY3JvcD02NDoxMzQ0Ong9NjI0Onk9MCxmb3JtYXQ9eXV2ajQyMHBbc2VnQV0sWzA6djowXWNyb3A9NjQ6MTM0NDp4PTY4ODp5PTAsZm9ybWF0PXl1dmo0MjBwW3NlZ0JdLFtzZWdBXVtzZWdCXVttYXNrMV1tYXNrZWRtZXJnZVtjcm9wXSxbY3JvcF1zY2FsZT05NjoxMzQ0W2Nyb3BTY2FsZWRdLFtsZWZ0XVtjcm9wU2NhbGVkXWhzdGFja1tsZWZ0QWxsXSxbbGVmdEFsbF1bcmlnaHRdaHN0YWNrW2xlZnREb25lXSxbMDp2OjBdY3JvcD0xMzQ0OjEzNDQ6MTM3NjowW21pZGRsZV0sWzA6djowXWNyb3A9NjI0OjEzNDQ6eD0yNzIwOnk9MCxmb3JtYXQ9eXV2ajQyMHBbbFJCXSxbMDp2OjBdY3JvcD02MjQ6MTM0NDp4PTM0NzI6eT0wLGZvcm1hdD15dXZqNDIwcFtyUkJdLFswOnY6MF1jcm9wPTY0OjEzNDQ6eD0zMzQ0Onk9MCxmb3JtYXQ9eXV2ajQyMHBbc2VnQVJCXSxbMDp2OjBdY3JvcD02NDoxMzQ0Ong9MzQwODp5PTAsZm9ybWF0PXl1dmo0MjBwW3NlZ0JSQl0sW3NlZ0FSQl1bc2VnQlJCXVttYXNrMl1tYXNrZWRtZXJnZVtjcm9wUkJdLFtjcm9wUkJdc2NhbGU9OTY6MTM0NFtjcm9wUkJTY2FsZWRdLFtsUkJdW2Nyb3BSQlNjYWxlZF1oc3RhY2tbckFsbF0sW3JBbGxdW3JSQl1oc3RhY2tbckJvdERvbmVdLFtsZWZ0RG9uZV1bbWlkZGxlXWhzdGFja1tsTWlkXSxbbE1pZF1bckJvdERvbmVdaHN0YWNrW2JvdENvbXBsZXRlXSxbMDp2OjFdY3JvcD02MjQ6MTM0NDp4PTA6eT0wLGZvcm1hdD15dXZqNDIwcFtmbHRdLFswOnY6MV1jcm9wPTYyNDoxMzQ0Ong9NzUyOnk9MCxmb3JtYXQ9eXV2ajQyMHBbZnJ0XSxbMDp2OjFdY3JvcD02NDoxMzQ0Ong9NjI0Onk9MCxmb3JtYXQ9eXV2ajQyMHBbc2VnQ10sWzA6djoxXWNyb3A9NjQ6MTM0NDp4PTY4ODp5PTAsZm9ybWF0PXl1dmo0MjBwW3NlZ0RdLFtzZWdDXVtzZWdEXVttYXNrM11tYXNrZWRtZXJnZVtsdGNdLFtsdGNdc2NhbGU9OTY6MTM0NFtsdGNTY2FsZWRdLFtmbHRdW2x0Y1NjYWxlZF1oc3RhY2tbdGxoXSxbdGxoXVtmcnRdaHN0YWNrW3RsRG9uZV0sWzA6djoxXWNyb3A9MTM0NDoxMzQ0OjEzNzY6MFt0TWlkXSxbMDp2OjFdY3JvcD02MjQ6MTM0NDp4PTI3MjA6eT0wLGZvcm1hdD15dXZqNDIwcFt0bFJCXSxbMDp2OjFdY3JvcD02MjQ6MTM0NDp4PTM0NzI6eT0wLGZvcm1hdD15dXZqNDIwcFt0clJCXSxbMDp2OjFdY3JvcD02NDoxMzQ0Ong9MzM0NDp5PTAsZm9ybWF0PXl1dmo0MjBwW3NlZ0VdLFswOnY6MV1jcm9wPTY0OjEzNDQ6eD0zNDA4Onk9MCxmb3JtYXQ9eXV2ajQyMHBbc2VnRl0sW3NlZ0VdW3NlZ0ZdW21hc2s0XW1hc2tlZG1lcmdlW3RjUkJdLFt0Y1JCXXNjYWxlPTk2OjEzNDRbdGNSQlNjYWxlZF0sW3RsUkJdW3RjUkJTY2FsZWRdaHN0YWNrW3RyQWxsXSxbdHJBbGxdW3RyUkJdaHN0YWNrW3RyQm90RG9uZV0sW3RsRG9uZV1bdE1pZF1oc3RhY2tbdGxNaWRdLFt0bE1pZF1bdHJCb3REb25lXWhzdGFja1t0b3BDb21wbGV0ZV0sW2JvdENvbXBsZXRlXVt0b3BDb21wbGV0ZV12c3RhY2tbY29tcGxldGVdLFtjb21wbGV0ZV12MzYwPWVhYzplOmludGVycD1saW5lYXIsY3JvcD00MDMyOjIzODg6eD0wOnk9MFt2XScKCmxvZyAiLS0tIFN0aXRjaGluZyBUUklNIChzcz0ke1RSSU1fU1RBUlR9IHQ9JHtDTElQX0RVUkFUSU9OfSkgLS0tIgpsb2cgImZmbXBlZyBwYXRoOiAkKHdoaWNoIC91c3IvYmluL2ZmbXBlZyAmJiBlY2hvIE9LIHx8IGVjaG8gTUlTU0lORykiCi91c3IvYmluL2ZmbXBlZyAtdmVyc2lvbiAyPiYxIHwgaGVhZCAtMSB8fCB0cnVlCmxvZyAiUnVubmluZyB0cmltIGZmbXBlZy4uLiIKL3Vzci9iaW4vZmZtcGVnIC15IC1zcyAiJHtUUklNX1NUQVJUfSIgICAtaSAiJHtTT1VSQ0V9IiAgIC1pICIke01BU0t9IiAgIC1maWx0ZXJfY29tcGxleCAiJHtGSUxURVJ9IiAgIC1tYXAgIlt2XSIgLW1hcCAiMDphOjA/IiAgIC1jOnYgbGlieDI2NCAtcHJlc2V0IHVsdHJhZmFzdCAtY3JmIDE4IC10aHJlYWRzIDAgICAtYzphIGFhYyAtYWMgMiAtYjphIDE5MmsgLW1vdmZsYWdzICtmYXN0c3RhcnQgICAtdCAiJHtDTElQX0RVUkFUSU9OfSIgICAiJHtUUklNX09VVH0iIDI+JjEgfCB0YWlsIC0yMAoKVFJJTV9TSVpFPSQoc3RhdCAtYyVzICIke1RSSU1fT1VUfSIgMj4vZGV2L251bGwgfHwgZWNobyAwKQpsb2cgImVxdWlyZWN0X3RyaW0ubXA0OiAke1RSSU1fU0laRX0gYnl0ZXMiCmlmIFsgIiR7VFJJTV9TSVpFfSIgLWx0IDEwMDAwMCBdOyB0aGVuCiAgbG9nICJFUlJPUjogdHJpbSB0b28gc21hbGwgKCR7VFJJTV9TSVpFfWIpIgogIGV4aXQgMQpmaQpsb2cgIlRyaW0gc3RpdGNoIE9LIgoKbG9nICI9PT0gU3RpdGNoIGNvbXBsZXRlICh0cmltIG9ubHkpID09PSIK'))"
           chmod +x /tmp/stitch_equirect.sh
           echo "--- SCPing stitch script to instance ---"
           $SCP /tmp/stitch_equirect.sh root@$IP:/tmp/ffa_track/stitch_equirect.sh
@@ -341,100 +341,6 @@ jobs:
 
           echo "--- Running stitch (trim ss=$TRIM_START t=$CLIP_DURATION, then full) ---"
           $SSH "chmod +x /tmp/ffa_track/stitch_equirect.sh && /tmp/ffa_track/stitch_equirect.sh $TRIM_START $CLIP_DURATION"
-
-      - name: Upload stitched files to Google Drive
-        env:
-          IP:                  ${{ steps.launch.outputs.ip }}
-          PORT:                ${{ steps.launch.outputs.port }}
-          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
-          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
-        run: |
-          pip install -q google-auth google-auth-oauthlib google-api-python-client
-          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
-          echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token_local.json
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-
-          echo "--- Pulling stitched files from instance ---"
-          mkdir -p /tmp/equirect_out
-          echo "equirect_trim.mp4 size on instance: $($SSH "du -sh /tmp/ffa_track/equirect_trim.mp4" | cut -f1)"
-          scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
-            root@$IP:/tmp/ffa_track/equirect_trim.mp4 /tmp/equirect_out/ && echo "equirect_trim.mp4 pulled OK"
-          echo "equirect_full.mp4 size on instance: $($SSH "du -sh /tmp/ffa_track/equirect_full.mp4" | cut -f1)"
-          scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
-            root@$IP:/tmp/ffa_track/equirect_full.mp4 /tmp/equirect_out/ && echo "equirect_full.mp4 pulled OK"
-          ls -lh /tmp/equirect_out/
-
-          echo "--- Uploading to Drive (FFA/Clips/equirect_source/) ---"
-          python3 - << 'PY'
-          import os, json, urllib.request as _req
-          from google.oauth2.credentials import Credentials
-          from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload
-
-          SCOPES    = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/youtube"]
-          CLIPS_FOLDER_ID = "1gHW29JbvUWnbvJTCC0J8O7r-O1IPZAd8"  # FFA/Clips
-
-          token_data = json.loads(open("/tmp/youtube_token_local.json").read())
-          creds_data = json.loads(open("/tmp/youtube_credentials.json").read())
-          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
-          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
-          refresh_token = token_data["refresh_token"]
-          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
-
-          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
-                                "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
-          r = _req.urlopen(_req.Request(token_uri, data=payload,
-                           headers={"Content-Type": "application/json"}, method="POST"))
-          tok = json.loads(r.read())
-          if "access_token" not in tok:
-              raise RuntimeError(f"Token refresh failed: {tok}")
-          print(f"Drive token refreshed OK (expires_in={tok.get('expires_in')}s)")
-
-          creds = Credentials(token=tok["access_token"], refresh_token=refresh_token,
-                              token_uri=token_uri, client_id=client_id,
-                              client_secret=client_secret, scopes=SCOPES)
-          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-
-          # Create or reuse equirect_source subfolder
-          existing = drive.files().list(
-              q=f"name='equirect_source' and '{CLIPS_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
-              fields="files(id,name)"
-          ).execute().get("files", [])
-
-          if existing:
-              subfolder_id = existing[0]["id"]
-              print(f"Reusing existing Drive folder: equirect_source  id={subfolder_id}")
-          else:
-              folder = drive.files().create(
-                  body={"name": "equirect_source", "mimeType": "application/vnd.google-apps.folder", "parents": [CLIPS_FOLDER_ID]},
-                  fields="id"
-              ).execute()
-              subfolder_id = folder["id"]
-              print(f"Created Drive subfolder: equirect_source  id={subfolder_id}")
-
-          output_dir = "/tmp/equirect_out"
-          for fname in sorted(os.listdir(output_dir)):
-              fpath = os.path.join(output_dir, fname)
-              if not os.path.isfile(fpath): continue
-              # Remove existing file with same name to avoid duplicates
-              existing_files = drive.files().list(
-                  q=f"name='{fname}' and '{subfolder_id}' in parents and trashed=false",
-                  fields="files(id,name)"
-              ).execute().get("files", [])
-              for ef in existing_files:
-                  drive.files().delete(fileId=ef["id"]).execute()
-                  print(f"  Removed old: {ef['name']}")
-              media    = MediaFileUpload(fpath, mimetype="video/mp4", resumable=True)
-              uploaded = drive.files().create(
-                  body={"name": fname, "parents": [subfolder_id]},
-                  media_body=media, fields="id,name,size"
-              ).execute()
-              size_mb = int(uploaded.get("size", 0)) // (1024*1024)
-              print(f"  Uploaded: {uploaded['name']} ({size_mb}MB)  id={uploaded['id']}")
-
-          print(f"\nAll files at: https://drive.google.com/drive/folders/{subfolder_id}")
-          print(f"EQUIRECT_FOLDER_ID={subfolder_id}")
-          PY
 
       - name: Run 360 ball tracker
         if: ${{ github.event.inputs.prep_only != 'true' }}
