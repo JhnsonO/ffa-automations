@@ -396,11 +396,15 @@ if [ "${SIZE_MB}" -lt 10 ]; then
 fi
 
 OUT_DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "${OUTPUT_EQUIRECT}" || echo "0")
-MIN_DURATION=$(python3 -c "print(${TOTAL_DUR} * 0.9)")
-DURATION_OK=$(python3 -c "exit(0 if float('${OUT_DURATION}') >= float('${MIN_DURATION}') else 1)" && echo yes || echo no)
-if [ "${DURATION_OK}" = "no" ]; then
-  log "ERROR: Output duration ${OUT_DURATION}s < 90% of source ${TOTAL_DUR}s — encode truncated"
-  exit 1
+if [ -n "${TEST_DURATION_SEC:-}" ]; then
+  log "TEST MODE: skipping duration check (expected ~${TEST_DURATION_SEC}s, source ${TOTAL_DUR}s)"
+else
+  MIN_DURATION=$(python3 -c "print(${TOTAL_DUR} * 0.9)")
+  DURATION_OK=$(python3 -c "exit(0 if float('${OUT_DURATION}') >= float('${MIN_DURATION}') else 1)" && echo yes || echo no)
+  if [ "${DURATION_OK}" = "no" ]; then
+    log "ERROR: Output duration ${OUT_DURATION}s < 90% of source ${TOTAL_DUR}s — encode truncated"
+    exit 1
+  fi
 fi
 
 if [ "${FFMPEG_EXIT}" != "0" ]; then
