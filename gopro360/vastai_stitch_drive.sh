@@ -157,45 +157,64 @@ SOURCE_MODE="${SOURCE_MODE:-gopro}"
 log "Source mode: ${SOURCE_MODE}"
 
 if [ "${SOURCE_MODE}" = "drive" ]; then
-  log "--- Downloading from Google Drive (aria2c, large-file safe) ---"
-  apt-get install -y -qq aria2 > /dev/null
+  log "--- Downloading from Google Drive (Drive API, authenticated) ---"
   # Extract the file ID from the SOURCE_URL query string
   DRIVE_FILE_ID=$(echo "${SOURCE_URL}" | grep -oP '(?<=id=)[^&]+')
   log "Drive file ID: ${DRIVE_FILE_ID}"
-  # Step 1: hit the uc endpoint to get the confirm token for large files
-  CONFIRM=$(curl -sc /tmp/drive_cookies.txt     "https://drive.google.com/uc?export=download&id=${DRIVE_FILE_ID}"     | grep -oP '(?<=confirm=)[^&"]+' | head -1 || echo "t")
-  log "Confirm token: ${CONFIRM}"
-  # Step 2: download with the confirm token and cookies (bypasses large-file warning)
-  DRIVE_DL_URL="https://drive.google.com/uc?export=download&id=${DRIVE_FILE_ID}&confirm=${CONFIRM}"
-  aria2c     --out="source.360"     --dir="${WORKDIR}"     --split=16     --max-connection-per-server=16     --min-split-size=10M     --connect-timeout=30     --timeout=60     --max-tries=10     --retry-wait=5     --max-overall-download-limit=0     --file-allocation=none     --allow-overwrite=true     --console-log-level=warn     --summary-interval=0     --load-cookies=/tmp/drive_cookies.txt     "${DRIVE_DL_URL}" > "${WORKDIR}/download.log" 2>&1 &
-  DL_PID=$!
-  STALL_TICKS=0
-  LAST_SZ=0
-  DL_START=$(date +%s)
-  while kill -0 "${DL_PID}" 2>/dev/null; do
-    sleep 5
-    SZ=$(du -m "${LOCAL_SOURCE}" 2>/dev/null | cut -f1 || echo 0)
-    NOW=$(date +%s)
-    ELAPSED=$(( NOW - DL_START ))
-    if [ "${SZ}" -gt 0 ] && [ "${ELAPSED}" -gt 0 ]; then
-      SPEED_MBS=$(( SZ / ELAPSED ))
-      log "  downloading... ${SZ}MB (${SPEED_MBS}MB/s)"
-    else
-      log "  downloading... ${SZ}MB so far"
-    fi
-    if [ "${SZ}" -eq "${LAST_SZ}" ]; then
-      STALL_TICKS=$((STALL_TICKS+1))
-    else
-      STALL_TICKS=0
-    fi
-    LAST_SZ="${SZ}"
-    if [ "${STALL_TICKS}" -ge 12 ]; then
-      log "ERROR: Drive download stalled for 60s at ${SZ}MB"
-      kill "${DL_PID}" 2>/dev/null || true
-      exit 1
-    fi
-  done
-  wait "${DL_PID}" || { log "ERROR: aria2c Drive download failed:"; tail -20 "${WORKDIR}/download.log"; exit 1; }
+  # Use the Drive API with the existing OAuth token — bypasses all confirmation walls
+  python3 - <<DRIVEEOF
+import json, sys, urllib.request
+from pathlib import Path
+from datetime import datetime
+
+CREDS_PATH = Path("${WORKDIR}/youtube_credentials.json")
+TOKEN_PATH  = Path("${WORKDIR}/youtube_token.json")
+FILE_ID     = "${DRIVE_FILE_ID}"
+OUT_PATH    = "${LOCAL_SOURCE}"
+TOTAL_MB    = ${TOTAL_MB:-0}
+
+creds_data = json.loads(CREDS_PATH.read_text())
+token_data  = json.loads(TOKEN_PATH.read_text())
+
+client_id     = token_data.get("client_id")     or creds_data["installed"]["client_id"]
+client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+refresh_token = token_data["refresh_token"]
+token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+
+# Refresh access token
+print(f"[{datetime.now().strftime('%H:%M:%S')}] Refreshing token...")
+resp = urllib.request.urlopen(urllib.request.Request(
+    token_uri,
+    data=json.dumps({"client_id": client_id, "client_secret": client_secret,
+                     "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode(),
+    headers={"Content-Type": "application/json"}, method="POST"
+))
+tok = json.loads(resp.read())
+if "access_token" not in tok:
+    print(f"Token refresh failed: {tok}", file=sys.stderr)
+    sys.exit(1)
+access_token = tok["access_token"]
+print(f"[{datetime.now().strftime('%H:%M:%S')}] Token OK")
+
+# Stream download via Drive API alt=media
+url = f"https://www.googleapis.com/drive/v3/files/{FILE_ID}?alt=media"
+req = urllib.request.Request(url, headers={"Authorization": f"Bearer {access_token}"})
+chunk = 8 * 1024 * 1024  # 8MB chunks
+downloaded = 0
+start = datetime.now()
+with urllib.request.urlopen(req) as r, open(OUT_PATH, "wb") as f:
+    while True:
+        buf = r.read(chunk)
+        if not buf:
+            break
+        f.write(buf)
+        downloaded += len(buf)
+        mb = downloaded / 1e6
+        elapsed = (datetime.now() - start).total_seconds()
+        speed = mb / elapsed if elapsed > 0 else 0
+        print(f"[{datetime.now().strftime('%H:%M:%S')}]   downloaded {mb:.0f}MB ({speed:.1f}MB/s)")
+print(f"[{datetime.now().strftime('%H:%M:%S')}] Download complete: {downloaded/1e6:.0f}MB")
+DRIVEEOF
   log "Drive download complete: $(du -m "${LOCAL_SOURCE}" | cut -f1)MB"
 else
   log "--- Installing aria2 ---"
