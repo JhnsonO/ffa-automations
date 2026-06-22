@@ -35,10 +35,10 @@ on:
         description: 'Horizon-levelling roll offset for this venue (degrees)'
         required: false
         default: '4'
-      activity_file_id:
-        description: 'Google Drive file ID for activity.json (leave blank to skip)'
+      activity_json_path:
+        description: 'Repo path to activity.json (e.g. ball_tracker/activity_700_1300.json), leave blank to skip'
         required: false
-        default: ''
+        default: 'ball_tracker/activity_700_1300.json'
 
 jobs:
   render:
@@ -127,20 +127,17 @@ jobs:
             "https://www.googleapis.com/drive/v3/files/$TRACKING_FILE_ID?alt=media"
           du -sh render_work/tracking.json
 
-      - name: Download activity.json from Drive (optional)
-        if: ${{ github.event.inputs.activity_file_id != '' }}
-        env:
-          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
-          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
-          ACTIVITY_FILE_ID: ${{ github.event.inputs.activity_file_id }}
+      - name: Copy activity.json from repo (optional)
+        if: ${{ github.event.inputs.activity_json_path != '' }}
         run: |
-          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
-          echo "--- Downloading activity.json ---"
-          aria2c -x 4 -s 4 --file-allocation=none \
-            --header="Authorization: Bearer $ACCESS_TOKEN" \
-            --dir=render_work --out=activity.json \
-            "https://www.googleapis.com/drive/v3/files/$ACTIVITY_FILE_ID?alt=media"
-          du -sh render_work/activity.json
+          SRC="${{ github.event.inputs.activity_json_path }}"
+          if [ -f "$SRC" ]; then
+            cp "$SRC" render_work/activity.json
+            echo "activity.json copied from $SRC"
+            du -sh render_work/activity.json
+          else
+            echo "activity_json_path '$SRC' not found in checkout — skipping"
+          fi
 
       - name: Render segment
         env:
