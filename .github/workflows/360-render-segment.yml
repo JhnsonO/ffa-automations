@@ -35,6 +35,10 @@ on:
         description: 'Horizon-levelling roll offset for this venue (degrees)'
         required: false
         default: '4'
+      activity_file_id:
+        description: 'Google Drive file ID for activity.json (leave blank to skip)'
+        required: false
+        default: ''
 
 jobs:
   render:
@@ -123,6 +127,21 @@ jobs:
             "https://www.googleapis.com/drive/v3/files/$TRACKING_FILE_ID?alt=media"
           du -sh render_work/tracking.json
 
+      - name: Download activity.json from Drive (optional)
+        if: ${{ github.event.inputs.activity_file_id != '' }}
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          ACTIVITY_FILE_ID: ${{ github.event.inputs.activity_file_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          echo "--- Downloading activity.json ---"
+          aria2c -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=render_work --out=activity.json \
+            "https://www.googleapis.com/drive/v3/files/$ACTIVITY_FILE_ID?alt=media"
+          du -sh render_work/activity.json
+
       - name: Render segment
         env:
           FFMPEG_BIN: /usr/bin/ffmpeg
@@ -145,7 +164,8 @@ jobs:
             --fallback-yaw   $FALLBACK_YAW \
             --fallback-pitch $FALLBACK_PITCH \
             --fallback-fov   $FALLBACK_FOV \
-            --fallback-roll  $FALLBACK_ROLL
+            --fallback-roll  $FALLBACK_ROLL \
+            $([ -f render_work/activity.json ] && echo '--activity render_work/activity.json' || true)
           ls -lh render_output/
 
       - name: Upload render outputs as artifact
