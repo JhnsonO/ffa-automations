@@ -19,6 +19,22 @@ on:
         description: 'End frame for render segment'
         required: true
         default: '1000'
+      fallback_yaw:
+        description: 'Fallback band centre yaw (degrees)'
+        required: false
+        default: '0'
+      fallback_pitch:
+        description: 'Fallback band centre pitch (degrees)'
+        required: false
+        default: '0'
+      fallback_h_span:
+        description: 'Fallback band horizontal span (degrees)'
+        required: false
+        default: '160'
+      fallback_v_span:
+        description: 'Fallback band vertical span (degrees)'
+        required: false
+        default: '45'
 
 jobs:
   render:
@@ -112,16 +128,24 @@ jobs:
           FFMPEG_BIN: /usr/bin/ffmpeg
           START_FRAME: ${{ github.event.inputs.start_frame }}
           END_FRAME: ${{ github.event.inputs.end_frame }}
+          FALLBACK_YAW: ${{ github.event.inputs.fallback_yaw }}
+          FALLBACK_PITCH: ${{ github.event.inputs.fallback_pitch }}
+          FALLBACK_H_SPAN: ${{ github.event.inputs.fallback_h_span }}
+          FALLBACK_V_SPAN: ${{ github.event.inputs.fallback_v_span }}
         run: |
           echo "--- Rendering frames $START_FRAME to $END_FRAME ---"
           mkdir -p render_output
           python3 ball_tracker/render_segment.py \
-            --input        render_work/equirect_trim.mp4 \
-            --tracking     render_work/tracking.json \
-            --start-frame  $START_FRAME \
-            --end-frame    $END_FRAME \
-            --output-clean render_output/render_clean.mp4 \
-            --output-debug render_output/render_debug.mp4
+            --input           render_work/equirect_trim.mp4 \
+            --tracking        render_work/tracking.json \
+            --start-frame     $START_FRAME \
+            --end-frame       $END_FRAME \
+            --output-clean    render_output/render_clean.mp4 \
+            --output-debug    render_output/render_debug.mp4 \
+            --fallback-yaw    $FALLBACK_YAW \
+            --fallback-pitch  $FALLBACK_PITCH \
+            --fallback-h-span $FALLBACK_H_SPAN \
+            --fallback-v-span $FALLBACK_V_SPAN
           ls -lh render_output/
 
       - name: Upload render outputs as artifact
@@ -194,3 +218,4 @@ jobs:
 
           print(f"\nAll outputs at: https://drive.google.com/drive/folders/{subfolder_id}")
           PY
+
