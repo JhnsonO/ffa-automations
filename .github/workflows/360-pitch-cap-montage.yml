@@ -1,0 +1,109 @@
+name: 360 Pitch Cap Montage
+
+on:
+  workflow_dispatch:
+    inputs:
+      equirect_file_id:
+        description: 'Drive ID of equirect_trim.mp4'
+        required: true
+        default: '1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX'
+        type: string
+
+jobs:
+  montage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          pip install -q opencv-python-headless numpy google-auth google-auth-oauthlib google-api-python-client
+
+      - name: Get Drive token
+        env:
+          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 - << 'PY'
+          import json, urllib.request as _req
+          td = json.loads(open("/tmp/youtube_token.json").read())
+          cd = json.loads(open("/tmp/youtube_credentials.json").read())
+          cid = td.get("client_id") or cd["installed"]["client_id"]
+          cs  = td.get("client_secret") or cd["installed"]["client_secret"]
+          rt  = td["refresh_token"]
+          uri = td.get("token_uri", "https://oauth2.googleapis.com/token")
+          r = _req.urlopen(_req.Request(uri,
+              data=json.dumps({"client_id":cid,"client_secret":cs,"refresh_token":rt,"grant_type":"refresh_token"}).encode(),
+              headers={"Content-Type":"application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok: raise RuntimeError(tok)
+          open("/tmp/drive_token.txt","w").write(tok["access_token"])
+          print(f"Token OK (expires_in={tok.get('expires_in')}s)")
+          PY
+
+      - name: Download equirect_trim.mp4
+        env:
+          EQUIRECT_FILE_ID: ${{ github.event.inputs.equirect_file_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          sudo apt-get install -y -q aria2
+          aria2c -x 8 -s 8 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp --out=equirect_trim.mp4 \
+            "https://www.googleapis.com/drive/v3/files/$EQUIRECT_FILE_ID?alt=media" 2>&1 | tail -5
+          du -sh /tmp/equirect_trim.mp4
+
+      - name: Generate montage
+        run: |
+          python3 -c "import base64; open('/tmp/montage.py','wb').write(base64.b64decode(open('ball_tracker/pitch_cap_montage_v2.py','rb').read()))" 2>/dev/null || \
+          cp ball_tracker/pitch_cap_montage_v2.py /tmp/montage.py
+          python3 /tmp/montage.py --input /tmp/equirect_trim.mp4 --output /tmp/pitch_cap_montage.png
+          ls -lh /tmp/pitch_cap_montage.png
+
+      - name: Upload montage as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pitch-cap-montage-${{ github.run_id }}
+          path: /tmp/pitch_cap_montage.png
+          retention-days: 14
+
+      - name: Upload montage to Google Drive
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
+        run: |
+          echo "$YOUTUBE_CREDENTIALS" > youtube_credentials.json
+          echo "$YOUTUBE_TOKEN"       > youtube_token.json
+          python3 - << 'PY'
+          import os, json, urllib.request as _req, datetime
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          FOLDER_ID = "1gHW29JbvUWnbvJTCC0J8O7r-O1IPZAd8"
+          td = json.loads(open("youtube_token.json").read())
+          cd = json.loads(open("youtube_credentials.json").read())
+          cid = td.get("client_id") or cd["installed"]["client_id"]
+          cs  = td.get("client_secret") or cd["installed"]["client_secret"]
+          rt  = td["refresh_token"]
+          uri = td.get("token_uri","https://oauth2.googleapis.com/token")
+          r = _req.urlopen(_req.Request(uri,
+              data=json.dumps({"client_id":cid,"client_secret":cs,"refresh_token":rt,"grant_type":"refresh_token"}).encode(),
+              headers={"Content-Type":"application/json"},method="POST"))
+          tok = json.loads(r.read())
+          creds = Credentials(token=tok["access_token"],refresh_token=rt,token_uri=uri,
+              client_id=cid,client_secret=cs,scopes=["https://www.googleapis.com/auth/drive"])
+          creds.expiry = datetime.datetime.utcnow()+datetime.timedelta(seconds=int(tok.get("expires_in",3600)))
+          drive = build("drive","v3",credentials=creds,cache_discovery=False)
+          run_id = os.environ.get("GITHUB_RUN_ID","unknown")
+          media = MediaFileUpload("/tmp/pitch_cap_montage.png", mimetype="image/png", resumable=True)
+          up = drive.files().create(
+              body={"name":f"pitch_cap_montage_{run_id}.png","parents":[FOLDER_ID]},
+              media_body=media,fields="id,name,size").execute()
+          print(f"Uploaded: {up['name']}  id={up['id']}  size={int(up.get('size',0))//1024}KB")
+          PY
