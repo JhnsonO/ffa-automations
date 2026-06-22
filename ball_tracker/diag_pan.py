@@ -3,6 +3,11 @@
 Diagnostic: pan yaw from -90° to +90° at fixed pitch/FOV, output montage.
 Tests that the horizon/halfway-line stays level throughout the pan.
 Two rows: old (broken) rotation order vs new (world-up) rotation order.
+
+Modes:
+  --mode sanity   : yaw=0 only, compare OLD vs NEW, print MAD, save sanity_yaw0.jpg
+  --mode pm30     : yaw=-30,0,+30 only
+  --mode full     : full 7-yaw sweep montage (default)
 """
 import argparse, math, os
 import cv2, numpy as np
@@ -48,7 +53,7 @@ def extract_new(eq, yaw_deg, pitch_deg, fov_deg, roll_deg, out_w, out_h):
     f = (out_w / 2.0) / math.tan(math.radians(fov_deg / 2.0))
 
     # Forward vector from yaw + pitch (standard spherical, Y-up)
-    yaw  = math.radians(yaw_deg)
+    yaw   = math.radians(yaw_deg)
     pitch = math.radians(pitch_deg)
     fwd = np.array([
         math.sin(yaw) * math.cos(pitch),
@@ -56,13 +61,12 @@ def extract_new(eq, yaw_deg, pitch_deg, fov_deg, roll_deg, out_w, out_h):
         math.cos(yaw) * math.cos(pitch),
     ])
 
-    # Right: derived from yaw ONLY (horizontal, ignores pitch).
-    # Using cross(fwd, world_up) would tilt right when pitch!=0,
-    # causing yaw-dependent banking. This keeps right perfectly horizontal.
+    # Right: derived from yaw ONLY — always exactly horizontal regardless of pitch.
     right = np.array([math.cos(yaw), 0.0, -math.sin(yaw)])
 
-    # Up: orthogonal to both right and fwd
-    up = np.cross(right, fwd)
+    # Up: cross(fwd, right) gives [0,+1,0] at yaw=0,pitch=0  (sky = up).
+    # cross(right, fwd) would give [0,-1,0] — flipped world. Fixed here.
+    up = np.cross(fwd, right)
     up /= np.linalg.norm(up)
 
     # Apply roll within camera frame (rotate right/up)
@@ -78,17 +82,14 @@ def extract_new(eq, yaw_deg, pitch_deg, fov_deg, roll_deg, out_w, out_h):
     ys = np.linspace(0, out_h-1, out_h)
     xv, yv = np.meshgrid(xs, ys)
     rx_c = (xv - out_w/2.0) / f
-    ry_c = (yv - out_h/2.0) / f   # note: positive y = down in image = negative up
-    rz_c = np.ones_like(rx_c)
+    ry_c = (yv - out_h/2.0) / f
 
-    # Rotate to world space: world_ray = R @ [rx_c, -ry_c, rz_c]
-    # (flip ry_c sign so +y_image = -world_up)
     rx_c_flat = rx_c.ravel()
-    ry_c_flat = (-ry_c).ravel()   # image y flipped
-    rz_c_flat = rz_c.ravel()
+    ry_c_flat = (-ry_c).ravel()   # image y flipped: +row = down = -world_up
+    rz_c_flat = np.ones(rx_c_flat.shape)
 
-    cam_rays = np.stack([rx_c_flat, ry_c_flat, rz_c_flat], axis=0)  # (3, N)
-    world_rays = R @ cam_rays  # (3, N)
+    cam_rays  = np.stack([rx_c_flat, ry_c_flat, rz_c_flat], axis=0)  # (3,N)
+    world_rays = R @ cam_rays  # (3,N)
 
     wx, wy, wz = world_rays[0], world_rays[1], world_rays[2]
     norm = np.sqrt(wx**2 + wy**2 + wz**2)
@@ -110,6 +111,63 @@ def label(text, w):
     return bar
 
 
+def run_sanity(eq, pitch, fov, roll, out_path):
+    """yaw=0 only. Print basis vectors, MAD between OLD and NEW, save side-by-side."""
+    yaw = 0.0
+    pitch_r = math.radians(pitch)
+    yaw_r   = math.radians(yaw)
+    fwd   = np.array([math.sin(yaw_r)*math.cos(pitch_r),
+                      math.sin(pitch_r),
+                      math.cos(yaw_r)*math.cos(pitch_r)])
+    right = np.array([math.cos(yaw_r), 0.0, -math.sin(yaw_r)])
+    up    = np.cross(fwd, right)
+    up   /= np.linalg.norm(up)
+    print(f"[SANITY] basis at yaw=0 pitch={pitch}°:")
+    print(f"  fwd   = {fwd.round(4)}  (expect [0, 0, 1])")
+    print(f"  right = {right.round(4)}  (expect [1, 0, 0])")
+    print(f"  up    = {up.round(4)}  (expect [0, 1, 0])")
+
+    old_f = extract_old(eq, 0, pitch, fov, roll, THUMB_W, THUMB_H)
+    new_f = extract_new(eq, 0, pitch, fov, roll, THUMB_W, THUMB_H)
+
+    diff = np.abs(old_f.astype(np.float32) - new_f.astype(np.float32))
+    mad  = diff.mean()
+    maxd = diff.max()
+    match = "MATCH" if mad < 2.0 else "MISMATCH"
+    print(f"[SANITY] MAD={mad:.2f}  MAX_PIXEL_DIFF={maxd:.0f}  → {match}")
+
+    canvas = np.zeros((LABEL_H + THUMB_H, THUMB_W * 2, 3), dtype=np.uint8)
+    canvas[LABEL_H:, :THUMB_W]  = old_f
+    canvas[LABEL_H:, THUMB_W:]  = new_f
+    cv2.putText(canvas, "OLD  yaw=0",
+                (10, 24), FONT, 0.7, (255,255,255), 2, cv2.LINE_AA)
+    cv2.putText(canvas, f"NEW  yaw=0  MAD={mad:.1f}  {match}",
+                (THUMB_W+10, 24), FONT, 0.7, (255,255,255), 2, cv2.LINE_AA)
+    cv2.imwrite(out_path, canvas, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    print(f"[SANITY] Saved {out_path}")
+    return mad
+
+
+def run_sweep(eq, yaws, pitch, fov, roll, out_path, mode_label):
+    old_panels, new_panels = [], []
+    for yaw in yaws:
+        o = extract_old(eq, yaw, pitch, fov, roll, THUMB_W, THUMB_H)
+        n = extract_new(eq, yaw, pitch, fov, roll, THUMB_W, THUMB_H)
+        old_panels.append(np.vstack([label(f"OLD yaw={yaw:+.0f}°", THUMB_W), o]))
+        new_panels.append(np.vstack([label(f"NEW yaw={yaw:+.0f}°", THUMB_W), n]))
+        print(f"[diag] Rendered yaw={yaw:+.0f}°")
+
+    row_old = np.hstack(old_panels)
+    row_new = np.hstack(new_panels)
+    divider = np.full((8, row_old.shape[1], 3), 80, dtype=np.uint8)
+    old_hdr = label(f"── OLD rotation order  [{mode_label}] ──", row_old.shape[1])
+    new_hdr = label(f"── NEW world-up look-at  [{mode_label}] ──", row_new.shape[1])
+    montage = np.vstack([old_hdr, row_old, divider, new_hdr, row_new])
+    cv2.imwrite(out_path, montage, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    print(f"[diag] Saved {out_path}  shape={montage.shape}  "
+          f"size={os.path.getsize(out_path)//1024}KB")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input",   required=True)
@@ -119,9 +177,8 @@ def main():
     ap.add_argument("--roll",    type=float, default=4.0)
     ap.add_argument("--yaws",    nargs="+", default=["-90","-60","-30","0","30","60","90"])
     ap.add_argument("--output",  default="pan_diagnostic.jpg")
+    ap.add_argument("--mode",    choices=["sanity","pm30","full"], default="sanity")
     args = ap.parse_args()
-
-    yaws = [float(y) for y in args.yaws]
 
     cap = cv2.VideoCapture(args.input)
     cap.set(cv2.CAP_PROP_POS_FRAMES, args.frame)
@@ -129,30 +186,20 @@ def main():
     cap.release()
     if not ret:
         raise RuntimeError(f"Could not read frame {args.frame}")
-    print(f"[diag] Frame {args.frame} extracted")
+    print(f"[diag] Frame {args.frame} extracted  shape={eq.shape}")
 
-    old_panels, new_panels = [], []
-    for yaw in yaws:
-        o = extract_old(eq, yaw, args.pitch, args.fov, args.roll, THUMB_W, THUMB_H)
-        n = extract_new(eq, yaw, args.pitch, args.fov, args.roll, THUMB_W, THUMB_H)
-        old_panels.append(np.vstack([label(f"OLD yaw={yaw:+.0f}°", THUMB_W), o]))
-        new_panels.append(np.vstack([label(f"NEW yaw={yaw:+.0f}°", THUMB_W), n]))
-        print(f"[diag] Rendered yaw={yaw:+.0f}°")
+    if args.mode == "sanity":
+        run_sanity(eq, args.pitch, args.fov, args.roll, args.output)
 
-    row_old = np.hstack(old_panels)
-    row_new = np.hstack(new_panels)
+    elif args.mode == "pm30":
+        run_sweep(eq, [-30.0, 0.0, 30.0], args.pitch, args.fov, args.roll,
+                  args.output, "±30°")
 
-    divider = np.full((8, row_old.shape[1], 3), 80, dtype=np.uint8)
-    old_hdr = label("── OLD rotation order (banking at non-zero yaw) ──", row_old.shape[1])
-    new_hdr = label("── NEW world-up look-at (horizon stable) ──", row_new.shape[1])
-
-    montage = np.vstack([old_hdr, row_old, divider, new_hdr, row_new])
-    cv2.imwrite(args.output, montage, [cv2.IMWRITE_JPEG_QUALITY, 90])
-    print(f"[diag] Saved {args.output}  shape={montage.shape}  "
-          f"size={os.path.getsize(args.output)//1024}KB")
+    else:  # full
+        yaws = [float(y) for y in args.yaws]
+        run_sweep(eq, yaws, args.pitch, args.fov, args.roll,
+                  args.output, "full sweep")
 
 
 if __name__ == "__main__":
     main()
-
-
