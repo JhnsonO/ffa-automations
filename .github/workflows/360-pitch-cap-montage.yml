@@ -60,7 +60,6 @@ jobs:
 
       - name: Generate montage
         run: |
-          python3 -c "import base64; open('/tmp/montage.py','wb').write(base64.b64decode(open('ball_tracker/pitch_cap_montage_v2.py','rb').read()))" 2>/dev/null || \
           cp ball_tracker/pitch_cap_montage_v2.py /tmp/montage.py
           python3 /tmp/montage.py --input /tmp/equirect_trim.mp4 --output /tmp/pitch_cap_montage.png
           ls -lh /tmp/pitch_cap_montage.png
