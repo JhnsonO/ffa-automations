@@ -557,7 +557,19 @@ def run_tracker(equirect_path, output_path, json_path,
     static_lock_active        = False
     static_lock_start_frame   = None
     # v10e: initialise blacklist from seeded calibration zones; dynamic zones appended later
-    _seed_zones = seed_blacklist_zones or []
+    # v10e: seed zones — from param, or auto-load seed_blacklist.json if present in cwd
+    if seed_blacklist_zones is not None:
+        _seed_zones = seed_blacklist_zones
+    else:
+        import json as _json_seed
+        import os as _os_seed
+        _seed_file = _os_seed.path.join(_os_seed.getcwd(), "seed_blacklist.json")
+        if _os_seed.path.exists(_seed_file):
+            with open(_seed_file) as _sf:
+                _seed_zones = _json_seed.load(_sf)
+            print(f"[v10e] Loaded " + str(len(_seed_zones)) + " seeded blacklist zone(s) from seed_blacklist.json")
+        else:
+            _seed_zones = []
     static_blacklist = [
         {
             "yaw":              z["yaw"],
