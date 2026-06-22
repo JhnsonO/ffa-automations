@@ -1,29 +1,43 @@
 #!/usr/bin/env python3
 """
-FFA 360 Ball Tracker — v9 (Pitch Plausibility Scoring)
-=============================================
+FFA 360 Ball Tracker — v11 (Bootstrap Static Background Suppression)
+=====================================================================
 Input:  equirect_trim.mp4
 Output: tracking.json  (always)
         tracked.mp4    (only if --metrics-only is NOT set)
 
-v7 diagnosis: hard angular cap (MAX_FRAME_DELTA_DEG) is the wrong discriminator.
-  - Raw candidate delta p50=76°, p90=139° — real ball detections are genuinely
-    far from the Kalman prediction because the Kalman was poisoned at frame 1.
-  - Tracker initialises from the first accepted candidate. If that's junk, every
-    subsequent real detection looks geometrically distant → cap rejects them →
-    tracker locks onto junk indefinitely.
+v11 replaces the reactive post-lock blacklist (v10c/d/e) with a proactive
+bootstrap suppressor:
 
-v8 fixes:
-  1. REMOVE MAX_FRAME_DELTA_DEG entirely. Mahalanobis handles temporal gating.
-  2. TRACKLET WARM-UP: collect KALMAN_INIT_FRAMES=5 frames before committing
-     Kalman state. Build candidate tracklets across those frames using spherical
-     distance + size similarity + confidence. Initialise from the strongest chain.
-  3. STATE MACHINE: UNINITIALIZED → WARMING_UP → TRACKING → UNCERTAIN → LOST
-  4. NumPy deprecation fixes: kf.x[N] → kf.x[N, 0] throughout.
-  5. Extended diagnostics in tracking.json.
+  1. BOOTSTRAP PASS (pre warm-up):
+     Scan BOOTSTRAP_FRAMES frames of raw YOLO candidates.
+     Cluster recurring detections by spherical proximity.
+     Any cluster present in >= HOTSPOT_MIN_COVERAGE fraction of bootstrap
+     frames is marked as a persistent background hotspot.
+     These zones are suppressed from frame 0 — before warm-up, before
+     Kalman initialisation, before any candidate is scored.
 
---metrics-only flag:
-  Skips render. Produces tracking.json only. ~5x faster. Use for all experiments.
+  2. MAIN PASS:
+     Hotspot suppression applied to every candidate in every state:
+     WARMING_UP, TRACKING, UNCERTAIN, LOST.
+     No reactive blacklist. No grace period. No post-lock patching.
+
+Retained from v10b (baseline):
+  - PITCH_HARD_MAX = 18° pre-filter
+  - State machine: UNINITIALIZED → WARMING_UP → TRACKING → UNCERTAIN → LOST
+  - Tracklet warm-up (KALMAN_INIT_FRAMES=5, WARMUP_MIN_CHAIN_LEN=3)
+  - Mahalanobis gating, scoring weights, loss handling, player centroid drift
+
+Removed:
+  - v10c STATIC_LOCK_WINDOW / STD-based reactive detection
+  - v10d permanent blacklist added post-lock
+  - v10e seed_blacklist_zones / seed_blacklist.json
+
+Logging (new):
+  - bootstrap_hotspots: [{yaw, pitch, radius, frame_count, coverage_pct}]
+  - hotspot_suppression_count: total candidates suppressed by hotspot map
+  - hotspot_suppression_by_zone: hit count per hotspot
+  - confirmed_fence_hotspot: True if known -77.4°/-3.9° zone found pre-warmup
 """
 
 import argparse
@@ -38,7 +52,7 @@ from filterpy.kalman import KalmanFilter
 from ultralytics import YOLO
 
 # ---------------------------------------------------------------------------
-# Config — detection (unchanged from v5)
+# Config — detection
 # ---------------------------------------------------------------------------
 FFMPEG           = os.environ.get("FFMPEG_BIN", "/usr/bin/ffmpeg")
 CROP_YAWS_DEG    = [0, 90, 180, 270]
@@ -48,8 +62,8 @@ CROP_H           = 720
 DEDUP_THRESH_DEG = 15
 YOLO_CONF        = 0.12
 YOLO_IMGSZ       = 1280
-BALL_CLASS_ID    = 0   # football model: class 0 == ball
-PERSON_CLASS_ID  = 0   # yolov8s.pt: class 0 == person
+BALL_CLASS_ID    = 0
+PERSON_CLASS_ID  = 0
 
 OUTPUT_W         = 1920
 OUTPUT_H         = 1080
@@ -57,34 +71,29 @@ OUTPUT_FOV_DEG   = 90
 LEAD_DEG         = 3.0
 
 # ---------------------------------------------------------------------------
-# Config — candidate scoring weights (unchanged from v6)
+# Config — candidate scoring weights
 # ---------------------------------------------------------------------------
 W_CONF   = 0.20
 W_POS    = 0.25
-W_PITCH  = 0.15   # v9: pitch plausibility
+W_PITCH  = 0.15
 W_SIZE   = 0.20
 W_MOTION = 0.10
 W_EDGE   = 0.10
 
 MIN_CANDIDATE_SCORE   = 0.35
-# MAX_FRAME_DELTA_DEG removed in v8 — Mahalanobis handles temporal gating
 HYSTERESIS_MARGIN     = 0.08
 MAHAL_SOFT_THRESH     = 4.0
 MAHAL_FAST_THRESH     = 8.0
 FAST_MOVEMENT_DEG     = 5.0
 
 # ---------------------------------------------------------------------------
-# Config — v8 warm-up / state machine
+# Config — warm-up / state machine
 # ---------------------------------------------------------------------------
-KALMAN_INIT_FRAMES       = 5     # collect this many frames before committing Kalman
-WARMUP_MIN_CHAIN_LEN     = 3     # minimum tracklet length to consider valid
-WARMUP_SIZE_RATIO_THRESH = 0.3   # max log-ratio difference for size consistency
-WARMUP_DIST_THRESH_DEG   = 18.0  # max spherical distance between consecutive frames in chain
-UNCERTAIN_STREAK         = 3     # frames with score < UNCERTAIN_SCORE_THRESH → UNCERTAIN
-UNCERTAIN_SCORE_THRESH   = 0.50
+KALMAN_INIT_FRAMES       = 5
+WARMUP_MIN_CHAIN_LEN     = 3
 
 # ---------------------------------------------------------------------------
-# Config — loss handling (unchanged from v4/v5)
+# Config — loss handling
 # ---------------------------------------------------------------------------
 LOSS_EXTRAPOLATE_FRAMES = 45
 LOSS_HOLD_FRAMES        = 90
@@ -96,22 +105,29 @@ EMA_ALPHA_LOSS          = 0.08
 MAX_EXTRAP_VELOCITY_DEG = 3.0
 EDGE_PENALTY_ZONE       = 80
 
+UNCERTAIN_SCORE_THRESH  = 0.25
+UNCERTAIN_STREAK        = 5
+
 # ---------------------------------------------------------------------------
 # Config — v9 pitch plausibility
 # ---------------------------------------------------------------------------
-PITCH_SOFT_MIN = -30.0   # degrees — real ball is almost never above this pitch
-PITCH_SOFT_MAX =  10.0   # degrees — real ball rarely goes above this on a football pitch
-PITCH_PLAUSIBILITY_DECAY = 8.0  # degrees outside range for score to reach 0.0
-PITCH_HARD_MAX           = 18.0 # v10b: hard ceiling — candidates above this are rejected before scoring
+PITCH_SOFT_MIN = -30.0
+PITCH_SOFT_MAX =  10.0
+PITCH_PLAUSIBILITY_DECAY = 8.0
+PITCH_HARD_MAX           = 18.0  # v10b: hard ceiling
 
 # ---------------------------------------------------------------------------
-# Config — v10c static-lock breaker
+# Config — v11 bootstrap static background suppression
 # ---------------------------------------------------------------------------
-STATIC_LOCK_WINDOW      = 90    # frames: rolling window to measure position spread
-STATIC_LOCK_STD_MAX     = 0.4   # degrees: max std-dev of yaw OR pitch to flag static lock
-STATIC_LOCK_GRACE       = 45    # frames: confirmed-ball frames before lock can trigger (real ball can pause briefly)
-STATIC_BLACKLIST_RADIUS = 2.0   # degrees: exclusion zone around a detected static lock
-# v10d: blacklist entries are permanent for the clip duration (permanent=True in each entry)
+BOOTSTRAP_FRAMES        = 150   # frames to scan before warm-up begins
+HOTSPOT_CLUSTER_RADIUS  = 5.0   # degrees: merge candidates within this radius
+HOTSPOT_MIN_COVERAGE    = 0.40  # fraction of bootstrap frames a cluster must appear in
+HOTSPOT_SUPPRESS_RADIUS = 5.0   # degrees: suppression zone around each hotspot centre
+
+# Known fence zone for pre-warmup confirmation logging
+KNOWN_FENCE_YAW   = -77.4
+KNOWN_FENCE_PITCH = -3.9
+KNOWN_FENCE_CONFIRM_RADIUS = 10.0  # degrees
 
 
 # ---------------------------------------------------------------------------
@@ -173,43 +189,40 @@ def crop_pixel_to_yaw_pitch(px, py, crop_yaw_deg, fov_deg, w, h):
     Ry = np.array([[ math.cos(cy), 0, math.sin(cy)],
                    [            0, 1,            0],
                    [-math.sin(cy), 0, math.cos(cy)]])
-    world_ray = Ry @ ray
-    yaw   = math.degrees(math.atan2(world_ray[0], world_ray[2]))
-    pitch = math.degrees(math.asin(np.clip(world_ray[1], -1, 1)))
+    world = Ry @ ray
+    yaw   = math.degrees(math.atan2(world[0], world[2]))
+    pitch = math.degrees(math.asin(max(-1.0, min(1.0, world[1]))))
     return yaw, pitch
 
 
 def angular_distance(y1, p1, y2, p2):
-    y1, p1, y2, p2 = map(math.radians, [y1, p1, y2, p2])
-    dot = (math.cos(p1)*math.cos(y1)*math.cos(p2)*math.cos(y2) +
-           math.cos(p1)*math.sin(y1)*math.cos(p2)*math.sin(y2) +
-           math.sin(p1)*math.sin(p2))
-    return math.degrees(math.acos(np.clip(dot, -1, 1)))
+    dy = math.radians(y1 - y2)
+    dp = math.radians(p1 - p2)
+    return math.degrees(math.acos(max(-1.0, min(1.0,
+        math.sin(math.radians(p1)) * math.sin(math.radians(p2)) +
+        math.cos(math.radians(p1)) * math.cos(math.radians(p2)) * math.cos(dy)
+    ))))
 
 
 def dedupe_detections(detections, thresh_deg=DEDUP_THRESH_DEG):
-    if not detections:
-        return []
-    detections = sorted(detections, key=lambda d: -d[2])
     kept = []
-    for d in detections:
-        if not any(angular_distance(d[0], d[1], k[0], k[1]) < thresh_deg for k in kept):
-            kept.append(d)
+    for det in sorted(detections, key=lambda d: -d[2]):
+        yaw, pitch, conf = det[:3]
+        if not any(angular_distance(yaw, pitch, k[0], k[1]) < thresh_deg for k in kept):
+            kept.append(det)
     return kept
 
 
 def player_centroid_from_detections(person_detections):
     if not person_detections:
         return None
-    total_conf = sum(d[2] for d in person_detections)
-    if total_conf == 0:
-        return None
-    return (sum(d[0] * d[2] for d in person_detections) / total_conf,
-            sum(d[1] * d[2] for d in person_detections) / total_conf)
+    yaws   = [d[0] for d in person_detections]
+    pitches = [d[1] for d in person_detections]
+    return sum(yaws) / len(yaws), sum(pitches) / len(pitches)
 
 
 # ---------------------------------------------------------------------------
-# Frame extraction
+# Crop extraction
 # ---------------------------------------------------------------------------
 def extract_crop_frame(equirect_frame, crop_yaw_deg, fov_deg, out_w, out_h):
     h_eq, w_eq = equirect_frame.shape[:2]
@@ -230,17 +243,18 @@ def extract_crop_frame(equirect_frame, crop_yaw_deg, fov_deg, out_w, out_h):
     pitch_map = np.arcsin(np.clip(wy, -1, 1))
     map_x = ((yaw_map / (2 * math.pi)) + 0.5) * w_eq
     map_y = (0.5 - pitch_map / math.pi) * h_eq
-    return cv2.remap(equirect_frame, map_x.astype(np.float32), map_y.astype(np.float32),
+    return cv2.remap(equirect_frame,
+                     map_x.astype(np.float32), map_y.astype(np.float32),
                      interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
 
 
 # ---------------------------------------------------------------------------
-# Ball size tracker
+# Size / velocity trackers
 # ---------------------------------------------------------------------------
 class BallSizeTracker:
     def __init__(self, history=BALL_SIZE_HISTORY):
-        self._sizes = []
         self._history = history
+        self._sizes   = []
 
     def update(self, bbox_area):
         self._sizes.append(bbox_area)
@@ -248,212 +262,200 @@ class BallSizeTracker:
             self._sizes.pop(0)
 
     def expected_size(self):
-        return float(np.median(self._sizes)) if self._sizes else None
+        return sum(self._sizes) / len(self._sizes) if self._sizes else None
 
     def size_score(self, bbox_area):
         exp = self.expected_size()
-        if exp is None or exp == 0:
-            return 1.0
+        if exp is None or exp <= 0:
+            return 0.5
         ratio = bbox_area / exp
-        return math.exp(-abs(math.log(ratio)) * 2)
+        return max(0.0, 1.0 - abs(math.log(max(ratio, 1e-6))) / 2.0)
 
 
-# ---------------------------------------------------------------------------
-# Velocity tracker
-# ---------------------------------------------------------------------------
 class VelocityTracker:
     def __init__(self, history=8):
         self._history = history
-        self._dyaws   = []
-        self._dpitches = []
+        self._vels    = []
 
     def update(self, dyaw, dpitch):
-        self._dyaws.append(dyaw)
-        self._dpitches.append(dpitch)
-        if len(self._dyaws) > self._history:
-            self._dyaws.pop(0)
-            self._dpitches.pop(0)
+        self._vels.append((dyaw, dpitch))
+        if len(self._vels) > self._history:
+            self._vels.pop(0)
 
     def expected_velocity(self):
-        if not self._dyaws:
+        if not self._vels:
             return 0.0, 0.0
-        return float(np.mean(self._dyaws)), float(np.mean(self._dpitches))
+        return (sum(v[0] for v in self._vels) / len(self._vels),
+                sum(v[1] for v in self._vels) / len(self._vels))
 
     def motion_score(self, dyaw, dpitch):
-        edy, edp = self.expected_velocity()
-        diff = math.sqrt((dyaw - edy)**2 + (dpitch - edp)**2)
-        return math.exp(-diff * 0.3)
+        ey, ep = self.expected_velocity()
+        pred_dist = math.sqrt((dyaw - ey)**2 + (dpitch - ep)**2)
+        return max(0.0, 1.0 - pred_dist / 10.0)
 
 
 # ---------------------------------------------------------------------------
-# v8: Tracklet warm-up builder
+# v11: Bootstrap static background map builder
+# ---------------------------------------------------------------------------
+def build_static_hotspot_map(bootstrap_candidates):
+    """
+    bootstrap_candidates: list of per-frame lists, each [(yaw, pitch, conf), ...]
+    Returns list of hotspot dicts: {yaw, pitch, radius, frame_count, coverage_pct}
+    Uses greedy spherical clustering. A cluster must appear in
+    >= HOTSPOT_MIN_COVERAGE fraction of bootstrap frames to be flagged.
+    """
+    n_frames = len(bootstrap_candidates)
+    if n_frames == 0:
+        return []
+
+    # Build clusters: list of {centre_yaw, centre_pitch, frames: set}
+    clusters = []
+
+    for fi, frame_cands in enumerate(bootstrap_candidates):
+        for yaw, pitch, conf in frame_cands:
+            matched = False
+            for cl in clusters:
+                if angular_distance(yaw, pitch, cl["yaw"], cl["pitch"]) < HOTSPOT_CLUSTER_RADIUS:
+                    # Update cluster centre as running mean
+                    n = len(cl["frames"])
+                    cl["yaw"]   = (cl["yaw"] * n + yaw)   / (n + 1)
+                    cl["pitch"] = (cl["pitch"] * n + pitch) / (n + 1)
+                    cl["frames"].add(fi)
+                    matched = True
+                    break
+            if not matched:
+                clusters.append({"yaw": yaw, "pitch": pitch, "frames": {fi}})
+
+    hotspots = []
+    for cl in clusters:
+        coverage = len(cl["frames"]) / n_frames
+        if coverage >= HOTSPOT_MIN_COVERAGE:
+            hotspots.append({
+                "yaw":          round(cl["yaw"], 2),
+                "pitch":        round(cl["pitch"], 2),
+                "radius":       HOTSPOT_SUPPRESS_RADIUS,
+                "frame_count":  len(cl["frames"]),
+                "coverage_pct": round(100.0 * coverage, 1),
+                "hit_count":    0,
+            })
+
+    return hotspots
+
+
+def is_hotspot_suppressed(yaw, pitch, hotspots):
+    for hs in hotspots:
+        if angular_distance(yaw, pitch, hs["yaw"], hs["pitch"]) < hs["radius"]:
+            hs["hit_count"] += 1
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Warm-up tracklet builder (unchanged from v8/v10b)
 # ---------------------------------------------------------------------------
 def build_warmup_tracklets(warmup_frames):
-    """
-    warmup_frames: list of lists, each inner list is the deduped candidates
-    for that frame: [(yaw, pitch, conf, area), ...]
-
-    Returns (best_chain, consistency_score) where best_chain is a list of
-    (frame_idx, yaw, pitch, conf, area) tuples from the winning tracklet,
-    or (None, 0.0) if no valid chain found.
-    """
-    n = len(warmup_frames)
-    if n == 0:
-        return None, 0.0
-
-    # Each node: (frame_idx, candidate_idx, yaw, pitch, conf, area)
+    best_chain, best_score = None, -1.0
     nodes = []
     for fi, candidates in enumerate(warmup_frames):
         for ci, (yaw, pitch, conf, area) in enumerate(candidates):
             nodes.append((fi, ci, yaw, pitch, conf, area))
 
-    # Build chains greedily: for each node as chain start, extend forward
-    best_chain = None
-    best_score = -1.0
+    if not nodes:
+        return None, 0.0
 
-    for start_node in nodes:
-        chain = [start_node]
-        for fi in range(start_node[0] + 1, n):
-            last = chain[-1]
-            best_next = None
-            best_link_score = -1.0
-            for candidate in warmup_frames[fi]:
-                yaw, pitch, conf, area = candidate
-                dist = angular_distance(last[2], last[3], yaw, pitch)
-                if dist > WARMUP_DIST_THRESH_DEG:
-                    continue
-                # Size consistency
-                if last[5] > 0 and area > 0:
-                    size_ratio = abs(math.log(area / last[5]))
-                    if size_ratio > WARMUP_SIZE_RATIO_THRESH * 3:
-                        continue
-                    size_sim = math.exp(-size_ratio * 2)
-                else:
-                    size_sim = 0.5
-                # Link score: confidence + proximity + size similarity + pitch plausibility
-                prox_score   = max(0.0, 1.0 - dist / WARMUP_DIST_THRESH_DEG)
-                pitch_score  = pitch_plausibility(pitch)
-                if pitch_score == 0.0:
-                    # Hard-exclude impossible pitch in warm-up chain
-                    print(f"[v9 warmup] excluding candidate pitch={pitch:.1f}° (plausibility=0)")
-                    continue
-                link_score = 0.35 * conf + 0.35 * prox_score + 0.15 * size_sim + 0.15 * pitch_score
-                if link_score > best_link_score:
-                    best_link_score = link_score
-                    best_next = (fi, 0, yaw, pitch, conf, area)
+    chains = {i: {"path": [i], "score": nodes[i][4]} for i in range(len(nodes))}
 
-            if best_next is not None:
-                chain.append(best_next)
+    for i, (fi, ci, yaw, pitch, conf, area) in enumerate(nodes):
+        for j, (fj, cj, yw2, pt2, cf2, ar2) in enumerate(nodes):
+            if fj != fi + 1:
+                continue
+            dist = angular_distance(yaw, pitch, yw2, pt2)
+            if dist > 30.0:
+                continue
+            link_score = (conf + cf2) / 2.0 - dist / 60.0
+            for seed, chain in list(chains.items()):
+                if chain["path"][-1] == i:
+                    new_score = chain["score"] + link_score
+                    if j not in chains or chains[j]["score"] < new_score:
+                        chains[j] = {"path": chain["path"] + [j], "score": new_score}
 
-        if len(chain) < WARMUP_MIN_CHAIN_LEN:
+    for chain in chains.values():
+        path = chain["path"]
+        if len(path) < WARMUP_MIN_CHAIN_LEN:
             continue
-
-        # Score the chain
-        frame_coverage = len(chain) / n
-        mean_conf = sum(c[4] for c in chain) / len(chain)
-        # Size consistency across chain
-        areas = [c[5] for c in chain if c[5] > 0]
-        if len(areas) >= 2:
-            log_areas = [math.log(a) for a in areas]
-            size_consistency = math.exp(-float(np.std(log_areas)))
-        else:
-            size_consistency = 0.5
-        # Motion smoothness: variance of frame-to-frame angular deltas
-        if len(chain) >= 2:
-            deltas = [angular_distance(chain[i][2], chain[i][3],
-                                       chain[i+1][2], chain[i+1][3])
-                      for i in range(len(chain)-1)]
-            smoothness = math.exp(-float(np.std(deltas)) * 0.1)
-        else:
-            smoothness = 0.5
-
-        chain_score = (0.35 * mean_conf +
-                       0.25 * frame_coverage +
-                       0.20 * size_consistency +
-                       0.20 * smoothness)
-
-        if chain_score > best_score:
-            best_score = chain_score
-            best_chain = chain
+        # Hard-exclude impossible pitch in warm-up chain
+        if any(nodes[k][3] > PITCH_HARD_MAX for k in path):
+            continue
+        if chain["score"] > best_score:
+            best_score = chain["score"]
+            best_chain = [(nodes[k][0], nodes[k][1], nodes[k][2], nodes[k][3],
+                           chain["score"], nodes[k][5]) for k in path]
 
     return best_chain, best_score
 
 
 # ---------------------------------------------------------------------------
-# v9: Pitch plausibility scorer
+# Pitch plausibility (v9, unchanged)
 # ---------------------------------------------------------------------------
 def pitch_plausibility(pitch_deg):
-    """Soft pitch penalty. Returns 1.0 inside [PITCH_SOFT_MIN, PITCH_SOFT_MAX],
-    decays linearly to 0.0 at PITCH_PLAUSIBILITY_DECAY degrees outside the range.
-    Candidates at pitch=48.8° → 0.0 (the v8 failure case)."""
+    if pitch_deg > PITCH_HARD_MAX:
+        return 0.0
     if PITCH_SOFT_MIN <= pitch_deg <= PITCH_SOFT_MAX:
         return 1.0
-    distance = max(PITCH_SOFT_MIN - pitch_deg, pitch_deg - PITCH_SOFT_MAX)
-    return max(0.0, 1.0 - distance / PITCH_PLAUSIBILITY_DECAY)
+    dist = max(0.0, pitch_deg - PITCH_SOFT_MAX) if pitch_deg > PITCH_SOFT_MAX \
+           else max(0.0, PITCH_SOFT_MIN - pitch_deg)
+    return max(0.0, 1.0 - dist / PITCH_PLAUSIBILITY_DECAY)
 
 
 # ---------------------------------------------------------------------------
-# Candidate scorer — v9: pitch plausibility added
+# Candidate scorer (unchanged from v10b)
 # ---------------------------------------------------------------------------
 def score_candidate(candidate, kf, kf_initialised, ball_size_tracker, vel_tracker,
-                    last_yaw, last_pitch, crop_yaw_deg, tracker_state):
-    """
-    Returns (total_score, component_dict).
-    No hard rejects in v8 — Mahalanobis handles temporal discrimination.
-    """
+                    last_yaw, last_pitch, crop_yaw, tracker_state):
     yaw, pitch, conf, area, px, py = candidate
 
-    components = {}
-    components["conf"] = float(conf)
+    plaus = pitch_plausibility(pitch)
+    if plaus == 0.0:
+        return 0.0, {"_rejected": "pitch_hard_max"}
 
-    # Position consistency vs Kalman prediction
-    if kf_initialised and tracker_state in (TrackerState.TRACKING, TrackerState.UNCERTAIN):
+    conf_score   = min(1.0, conf / 0.5)
+    size_score   = ball_size_tracker.size_score(area)
+
+    if kf_initialised:
         pred_yaw   = float(kf.x[0, 0])
         pred_pitch = float(kf.x[1, 0])
-        vel_mag    = math.sqrt(float(kf.x[2, 0])**2 + float(kf.x[3, 0])**2)
-
-        mahal_thresh = MAHAL_FAST_THRESH if vel_mag > FAST_MOVEMENT_DEG else MAHAL_SOFT_THRESH
-        z     = np.array([[yaw], [pitch]])
-        innov = z - kf.H @ kf.x
-        S     = kf.H @ kf.P @ kf.H.T + kf.R
+        dy  = yaw   - pred_yaw
+        dp  = pitch - pred_pitch
+        S   = kf.S if hasattr(kf, "S") else np.eye(2) * 25.0
         try:
-            mahal = float(np.sqrt(innov.T @ np.linalg.inv(S) @ innov))
-        except np.linalg.LinAlgError:
+            z   = np.array([dy, dp])
+            Si  = np.linalg.inv(S)
+            mahal = float(np.sqrt(z @ Si @ z))
+        except Exception:
             mahal = 0.0
-        components["pos"]    = max(0.0, 1.0 - mahal / (mahal_thresh * 2))
-        components["_mahal"] = mahal
-
-        dyaw   = yaw   - last_yaw
-        dpitch = pitch - last_pitch
-        components["motion"] = vel_tracker.motion_score(dyaw, dpitch)
+        if mahal > MAHAL_FAST_THRESH and angular_distance(yaw, pitch, last_yaw, last_pitch) > FAST_MOVEMENT_DEG:
+            mahal = min(mahal, MAHAL_SOFT_THRESH)
+        pos_score = max(0.0, 1.0 - mahal / 10.0)
+        dyaw_v  = yaw   - last_yaw
+        dpitch_v = pitch - last_pitch
+        motion_score = vel_tracker.motion_score(dyaw_v, dpitch_v)
     else:
-        # Warming up or uninitialised: position and motion scores are neutral
-        components["pos"]    = 1.0
-        components["motion"] = 1.0
-        components["_mahal"] = 0.0
+        pos_score    = 0.5
+        mahal        = 0.0
+        motion_score = 0.5
 
-    components["size"] = ball_size_tracker.size_score(area) if area else 1.0
+    edge_dist   = min(abs(px), abs(CROP_W - px))
+    edge_score  = min(1.0, edge_dist / EDGE_PENALTY_ZONE)
 
-    edge_dist = min(px, CROP_W - px, py, CROP_H - py)
-    edge_score = min(1.0, edge_dist / EDGE_PENALTY_ZONE)
-    components["edge"] = edge_score
+    score = (W_CONF * conf_score + W_POS * pos_score + W_PITCH * plaus +
+             W_SIZE * size_score + W_MOTION * motion_score + W_EDGE * edge_score)
 
-    # v9: pitch plausibility
-    p_score = pitch_plausibility(pitch)
-    components["pitch_plausibility"] = p_score
-    if p_score < 1.0:
-        # Log any candidate outside the plausible pitch range
-        print(f"[v9] pitch_plausibility warning: pitch={pitch:.1f}° score={p_score:.3f} "
-              f"conf={conf:.3f} total_pre_pitch={(W_CONF*float(conf) + W_POS*components['pos'] + W_SIZE*components['size'] + W_MOTION*components['motion'] + W_EDGE*edge_score):.3f}")
-
-    total = (W_CONF   * components["conf"] +
-             W_POS    * components["pos"] +
-             W_PITCH  * components["pitch_plausibility"] +
-             W_SIZE   * components["size"] +
-             W_MOTION * components["motion"] +
-             W_EDGE   * components["edge"])
-
-    return total, components
+    return score, {
+        "conf_score": round(conf_score, 3), "pos_score": round(pos_score, 3),
+        "plaus": round(plaus, 3), "size_score": round(size_score, 3),
+        "motion_score": round(motion_score, 3), "edge_score": round(edge_score, 3),
+        "_mahal": round(mahal, 3),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -462,8 +464,7 @@ def score_candidate(candidate, kf, kf_initialised, ball_size_tracker, vel_tracke
 def run_tracker(equirect_path, output_path, json_path,
                 ball_model_path="models/football-ball-detection.pt",
                 person_model_path="yolov8s.pt",
-                metrics_only=False,
-                seed_blacklist_zones=None):  # v10e: list of {yaw,pitch,radius} seeded from calibration
+                metrics_only=False):
 
     device = get_device()
 
@@ -476,26 +477,74 @@ def run_tracker(equirect_path, output_path, json_path,
     person_model.to(device)
 
     print("=" * 70)
-    print("[v9 PITCH PLAUSIBILITY — soft pitch scorer, warmup pitch gate, per-candidate logging]")
-    print(f"  ball_model    : {ball_model_path}  names={ball_model.names}")
-    print(f"  device        : {device}")
-    print(f"  crop res      : {CROP_W}x{CROP_H}  fov={CROP_FOV_DEG}  yaws={CROP_YAWS_DEG}")
-    print(f"  imgsz         : {YOLO_IMGSZ}   conf={YOLO_CONF}")
-    print(f"  metrics_only  : {metrics_only}")
-    print(f"  kalman_init   : {KALMAN_INIT_FRAMES} frames, min chain {WARMUP_MIN_CHAIN_LEN}")
-    print(f"  scoring       : conf={W_CONF} pos={W_POS} pitch={W_PITCH} size={W_SIZE} motion={W_MOTION} edge={W_EDGE}")
-    print(f"  pitch_range   : [{PITCH_SOFT_MIN}, {PITCH_SOFT_MAX}] decay={PITCH_PLAUSIBILITY_DECAY}°")
-    print(f"  min_score     : {MIN_CANDIDATE_SCORE}   hysteresis={HYSTERESIS_MARGIN}")
-    print(f"  hard_cap      : REMOVED (v8)")
+    print("[v11 BOOTSTRAP STATIC BACKGROUND SUPPRESSION]")
+    print(f"  bootstrap_frames   : {BOOTSTRAP_FRAMES}")
+    print(f"  cluster_radius     : {HOTSPOT_CLUSTER_RADIUS}°")
+    print(f"  min_coverage       : {HOTSPOT_MIN_COVERAGE*100:.0f}%")
+    print(f"  suppress_radius    : {HOTSPOT_SUPPRESS_RADIUS}°")
+    print(f"  pitch_hard_max     : {PITCH_HARD_MAX}°")
+    print(f"  kalman_init_frames : {KALMAN_INIT_FRAMES}  min_chain={WARMUP_MIN_CHAIN_LEN}")
     print("=" * 70)
 
-    # Raise OpenCV's packet-read attempt limit — equirect MP4s may have
-    # multiple streams (audio/metadata) that exhaust the default 4096 limit.
     os.environ["OPENCV_FFMPEG_READ_ATTEMPTS"] = "65536"
+
+    # ====================================================================
+    # PASS 1: Bootstrap — scan first BOOTSTRAP_FRAMES for static hotspots
+    # ====================================================================
+    print(f"\n[v11] === BOOTSTRAP PASS (frames 0–{BOOTSTRAP_FRAMES-1}) ===")
     cap = cv2.VideoCapture(equirect_path, cv2.CAP_FFMPEG)
     fps          = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f"[video] {total_frames} frames @ {fps:.2f} fps")
+
+    bootstrap_candidates = []   # per-frame lists of (yaw, pitch, conf)
+    for fi in range(min(BOOTSTRAP_FRAMES, total_frames)):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        raw = []
+        for crop_yaw in CROP_YAWS_DEG:
+            crop = extract_crop_frame(frame, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
+            res  = ball_model(crop, imgsz=YOLO_IMGSZ, conf=YOLO_CONF,
+                              verbose=False, classes=[BALL_CLASS_ID], device=device)
+            for box in res[0].boxes:
+                x1, y1, x2, y2 = [float(v) for v in box.xyxy[0]]
+                px, py = (x1 + x2) / 2, (y1 + y2) / 2
+                conf   = float(box.conf[0])
+                yaw_d, pitch_d = crop_pixel_to_yaw_pitch(
+                    px, py, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
+                raw.append((yaw_d, pitch_d, conf))
+        deduped = dedupe_detections(raw)
+        # Apply pitch hard cap even in bootstrap
+        deduped = [(y, p, c) for y, p, c in deduped if p <= PITCH_HARD_MAX]
+        bootstrap_candidates.append(deduped)
+        if fi % 30 == 0:
+            print(f"  [bootstrap] frame {fi}  candidates={len(deduped)}")
+    cap.release()
+
+    # Build hotspot map
+    hotspots = build_static_hotspot_map(bootstrap_candidates)
+
+    print(f"\n[v11] Bootstrap complete. Discovered {len(hotspots)} hotspot(s):")
+    confirmed_fence_hotspot = False
+    for i, hs in enumerate(hotspots):
+        print(f"  hotspot {i}: yaw={hs['yaw']:.2f}° pitch={hs['pitch']:.2f}° "
+              f"radius={hs['radius']}° frame_count={hs['frame_count']} "
+              f"coverage={hs['coverage_pct']:.1f}%")
+        if angular_distance(hs["yaw"], hs["pitch"],
+                            KNOWN_FENCE_YAW, KNOWN_FENCE_PITCH) < KNOWN_FENCE_CONFIRM_RADIUS:
+            confirmed_fence_hotspot = True
+            print(f"  *** FENCE HOTSPOT CONFIRMED (matches known {KNOWN_FENCE_YAW}°/{KNOWN_FENCE_PITCH}°)")
+
+    if not confirmed_fence_hotspot:
+        print(f"  [v11] NOTE: known fence zone ({KNOWN_FENCE_YAW}°, {KNOWN_FENCE_PITCH}°) "
+              f"NOT found as hotspot — may not appear in bootstrap window")
+
+    # ====================================================================
+    # PASS 2: Main tracking
+    # ====================================================================
+    print(f"\n[v11] === MAIN TRACKING PASS ===")
+    cap = cv2.VideoCapture(equirect_path, cv2.CAP_FFMPEG)
 
     ffmpeg_writer = None
     if not metrics_only:
@@ -517,9 +566,7 @@ def run_tracker(equirect_path, output_path, json_path,
     kf_initialised = False
     tracker_state  = TrackerState.UNINITIALIZED
 
-    # Warm-up buffer: list of per-frame candidate lists
-    warmup_buffer  = []   # each entry: [(yaw, pitch, conf, area), ...]
-    # v8 diagnostics
+    warmup_buffer  = []
     kalman_init_frame       = None
     warmup_candidate_count  = 0
     warmup_consistency_score = 0.0
@@ -533,7 +580,6 @@ def run_tracker(equirect_path, output_path, json_path,
     prev_loss_state_was_hold   = False
     incumbent_yaw, incumbent_pitch = None, None
     uncertain_streak           = 0
-
     reacq_lerp_remaining = 0
     reacq_target_yaw     = 0.0
     reacq_target_pitch   = 0.0
@@ -548,41 +594,6 @@ def run_tracker(equirect_path, output_path, json_path,
     tracking_data = []
     swap_events   = []
 
-    # v10c: static-lock breaker state
-    static_lock_yaw_history   = []   # rolling window of accepted yaw values
-    static_lock_pitch_history = []   # rolling window of accepted pitch values
-    static_lock_events        = []   # list of {start_frame, end_frame, yaw, pitch}
-    static_lock_active        = False
-    static_lock_start_frame   = None
-    # v10e: initialise blacklist from seeded calibration zones; dynamic zones appended later
-    # v10e: seed zones — from param, or auto-load seed_blacklist.json if present in cwd
-    if seed_blacklist_zones is not None:
-        _seed_zones = seed_blacklist_zones
-    else:
-        import json as _json_seed
-        import os as _os_seed
-        _seed_file = _os_seed.path.join(_os_seed.getcwd(), "seed_blacklist.json")
-        if _os_seed.path.exists(_seed_file):
-            with open(_seed_file) as _sf:
-                _seed_zones = _json_seed.load(_sf)
-            print(f"[v10e] Loaded " + str(len(_seed_zones)) + " seeded blacklist zone(s) from seed_blacklist.json")
-        else:
-            _seed_zones = []
-    static_blacklist = [
-        {
-            "yaw":              z["yaw"],
-            "pitch":            z["pitch"],
-            "radius":           z.get("radius", STATIC_BLACKLIST_RADIUS),
-            "permanent":        True,
-            "seeded":           True,
-            "first_lock_frame": -1,
-            "hit_count":        0,
-        }
-        for z in _seed_zones
-    ]  # dynamic detections appended below
-    confirmed_ball_count      = 0    # tracks frames with confirmed ball (for grace period)
-
-    # ---- Instrumentation ----
     instr = {
         "frames_total":                0,
         "frames_with_raw_ball":        0,
@@ -596,16 +607,17 @@ def run_tracker(equirect_path, output_path, json_path,
         "continuous_gate_rejected":    0,
         "candidate_switch_count":      0,
         "rejection_reasons": {
-            "low_score":  0,
-            "hysteresis": 0,
+            "low_score":    0,
+            "hysteresis":   0,
+            "pitch_hard_max": 0,
+            "hotspot":      0,
         },
         "mahalanobis_accepted":        [],
         "mahalanobis_rejected":        [],
-        "large_yaw_jump_count":        0,   # yaw delta > 30° (informational only, no reject)
-        "accepted_pitches":            [],  # v9: pitch of every confirmed-ball frame
-        "pitch_hard_rejections":       0,   # v10b: candidates above PITCH_HARD_MAX
-        "static_blacklist_hits":        0,   # dynamic static-lock blacklist hits
-        "seeded_blacklist_hits":         0,   # v10e: seeded calibration zone hits
+        "large_yaw_jump_count":        0,
+        "accepted_pitches":            [],
+        "pitch_hard_rejections":       0,
+        "hotspot_suppression_count":   0,
     }
 
     frame_idx = 0
@@ -654,7 +666,6 @@ def run_tracker(equirect_path, output_path, json_path,
         if raw_ball_detections:
             instr["frames_with_raw_ball"] += 1
 
-        # Helper: match deduped coords back to raw for area/px/py
         def find_raw(yaw, pitch):
             best, best_d = None, 999
             for r in raw_ball_detections:
@@ -670,37 +681,37 @@ def run_tracker(equirect_path, output_path, json_path,
         }
 
         # ================================================================
+        # Helper: filter candidates through pitch cap + hotspot suppression
+        # ================================================================
+        def filter_candidates(candidates):
+            """Apply pitch hard cap and hotspot suppression. Returns filtered list."""
+            filtered = []
+            for yaw_d, pitch_d, conf_d in candidates:
+                if pitch_d > PITCH_HARD_MAX:
+                    instr["pitch_hard_rejections"] += 1
+                    instr["rejection_reasons"]["pitch_hard_max"] += 1
+                    continue
+                if is_hotspot_suppressed(yaw_d, pitch_d, hotspots):
+                    instr["hotspot_suppression_count"] += 1
+                    instr["rejection_reasons"]["hotspot"] += 1
+                    continue
+                filtered.append((yaw_d, pitch_d, conf_d))
+            return filtered
+
+        # ================================================================
         # STATE: UNINITIALIZED / WARMING_UP
         # ================================================================
         if tracker_state in (TrackerState.UNINITIALIZED, TrackerState.WARMING_UP):
 
-            if tracker_state == TrackerState.UNINITIALIZED and deduped_balls:
+            filtered = filter_candidates(deduped_balls)
+
+            if tracker_state == TrackerState.UNINITIALIZED and filtered:
                 tracker_state = TrackerState.WARMING_UP
                 state_transition_counts[TrackerState.WARMING_UP] += 1
 
             if tracker_state == TrackerState.WARMING_UP:
-                # Collect this frame's candidates (yaw, pitch, conf, area)
                 frame_candidates = []
-                for yaw_d, pitch_d, conf_d in deduped_balls:
-                    # v10b: hard pitch ceiling — exclude before warmup chain building
-                    if pitch_d > PITCH_HARD_MAX:
-                        instr["pitch_hard_rejections"] += 1
-                        continue
-                    # v10e: seeded + dynamic blacklist applied from frame 0 in warmup
-                    _wbl_hit = False
-                    for _bl in static_blacklist:
-                        if angular_distance(yaw_d, pitch_d, _bl["yaw"], _bl["pitch"]) < _bl.get("radius", STATIC_BLACKLIST_RADIUS):
-                            _bl["hit_count"] += 1
-                            if _bl.get("seeded"):
-                                instr["seeded_blacklist_hits"] += 1
-                            else:
-                                instr["static_blacklist_hits"] += 1
-                            _wbl_hit = True
-                            break
-                    if _wbl_hit:
-                        continue
-                        instr["pitch_hard_rejections"] += 1
-                        continue
+                for yaw_d, pitch_d, conf_d in filtered:
                     raw = find_raw(yaw_d, pitch_d)
                     if raw:
                         frame_candidates.append((yaw_d, pitch_d, conf_d, raw[3]))
@@ -708,11 +719,9 @@ def run_tracker(equirect_path, output_path, json_path,
                 warmup_candidate_count += len(frame_candidates)
 
                 if len(warmup_buffer) >= KALMAN_INIT_FRAMES:
-                    # Build tracklets and pick winner
                     best_chain, chain_score = build_warmup_tracklets(warmup_buffer)
 
                     if best_chain is not None:
-                        # Initialise Kalman from chain mean position + estimated velocity
                         init_yaw   = sum(c[2] for c in best_chain) / len(best_chain)
                         init_pitch = sum(c[3] for c in best_chain) / len(best_chain)
                         if len(best_chain) >= 2:
@@ -736,7 +745,6 @@ def run_tracker(equirect_path, output_path, json_path,
                         incumbent_yaw, incumbent_pitch = init_yaw, init_pitch
                         cam_yaw, cam_pitch = init_yaw, init_pitch
 
-                        # Seed size tracker from chain
                         for c in best_chain:
                             if c[5] > 0:
                                 ball_size_tracker.update(c[5])
@@ -744,13 +752,12 @@ def run_tracker(equirect_path, output_path, json_path,
                         tracker_state = TrackerState.TRACKING
                         state_transition_counts[TrackerState.TRACKING] += 1
                         frames_since_detection = 0
-                        print(f"[v8] Kalman initialised at frame {frame_idx} "
+                        print(f"[v11] Kalman initialised at frame {frame_idx} "
                               f"from chain len={len(best_chain)} score={chain_score:.3f} "
                               f"init_pos=({init_yaw:.1f}°, {init_pitch:.1f}°)")
                     else:
-                        # No valid chain — reset buffer and try again
-                        print(f"[v8] Warm-up failed at frame {frame_idx} "
-                              f"(no chain ≥{WARMUP_MIN_CHAIN_LEN} frames) — resetting buffer")
+                        print(f"[v11] Warm-up failed at frame {frame_idx} "
+                              f"(no chain ≥{WARMUP_MIN_CHAIN_LEN}) — resetting buffer")
                         warmup_buffer = []
                         reinitialisation_count += 1
 
@@ -759,7 +766,7 @@ def run_tracker(equirect_path, output_path, json_path,
             best_score = 0.0
 
         # ================================================================
-        # STATE: TRACKING / UNCERTAIN
+        # STATE: TRACKING / UNCERTAIN / LOST
         # ================================================================
         else:
             if kf_initialised:
@@ -769,29 +776,9 @@ def run_tracker(equirect_path, output_path, json_path,
             best_score     = -1.0
             ball_seen_this_frame = False
 
-            for yaw_d, pitch_d, conf_d in deduped_balls:
-                # v10b: hard pitch ceiling — reject before scoring or Kalman update
-                if pitch_d > PITCH_HARD_MAX:
-                    instr["pitch_hard_rejections"] += 1
-                    instr["rejection_reasons"]["pitch_hard_max"] =                         instr["rejection_reasons"].get("pitch_hard_max", 0) + 1
-                    continue
-                # v10e: seeded + dynamic blacklist check
-                blacklisted = False
-                for bl in static_blacklist:
-                    if angular_distance(yaw_d, pitch_d, bl["yaw"], bl["pitch"]) < bl.get("radius", STATIC_BLACKLIST_RADIUS):
-                        blacklisted = True
-                        bl["hit_count"] += 1
-                        if bl.get("seeded"):
-                            instr["seeded_blacklist_hits"] += 1
-                            instr["rejection_reasons"]["seeded_blacklist"] = \
-                                instr["rejection_reasons"].get("seeded_blacklist", 0) + 1
-                        else:
-                            instr["static_blacklist_hits"] += 1
-                            instr["rejection_reasons"]["static_blacklist"] = \
-                                instr["rejection_reasons"].get("static_blacklist", 0) + 1
-                        break
-                if blacklisted:
-                    continue
+            filtered = filter_candidates(deduped_balls)
+
+            for yaw_d, pitch_d, conf_d in filtered:
                 raw = find_raw(yaw_d, pitch_d)
                 if raw is None:
                     continue
@@ -804,7 +791,6 @@ def run_tracker(equirect_path, output_path, json_path,
 
                 mahal = components.get("_mahal", 0.0)
 
-                # Large yaw jump counter (informational — no reject)
                 if abs(yaw_d - last_yaw) > 30.0:
                     instr["large_yaw_jump_count"] += 1
 
@@ -838,91 +824,23 @@ def run_tracker(equirect_path, output_path, json_path,
                 instr["best_candidate_scores"].append(best_score)
                 instr["frames_confirmed_ball"] += 1
                 instr["accepted_size_scores"].append(ball_size_tracker.size_score(area_meas))
-                instr["accepted_pitches"].append(pitch_meas)  # v9
+                instr["accepted_pitches"].append(pitch_meas)
 
                 vel_tracker.update(yaw_meas - float(kf.x[0, 0]),
                                    pitch_meas - float(kf.x[1, 0]))
                 kf.update(np.array([[yaw_meas], [pitch_meas]]))
-
                 ball_size_tracker.update(area_meas)
                 confirmed_yaw, confirmed_pitch = float(kf.x[0, 0]), float(kf.x[1, 0])
                 incumbent_yaw, incumbent_pitch = yaw_meas, pitch_meas
                 frames_since_detection = 0
                 prev_loss_state_was_hold = False
 
-                # v10c: update static-lock rolling window
-                confirmed_ball_count += 1
-                static_lock_yaw_history.append(yaw_meas)
-                static_lock_pitch_history.append(pitch_meas)
-                if len(static_lock_yaw_history) > STATIC_LOCK_WINDOW:
-                    static_lock_yaw_history.pop(0)
-                    static_lock_pitch_history.pop(0)
-
-                # Check for static lock (only after grace period and full window)
-                if (confirmed_ball_count >= STATIC_LOCK_GRACE and
-                        len(static_lock_yaw_history) == STATIC_LOCK_WINDOW):
-                    yaw_mean = sum(static_lock_yaw_history) / STATIC_LOCK_WINDOW
-                    pitch_mean = sum(static_lock_pitch_history) / STATIC_LOCK_WINDOW
-                    yaw_std = (sum((y - yaw_mean)**2 for y in static_lock_yaw_history) / STATIC_LOCK_WINDOW) ** 0.5
-                    pitch_std = (sum((p - pitch_mean)**2 for p in static_lock_pitch_history) / STATIC_LOCK_WINDOW) ** 0.5
-                    if yaw_std < STATIC_LOCK_STD_MAX and pitch_std < STATIC_LOCK_STD_MAX:
-                        if not static_lock_active:
-                            static_lock_active = True
-                            static_lock_start_frame = frame_idx - STATIC_LOCK_WINDOW + 1
-                            lock_yaw = round(yaw_mean, 2)
-                            lock_pitch = round(pitch_mean, 2)
-                            print(f"[v10c] STATIC LOCK detected at frame {frame_idx}: "
-                                  f"yaw={lock_yaw:.2f} pitch={lock_pitch:.2f} "
-                                  f"yaw_std={yaw_std:.3f} pitch_std={pitch_std:.3f}")
-                            # Log event
-                            static_lock_events.append({
-                                "start_frame": static_lock_start_frame,
-                                "end_frame": frame_idx,
-                                "yaw": lock_yaw,
-                                "pitch": lock_pitch,
-                                "yaw_std": round(yaw_std, 4),
-                                "pitch_std": round(pitch_std, 4),
-                            })
-                            # v10d: permanent blacklist — persists for entire clip
-                            already_listed = any(
-                                angular_distance(lock_yaw, lock_pitch, bl["yaw"], bl["pitch"]) < STATIC_BLACKLIST_RADIUS
-                                for bl in static_blacklist
-                            )
-                            if not already_listed:
-                                static_blacklist.append({
-                                    "yaw":              lock_yaw,
-                                    "pitch":            lock_pitch,
-                                    "radius":           STATIC_BLACKLIST_RADIUS,
-                                    "permanent":        True,
-                                    "seeded":           False,
-                                    "first_lock_frame": frame_idx,
-                                    "hit_count":        0,
-                                })
-                                print(f"[v10d] PERMANENT BLACKLIST added: "
-                                      f"yaw={lock_yaw:.2f} pitch={lock_pitch:.2f} "
-                                      f"radius={STATIC_BLACKLIST_RADIUS}° at frame {frame_idx} "
-                                      f"(total zones: {len(static_blacklist) + 1})")
-                            # Invalidate Kalman — transition to UNCERTAIN
-                            kf_initialised = False
-                            kf = build_kalman()
-                            incumbent_yaw, incumbent_pitch = None, None
-                            tracker_state = TrackerState.UNCERTAIN
-                            state_transition_counts[TrackerState.UNCERTAIN] += 1
-                            static_lock_yaw_history.clear()
-                            static_lock_pitch_history.clear()
-                            confirmed_ball_count = 0
-                    else:
-                        static_lock_active = False
-
-                # State transitions
                 uncertain_streak = 0
-                if tracker_state == TrackerState.UNCERTAIN:
+                if tracker_state in (TrackerState.UNCERTAIN, TrackerState.LOST):
                     tracker_state = TrackerState.TRACKING
                     state_transition_counts[TrackerState.TRACKING] += 1
-                elif tracker_state == TrackerState.LOST:
-                    tracker_state = TrackerState.TRACKING
-                    state_transition_counts[TrackerState.TRACKING] += 1
-                    reinitialisation_count += 1
+                    if tracker_state == TrackerState.LOST:
+                        reinitialisation_count += 1
 
                 frame_record["best_score"] = round(best_score, 3)
 
@@ -933,7 +851,6 @@ def run_tracker(equirect_path, output_path, json_path,
                 else:
                     uncertain_streak = 0
 
-                # State transitions
                 if frames_since_detection > LOSS_EXTRAPOLATE_FRAMES + LOSS_HOLD_FRAMES:
                     if tracker_state != TrackerState.LOST:
                         tracker_state = TrackerState.LOST
@@ -944,7 +861,7 @@ def run_tracker(equirect_path, output_path, json_path,
                         state_transition_counts[TrackerState.UNCERTAIN] += 1
 
         # ================================================================
-        # Camera target — unchanged loss logic
+        # Camera target — loss handling (unchanged from v10b)
         # ================================================================
         if not kf_initialised or tracker_state == TrackerState.UNINITIALIZED:
             target_yaw, target_pitch = last_yaw, last_pitch
@@ -1035,7 +952,7 @@ def run_tracker(equirect_path, output_path, json_path,
             cg_pct = 100 * instr["frames_confirmed_ball"] / max(instr["frames_total"], 1)
             print(f"[tracker] frame {frame_idx}/{total_frames} | "
                   f"state={tracker_state} yaw={ema_yaw:.1f}° | {loss_state} | "
-                  f"confirmed={cg_pct:.1f}% gate_rej={instr['continuous_gate_rejected']}")
+                  f"confirmed={cg_pct:.1f}% hotspot_hits={instr['hotspot_suppression_count']}")
 
     cap.release()
     if ffmpeg_writer:
@@ -1069,29 +986,28 @@ def run_tracker(equirect_path, output_path, json_path,
         "mean_mahalanobis_accepted":        _mean(instr["mahalanobis_accepted"]),
         "mean_mahalanobis_rejected":        _mean(instr["mahalanobis_rejected"]),
         "large_yaw_jump_count":             instr["large_yaw_jump_count"],
-        "swap_event_count":                 len(swap_events),
-        # v9: accepted pitch distribution
         "accepted_pitch_median":            _median(instr["accepted_pitches"]),
         "accepted_pitch_p90":               _pct(instr["accepted_pitches"], 90),
         "accepted_pitch_p95":               _pct(instr["accepted_pitches"], 95),
         "accepted_pitch_above_10":          sum(1 for p in instr["accepted_pitches"] if p > 10.0),
         "accepted_pitch_above_20":          sum(1 for p in instr["accepted_pitches"] if p > 20.0),
         "accepted_pitch_above_30":          sum(1 for p in instr["accepted_pitches"] if p > 30.0),
-        "pitch_hard_rejection_count":       instr["pitch_hard_rejections"],  # v10b
-        # v10c: static lock breaker
-        "static_lock_event_count":          len(static_lock_events),
-        "static_lock_events":               static_lock_events,
-        "static_blacklist_hit_count":       instr["static_blacklist_hits"],
-        "seeded_blacklist_hit_count":        instr["seeded_blacklist_hits"],   # v10e
-        "permanent_blacklist_zones":        [
-            {
-                "yaw":              bl["yaw"],
-                "pitch":            bl["pitch"],
-                "seeded":           bl.get("seeded", False),
-                "first_lock_frame": bl["first_lock_frame"],
-                "hit_count":        bl["hit_count"],
-            }
-            for bl in static_blacklist
+        "pitch_hard_rejection_count":       instr["pitch_hard_rejections"],
+        "hotspot_suppression_count":        instr["hotspot_suppression_count"],
+        "hotspot_suppression_by_zone": [
+            {"yaw": hs["yaw"], "pitch": hs["pitch"],
+             "coverage_pct": hs["coverage_pct"], "hit_count": hs["hit_count"]}
+            for hs in hotspots
+        ],
+    }
+    v11_bootstrap_metrics = {
+        "bootstrap_frames_scanned":     len(bootstrap_candidates),
+        "hotspots_discovered":          len(hotspots),
+        "confirmed_fence_hotspot":      confirmed_fence_hotspot,
+        "bootstrap_hotspots": [
+            {"yaw": hs["yaw"], "pitch": hs["pitch"], "radius": hs["radius"],
+             "frame_count": hs["frame_count"], "coverage_pct": hs["coverage_pct"]}
+            for hs in hotspots
         ],
     }
     v8_init_metrics = {
@@ -1100,48 +1016,41 @@ def run_tracker(equirect_path, output_path, json_path,
         "warmup_consistency_score":  round(warmup_consistency_score, 4),
         "reinitialisation_count":    reinitialisation_count,
         "state_transition_counts":   state_transition_counts,
-        "frames_in_tracking":        state_transition_counts.get(TrackerState.TRACKING, 0),
-        "frames_in_uncertain":       state_transition_counts.get(TrackerState.UNCERTAIN, 0),
-        "frames_in_lost":            state_transition_counts.get(TrackerState.LOST, 0),
     }
     metadata = {
-        "version": "v10e",
+        "version": "v11",
         "metrics_only": metrics_only,
         "config": {
             "ball_model":           ball_model_path,
-            "ball_names":           ball_model.names,
             "device":               device,
             "crop_w": CROP_W, "crop_h": CROP_H, "crop_fov_deg": CROP_FOV_DEG,
             "imgsz": YOLO_IMGSZ, "conf": YOLO_CONF,
             "scoring_weights": {"conf": W_CONF, "pos": W_POS, "pitch": W_PITCH,
                                 "size": W_SIZE, "motion": W_MOTION, "edge": W_EDGE},
             "min_candidate_score":   MIN_CANDIDATE_SCORE,
-            "hysteresis_margin":     HYSTERESIS_MARGIN,
-            "pitch_hard_max":        PITCH_HARD_MAX,  # v10b
-            "static_lock_window":    STATIC_LOCK_WINDOW,   # v10c
-            "static_lock_std_max":   STATIC_LOCK_STD_MAX,  # v10c
-            "static_lock_grace":     STATIC_LOCK_GRACE,    # v10c
-            "static_blacklist_radius": STATIC_BLACKLIST_RADIUS,  # v10c
-            "static_blacklist_permanent": True,
-            "seed_blacklist_zones":       seed_blacklist_zones or [],  # v10e
-            "max_frame_delta_deg":   "REMOVED_v8",
+            "pitch_hard_max":        PITCH_HARD_MAX,
+            "bootstrap_frames":      BOOTSTRAP_FRAMES,
+            "hotspot_cluster_radius": HOTSPOT_CLUSTER_RADIUS,
+            "hotspot_min_coverage":  HOTSPOT_MIN_COVERAGE,
+            "hotspot_suppress_radius": HOTSPOT_SUPPRESS_RADIUS,
             "kalman_init_frames":    KALMAN_INIT_FRAMES,
             "warmup_min_chain_len":  WARMUP_MIN_CHAIN_LEN,
         },
         "detection_metrics":   detection_metrics,
         "association_metrics": association_metrics,
+        "v11_bootstrap_metrics": v11_bootstrap_metrics,
         "v8_init_metrics":     v8_init_metrics,
     }
 
     print("=" * 70)
-    print("[v8 DETECTION METRICS]")
+    print("[v11 DETECTION METRICS]")
     for k, v in detection_metrics.items():
         print(f"  {k:44s}: {v}")
-    print("[v8 ASSOCIATION METRICS]")
+    print("[v11 ASSOCIATION METRICS]")
     for k, v in association_metrics.items():
         print(f"  {k:44s}: {v}")
-    print("[v8 INIT METRICS]")
-    for k, v in v8_init_metrics.items():
+    print("[v11 BOOTSTRAP METRICS]")
+    for k, v in v11_bootstrap_metrics.items():
         print(f"  {k:44s}: {v}")
     print("=" * 70)
 
@@ -1156,12 +1065,12 @@ def run_tracker(equirect_path, output_path, json_path,
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input",          default="equirect_trim.mp4")
-    parser.add_argument("--output",         default="tracked.mp4")
-    parser.add_argument("--json",           default="tracking.json")
-    parser.add_argument("--ball-model",     default="models/football-ball-detection.pt")
-    parser.add_argument("--person-model",   default="yolov8s.pt")
-    parser.add_argument("--metrics-only",   action="store_true",
+    parser.add_argument("--input",        default="equirect_trim.mp4")
+    parser.add_argument("--output",       default="tracked.mp4")
+    parser.add_argument("--json",         default="tracking.json")
+    parser.add_argument("--ball-model",   default="models/football-ball-detection.pt")
+    parser.add_argument("--person-model", default="yolov8s.pt")
+    parser.add_argument("--metrics-only", action="store_true",
                         help="Skip render, produce tracking.json only (~5x faster)")
     args = parser.parse_args()
 
@@ -1172,5 +1081,4 @@ if __name__ == "__main__":
         ball_model_path=args.ball_model,
         person_model_path=args.person_model,
         metrics_only=args.metrics_only,
-        seed_blacklist_zones=None,  # v10e: auto-loads seed_blacklist.json from cwd
     )
