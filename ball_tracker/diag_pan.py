@@ -56,16 +56,12 @@ def extract_new(eq, yaw_deg, pitch_deg, fov_deg, roll_deg, out_w, out_h):
         math.cos(yaw) * math.cos(pitch),
     ])
 
-    world_up = np.array([0.0, 1.0, 0.0])
+    # Right: derived from yaw ONLY (horizontal, ignores pitch).
+    # Using cross(fwd, world_up) would tilt right when pitch!=0,
+    # causing yaw-dependent banking. This keeps right perfectly horizontal.
+    right = np.array([math.cos(yaw), 0.0, -math.sin(yaw)])
 
-    # Build orthonormal camera frame
-    right = np.cross(fwd, world_up)
-    right_norm = np.linalg.norm(right)
-    if right_norm < 1e-6:
-        # Looking straight up/down — use fallback up
-        right = np.array([1.0, 0.0, 0.0])
-    else:
-        right /= right_norm
+    # Up: orthogonal to both right and fwd
     up = np.cross(right, fwd)
     up /= np.linalg.norm(up)
 
