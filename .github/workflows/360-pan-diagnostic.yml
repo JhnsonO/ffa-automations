@@ -91,12 +91,6 @@ jobs:
           FOV:   ${{ github.event.inputs.fov }}
           ROLL:  ${{ github.event.inputs.roll }}
           YAWS:  ${{ github.event.inputs.yaws }}
-        env:
-          FRAME: ${{ github.event.inputs.frame }}
-          PITCH: ${{ github.event.inputs.pitch }}
-          FOV:   ${{ github.event.inputs.fov }}
-          ROLL:  ${{ github.event.inputs.roll }}
-          YAWS:  ${{ github.event.inputs.yaws }}
           MODE:  ${{ github.event.inputs.mode }}
         run: |
           mkdir -p calib_output
