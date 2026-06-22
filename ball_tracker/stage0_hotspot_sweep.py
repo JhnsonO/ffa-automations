@@ -87,6 +87,7 @@ DEF_DUTY_CYCLE_THRESHOLD = 0.60
 DEF_PENALTY_MIN          = 0.10
 DEF_SPHERE_BIN_DEG       = 2.0
 DEF_SAMPLE_INTERVAL_S    = 0.5
+DEF_MERGE_RADIUS_DEG     = 4.0   # cluster seed bins within this angular distance
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -187,6 +188,136 @@ def penalty_weight(duty_cycle, low_floor, threshold, penalty_min):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Hotspot region clustering
+#
+# Per-bin duty cycle is computed first (unchanged). We then merge adjacent
+# high-duty bins into spatial hotspot REGIONS so that the penalty applies by
+# angular distance from a hotspot centre/radius rather than exact 2° bin
+# membership. This catches detector jitter that spreads a single physical
+# hotspot (e.g. the fence) across neighbouring bins like (-77,-3) and (-77,-5).
+#
+# Soft-penalty logic and the no-hard-exclusion rule are preserved: a bin's
+# final penalty is the STRONGER (lower weight) of its own per-bin penalty and
+# the region-distance penalty, and is always floored at penalty_min.
+# ─────────────────────────────────────────────────────────────────────────────
+def cluster_hotspot_regions(bins, low_floor, bin_deg, merge_radius_deg):
+    """
+    Merge adjacent/high-duty bins into hotspot regions.
+
+    A bin is a "seed" if its own duty cycle is >= low_floor (i.e. it would
+    receive any penalty at all). Seeds within merge_radius_deg of each other
+    (spherical angular distance) are grouped by union-find into one region.
+
+    Returns list of region dicts:
+      { centre_yaw, centre_pitch, radius_deg, peak_duty,
+        member_bins:[(yaw,pitch,duty),...], n_members }
+    Centre = duty-weighted spherical mean of member bin centres.
+    Radius = max angular distance from centre to any member bin centre,
+             plus half a bin diagonal so the region covers the bin extent.
+    Peak duty = max member duty.
+    """
+    seeds = [b for b in bins if b["duty_cycle"] >= low_floor]
+    if not seeds:
+        return []
+
+    n = len(seeds)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    # Union seeds within merge_radius_deg
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = angular_distance(seeds[i]["yaw_centre"], seeds[i]["pitch_centre"],
+                                 seeds[j]["yaw_centre"], seeds[j]["pitch_centre"])
+            if d <= merge_radius_deg:
+                union(i, j)
+
+    # Gather groups
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(seeds[i])
+
+    bin_diag_half = (bin_deg * math.sqrt(2.0)) / 2.0
+
+    regions = []
+    for members in groups.values():
+        # Duty-weighted spherical mean of centres (unit-vector mean to handle wrap)
+        wsum = sum(m["duty_cycle"] for m in members) or 1.0
+        vx = vy = vz = 0.0
+        for m in members:
+            w = m["duty_cycle"]
+            la = math.radians(m["pitch_centre"])
+            lo = math.radians(m["yaw_centre"])
+            vx += w * math.cos(la) * math.cos(lo)
+            vy += w * math.cos(la) * math.sin(lo)
+            vz += w * math.sin(la)
+        vx /= wsum; vy /= wsum; vz /= wsum
+        norm = math.sqrt(vx*vx + vy*vy + vz*vz) or 1.0
+        vx, vy, vz = vx/norm, vy/norm, vz/norm
+        centre_pitch = math.degrees(math.asin(max(-1.0, min(1.0, vz))))
+        centre_yaw   = math.degrees(math.atan2(vy, vx))
+
+        radius = max(
+            angular_distance(centre_yaw, centre_pitch, m["yaw_centre"], m["pitch_centre"])
+            for m in members
+        ) + bin_diag_half
+        peak_duty = max(m["duty_cycle"] for m in members)
+
+        regions.append({
+            "centre_yaw":   round(centre_yaw, 3),
+            "centre_pitch": round(centre_pitch, 3),
+            "radius_deg":   round(radius, 3),
+            "peak_duty":    round(peak_duty, 4),
+            "n_members":    len(members),
+            "member_bins":  [(m["yaw_centre"], m["pitch_centre"], m["duty_cycle"]) for m in members],
+        })
+
+    regions.sort(key=lambda r: -r["peak_duty"])
+    return regions
+
+
+def region_penalty_for_point(yaw, pitch, regions, low_floor, threshold, penalty_min):
+    """
+    Penalty contributed by hotspot regions at a spherical point, applied SMOOTHLY
+    by angular distance from the nearest region centre.
+
+    Inside a region's core radius: full penalty based on the region's peak duty.
+    Beyond the core, the *effective duty* falls off linearly to zero across one
+    extra merge band (radius -> radius + falloff_band), so nearby jitter bins
+    just outside the core still receive a (decreasing) penalty.
+
+    Returns a weight in [penalty_min, 1.0]; 1.0 = no region influence here.
+    """
+    best_w = 1.0
+    for r in regions:
+        d = angular_distance(yaw, pitch, r["centre_yaw"], r["centre_pitch"])
+        core = r["radius_deg"]
+        band = core  # falloff band width = one more core radius
+        if d <= core:
+            eff_duty = r["peak_duty"]
+        elif d <= core + band:
+            # Linear falloff of effective duty from peak -> 0 across the band
+            frac = 1.0 - (d - core) / band
+            eff_duty = r["peak_duty"] * frac
+        else:
+            continue
+        w = penalty_weight(eff_duty, low_floor, threshold, penalty_min)
+        if w < best_w:
+            best_w = w
+    return best_w
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Detector
 # ─────────────────────────────────────────────────────────────────────────────
 def load_detector(weights_path):
@@ -282,12 +413,12 @@ def run_sweep(args):
 
     cap.release()
 
-    # ── Build hotspot map ─────────────────────────────────────────────────────
+    # ── Build hotspot map (per-bin duty cycle — unchanged) ────────────────────
     n_unique_ts = len(sampled_frames)
     hotspot_bins = []
     for b, ts_set in bin_timestamps.items():
         duty = len(ts_set) / n_unique_ts if n_unique_ts else 0.0
-        w = penalty_weight(duty, args.low_duty_floor, args.duty_cycle_threshold, args.penalty_min)
+        bin_w = penalty_weight(duty, args.low_duty_floor, args.duty_cycle_threshold, args.penalty_min)
         yaw_c, pitch_c = bin_centre(b[0], b[1], args.sphere_bin_deg)
         confs = bin_confs.get(b, [])
         in_bounds = (PITCH_SOFT_MIN <= pitch_c <= PITCH_HARD_MAX)
@@ -295,7 +426,7 @@ def run_sweep(args):
             "yaw_bin": b[0], "pitch_bin": b[1],
             "yaw_centre": round(yaw_c, 2), "pitch_centre": round(pitch_c, 2),
             "duty_cycle": round(duty, 4),
-            "penalty_weight": round(w, 4),
+            "bin_penalty_weight": round(bin_w, 4),   # own-bin penalty (pre-clustering)
             "n_timestamps": len(ts_set),
             "n_detections": len(confs),
             "mean_conf": round(sum(confs) / len(confs), 4) if confs else 0.0,
@@ -304,13 +435,32 @@ def run_sweep(args):
 
     hotspot_bins.sort(key=lambda x: -x["duty_cycle"])
 
-    # ── Estimate later-stage candidate reduction ──────────────────────────────
-    # Penalty weight acts as a soft retention factor on candidate scoring effort.
-    # Reduction estimate = 1 - (sum of penalty_weight over detections / total detections).
+    # ── Cluster adjacent high-duty bins into hotspot regions ──────────────────
+    merge_radius = args.merge_radius_deg
+    regions = cluster_hotspot_regions(hotspot_bins, args.low_duty_floor,
+                                      args.sphere_bin_deg, merge_radius)
+    print(f"[stage0] Clustered {len(regions)} hotspot region(s) "
+          f"(merge radius {merge_radius}°)")
+
+    # ── Final per-bin penalty = stronger of own-bin and region-distance ───────
+    # Region penalty applies SMOOTHLY by angular distance from region centres,
+    # so jitter bins just outside a region core still receive a (lighter) penalty.
+    # No hard exclusions; everything floored at penalty_min.
+    for hb in hotspot_bins:
+        rw = region_penalty_for_point(hb["yaw_centre"], hb["pitch_centre"], regions,
+                                      args.low_duty_floor, args.duty_cycle_threshold,
+                                      args.penalty_min)
+        final_w = min(hb["bin_penalty_weight"], rw)
+        hb["region_penalty_weight"] = round(rw, 4)
+        hb["penalty_weight"] = round(max(args.penalty_min, final_w), 4)
+
+    # ── Estimate later-stage candidate reduction (uses FINAL penalties) ───────
+    # Reduction estimate = 1 - (sum of final penalty_weight over detections / total).
+    bin_lookup = {(hb["yaw_bin"], hb["pitch_bin"]): hb for hb in hotspot_bins}
     weighted_kept = 0.0
     for b, confs in bin_confs.items():
-        duty = len(bin_timestamps[b]) / n_unique_ts if n_unique_ts else 0.0
-        w = penalty_weight(duty, args.low_duty_floor, args.duty_cycle_threshold, args.penalty_min)
+        hb = bin_lookup.get(b)
+        w = hb["penalty_weight"] if hb else 1.0
         weighted_kept += w * len(confs)
     est_reduction = (1.0 - weighted_kept / total_candidates) if total_candidates else 0.0
 
@@ -322,9 +472,11 @@ def run_sweep(args):
         "low_duty_floor": args.low_duty_floor,
         "duty_cycle_threshold": args.duty_cycle_threshold,
         "penalty_min": args.penalty_min,
+        "merge_radius_deg": merge_radius,
         "n_sampled_timestamps": n_unique_ts,
         "total_candidates": total_candidates,
         "hard_exclusions": False,
+        "hotspot_regions": regions,
         "bins": hotspot_bins,
     }
     with open(os.path.join(args.output_dir, "hotspot_map.json"), "w") as f:
@@ -355,10 +507,10 @@ def run_sweep(args):
         }, f, indent=2)
 
     # ── Render duty-cycle histogram image ─────────────────────────────────────
-    render_histogram(hotspot_bins, args)
+    render_histogram(hotspot_bins, regions, args)
 
     # ── Test report ───────────────────────────────────────────────────────────
-    report = build_report(hotspot_bins, n_unique_ts, total_candidates,
+    report = build_report(hotspot_bins, regions, n_unique_ts, total_candidates,
                            est_reduction, args)
     with open(os.path.join(args.output_dir, "stage0_report.txt"), "w") as f:
         f.write(report)
@@ -367,11 +519,11 @@ def run_sweep(args):
     print(f"\n[stage0] Done in {time.time()-t0:.1f}s. Outputs in {args.output_dir}/")
 
 
-def render_histogram(hotspot_bins, args):
+def render_histogram(hotspot_bins, regions, args):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.patches import Circle
 
     if not hotspot_bins:
         print("[stage0] No bins to plot")
@@ -400,6 +552,16 @@ def render_histogram(hotspot_bins, args):
     ax1.scatter([KNOWN_INTERMITTENT_YAW], [KNOWN_INTERMITTENT_PITCH], marker="o", s=200,
                 edgecolors="cyan", facecolors="none", linewidths=2.5,
                 label=f"prior intermittent ({KNOWN_INTERMITTENT_YAW},{KNOWN_INTERMITTENT_PITCH})")
+    # Draw merged hotspot region circles (core radius + falloff band)
+    for i, r in enumerate(regions):
+        core = Circle((r["centre_yaw"], r["centre_pitch"]), r["radius_deg"],
+                      fill=False, edgecolor="purple", lw=1.5, ls="-",
+                      label="hotspot region (core)" if i == 0 else None)
+        band = Circle((r["centre_yaw"], r["centre_pitch"]), r["radius_deg"] * 2,
+                      fill=False, edgecolor="purple", lw=0.8, ls=":", alpha=0.6,
+                      label="region falloff band" if i == 0 else None)
+        ax1.add_patch(core)
+        ax1.add_patch(band)
     ax1.set_xlabel("Yaw (°)"); ax1.set_ylabel("Pitch (°)")
     ax1.set_xlim(-180, 180); ax1.set_ylim(-90, 90)
     ax1.set_title("Spherical duty-cycle map (redder = more static)")
@@ -438,7 +600,17 @@ def nearest_bin_to(hotspot_bins, yaw, pitch):
     return best, dist
 
 
-def build_report(hotspot_bins, n_ts, total_cands, est_reduction, args):
+def nearest_region_to(regions, yaw, pitch):
+    """Find the hotspot region whose centre is nearest a reference (yaw,pitch)."""
+    if not regions:
+        return None, None
+    best = min(regions,
+               key=lambda r: angular_distance(yaw, pitch, r["centre_yaw"], r["centre_pitch"]))
+    dist = angular_distance(yaw, pitch, best["centre_yaw"], best["centre_pitch"])
+    return best, dist
+
+
+def build_report(hotspot_bins, regions, n_ts, total_cands, est_reduction, args):
     lines = []
     lines.append("=" * 70)
     lines.append("STAGE 0 — STATIC FALSE-POSITIVE SWEEP — TEST REPORT")
@@ -446,45 +618,77 @@ def build_report(hotspot_bins, n_ts, total_cands, est_reduction, args):
     lines.append(f"Sampled timestamps      : {n_ts}")
     lines.append(f"Total candidates        : {total_cands}")
     lines.append(f"Occupied bins           : {len(hotspot_bins)}")
+    lines.append(f"Hotspot regions (merged): {len(regions)}  (merge radius {args.merge_radius_deg}°)")
     lines.append(f"Est. later-stage candidate reduction : {est_reduction*100:.1f}%")
-    lines.append(f"  (1 - weighted-retained / total; penalty-weighted, no hard exclusions)")
+    lines.append(f"  (1 - weighted-retained / total; FINAL region-aware penalties, no hard exclusions)")
     lines.append("")
     lines.append("-" * 70)
-    lines.append("TOP HOTSPOT BINS (by duty cycle)")
+    lines.append("MERGED HOTSPOT REGIONS (by peak duty)")
     lines.append("-" * 70)
-    lines.append(f"{'yaw':>8} {'pitch':>8} {'duty':>7} {'penalty':>8} {'#ts':>5} {'#det':>6} {'mconf':>6} {'inPB':>5}")
+    lines.append(f"{'cen_yaw':>8} {'cen_pitch':>9} {'radius':>7} {'peak_duty':>9} {'#bins':>6}")
+    for r in regions[:15]:
+        lines.append(f"{r['centre_yaw']:>8.1f} {r['centre_pitch']:>9.1f} "
+                     f"{r['radius_deg']:>7.2f} {r['peak_duty']:>9.3f} {r['n_members']:>6}")
+    lines.append("")
+    lines.append("-" * 70)
+    lines.append("TOP HOTSPOT BINS (by duty cycle; bin vs region vs FINAL penalty)")
+    lines.append("-" * 70)
+    lines.append(f"{'yaw':>8} {'pitch':>8} {'duty':>7} {'binP':>6} {'regP':>6} {'finP':>6} {'#ts':>5} {'inPB':>5}")
     for b in hotspot_bins[:20]:
         lines.append(f"{b['yaw_centre']:>8.1f} {b['pitch_centre']:>8.1f} "
-                     f"{b['duty_cycle']:>7.3f} {b['penalty_weight']:>8.3f} "
-                     f"{b['n_timestamps']:>5} {b['n_detections']:>6} "
-                     f"{b['mean_conf']:>6.3f} {str(b['in_pitch_bounds']):>5}")
+                     f"{b['duty_cycle']:>7.3f} {b['bin_penalty_weight']:>6.3f} "
+                     f"{b['region_penalty_weight']:>6.3f} {b['penalty_weight']:>6.3f} "
+                     f"{b['n_timestamps']:>5} {str(b['in_pitch_bounds']):>5}")
     lines.append("")
     lines.append("-" * 70)
-    lines.append("KNOWN-REFERENCE CHECKS")
+    lines.append("KNOWN-REFERENCE CHECKS (region-aware)")
     lines.append("-" * 70)
 
-    fence_bin, fence_dist = nearest_bin_to(hotspot_bins, KNOWN_FENCE_YAW, KNOWN_FENCE_PITCH)
-    if fence_bin:
-        strongly = fence_bin["penalty_weight"] <= 0.3 and fence_dist <= 5.0
+    # Fence: check the merged region it belongs to
+    fence_region, fence_rdist = nearest_region_to(regions, KNOWN_FENCE_YAW, KNOWN_FENCE_PITCH)
+    fence_bin, fence_bdist = nearest_bin_to(hotspot_bins, KNOWN_FENCE_YAW, KNOWN_FENCE_PITCH)
+    if fence_region:
+        strongly = (fence_bin and fence_bin["penalty_weight"] <= 0.3 and fence_bdist <= 5.0)
         lines.append(f"Known FENCE  ({KNOWN_FENCE_YAW}, {KNOWN_FENCE_PITCH}):")
-        lines.append(f"  nearest bin ({fence_bin['yaw_centre']}, {fence_bin['pitch_centre']})  "
-                     f"dist={fence_dist:.1f}°  duty={fence_bin['duty_cycle']:.3f}  "
-                     f"penalty={fence_bin['penalty_weight']:.3f}")
+        lines.append(f"  region centre ({fence_region['centre_yaw']}, {fence_region['centre_pitch']})  "
+                     f"radius={fence_region['radius_deg']:.2f}°  peak_duty={fence_region['peak_duty']:.3f}  "
+                     f"members={fence_region['n_members']}  centre_dist={fence_rdist:.1f}°")
+        if fence_bin:
+            lines.append(f"  nearest bin ({fence_bin['yaw_centre']}, {fence_bin['pitch_centre']})  "
+                         f"final_penalty={fence_bin['penalty_weight']:.3f}")
         lines.append(f"  -> STRONGLY PENALISED: {'YES' if strongly else 'NO'} "
-                     f"(want YES — penalty<=0.3 within 5°)")
+                     f"(want YES — final penalty<=0.3 within 5°)")
     else:
-        lines.append(f"Known FENCE: no bins found")
+        lines.append(f"Known FENCE: no regions found")
 
     lines.append("")
-    inter_bin, inter_dist = nearest_bin_to(hotspot_bins, KNOWN_INTERMITTENT_YAW, KNOWN_INTERMITTENT_PITCH)
+    # -77,-5 jitter neighbour check: does it now receive a penalty via region falloff?
+    nb_bin, nb_dist = nearest_bin_to(hotspot_bins, -77.0, -5.0)
+    if nb_bin and nb_dist <= 2.0:
+        receives = nb_bin["penalty_weight"] < 1.0
+        lines.append(f"Jitter neighbour (-77, -5):")
+        lines.append(f"  bin ({nb_bin['yaw_centre']}, {nb_bin['pitch_centre']})  "
+                     f"own_duty={nb_bin['duty_cycle']:.3f}  bin_penalty={nb_bin['bin_penalty_weight']:.3f}  "
+                     f"region_penalty={nb_bin['region_penalty_weight']:.3f}  FINAL={nb_bin['penalty_weight']:.3f}")
+        lines.append(f"  -> RECEIVES PENALTY VIA REGION: {'YES' if receives else 'NO'} "
+                     f"(want YES — final penalty<1.0 even if own duty is low)")
+    else:
+        lines.append(f"Jitter neighbour (-77, -5): no bin within 2° (no detections there this run)")
+
+    lines.append("")
+    inter_region, inter_rdist = nearest_region_to(regions, KNOWN_INTERMITTENT_YAW, KNOWN_INTERMITTENT_PITCH)
+    inter_bin, inter_bdist = nearest_bin_to(hotspot_bins, KNOWN_INTERMITTENT_YAW, KNOWN_INTERMITTENT_PITCH)
     if inter_bin:
-        light = inter_bin["penalty_weight"] >= 0.7 or inter_dist > 5.0
+        light = inter_bin["penalty_weight"] >= 0.7 or inter_bdist > 5.0
         lines.append(f"Prior INTERMITTENT  ({KNOWN_INTERMITTENT_YAW}, {KNOWN_INTERMITTENT_PITCH}):")
         lines.append(f"  nearest bin ({inter_bin['yaw_centre']}, {inter_bin['pitch_centre']})  "
-                     f"dist={inter_dist:.1f}°  duty={inter_bin['duty_cycle']:.3f}  "
-                     f"penalty={inter_bin['penalty_weight']:.3f}")
+                     f"dist={inter_bdist:.1f}°  duty={inter_bin['duty_cycle']:.3f}  "
+                     f"final_penalty={inter_bin['penalty_weight']:.3f}")
+        if inter_region:
+            lines.append(f"  nearest region centre ({inter_region['centre_yaw']}, {inter_region['centre_pitch']})  "
+                         f"dist={inter_rdist:.1f}°")
         lines.append(f"  -> LIGHTLY/NOT PENALISED: {'YES' if light else 'NO'} "
-                     f"(want YES — penalty>=0.7 or no nearby bin)")
+                     f"(want YES — final penalty>=0.7 or no nearby bin)")
     else:
         lines.append(f"Prior INTERMITTENT: no bins found (counts as not penalised)")
 
@@ -500,6 +704,8 @@ def main():
                     help="YOLO ball detector weights (.pt)")
     ap.add_argument("--sample-interval-s", type=float, default=DEF_SAMPLE_INTERVAL_S)
     ap.add_argument("--sphere-bin-deg",    type=float, default=DEF_SPHERE_BIN_DEG)
+    ap.add_argument("--merge-radius-deg",  type=float, default=DEF_MERGE_RADIUS_DEG,
+                    help="angular distance for clustering seed bins into regions")
     ap.add_argument("--low-duty-floor",       type=float, default=DEF_LOW_DUTY_FLOOR)
     ap.add_argument("--duty-cycle-threshold", type=float, default=DEF_DUTY_CYCLE_THRESHOLD)
     ap.add_argument("--penalty-min",          type=float, default=DEF_PENALTY_MIN)
