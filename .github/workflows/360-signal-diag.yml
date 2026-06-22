@@ -8,9 +8,9 @@ on:
         required: true
         default: '1imgH6LNwmism6dwlNNc_UfJ_bFlApKa1'
       activity_json_path:
-        description: 'Repo path to activity JSON (e.g. ball_tracker/activity_700_1300.json)'
+        description: 'Repo path to activity JSON (e.g. ball_tracker/diagnostics/activity_700_1300.json)'
         required: true
-        default: 'ball_tracker/activity_700_1300.json'
+        default: 'ball_tracker/diagnostics/activity_700_1300.json'
       start_frame:
         description: 'Start frame'
         required: true
