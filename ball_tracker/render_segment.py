@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FFA 360 Render Segment — v5
+FFA 360 Render Segment — v6
 ============================
 Pure render step. Reads tracking.json (pre-computed), renders a frame window
 as two outputs:
@@ -69,6 +69,7 @@ HUD_SHADOW   = (0, 0, 0)
 FALLBACK_YAW          = 0.0    # pitch-centre yaw
 FALLBACK_PITCH        = 5.0    # lift target — test +5 and +8
 FALLBACK_FOV          = 120.0  # wide view FOV (120° is acceptable from calibration)
+FALLBACK_ROLL         = 4.0    # horizon-levelling roll offset for this venue (degrees)
 HOLD_BEFORE_ZOOM      = 15     # frames hold at last follow pose before zoom begins
 FALLBACK_ZOOM_FRAMES  = 45     # frames for zoom-out animation (~1.5s @ 30fps)
 REACQUIRE_MIN_FRAMES  = 5      # consecutive confirmed frames before zoom-in begins
@@ -108,7 +109,9 @@ def ease_inout(t):
 # ---------------------------------------------------------------------------
 # Geometry
 # ---------------------------------------------------------------------------
-def extract_crop_frame(equirect_frame, yaw_deg, pitch_deg, fov_deg, out_w, out_h):
+def extract_crop_frame(equirect_frame, yaw_deg, pitch_deg, fov_deg, out_w, out_h,
+                        roll_deg=0.0):
+    """Perspective crop with optional roll (horizon levelling). roll_deg=0 = no rotation."""
     h_eq, w_eq = equirect_frame.shape[:2]
     f = (out_w / 2.0) / math.tan(math.radians(fov_deg / 2.0))
     xs = np.linspace(0, out_w - 1, out_w)
@@ -117,6 +120,10 @@ def extract_crop_frame(equirect_frame, yaw_deg, pitch_deg, fov_deg, out_w, out_h
     rx = (xv - out_w / 2.0) / f
     ry = -(yv - out_h / 2.0) / f
     rz = np.ones_like(rx)
+    # Apply roll around optical axis
+    cr = math.cos(math.radians(roll_deg))
+    sr = math.sin(math.radians(roll_deg))
+    rx, ry = cr * rx - sr * ry, sr * rx + cr * ry
     norm = np.sqrt(rx**2 + ry**2 + rz**2)
     rx, ry, rz = rx / norm, ry / norm, rz / norm
     cy = math.radians(yaw_deg)
@@ -250,19 +257,21 @@ class SmoothZoomFallbackFSM:
     ZOOMING_IN  : ball reacquired → t reverses 1→0, camera returns to follow pose
     """
 
-    def __init__(self, fallback_yaw, fallback_pitch, fallback_fov):
+    def __init__(self, fallback_yaw, fallback_pitch, fallback_fov, fallback_roll):
         self.mode              = RENDER_FOLLOW
         self.hold_counter      = 0
         self.reacquire_streak  = 0
         self.zoom_t            = 0.0   # 0 = full follow, 1 = full wide
         # Anchor poses for animation
-        self.zoom_start_yaw    = 0.0   # yaw/pitch/fov at moment zoom-out began
+        self.zoom_start_yaw    = 0.0   # yaw/pitch/fov/roll at moment zoom-out began
         self.zoom_start_pitch  = 0.0
         self.zoom_start_fov    = OUTPUT_FOV
+        self.zoom_start_roll   = 0.0   # always 0 when leaving FOLLOW
         # Fallback targets
         self.fallback_yaw      = fallback_yaw
         self.fallback_pitch    = fallback_pitch
         self.fallback_fov      = fallback_fov
+        self.fallback_roll     = fallback_roll
 
     def _interp_pose(self, t):
         """Interpolate from zoom-start pose to wide pose using eased t."""
@@ -270,7 +279,8 @@ class SmoothZoomFallbackFSM:
         yaw   = lerp_yaw(self.zoom_start_yaw,   self.fallback_yaw,   et)
         pitch = lerp_val(self.zoom_start_pitch,  self.fallback_pitch, et)
         fov   = lerp_val(self.zoom_start_fov,    self.fallback_fov,   et)
-        return yaw, pitch, fov
+        roll  = lerp_val(self.zoom_start_roll,   self.fallback_roll,  et)
+        return yaw, pitch, fov, roll
 
     def update(self, ema_yaw, ema_pitch, tracker_state, best_score):
         confirmed = (best_score is not None)
@@ -282,7 +292,7 @@ class SmoothZoomFallbackFSM:
                 self.hold_counter     = 0
                 self.reacquire_streak = 0
                 self.zoom_t           = 0.0
-                return ema_yaw, ema_pitch, OUTPUT_FOV, RENDER_FOLLOW, 0.0, 0, 0
+                return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, RENDER_FOLLOW, 0.0, 0, 0
             else:
                 self.hold_counter += 1
                 if self.hold_counter >= HOLD_BEFORE_ZOOM:
@@ -292,22 +302,23 @@ class SmoothZoomFallbackFSM:
                     self.zoom_start_yaw   = ema_yaw
                     self.zoom_start_pitch = ema_pitch
                     self.zoom_start_fov   = OUTPUT_FOV
+                    self.zoom_start_roll  = 0.0
                     self.reacquire_streak = 0
-                return ema_yaw, ema_pitch, OUTPUT_FOV, RENDER_FOLLOW, 0.0, self.hold_counter, 0
+                return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, RENDER_FOLLOW, 0.0, self.hold_counter, 0
 
         elif self.mode == RENDER_ZOOMING_OUT:
             self.zoom_t = min(1.0, self.zoom_t + dt_out)
-            yaw, pitch, fov = self._interp_pose(self.zoom_t)
+            yaw, pitch, fov, roll = self._interp_pose(self.zoom_t)
             if confirmed:
                 self.reacquire_streak += 1
             else:
                 self.reacquire_streak = 0
             if self.zoom_t >= 1.0:
                 self.mode = RENDER_WIDE_HOLD
-            return yaw, pitch, fov, RENDER_ZOOMING_OUT, self.zoom_t, self.hold_counter, self.reacquire_streak
+            return yaw, pitch, fov, roll, RENDER_ZOOMING_OUT, self.zoom_t, self.hold_counter, self.reacquire_streak
 
         elif self.mode == RENDER_WIDE_HOLD:
-            yaw, pitch, fov = self._interp_pose(1.0)
+            yaw, pitch, fov, roll = self._interp_pose(1.0)
             if confirmed:
                 self.reacquire_streak += 1
                 if self.reacquire_streak >= REACQUIRE_MIN_FRAMES:
@@ -316,9 +327,10 @@ class SmoothZoomFallbackFSM:
                     self.zoom_start_yaw   = yaw
                     self.zoom_start_pitch = pitch
                     self.zoom_start_fov   = fov
+                    self.zoom_start_roll  = roll
             else:
                 self.reacquire_streak = 0
-            return yaw, pitch, fov, RENDER_WIDE_HOLD, 1.0, self.hold_counter, self.reacquire_streak
+            return yaw, pitch, fov, roll, RENDER_WIDE_HOLD, 1.0, self.hold_counter, self.reacquire_streak
 
         elif self.mode == RENDER_ZOOMING_IN:
             if confirmed:
@@ -329,24 +341,26 @@ class SmoothZoomFallbackFSM:
                 yaw   = lerp_yaw(ema_yaw,   self.zoom_start_yaw,   et)
                 pitch = lerp_val(ema_pitch,  self.zoom_start_pitch, et)
                 fov   = lerp_val(OUTPUT_FOV, self.zoom_start_fov,   et)
+                roll  = lerp_val(0.0,        self.zoom_start_roll,  et)
                 if self.zoom_t <= 0.0:
                     self.mode             = RENDER_FOLLOW
                     self.hold_counter     = 0
                     self.reacquire_streak = 0
                     self.zoom_t           = 0.0
-                    return ema_yaw, ema_pitch, OUTPUT_FOV, RENDER_FOLLOW, 0.0, 0, 0
-                return yaw, pitch, fov, RENDER_ZOOMING_IN, self.zoom_t, self.hold_counter, self.reacquire_streak
+                    return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, RENDER_FOLLOW, 0.0, 0, 0
+                return yaw, pitch, fov, roll, RENDER_ZOOMING_IN, self.zoom_t, self.hold_counter, self.reacquire_streak
             else:
                 # Lost again — zoom back out from current position
-                cur_yaw, cur_pitch, cur_fov = self._interp_pose(self.zoom_t)
+                cur_yaw, cur_pitch, cur_fov, roll = self._interp_pose(self.zoom_t)
                 self.mode             = RENDER_ZOOMING_OUT
                 self.zoom_start_yaw   = cur_yaw
                 self.zoom_start_pitch = cur_pitch
                 self.zoom_start_fov   = cur_fov
+                self.zoom_start_roll  = roll
                 self.reacquire_streak = 0
-                return cur_yaw, cur_pitch, cur_fov, RENDER_ZOOMING_OUT, self.zoom_t, self.hold_counter, 0
+                return cur_yaw, cur_pitch, cur_fov, roll, RENDER_ZOOMING_OUT, self.zoom_t, self.hold_counter, 0
 
-        return ema_yaw, ema_pitch, OUTPUT_FOV, RENDER_FOLLOW, 0.0, 0, 0
+        return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, RENDER_FOLLOW, 0.0, 0, 0
 
 
 # ---------------------------------------------------------------------------
@@ -354,9 +368,9 @@ class SmoothZoomFallbackFSM:
 # ---------------------------------------------------------------------------
 def render_segment(equirect_path, tracking_path, start_frame, end_frame,
                    output_clean, output_debug,
-                   fallback_yaw, fallback_pitch, fallback_fov):
+                   fallback_yaw, fallback_pitch, fallback_fov, fallback_roll):
 
-    print("[render v5] Loading tracking.json...")
+    print("[render v6] Loading tracking.json...")
     with open(tracking_path) as f:
         tracking = json.load(f)
 
@@ -364,12 +378,12 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
     frames_data   = tracking.get("frames", [])
     total_tracked = len(frames_data)
     zoom_secs     = FALLBACK_ZOOM_FRAMES / fps
-    print(f"[render v5] {total_tracked} frames @ {fps:.2f} fps")
-    print(f"[render v5] Rendering frames {start_frame}–{end_frame}")
-    print(f"[render v5] Zoom: {FALLBACK_ZOOM_FRAMES} frames ({zoom_secs:.2f}s)  "
+    print(f"[render v6] {total_tracked} frames @ {fps:.2f} fps")
+    print(f"[render v6] Rendering frames {start_frame}–{end_frame}")
+    print(f"[render v6] Zoom: {FALLBACK_ZOOM_FRAMES} frames ({zoom_secs:.2f}s)  "
           f"hold={HOLD_BEFORE_ZOOM}fr")
-    print(f"[render v5] Wide target: yaw={fallback_yaw}° pitch={fallback_pitch}° "
-          f"fov={fallback_fov}°")
+    print(f"[render v6] Wide target: yaw={fallback_yaw}° pitch={fallback_pitch}° "
+          f"fov={fallback_fov}° roll={fallback_roll}°")
 
     end_frame = min(end_frame, total_tracked)
 
@@ -398,13 +412,13 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
     ema_yaw_ref = 0.0
     prev_best_score = None
 
-    fsm = SmoothZoomFallbackFSM(fallback_yaw, fallback_pitch, fallback_fov)
+    fsm = SmoothZoomFallbackFSM(fallback_yaw, fallback_pitch, fallback_fov, fallback_roll)
     rendered = 0
 
     for frame_idx in range(start_frame, end_frame):
         ret, equirect = cap.read()
         if not ret:
-            print(f"[render v5] Video ended at frame {frame_idx}")
+            print(f"[render v6] Video ended at frame {frame_idx}")
             break
 
         frame_data    = frames_data[frame_idx] if frame_idx < len(frames_data) else {}
@@ -436,7 +450,7 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
 
         prev_best_score = best_score
 
-        cam_yaw, cam_pitch, cam_fov, render_mode, zoom_t, hold_ctr, reacq_streak = fsm.update(
+        cam_yaw, cam_pitch, cam_fov, cam_roll, render_mode, zoom_t, hold_ctr, reacq_streak = fsm.update(
             ema_yaw, ema_pitch, tracker_state, best_score
         )
 
@@ -445,7 +459,7 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
         final_cam_yaw = cam_yaw + lead
 
         clean = extract_crop_frame(equirect, final_cam_yaw, cam_pitch, cam_fov,
-                                   OUTPUT_W, OUTPUT_H)
+                                   OUTPUT_W, OUTPUT_H, roll_deg=cam_roll)
         writer_clean.stdin.write(clean.tobytes())
 
         debug = draw_hud(clean, frame_data, frame_idx, fps,
@@ -461,7 +475,7 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
 
         rendered += 1
         if rendered % 100 == 0:
-            print(f"[render v5] frame {frame_idx}  mode={render_mode}  "
+            print(f"[render v6] frame {frame_idx}  mode={render_mode}  "
                   f"cam=({final_cam_yaw:.1f},{cam_pitch:.1f})  fov={cam_fov:.1f}  t={zoom_t:.2f}")
 
     cap.release()
@@ -469,9 +483,9 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
     writer_debug.stdin.close()
     writer_clean.wait()
     writer_debug.wait()
-    print(f"[render v5] Done. {rendered} frames rendered.")
-    print(f"[render v5] Clean : {output_clean}")
-    print(f"[render v5] Debug : {output_debug}")
+    print(f"[render v6] Done. {rendered} frames rendered.")
+    print(f"[render v6] Clean : {output_clean}")
+    print(f"[render v6] Debug : {output_debug}")
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +502,7 @@ if __name__ == "__main__":
     parser.add_argument("--fallback-yaw",    type=float, default=FALLBACK_YAW)
     parser.add_argument("--fallback-pitch",  type=float, default=FALLBACK_PITCH)
     parser.add_argument("--fallback-fov",    type=float, default=FALLBACK_FOV)
+    parser.add_argument("--fallback-roll",   type=float, default=FALLBACK_ROLL)
     args = parser.parse_args()
 
     render_segment(
@@ -500,4 +515,6 @@ if __name__ == "__main__":
         fallback_yaw=args.fallback_yaw,
         fallback_pitch=args.fallback_pitch,
         fallback_fov=args.fallback_fov,
+        fallback_roll=args.fallback_roll,
     )
+
