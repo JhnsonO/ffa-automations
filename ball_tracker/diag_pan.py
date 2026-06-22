@@ -52,48 +52,39 @@ def extract_new(eq, yaw_deg, pitch_deg, fov_deg, roll_deg, out_w, out_h):
     h_eq, w_eq = eq.shape[:2]
     f = (out_w / 2.0) / math.tan(math.radians(fov_deg / 2.0))
 
-    # Forward vector from yaw + pitch (standard spherical, Y-up)
-    yaw   = math.radians(yaw_deg)
-    pitch = math.radians(pitch_deg)
-    fwd = np.array([
-        math.sin(yaw) * math.cos(pitch),
-        math.sin(pitch),
-        math.cos(yaw) * math.cos(pitch),
-    ])
-
-    # Right: derived from yaw ONLY — always exactly horizontal regardless of pitch.
-    right = np.array([math.cos(yaw), 0.0, -math.sin(yaw)])
-
-    # Up: cross(fwd, right) gives [0,+1,0] at yaw=0,pitch=0  (sky = up).
-    # cross(right, fwd) would give [0,-1,0] — flipped world. Fixed here.
-    up = np.cross(fwd, right)
-    up /= np.linalg.norm(up)
-
-    # Apply roll within camera frame (rotate right/up)
-    cr, sr = math.cos(math.radians(roll_deg)), math.sin(math.radians(roll_deg))
-    right2 = cr * right - sr * up
-    up2    = sr * right + cr * up
-
-    # Build rotation matrix: columns = right2, up2, fwd
-    R = np.stack([right2, up2, fwd], axis=1)  # (3,3)
-
-    # Output pixel grid → camera-space rays
+    # Step 1: apply roll in pixel/camera space — identical to OLD.
+    # This preserves exact output at yaw=0 and keeps roll behaviour consistent.
     xs = np.linspace(0, out_w-1, out_w)
     ys = np.linspace(0, out_h-1, out_h)
     xv, yv = np.meshgrid(xs, ys)
-    rx_c = (xv - out_w/2.0) / f
-    ry_c = (yv - out_h/2.0) / f
+    rx = (xv - out_w/2.0) / f
+    ry = -(yv - out_h/2.0) / f   # flip: image +y = world -up
+    rz = np.ones_like(rx)
+    cr, sr = math.cos(math.radians(roll_deg)), math.sin(math.radians(roll_deg))
+    rx, ry = cr*rx - sr*ry, sr*rx + cr*ry
+    norm = np.sqrt(rx**2 + ry**2 + rz**2)
+    rx, ry, rz = rx/norm, ry/norm, rz/norm
 
-    rx_c_flat = rx_c.ravel()
-    ry_c_flat = (-ry_c).ravel()   # image y flipped: +row = down = -world_up
-    rz_c_flat = np.ones(rx_c_flat.shape)
+    # Step 2: build world-up look-at for yaw+pitch (no roll — already applied).
+    # Pitch negated to match OLD convention: positive pitch_deg tilts down.
+    yaw_r   = math.radians(yaw_deg)
+    pitch_r = math.radians(-pitch_deg)   # negated: matches OLD pitch direction
+    fwd   = np.array([math.sin(yaw_r)*math.cos(pitch_r),
+                      math.sin(pitch_r),
+                      math.cos(yaw_r)*math.cos(pitch_r)])
+    # Right is always horizontal — yaw only, no pitch contamination.
+    right = np.array([math.cos(yaw_r), 0.0, -math.sin(yaw_r)])
+    # Up via cross(fwd, right) → [0,+1,0] at neutral pose.
+    up = np.cross(fwd, right)
+    up /= np.linalg.norm(up)
+    R = np.stack([right, up, fwd], axis=1)  # (3,3), columns = basis vectors
 
-    cam_rays  = np.stack([rx_c_flat, ry_c_flat, rz_c_flat], axis=0)  # (3,N)
+    # Step 3: rotate rolled pixel rays into world space.
+    cam_rays  = np.stack([rx.ravel(), ry.ravel(), rz.ravel()], axis=0)  # (3,N)
     world_rays = R @ cam_rays  # (3,N)
-
     wx, wy, wz = world_rays[0], world_rays[1], world_rays[2]
-    norm = np.sqrt(wx**2 + wy**2 + wz**2)
-    wx, wy, wz = wx/norm, wy/norm, wz/norm
+    norm2 = np.sqrt(wx**2 + wy**2 + wz**2)
+    wx, wy, wz = wx/norm2, wy/norm2, wz/norm2
 
     yaw_map   = np.arctan2(wx, wz).reshape(out_h, out_w)
     pitch_map = np.arcsin(np.clip(wy, -1, 1)).reshape(out_h, out_w)
