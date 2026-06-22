@@ -121,11 +121,11 @@ def main():
     ap.add_argument("--pitch",   type=float, default=5.0)
     ap.add_argument("--fov",     type=float, default=120.0)
     ap.add_argument("--roll",    type=float, default=4.0)
-    ap.add_argument("--yaws",    default="-90,-60,-30,0,30,60,90")
+    ap.add_argument("--yaws",    nargs="+", default=["-90","-60","-30","0","30","60","90"])
     ap.add_argument("--output",  default="pan_diagnostic.jpg")
     args = ap.parse_args()
 
-    yaws = [float(y) for y in args.yaws.split(",")]
+    yaws = [float(y) for y in args.yaws]
 
     cap = cv2.VideoCapture(args.input)
     cap.set(cv2.CAP_PROP_POS_FRAMES, args.frame)
@@ -158,3 +158,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
