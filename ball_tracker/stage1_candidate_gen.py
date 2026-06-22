@@ -1,0 +1,494 @@
+#!/usr/bin/env python3
+"""
+FFA Offline Recovery Pipeline — Stage 1: Candidate Generation
+=============================================================
+Per docs/offline-recovery-pipeline.md §4.
+
+Purpose
+-------
+Produce a weighted candidate list for every frame in the clip, ready for
+Stage 2 temporal linking.  This stage is cheap and conservative:
+
+  1. Reuse Stage 0 sampled detections from stage0_detections.json — no
+     re-running the detector on already-sampled frames.
+  2. For frames NOT covered by Stage 0 (between sampled timestamps), run the
+     same cheap YOLO detector at the same conf floor.
+  3. Apply the hotspot penalty map (region-aware) to every candidate
+     immediately on ingestion.
+  4. Apply pitch bounds as a hard pre-filter — anything outside
+     [PITCH_MIN_DEG, PITCH_MAX_DEG] is dropped before any further processing.
+  5. Emit a per-frame candidate list and a reduction report.
+
+No rendering changes.  No temporal tracking.  Output only.
+
+Pitch bounds (configurable, not derived from Stage 0 data)
+----------------------------------------------------------
+  PITCH_MIN_DEG = -30   (conservative lower bound)
+  PITCH_MAX_DEG = +18   (conservative upper bound)
+These are workflow/config inputs and must not be globally relaxed just because
+high-pitch detections exist in Stage 0.  Stage 3 gap recovery may search wider
+locally when forward/backward anchors justify it.
+
+Inputs
+------
+  --hotspot-map      : stage0_output/hotspot_map.json
+  --stage0-detections: stage0_output/stage0_detections.json
+  --input            : equirect MP4 (same clip used for Stage 0)
+  --output-dir       : output directory
+
+Outputs
+-------
+  stage1_candidates.json  — per-frame candidate list with penalties applied
+  stage1_report.txt       — reduction stats and fence region check
+"""
+
+import argparse
+import json
+import math
+import os
+import sys
+import time
+
+import cv2
+import numpy as np
+
+# ── Detector config — identical to Stage 0 / run_tracker.py cheap path ────────
+CROP_YAWS_DEG    = [0, 90, 180, 270]
+CROP_FOV_DEG     = 110
+CROP_W           = 1280
+CROP_H           = 720
+DEDUP_THRESH_DEG = 15
+YOLO_CONF        = 0.12
+YOLO_IMGSZ       = 1280
+BALL_CLASS_ID    = 0
+
+# ── Pitch bounds — configurable, conservative defaults ────────────────────────
+DEF_PITCH_MIN_DEG = -30.0
+DEF_PITCH_MAX_DEG =  18.0
+
+# ── Known venue reference (for report) ───────────────────────────────────────
+KNOWN_FENCE_YAW   = -77.4
+KNOWN_FENCE_PITCH = -3.9
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Geometry — verbatim from run_tracker.py / stage0
+# ─────────────────────────────────────────────────────────────────────────────
+def extract_crop_frame(equirect_frame, crop_yaw_deg, fov_deg, out_w, out_h):
+    h_eq, w_eq = equirect_frame.shape[:2]
+    f = (out_w / 2.0) / math.tan(math.radians(fov_deg / 2.0))
+    xs = np.linspace(0, out_w - 1, out_w)
+    ys = np.linspace(0, out_h - 1, out_h)
+    xv, yv = np.meshgrid(xs, ys)
+    rx = (xv - out_w / 2.0) / f
+    ry = -(yv - out_h / 2.0) / f
+    rz = np.ones_like(rx)
+    norm = np.sqrt(rx**2 + ry**2 + rz**2)
+    rx, ry, rz = rx / norm, ry / norm, rz / norm
+    cy = math.radians(crop_yaw_deg)
+    wx = math.cos(cy) * rx + math.sin(cy) * rz
+    wy = ry
+    wz = -math.sin(cy) * rx + math.cos(cy) * rz
+    yaw_map   = np.arctan2(wx, wz)
+    pitch_map = np.arcsin(np.clip(wy, -1, 1))
+    map_x = ((yaw_map / (2 * math.pi)) + 0.5) * w_eq
+    map_y = (0.5 - pitch_map / math.pi) * h_eq
+    return cv2.remap(equirect_frame,
+                     map_x.astype(np.float32), map_y.astype(np.float32),
+                     interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
+
+
+def crop_pixel_to_yaw_pitch(px, py, crop_yaw_deg, fov_deg, w, h):
+    nx = (px - w / 2.0) / (w / 2.0)
+    ny = (py - h / 2.0) / (h / 2.0)
+    f  = 1.0 / math.tan(math.radians(fov_deg / 2.0))
+    ray = np.array([nx / f, -ny / f * (w / h), 1.0])
+    ray = ray / np.linalg.norm(ray)
+    cy = math.radians(crop_yaw_deg)
+    Ry = np.array([[ math.cos(cy), 0, math.sin(cy)],
+                   [            0, 1,            0],
+                   [-math.sin(cy), 0, math.cos(cy)]])
+    world = Ry @ ray
+    yaw   = math.degrees(math.atan2(world[0], world[2]))
+    pitch = math.degrees(math.asin(max(-1.0, min(1.0, world[1]))))
+    return yaw, pitch
+
+
+def angular_distance(y1, p1, y2, p2):
+    dy = math.radians(y1 - y2)
+    return math.degrees(math.acos(max(-1.0, min(1.0,
+        math.sin(math.radians(p1)) * math.sin(math.radians(p2)) +
+        math.cos(math.radians(p1)) * math.cos(math.radians(p2)) * math.cos(dy)
+    ))))
+
+
+def dedupe_detections(detections, thresh_deg=DEDUP_THRESH_DEG):
+    kept = []
+    for det in sorted(detections, key=lambda d: -d[2]):
+        yaw, pitch, conf = det[:3]
+        if all(angular_distance(yaw, pitch, k[0], k[1]) > thresh_deg for k in kept):
+            kept.append(det)
+    return kept
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Penalty — loaded from hotspot_map.json, applied per-candidate
+# ─────────────────────────────────────────────────────────────────────────────
+def load_hotspot_map(path):
+    with open(path) as f:
+        hm = json.load(f)
+    # Reconstruct penalty lookup from the bin list
+    bin_lookup = {}
+    for b in hm.get("bins", []):
+        key = (b["yaw_bin"], b["pitch_bin"])
+        bin_lookup[key] = b["penalty_weight"]
+    return hm, bin_lookup
+
+
+def bin_id_for(yaw, pitch, bin_deg):
+    yaw_w = ((yaw + 180.0) % 360.0) - 180.0
+    yb = int(math.floor((yaw_w + 180.0) / bin_deg))
+    pb = int(math.floor((pitch + 90.0) / bin_deg))
+    return (yb, pb)
+
+
+def penalty_weight_from_map(yaw, pitch, hm, bin_lookup):
+    """
+    Region-aware penalty at (yaw, pitch).
+
+    Two sources, take the stronger (lower weight):
+      1. Per-bin lookup — exact bin match from Stage 0 histogram.
+      2. Region-distance penalty — smooth falloff from hotspot region centres.
+
+    Returns weight in [penalty_min, 1.0].  1.0 = neutral.
+    """
+    bin_deg   = hm["sphere_bin_deg"]
+    low_floor = hm["low_duty_floor"]
+    threshold = hm["duty_cycle_threshold"]
+    pmin      = hm["penalty_min"]
+
+    # 1. Per-bin
+    b = bin_id_for(yaw, pitch, bin_deg)
+    bin_w = bin_lookup.get(b, 1.0)
+
+    # 2. Region-distance  (re-implements region_penalty_for_point from Stage 0)
+    region_w = 1.0
+    for r in hm.get("hotspot_regions", []):
+        d = angular_distance(yaw, pitch, r["centre_yaw"], r["centre_pitch"])
+        core = r["radius_deg"]
+        band = core
+        if d <= core:
+            eff_duty = r["peak_duty"]
+        elif d <= core + band:
+            frac     = 1.0 - (d - core) / band
+            eff_duty = r["peak_duty"] * frac
+        else:
+            continue
+        # Penalty curve
+        if eff_duty < low_floor:
+            w = 1.0
+        elif eff_duty >= threshold:
+            w = pmin
+        else:
+            frac2 = (eff_duty - low_floor) / (threshold - low_floor)
+            w = pmin + (1.0 - pmin) * 0.5 * (1.0 + math.cos(math.pi * frac2))
+        if w < region_w:
+            region_w = w
+
+    return max(pmin, min(bin_w, region_w))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Detector (same cheap path as Stage 0)
+# ─────────────────────────────────────────────────────────────────────────────
+def load_detector(weights_path):
+    from ultralytics import YOLO
+    return YOLO(weights_path)
+
+
+def detect_ball_candidates(model, equirect_frame):
+    raw = []
+    for crop_yaw in CROP_YAWS_DEG:
+        crop = extract_crop_frame(equirect_frame, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
+        results = model.predict(crop, conf=YOLO_CONF, imgsz=YOLO_IMGSZ,
+                                classes=[BALL_CLASS_ID], verbose=False)
+        for r in results:
+            if r.boxes is None:
+                continue
+            for box in r.boxes:
+                conf = float(box.conf[0])
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                yaw, pitch = crop_pixel_to_yaw_pitch(cx, cy, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
+                raw.append((yaw, pitch, conf, crop_yaw))
+    return dedupe_detections(raw)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Candidate processing
+# ─────────────────────────────────────────────────────────────────────────────
+def process_candidate(yaw, pitch, raw_conf, source, crop_yaw,
+                      hm, bin_lookup, pitch_min, pitch_max):
+    """
+    Apply pitch hard-filter then hotspot penalty.
+
+    Returns a dict ready for stage1_candidates.json, or None if pitch-rejected.
+    """
+    # Hard pitch filter — drop before any further processing
+    if pitch < pitch_min or pitch > pitch_max:
+        return None
+
+    penalty = penalty_weight_from_map(yaw, pitch, hm, bin_lookup)
+    weighted_conf = raw_conf * penalty
+
+    # Region label for report (nearest region within 2× its core radius)
+    region_label = None
+    for r in hm.get("hotspot_regions", []):
+        d = angular_distance(yaw, pitch, r["centre_yaw"], r["centre_pitch"])
+        if d <= r["radius_deg"] * 2:
+            region_label = f"({r['centre_yaw']:.1f},{r['centre_pitch']:.1f})"
+            break
+
+    return {
+        "yaw":           round(yaw, 3),
+        "pitch":         round(pitch, 3),
+        "raw_conf":      round(raw_conf, 4),
+        "penalty":       round(penalty, 4),
+        "weighted_conf": round(weighted_conf, 4),
+        "source":        source,        # "stage0_reuse" | "new_detection"
+        "crop_yaw":      crop_yaw,
+        "region":        region_label,  # None if not near any hotspot region
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+def run_stage1(args):
+    t0 = time.time()
+
+    # ── Load Stage 0 outputs ──────────────────────────────────────────────────
+    print(f"[stage1] Loading hotspot map: {args.hotspot_map}")
+    hm, bin_lookup = load_hotspot_map(args.hotspot_map)
+
+    print(f"[stage1] Loading Stage 0 detections: {args.stage0_detections}")
+    with open(args.stage0_detections) as f:
+        s0 = json.load(f)
+    s0_fps    = s0["fps"]
+    s0_stride = s0["sample_stride"]
+    # Keys are stored as strings in JSON; normalise to int
+    s0_frames = {int(k): v for k, v in s0["frames"].items()}
+    s0_frame_set = set(s0_frames.keys())
+    print(f"[stage1] Stage 0: {len(s0_frame_set)} sampled frames  "
+          f"fps={s0_fps:.2f}  stride={s0_stride}")
+    print(f"[stage1] Pitch bounds: [{args.pitch_min_deg}°, {args.pitch_max_deg}°]  (hard filter)")
+    print(f"[stage1] Hotspot regions loaded: {len(hm.get('hotspot_regions', []))}")
+
+    # ── Open video ────────────────────────────────────────────────────────────
+    cap = cv2.VideoCapture(args.input)
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open {args.input}")
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps          = cap.get(cv2.CAP_PROP_FPS) or s0_fps
+    print(f"[stage1] Clip: {total_frames} frames @ {fps:.2f} fps")
+
+    model = None
+    if not args.dry_run:
+        if not args.weights or not os.path.isfile(args.weights):
+            raise RuntimeError(f"Detector weights not found: {args.weights}")
+        print(f"[stage1] Loading detector: {args.weights}")
+        model = load_detector(args.weights)
+
+    # ── Per-frame processing ──────────────────────────────────────────────────
+    all_candidates = {}        # frame_idx -> [candidate_dict, ...]
+
+    # Counters
+    n_frames_processed   = 0
+    n_s0_reuse           = 0   # detections taken from stage0_detections.json
+    n_new_detected       = 0   # detections from re-running the detector
+    n_pitch_rejected     = 0   # dropped by hard pitch filter
+    n_kept               = 0   # after pitch filter, penalty applied
+
+    fence_weighted_total = 0.0  # weighted_conf sum for candidates near fence
+    fence_raw_total      = 0.0  # raw_conf sum for candidates near fence
+    fence_count          = 0
+
+    for frame_idx in range(total_frames):
+        if args.max_frames and frame_idx >= args.max_frames:
+            break
+
+        candidates_raw = []   # (yaw, pitch, conf, crop_yaw, source)
+
+        if frame_idx in s0_frame_set:
+            # ── Reuse Stage 0 detections ──────────────────────────────────────
+            for det in s0_frames[frame_idx]:
+                # det: [yaw, pitch, conf, crop_yaw, [yb, pb]]
+                candidates_raw.append((det[0], det[1], det[2], det[3], "stage0_reuse"))
+            n_s0_reuse += len(s0_frames[frame_idx])
+        else:
+            # ── Detect on this frame ───────────────────────────────────────────
+            if args.dry_run:
+                dets = []
+            else:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if not ret:
+                    all_candidates[frame_idx] = []
+                    continue
+                dets = detect_ball_candidates(model, frame)
+            for (yaw, pitch, conf, crop_yaw) in dets:
+                candidates_raw.append((yaw, pitch, conf, crop_yaw, "new_detection"))
+            n_new_detected += len(dets)
+
+        # ── Apply pitch filter + penalty ──────────────────────────────────────
+        frame_cands = []
+        for (yaw, pitch, raw_conf, crop_yaw, source) in candidates_raw:
+            cand = process_candidate(yaw, pitch, raw_conf, source, crop_yaw,
+                                     hm, bin_lookup,
+                                     args.pitch_min_deg, args.pitch_max_deg)
+            if cand is None:
+                n_pitch_rejected += 1
+                continue
+            frame_cands.append(cand)
+            n_kept += 1
+
+            # Fence proximity tracking (for report)
+            d = angular_distance(yaw, pitch, KNOWN_FENCE_YAW, KNOWN_FENCE_PITCH)
+            if d <= 5.0:
+                fence_count          += 1
+                fence_raw_total      += raw_conf
+                fence_weighted_total += cand["weighted_conf"]
+
+        all_candidates[frame_idx] = frame_cands
+        n_frames_processed += 1
+
+        if (n_frames_processed % 500) == 0:
+            el = time.time() - t0
+            print(f"[stage1] {n_frames_processed}/{total_frames} frames  "
+                  f"kept={n_kept}  pitch_rej={n_pitch_rejected}  {el:.1f}s")
+
+    cap.release()
+
+    # ── Compute stats ─────────────────────────────────────────────────────────
+    n_raw_total  = n_s0_reuse + n_new_detected  # before pitch filter
+    # Reduction vs raw (pre-filter) candidates
+    pitch_rej_pct    = (n_pitch_rejected / n_raw_total * 100) if n_raw_total else 0.0
+    candidates_after = n_kept
+    # Weighted confidence reduction: 1 - sum(weighted_conf) / sum(raw_conf)
+    sum_raw_kept      = sum(c["raw_conf"]      for cs in all_candidates.values() for c in cs)
+    sum_weighted_kept = sum(c["weighted_conf"] for cs in all_candidates.values() for c in cs)
+    weight_reduction  = (1.0 - sum_weighted_kept / sum_raw_kept) if sum_raw_kept else 0.0
+
+    fence_suppression = (1.0 - fence_weighted_total / fence_raw_total) if fence_raw_total else None
+
+    # Region breakdown: how many candidates landed in each region
+    region_counts = {}
+    for cs in all_candidates.values():
+        for c in cs:
+            label = c["region"] or "_none_"
+            region_counts[label] = region_counts.get(label, 0) + 1
+
+    # ── Write outputs ─────────────────────────────────────────────────────────
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    out_cands = os.path.join(args.output_dir, "stage1_candidates.json")
+    with open(out_cands, "w") as f:
+        json.dump({
+            "fps":              fps,
+            "total_frames":     total_frames,
+            "pitch_min_deg":    args.pitch_min_deg,
+            "pitch_max_deg":    args.pitch_max_deg,
+            "hotspot_map":      os.path.basename(args.hotspot_map),
+            "stage0_detections": os.path.basename(args.stage0_detections),
+            "frames":           all_candidates,
+        }, f)
+    print(f"[stage1] Candidates written -> {out_cands}")
+
+    report = build_report(
+        n_frames_processed, n_raw_total, n_s0_reuse, n_new_detected,
+        n_pitch_rejected, pitch_rej_pct,
+        candidates_after, weight_reduction,
+        fence_count, fence_suppression,
+        region_counts, args,
+    )
+    out_rep = os.path.join(args.output_dir, "stage1_report.txt")
+    with open(out_rep, "w") as f:
+        f.write(report)
+    print("\n" + report)
+    print(f"\n[stage1] Done in {time.time()-t0:.1f}s. Outputs in {args.output_dir}/")
+
+
+def build_report(n_frames, n_raw, n_s0_reuse, n_new, n_pitch_rej, pitch_rej_pct,
+                 n_kept, weight_reduction,
+                 fence_count, fence_suppression,
+                 region_counts, args):
+    lines = []
+    lines.append("=" * 70)
+    lines.append("STAGE 1 — CANDIDATE GENERATION — REPORT")
+    lines.append("=" * 70)
+    lines.append(f"Input clip            : {os.path.basename(args.input)}")
+    lines.append(f"Pitch bounds          : [{args.pitch_min_deg}°, {args.pitch_max_deg}°]  (hard filter)")
+    lines.append(f"Hotspot map           : {os.path.basename(args.hotspot_map)}")
+    lines.append("")
+    lines.append("-" * 70)
+    lines.append("CANDIDATE COUNTS")
+    lines.append("-" * 70)
+    lines.append(f"Frames processed      : {n_frames}")
+    lines.append(f"Raw candidates        : {n_raw}")
+    lines.append(f"  from Stage 0 reuse  : {n_s0_reuse}")
+    lines.append(f"  from new detection  : {n_new}")
+    lines.append(f"Pitch-rejected        : {n_pitch_rej}  ({pitch_rej_pct:.1f}% of raw)")
+    lines.append(f"After pitch filter    : {n_kept}")
+    lines.append("")
+    lines.append("-" * 70)
+    lines.append("PENALTY EFFECT (weighted confidence reduction)")
+    lines.append("-" * 70)
+    lines.append(f"Weighted conf reduction vs raw : {weight_reduction*100:.1f}%")
+    lines.append(f"  (1 - sum(weighted_conf) / sum(raw_conf) across kept candidates)")
+    lines.append("")
+    lines.append("-" * 70)
+    lines.append("REGION BREAKDOWN (candidates touching each hotspot region)")
+    lines.append("-" * 70)
+    for label, count in sorted(region_counts.items(), key=lambda x: -x[1]):
+        lines.append(f"  {label:<30} : {count}")
+    lines.append("")
+    lines.append("-" * 70)
+    lines.append("FENCE REGION CHECK")
+    lines.append("-" * 70)
+    lines.append(f"Known fence reference : ({KNOWN_FENCE_YAW}, {KNOWN_FENCE_PITCH})")
+    lines.append(f"Candidates within 5°  : {fence_count}")
+    if fence_suppression is not None:
+        lines.append(f"Weighted conf reduction in fence zone : {fence_suppression*100:.1f}%")
+        flag = "YES" if fence_suppression >= 0.50 else "NO"
+        lines.append(f"-> FENCE EFFECTIVELY DOWN-WEIGHTED: {flag}  (want >=50% suppression)")
+    else:
+        lines.append("-> No candidates near fence — nothing to check")
+    lines.append("=" * 70)
+    return "\n".join(lines)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Stage 1 candidate generation")
+    ap.add_argument("--input",              required=True,
+                    help="equirect MP4 (same clip as Stage 0)")
+    ap.add_argument("--hotspot-map",        required=True,
+                    help="stage0_output/hotspot_map.json")
+    ap.add_argument("--stage0-detections",  required=True,
+                    help="stage0_output/stage0_detections.json")
+    ap.add_argument("--output-dir",         default="stage1_output")
+    ap.add_argument("--weights",            default=os.environ.get("BALL_WEIGHTS", ""),
+                    help="YOLO ball detector weights (.pt)")
+    ap.add_argument("--pitch-min-deg",      type=float, default=DEF_PITCH_MIN_DEG,
+                    help="Hard pitch lower bound (default: -30)")
+    ap.add_argument("--pitch-max-deg",      type=float, default=DEF_PITCH_MAX_DEG,
+                    help="Hard pitch upper bound (default: +18)")
+    ap.add_argument("--max-frames",         type=int, default=None,
+                    help="Cap frames processed (quick test)")
+    ap.add_argument("--dry-run",            action="store_true",
+                    help="Skip detection; reuse Stage 0 data only (pipeline/IO test)")
+    args = ap.parse_args()
+    run_stage1(args)
+
+
+if __name__ == "__main__":
+    main()
