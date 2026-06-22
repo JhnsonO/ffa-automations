@@ -24,9 +24,9 @@ on:
         required: false
         default: '120'
       rolls:
-        description: 'Comma-separated roll offsets to test'
+        description: 'Space-separated roll offsets to test'
         required: false
-        default: '-8,-4,0,4,8'
+        default: '-8 -4 0 4 8'
 
 jobs:
   calibrate:
@@ -94,7 +94,7 @@ jobs:
             --yaw    $YAW \
             --pitch  $PITCH \
             --fov    $FOV \
-            --rolls "$ROLLS" \
+            --rolls $ROLLS \
             --output calib_output/roll_calibration.jpg
           ls -lh calib_output/
 
@@ -164,4 +164,5 @@ jobs:
 
           print(f"\nAll outputs: https://drive.google.com/drive/folders/{subfolder_id}")
           PY
+
 
