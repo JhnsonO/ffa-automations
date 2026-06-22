@@ -1,19 +1,31 @@
 #!/usr/bin/env python3
 """
-FFA 360 Render Segment — v2
+FFA 360 Render Segment — v3
 ============================
 Pure render step. Reads tracking.json (pre-computed), renders a frame window
 as two outputs:
   - render_clean.mp4  : 16:9 follow-cam, no overlays
   - render_debug.mp4  : follow-cam + HUD overlay + equirect inset with ball marker
 
-Adds render-side STATIC FALLBACK:
-  When the smoothed camera position hasn't moved more than STATIC_MAX_DISPLACEMENT_DEG
-  over STATIC_WINDOW_FRAMES, the renderer enters STATIC_HOLD (freeze last good pose),
-  then STATIC_DRIFT (slow pan toward configurable fallback pose), and snaps back on
-  genuine motion recovery (STATIC_RECOVER).
+v3: Replaces displacement-based StaticFallbackFSM with a tracker-state-aware
+wide playable-area fallback FSM.
 
-No detection, no Kalman — this is a visual validation step only.
+Render modes:
+  FOLLOW        — Tracker confirmed ball this frame → EMA follow-cam
+  WIDE_FALLBACK — Tracker UNCERTAIN/LOST, or no confirmed ball for
+                  HOLD_BEFORE_FALLBACK frames → smooth lerp to configured
+                  wide pitch-facing view
+  REACQUIRE     — Tracker returns confirmed ball for REACQUIRE_MIN_FRAMES
+                  consecutive frames → fast lerp back to follow-cam + EMA reset
+
+Config:
+  FALLBACK_YAW, FALLBACK_PITCH, FALLBACK_FOV  — manual wide view (v1)
+  HOLD_BEFORE_FALLBACK                         — frames to hold last pose before drifting
+  REACQUIRE_MIN_FRAMES                         — confirmed frames needed to exit fallback
+  FALLBACK_LERP_ALPHA                          — drift rate into wide view per frame
+  REACQUIRE_LERP_ALPHA                         — snap rate back to follow-cam per frame
+
+No detection, no Kalman — render-only step.
 
 Usage:
   python3 render_segment.py \\
@@ -30,7 +42,6 @@ import json
 import math
 import os
 import subprocess
-from collections import deque
 
 import cv2
 import numpy as np
@@ -45,10 +56,10 @@ OUTPUT_H     = 1080
 OUTPUT_FOV   = 90          # follow-cam FOV (degrees)
 LEAD_DEG     = 3.0         # camera leads ball by this much in yaw
 
-INSET_W      = 480         # equirect inset width
-INSET_H      = 270         # equirect inset height (16:9)
-INSET_X      = 20          # inset position (bottom-left)
-INSET_Y_OFF  = 20          # offset from bottom
+INSET_W      = 480
+INSET_H      = 270
+INSET_X      = 20
+INSET_Y_OFF  = 20
 
 HUD_FONT     = cv2.FONT_HERSHEY_SIMPLEX
 HUD_SCALE    = 0.65
@@ -57,43 +68,37 @@ HUD_COLOR    = (255, 255, 255)
 HUD_SHADOW   = (0, 0, 0)
 
 # ---------------------------------------------------------------------------
-# Static Fallback Config
+# v3: Tracker-state-aware wide fallback config
 # ---------------------------------------------------------------------------
-STATIC_WINDOW_FRAMES        = 90    # frames over which to measure displacement
-STATIC_MAX_DISPLACEMENT_DEG = 0.5   # max spherical displacement to trigger suspect
-STATIC_HOLD_FRAMES          = 60    # frames to hold last good pose before drifting
-STATIC_RECOVERY_FRAMES      = 5     # consecutive moving frames required to exit fallback
-FALLBACK_YAW                = 0.0   # configurable pitch-facing fallback yaw (degrees)
-FALLBACK_PITCH              = -5.0  # configurable pitch-facing fallback pitch (degrees)
-FALLBACK_FOV                = 100.0 # fallback FOV — slightly wider to show more pitch
-DRIFT_ALPHA                 = 0.02  # lerp rate toward fallback pose per frame
+FALLBACK_YAW             = 0.0    # wide view centre yaw (degrees) — point at pitch centre
+FALLBACK_PITCH           = -5.0   # wide view centre pitch (degrees)
+FALLBACK_FOV             = 100.0  # wide view FOV — broader than follow-cam
+HOLD_BEFORE_FALLBACK     = 30     # frames to hold last good pose before drifting to wide
+REACQUIRE_MIN_FRAMES     = 5      # consecutive confirmed frames before exiting fallback
+FALLBACK_LERP_ALPHA      = 0.03   # drift rate toward wide view per frame (slow, smooth)
+REACQUIRE_LERP_ALPHA     = 0.20   # snap rate back to follow-cam on reacquisition
+
+EMA_ALPHA_TRACKING       = 0.18
+EMA_ALPHA_LOSS           = 0.08
 
 # ---------------------------------------------------------------------------
-# Render states (tracker + static fallback combined)
+# Render states
 # ---------------------------------------------------------------------------
-RENDER_STATE_NORMAL         = "NORMAL"
-RENDER_STATE_STATIC_SUSPECT = "STATIC_SUSPECT"
-RENDER_STATE_STATIC_HOLD    = "STATIC_HOLD"
-RENDER_STATE_STATIC_DRIFT   = "STATIC_DRIFT"
-RENDER_STATE_STATIC_RECOVER = "STATIC_RECOVER"
+RENDER_FOLLOW        = "FOLLOW"
+RENDER_WIDE_FALLBACK = "WIDE_FALLBACK"
+RENDER_REACQUIRE     = "REACQUIRE"
 
 STATE_COLORS = {
-    "TRACKING":         (0, 220, 0),
-    "UNCERTAIN":        (0, 180, 220),
-    "LOST":             (0, 0, 220),
-    "WARMING_UP":       (220, 180, 0),
-    "UNINITIALIZED":    (100, 100, 100),
-    "tracking":         (0, 220, 0),
-    "extrapolating":    (0, 180, 220),
-    "holding":          (0, 120, 220),
-    "player_drift":     (0, 0, 220),
-    "uninitialised":    (100, 100, 100),
-    "warming_up":       (220, 180, 0),
-    # Static fallback states
-    RENDER_STATE_STATIC_SUSPECT: (0, 200, 255),
-    RENDER_STATE_STATIC_HOLD:    (0, 100, 255),
-    RENDER_STATE_STATIC_DRIFT:   (30, 30, 255),
-    RENDER_STATE_STATIC_RECOVER: (0, 255, 180),
+    # Tracker states → bar colour
+    "TRACKING":         (0, 180, 0),
+    "UNCERTAIN":        (0, 160, 200),
+    "LOST":             (0, 0, 200),
+    "WARMING_UP":       (200, 160, 0),
+    "UNINITIALIZED":    (80, 80, 80),
+    # Render mode → bar colour
+    RENDER_FOLLOW:        (0, 180, 0),
+    RENDER_WIDE_FALLBACK: (30, 30, 220),
+    RENDER_REACQUIRE:     (0, 210, 140),
 }
 
 
@@ -111,12 +116,10 @@ def extract_crop_frame(equirect_frame, yaw_deg, pitch_deg, fov_deg, out_w, out_h
     rz = np.ones_like(rx)
     norm = np.sqrt(rx**2 + ry**2 + rz**2)
     rx, ry, rz = rx / norm, ry / norm, rz / norm
-    # Yaw rotation
     cy = math.radians(yaw_deg)
     wx = math.cos(cy) * rx + math.sin(cy) * rz
     wy = ry
     wz = -math.sin(cy) * rx + math.cos(cy) * rz
-    # Pitch rotation
     cp = math.radians(pitch_deg)
     wx2 = wx
     wy2 = math.cos(cp) * wy - math.sin(cp) * wz
@@ -136,25 +139,14 @@ def yaw_pitch_to_equirect_pixel(yaw_deg, pitch_deg, w, h):
     return x, y
 
 
-def spherical_displacement(yaw1, pitch1, yaw2, pitch2):
-    """Angular distance between two spherical positions (degrees)."""
-    y1, p1 = math.radians(yaw1), math.radians(pitch1)
-    y2, p2 = math.radians(yaw2), math.radians(pitch2)
-    # Convert to unit vectors
-    x1 = math.cos(p1) * math.sin(y1)
-    y1v = math.sin(p1)
-    z1 = math.cos(p1) * math.cos(y1)
-    x2 = math.cos(p2) * math.sin(y2)
-    y2v = math.sin(p2)
-    z2 = math.cos(p2) * math.cos(y2)
-    dot = max(-1.0, min(1.0, x1*x2 + y1v*y2v + z1*z2))
-    return math.degrees(math.acos(dot))
-
-
 def lerp_yaw(current, target, alpha):
     """Lerp yaw taking shortest path across 360° seam."""
     diff = (target - current + 540) % 360 - 180
     return current + alpha * diff
+
+
+def lerp_pitch(current, target, alpha):
+    return current + alpha * (target - current)
 
 
 # ---------------------------------------------------------------------------
@@ -163,71 +155,68 @@ def lerp_yaw(current, target, alpha):
 def draw_text_shadowed(img, text, pos, scale, color, thick, shadow=HUD_SHADOW):
     x, y = pos
     cv2.putText(img, text, (x+1, y+1), HUD_FONT, scale, shadow, thick + 1, cv2.LINE_AA)
-    cv2.putText(img, text, (x, y), HUD_FONT, scale, color, thick, cv2.LINE_AA)
+    cv2.putText(img, text, (x, y),     HUD_FONT, scale, color,  thick,     cv2.LINE_AA)
 
 
 def draw_hud(frame, frame_data, frame_idx, fps, cam_yaw, cam_pitch, cam_fov,
-             render_state, static_hold_counter, static_recover_counter):
+             render_mode, hold_counter, reacquire_streak):
     out = frame.copy()
     h, w = out.shape[:2]
 
-    # Tracker state — use render_state if in static fallback, else tracker state
-    tracker_state_str = frame_data.get("tracker_state") or frame_data.get("loss_state", "?")
-    if render_state != RENDER_STATE_NORMAL:
-        display_state = render_state
-    else:
-        display_state = tracker_state_str
-
-    state_key = display_state.split(" ")[0]
-    bar_color = STATE_COLORS.get(state_key, STATE_COLORS.get(display_state, (128, 128, 128)))
-    cv2.rectangle(out, (0, 0), (w, 40), bar_color, -1)
-    cv2.rectangle(out, (0, 0), (w, 40), (0, 0, 0), 2)
-    draw_text_shadowed(out, f"STATE: {display_state}", (10, 28),
-                       HUD_SCALE * 1.1, (0, 0, 0), HUD_THICK)
+    # State bar — show render mode prominently
+    tracker_state = frame_data.get("tracker_state", "?")
+    loss_state    = frame_data.get("loss_state", "")
+    bar_color = STATE_COLORS.get(render_mode, (80, 80, 80))
+    cv2.rectangle(out, (0, 0), (w, 44), bar_color, -1)
+    cv2.rectangle(out, (0, 0), (w, 44), (0, 0, 0), 2)
+    label = f"RENDER: {render_mode}   |   TRACKER: {tracker_state}   {loss_state}"
+    draw_text_shadowed(out, label, (10, 30), HUD_SCALE * 1.05, (0, 0, 0), HUD_THICK)
 
     # Frame / time
     t_sec = frame_idx / fps if fps else 0
     draw_text_shadowed(out, f"Frame {frame_idx}  t={t_sec:.2f}s",
-                       (10, 75), HUD_SCALE, HUD_COLOR, HUD_THICK)
+                       (10, 78), HUD_SCALE, HUD_COLOR, HUD_THICK)
 
     # Camera pose
     draw_text_shadowed(out,
-                       f"Cam  yaw={cam_yaw:.1f}°  pitch={cam_pitch:.1f}°  fov={cam_fov:.0f}°",
-                       (10, 105), HUD_SCALE, HUD_COLOR, HUD_THICK)
+                       f"Cam  yaw={cam_yaw:.1f}  pitch={cam_pitch:.1f}  fov={cam_fov:.0f}",
+                       (10, 106), HUD_SCALE, HUD_COLOR, HUD_THICK)
 
     # Ball tracker position
-    smoothed = frame_data.get("smoothed") or {}
+    smoothed   = frame_data.get("smoothed") or {}
     ball_yaw   = smoothed.get("yaw", "?")
     ball_pitch = smoothed.get("pitch", "?")
-    draw_text_shadowed(out,
-                       f"Ball yaw={ball_yaw}°  pitch={ball_pitch}°",
-                       (10, 133), HUD_SCALE, HUD_COLOR, HUD_THICK)
-
-    # Detection count + best score
-    dets = frame_data.get("detections", [])
     best_score = frame_data.get("best_score")
-    score_str = f"{best_score:.3f}" if best_score is not None else "—"
+    score_str  = f"{best_score:.3f}" if best_score is not None else "—"
     draw_text_shadowed(out,
-                       f"Detections: {len(dets)}   Best score: {score_str}",
-                       (10, 161), HUD_SCALE, HUD_COLOR, HUD_THICK)
+                       f"Ball yaw={ball_yaw}  pitch={ball_pitch}  score={score_str}",
+                       (10, 134), HUD_SCALE, HUD_COLOR, HUD_THICK)
 
-    # Static fallback counters
-    if render_state in (RENDER_STATE_STATIC_HOLD, RENDER_STATE_STATIC_DRIFT,
-                        RENDER_STATE_STATIC_SUSPECT, RENDER_STATE_STATIC_RECOVER):
+    # Fallback counters
+    if render_mode == RENDER_WIDE_FALLBACK:
         draw_text_shadowed(out,
-                           f"hold_frames={static_hold_counter}  recover_streak={static_recover_counter}",
-                           (10, 189), HUD_SCALE, (0, 200, 255), HUD_THICK)
+                           f"hold_counter={hold_counter}  (fallback after {HOLD_BEFORE_FALLBACK}fr)",
+                           (10, 162), HUD_SCALE, (80, 160, 255), HUD_THICK)
+    elif render_mode == RENDER_REACQUIRE:
+        draw_text_shadowed(out,
+                           f"reacquire_streak={reacquire_streak}/{REACQUIRE_MIN_FRAMES}",
+                           (10, 162), HUD_SCALE, (0, 220, 140), HUD_THICK)
 
-    # Ball crosshair
+    # Detections
+    dets = frame_data.get("detections", [])
+    draw_text_shadowed(out,
+                       f"Detections: {len(dets)}",
+                       (10, 190), HUD_SCALE, HUD_COLOR, HUD_THICK)
+
+    # Crosshair — grey in fallback, cyan in follow/reacquire
     ball_offset_px = int(LEAD_DEG / OUTPUT_FOV * w)
     cx = w // 2 - ball_offset_px
     cy_mid = h // 2
-    crosshair_color = (128, 128, 128) if render_state in (
-        RENDER_STATE_STATIC_HOLD, RENDER_STATE_STATIC_DRIFT) else (0, 255, 255)
-    cv2.circle(out, (cx, cy_mid), 18, crosshair_color, 2)
-    cv2.circle(out, (cx, cy_mid), 4,  crosshair_color, -1)
-    cv2.line(out, (cx - 28, cy_mid), (cx + 28, cy_mid), crosshair_color, 1)
-    cv2.line(out, (cx, cy_mid - 28), (cx, cy_mid + 28), crosshair_color, 1)
+    ch_color = (128, 128, 128) if render_mode == RENDER_WIDE_FALLBACK else (0, 255, 255)
+    cv2.circle(out, (cx, cy_mid), 18, ch_color, 2)
+    cv2.circle(out, (cx, cy_mid), 4,  ch_color, -1)
+    cv2.line(out, (cx - 28, cy_mid), (cx + 28, cy_mid), ch_color, 1)
+    cv2.line(out, (cx, cy_mid - 28), (cx, cy_mid + 28), ch_color, 1)
 
     return out
 
@@ -241,8 +230,8 @@ def draw_equirect_inset(equirect_frame, frame_data, inset_w, inset_h):
         px, py = yaw_pitch_to_equirect_pixel(yaw, pitch, inset_w, inset_h)
         px = max(5, min(inset_w - 5, px))
         py = max(5, min(inset_h - 5, py))
-        cv2.circle(inset, (px, py), 8,  (0, 255, 255), 2)
-        cv2.circle(inset, (px, py), 2,  (0, 255, 255), -1)
+        cv2.circle(inset, (px, py), 8, (0, 255, 255), 2)
+        cv2.circle(inset, (px, py), 2, (0, 255, 255), -1)
     for det in frame_data.get("detections", []):
         dx, dy = yaw_pitch_to_equirect_pixel(det["yaw"], det["pitch"], inset_w, inset_h)
         dx = max(3, min(inset_w - 3, dx))
@@ -253,140 +242,106 @@ def draw_equirect_inset(equirect_frame, frame_data, inset_w, inset_h):
 
 
 # ---------------------------------------------------------------------------
-# Static Fallback State Machine
+# v3 Tracker-State-Aware Fallback FSM
 # ---------------------------------------------------------------------------
-class StaticFallbackFSM:
+class WideAreaFallbackFSM:
     """
-    Monitors EMA camera pose for static lock.
-    States: NORMAL → STATIC_SUSPECT → STATIC_HOLD → STATIC_DRIFT → STATIC_RECOVER → NORMAL
+    Driven by tracker state, not by measuring EMA displacement.
 
-    Displacement check uses max spherical distance over a rolling window of recent poses,
-    not std dev, so a single-direction drift still triggers if it is very slow.
+    FOLLOW        : tracker confirmed ball → EMA follow-cam
+    WIDE_FALLBACK : tracker not confirmed for HOLD_BEFORE_FALLBACK frames
+                    → slow lerp to (FALLBACK_YAW, FALLBACK_PITCH, FALLBACK_FOV)
+    REACQUIRE     : tracker confirms ball for REACQUIRE_MIN_FRAMES consecutive frames
+                    → fast lerp back to follow-cam, then snap EMA
     """
 
     def __init__(self):
-        self.state = RENDER_STATE_NORMAL
-        self.pose_history = deque(maxlen=STATIC_WINDOW_FRAMES)
-        self.last_good_yaw = None
-        self.last_good_pitch = None
-        self.hold_counter = 0
-        self.recover_counter = 0
-        self.drift_yaw = None
-        self.drift_pitch = None
-        self.drift_fov = OUTPUT_FOV
+        self.mode              = RENDER_FOLLOW
+        self.hold_counter      = 0
+        self.reacquire_streak  = 0
+        # Pose held during fallback drift
+        self.fb_yaw            = FALLBACK_YAW
+        self.fb_pitch          = FALLBACK_PITCH
+        self.fb_fov            = OUTPUT_FOV
+        # Last confirmed EMA before entering fallback
+        self.last_follow_yaw   = None
+        self.last_follow_pitch = None
 
-    def update(self, ema_yaw, ema_pitch, tracker_state):
+    def update(self, ema_yaw, ema_pitch, tracker_state, best_score):
         """
-        Call each frame with the current EMA pose.
-        Returns (cam_yaw, cam_pitch, cam_fov, render_state).
+        ema_yaw/pitch: current EMA camera position from tracker smoothed output
+        tracker_state: string from tracking.json
+        best_score:    float or None (None = no confirmed detection this frame)
+
+        Returns (cam_yaw, cam_pitch, cam_fov, render_mode, hold_counter, reacquire_streak)
         """
-        self.pose_history.append((ema_yaw, ema_pitch))
+        confirmed = (best_score is not None)
 
-        # Compute max spherical displacement over history window
-        max_disp = 0.0
-        if len(self.pose_history) >= STATIC_WINDOW_FRAMES:
-            ref_yaw, ref_pitch = self.pose_history[0]
-            for py, pp in self.pose_history:
-                d = spherical_displacement(ref_yaw, ref_pitch, py, pp)
-                if d > max_disp:
-                    max_disp = d
-
-        is_static = (len(self.pose_history) >= STATIC_WINDOW_FRAMES
-                     and max_disp < STATIC_MAX_DISPLACEMENT_DEG)
-
-        if self.state == RENDER_STATE_NORMAL:
-            if is_static:
-                # Save last good pose before we enter suspect
-                if self.last_good_yaw is None:
-                    self.last_good_yaw = ema_yaw
-                    self.last_good_pitch = ema_pitch
-                self.state = RENDER_STATE_STATIC_SUSPECT
-                self.hold_counter = 0
-                self.recover_counter = 0
+        if self.mode == RENDER_FOLLOW:
+            self.last_follow_yaw   = ema_yaw
+            self.last_follow_pitch = ema_pitch
+            if confirmed:
+                self.hold_counter     = 0
+                self.reacquire_streak = 0
+                # Normal follow
+                return ema_yaw, ema_pitch, OUTPUT_FOV, RENDER_FOLLOW, 0, 0
             else:
-                self.last_good_yaw = ema_yaw
-                self.last_good_pitch = ema_pitch
-
-        elif self.state == RENDER_STATE_STATIC_SUSPECT:
-            if not is_static:
-                self.state = RENDER_STATE_NORMAL
-                self.last_good_yaw = ema_yaw
-                self.last_good_pitch = ema_pitch
-            else:
-                # Immediately transition to HOLD (SUSPECT is a 1-frame gate)
-                self.state = RENDER_STATE_STATIC_HOLD
-                self.hold_counter = 0
-                self.drift_yaw = self.last_good_yaw
-                self.drift_pitch = self.last_good_pitch
-                self.drift_fov = OUTPUT_FOV
-
-        elif self.state == RENDER_STATE_STATIC_HOLD:
-            if not is_static:
-                self.recover_counter += 1
-                if self.recover_counter >= STATIC_RECOVERY_FRAMES:
-                    self.state = RENDER_STATE_STATIC_RECOVER
-            else:
-                self.recover_counter = 0
                 self.hold_counter += 1
-                if self.hold_counter >= STATIC_HOLD_FRAMES:
-                    self.state = RENDER_STATE_STATIC_DRIFT
-                    self.drift_yaw = self.last_good_yaw
-                    self.drift_pitch = self.last_good_pitch
-                    self.drift_fov = OUTPUT_FOV
+                if self.hold_counter >= HOLD_BEFORE_FALLBACK:
+                    # Enter fallback — initialise drift pose from current EMA
+                    self.mode    = RENDER_WIDE_FALLBACK
+                    self.fb_yaw  = ema_yaw
+                    self.fb_pitch = ema_pitch
+                    self.fb_fov  = OUTPUT_FOV
+                    self.reacquire_streak = 0
+                # Still holding at last good pose
+                return ema_yaw, ema_pitch, OUTPUT_FOV, RENDER_FOLLOW, self.hold_counter, 0
 
-        elif self.state == RENDER_STATE_STATIC_DRIFT:
-            if not is_static:
-                self.recover_counter += 1
-                if self.recover_counter >= STATIC_RECOVERY_FRAMES:
-                    self.state = RENDER_STATE_STATIC_RECOVER
+        elif self.mode == RENDER_WIDE_FALLBACK:
+            if confirmed:
+                self.reacquire_streak += 1
+                if self.reacquire_streak >= REACQUIRE_MIN_FRAMES:
+                    # Enough consecutive confirmations — start reacquire
+                    self.mode         = RENDER_REACQUIRE
+                    self.hold_counter = 0
             else:
-                self.recover_counter = 0
-                # Drift toward fallback pose
-                self.drift_yaw   = lerp_yaw(self.drift_yaw, FALLBACK_YAW, DRIFT_ALPHA)
-                self.drift_pitch = self.drift_pitch + DRIFT_ALPHA * (FALLBACK_PITCH - self.drift_pitch)
-                self.drift_fov   = self.drift_fov   + DRIFT_ALPHA * (FALLBACK_FOV   - self.drift_fov)
+                self.reacquire_streak = 0
+                # Drift toward wide fallback view
+                self.fb_yaw   = lerp_yaw(self.fb_yaw,   FALLBACK_YAW,   FALLBACK_LERP_ALPHA)
+                self.fb_pitch = lerp_pitch(self.fb_pitch, FALLBACK_PITCH, FALLBACK_LERP_ALPHA)
+                self.fb_fov   = lerp_pitch(self.fb_fov,   FALLBACK_FOV,   FALLBACK_LERP_ALPHA)
 
-        elif self.state == RENDER_STATE_STATIC_RECOVER:
-            if not is_static:
-                self.recover_counter += 1
-                if self.recover_counter >= STATIC_RECOVERY_FRAMES:
-                    # Fully recovered — snap to live EMA
-                    self.state = RENDER_STATE_NORMAL
-                    self.last_good_yaw = ema_yaw
-                    self.last_good_pitch = ema_pitch
-                    self.recover_counter = 0
+            return (self.fb_yaw, self.fb_pitch, self.fb_fov,
+                    RENDER_WIDE_FALLBACK, self.hold_counter, self.reacquire_streak)
+
+        elif self.mode == RENDER_REACQUIRE:
+            if confirmed:
+                self.reacquire_streak += 1
+                # Fast lerp current fb pose toward live EMA
+                self.fb_yaw   = lerp_yaw(self.fb_yaw,    ema_yaw,   REACQUIRE_LERP_ALPHA)
+                self.fb_pitch = lerp_pitch(self.fb_pitch, ema_pitch, REACQUIRE_LERP_ALPHA)
+                self.fb_fov   = lerp_pitch(self.fb_fov,   OUTPUT_FOV, REACQUIRE_LERP_ALPHA)
+
+                # Once close enough, snap to FOLLOW and reset EMA
+                dist_yaw   = abs(((self.fb_yaw - ema_yaw + 540) % 360) - 180)
+                dist_pitch = abs(self.fb_pitch - ema_pitch)
+                if dist_yaw < 3.0 and dist_pitch < 3.0:
+                    self.mode             = RENDER_FOLLOW
+                    self.hold_counter     = 0
+                    self.reacquire_streak = 0
+                    return ema_yaw, ema_pitch, OUTPUT_FOV, RENDER_FOLLOW, 0, 0
+
+                return (self.fb_yaw, self.fb_pitch, self.fb_fov,
+                        RENDER_REACQUIRE, self.hold_counter, self.reacquire_streak)
             else:
-                # Lost it again — back to hold
-                self.recover_counter = 0
-                self.state = RENDER_STATE_STATIC_HOLD
-                self.hold_counter = 0
+                # Lost ball again during reacquire — back to fallback
+                self.mode             = RENDER_WIDE_FALLBACK
+                self.reacquire_streak = 0
+                return (self.fb_yaw, self.fb_pitch, self.fb_fov,
+                        RENDER_WIDE_FALLBACK, self.hold_counter, 0)
 
-        # --- Output camera pose ---
-        if self.state == RENDER_STATE_NORMAL:
-            return ema_yaw, ema_pitch, OUTPUT_FOV, self.state
-
-        elif self.state == RENDER_STATE_STATIC_SUSPECT:
-            # Still using live EMA for one frame
-            return ema_yaw, ema_pitch, OUTPUT_FOV, self.state
-
-        elif self.state == RENDER_STATE_STATIC_HOLD:
-            return self.last_good_yaw, self.last_good_pitch, OUTPUT_FOV, self.state
-
-        elif self.state == RENDER_STATE_STATIC_DRIFT:
-            return self.drift_yaw, self.drift_pitch, self.drift_fov, self.state
-
-        elif self.state == RENDER_STATE_STATIC_RECOVER:
-            # Fast lerp toward live EMA
-            snap_alpha = 0.25
-            recover_yaw   = lerp_yaw(self.drift_yaw if self.drift_yaw is not None else ema_yaw,
-                                     ema_yaw, snap_alpha)
-            recover_pitch = (self.drift_pitch if self.drift_pitch is not None else ema_pitch)
-            recover_pitch = recover_pitch + snap_alpha * (ema_pitch - recover_pitch)
-            self.drift_yaw   = recover_yaw
-            self.drift_pitch = recover_pitch
-            return recover_yaw, recover_pitch, OUTPUT_FOV, self.state
-
-        return ema_yaw, ema_pitch, OUTPUT_FOV, self.state
+        # Fallthrough (should not reach)
+        return ema_yaw, ema_pitch, OUTPUT_FOV, RENDER_FOLLOW, 0, 0
 
 
 # ---------------------------------------------------------------------------
@@ -395,30 +350,25 @@ class StaticFallbackFSM:
 def render_segment(equirect_path, tracking_path, start_frame, end_frame,
                    output_clean, output_debug):
 
-    print(f"[render] Loading tracking.json...")
+    print("[render v3] Loading tracking.json...")
     with open(tracking_path) as f:
         tracking = json.load(f)
 
-    fps_raw = tracking.get("fps", 29.97)
-    fps = float(fps_raw)
+    fps         = float(tracking.get("fps", 29.97))
     frames_data = tracking.get("frames", [])
     total_tracked = len(frames_data)
-    print(f"[render] Tracking data: {total_tracked} frames @ {fps:.2f} fps")
-    print(f"[render] Rendering frames {start_frame}–{end_frame} ({end_frame - start_frame} frames)")
-    print(f"[render] Static fallback config: window={STATIC_WINDOW_FRAMES}fr "
-          f"threshold={STATIC_MAX_DISPLACEMENT_DEG}° hold={STATIC_HOLD_FRAMES}fr "
-          f"recovery={STATIC_RECOVERY_FRAMES}fr fallback=({FALLBACK_YAW},{FALLBACK_PITCH})°")
+    print(f"[render v3] {total_tracked} frames @ {fps:.2f} fps")
+    print(f"[render v3] Rendering frames {start_frame}–{end_frame}")
+    print(f"[render v3] Fallback config: hold={HOLD_BEFORE_FALLBACK}fr "
+          f"reacquire={REACQUIRE_MIN_FRAMES}fr "
+          f"fallback=({FALLBACK_YAW},{FALLBACK_PITCH},{FALLBACK_FOV}°)")
 
-    if start_frame >= total_tracked or end_frame > total_tracked:
-        print(f"[render] WARNING: clamping end_frame from {end_frame} to {total_tracked}")
-        end_frame = min(end_frame, total_tracked)
+    end_frame = min(end_frame, total_tracked)
 
     cap = cv2.VideoCapture(equirect_path)
-    total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    print(f"[render] Video: {total_video_frames} frames")
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
-    def make_ffmpeg_writer(output_path):
+    def make_writer(path):
         return subprocess.Popen([
             FFMPEG, "-y",
             "-f", "rawvideo", "-vcodec", "rawvideo",
@@ -430,109 +380,99 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
             "-preset", "fast", "-crf", "18",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
-            output_path
+            path
         ], stdin=subprocess.PIPE)
 
-    writer_clean = make_ffmpeg_writer(output_clean)
-    writer_debug = make_ffmpeg_writer(output_debug)
+    writer_clean = make_writer(output_clean)
+    writer_debug = make_writer(output_debug)
 
     # EMA state
     ema_yaw, ema_pitch = None, None
     ema_yaw_ref = 0.0
-    EMA_ALPHA = 0.18
+    prev_best_score = None
 
-    static_fsm = StaticFallbackFSM()
-
+    fsm = WideAreaFallbackFSM()
     rendered = 0
-    prev_loss_state = None
-    snap_event = False
 
     for frame_idx in range(start_frame, end_frame):
         ret, equirect = cap.read()
         if not ret:
-            print(f"[render] Video ended at frame {frame_idx}")
+            print(f"[render v3] Video ended at frame {frame_idx}")
             break
 
-        frame_data = frames_data[frame_idx] if frame_idx < len(frames_data) else {}
-        smoothed   = frame_data.get("smoothed") or {}
-        ball_yaw   = smoothed.get("yaw", 0.0)
-        ball_pitch = smoothed.get("pitch", 0.0)
-        loss_state = frame_data.get("loss_state", "tracking")
-
-        # EMA smoothing
-        alpha = EMA_ALPHA if "tracking" in str(loss_state).lower() else 0.08
+        frame_data   = frames_data[frame_idx] if frame_idx < len(frames_data) else {}
+        smoothed     = frame_data.get("smoothed") or {}
+        ball_yaw     = smoothed.get("yaw", 0.0)
+        ball_pitch   = smoothed.get("pitch", 0.0)
         tracker_state = frame_data.get("tracker_state", "")
-        is_confirmed  = (tracker_state == "TRACKING" and frame_data.get("best_score") is not None)
-        was_hold      = prev_loss_state in {"holding", "hold"} or (
-                            prev_loss_state and str(prev_loss_state).startswith("holding"))
+        best_score    = frame_data.get("best_score")
+
+        # EMA
+        confirmed = best_score is not None
+        alpha = EMA_ALPHA_TRACKING if confirmed else EMA_ALPHA_LOSS
 
         if ema_yaw is None:
             ema_yaw, ema_pitch = ball_yaw, ball_pitch
             ema_yaw_ref = ball_yaw
-        elif was_hold and is_confirmed:
-            ema_yaw, ema_pitch = ball_yaw, ball_pitch
-            ema_yaw_ref = ball_yaw
-            snap_event = True
         else:
-            dyaw = ball_yaw - ema_yaw_ref
-            if dyaw > 180:
-                ball_yaw -= 360
-            elif dyaw < -180:
-                ball_yaw += 360
-            ema_yaw_ref = ball_yaw
-            ema_yaw   = alpha * ball_yaw   + (1 - alpha) * ema_yaw
-            ema_pitch = alpha * ball_pitch + (1 - alpha) * ema_pitch
+            # Reacquisition snap: prev was not confirmed, now is
+            was_confirmed = prev_best_score is not None
+            if confirmed and not was_confirmed:
+                # Snap EMA to confirmed position, skip lerp
+                ema_yaw   = ball_yaw
+                ema_pitch = ball_pitch
+                ema_yaw_ref = ball_yaw
+            else:
+                dyaw = ball_yaw - ema_yaw_ref
+                if dyaw > 180:  ball_yaw -= 360
+                elif dyaw < -180: ball_yaw += 360
+                ema_yaw_ref = ball_yaw
+                ema_yaw   = alpha * ball_yaw   + (1 - alpha) * ema_yaw
+                ema_pitch = alpha * ball_pitch + (1 - alpha) * ema_pitch
 
-        # Static fallback FSM
-        cam_yaw, cam_pitch, cam_fov, render_state = static_fsm.update(
-            ema_yaw, ema_pitch, tracker_state)
+        prev_best_score = best_score
 
-        # Apply lead only in NORMAL/RECOVER states
-        if render_state in (RENDER_STATE_NORMAL, RENDER_STATE_STATIC_RECOVER,
-                            RENDER_STATE_STATIC_SUSPECT):
-            final_cam_yaw = cam_yaw + LEAD_DEG
-        else:
-            final_cam_yaw = cam_yaw  # no lead offset during hold/drift
+        # FSM
+        cam_yaw, cam_pitch, cam_fov, render_mode, hold_ctr, reacq_streak = fsm.update(
+            ema_yaw, ema_pitch, tracker_state, best_score
+        )
 
-        # --- Clean render ---
-        clean_frame = extract_crop_frame(equirect, final_cam_yaw, cam_pitch,
-                                         cam_fov, OUTPUT_W, OUTPUT_H)
-        writer_clean.stdin.write(clean_frame.tobytes())
+        # Lead offset only in FOLLOW/REACQUIRE
+        final_cam_yaw = cam_yaw + LEAD_DEG if render_mode != RENDER_WIDE_FALLBACK else cam_yaw
 
-        # --- Debug render ---
-        debug_frame = draw_hud(clean_frame, frame_data, frame_idx, fps,
-                                final_cam_yaw, cam_pitch, cam_fov,
-                                render_state,
-                                static_fsm.hold_counter,
-                                static_fsm.recover_counter)
+        # Clean render
+        clean = extract_crop_frame(equirect, final_cam_yaw, cam_pitch, cam_fov, OUTPUT_W, OUTPUT_H)
+        writer_clean.stdin.write(clean.tobytes())
 
-        if snap_event:
-            draw_text_shadowed(debug_frame, "*** REACQUIRE: EMA RESET ***",
-                               (OUTPUT_W // 2 - 200, OUTPUT_H // 2),
-                               HUD_SCALE * 1.3, (0, 255, 255), HUD_THICK + 1)
-            snap_event = False
+        # Debug render
+        debug = draw_hud(clean, frame_data, frame_idx, fps,
+                         final_cam_yaw, cam_pitch, cam_fov,
+                         render_mode, hold_ctr, reacq_streak)
 
-        # Equirect inset
+        if render_mode == RENDER_REACQUIRE and confirmed and (reacq_streak == REACQUIRE_MIN_FRAMES):
+            draw_text_shadowed(debug, "*** REACQUIRE ***",
+                               (OUTPUT_W // 2 - 160, OUTPUT_H // 2),
+                               HUD_SCALE * 1.4, (0, 220, 140), HUD_THICK + 1)
+
         inset = draw_equirect_inset(equirect, frame_data, INSET_W, INSET_H)
         iy = OUTPUT_H - INSET_H - INSET_Y_OFF
-        debug_frame[iy:iy + INSET_H, INSET_X:INSET_X + INSET_W] = inset
+        debug[iy:iy + INSET_H, INSET_X:INSET_X + INSET_W] = inset
 
-        writer_debug.stdin.write(debug_frame.tobytes())
+        writer_debug.stdin.write(debug.tobytes())
 
-        prev_loss_state = loss_state
         rendered += 1
-        if rendered % 50 == 0:
-            print(f"[render] frame {frame_idx}  cam_yaw={final_cam_yaw:.1f}°  "
-                  f"ema_yaw={ema_yaw:.1f}°  render_state={render_state}")
+        if rendered % 100 == 0:
+            print(f"[render v3] frame {frame_idx}  mode={render_mode}  "
+                  f"cam=({final_cam_yaw:.1f},{cam_pitch:.1f})  fov={cam_fov:.0f}")
 
     cap.release()
     writer_clean.stdin.close()
     writer_debug.stdin.close()
     writer_clean.wait()
     writer_debug.wait()
-    print(f"[render] Done. {rendered} frames rendered.")
-    print(f"[render] Clean:  {output_clean}")
-    print(f"[render] Debug:  {output_debug}")
+    print(f"[render v3] Done. {rendered} frames rendered.")
+    print(f"[render v3] Clean : {output_clean}")
+    print(f"[render v3] Debug : {output_debug}")
 
 
 # ---------------------------------------------------------------------------
@@ -542,8 +482,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input",         default="equirect_trim.mp4")
     parser.add_argument("--tracking",      default="tracking.json")
-    parser.add_argument("--start-frame",   type=int, default=800)
-    parser.add_argument("--end-frame",     type=int, default=1000)
+    parser.add_argument("--start-frame",   type=int, default=700)
+    parser.add_argument("--end-frame",     type=int, default=1300)
     parser.add_argument("--output-clean",  default="render_clean.mp4")
     parser.add_argument("--output-debug",  default="render_debug.mp4")
     args = parser.parse_args()
