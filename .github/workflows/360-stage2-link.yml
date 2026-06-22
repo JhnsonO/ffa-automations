@@ -25,7 +25,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install numpy requests google-auth google-auth-oauthlib google-api-python-client
+        run: pip install numpy pytest requests google-auth google-auth-oauthlib google-api-python-client
 
       - name: Get Drive access token
         id: drive_token
