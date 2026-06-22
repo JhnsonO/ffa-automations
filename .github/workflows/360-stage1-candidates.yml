@@ -8,10 +8,15 @@ on:
         required: true
         default: '1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX'
         type: string
-      stage0_artifact_name:
-        description: 'Name of the Stage 0 artifact to pull (e.g. stage0-sweep-27981718085)'
+      hotspot_map_file_id:
+        description: 'Drive ID of hotspot_map.json (from Stage 0 Drive upload step)'
         required: true
-        default: 'stage0-sweep-27981718085'
+        default: ''
+        type: string
+      stage0_detections_file_id:
+        description: 'Drive ID of stage0_detections.json (from Stage 0 Drive upload step)'
+        required: true
+        default: ''
         type: string
       pitch_min_deg:
         description: 'Hard pitch lower bound (degrees)'
@@ -42,67 +47,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Download Stage 0 artifact
-        env:
-          GH_PAT:                ${{ secrets.GH_PAT }}
-          STAGE0_ARTIFACT_NAME:  ${{ github.event.inputs.stage0_artifact_name }}
-        run: |
-          pip install -q requests
-          python3 - << 'PY'
-          import os, json, urllib.request, zipfile, io
-
-          TOKEN = os.environ["GH_PAT"]
-          NAME  = os.environ["STAGE0_ARTIFACT_NAME"]
-          REPO  = "JhnsonO/ffa-automations"
-          HEADERS = {"Authorization": f"token {TOKEN}", "Accept": "application/vnd.github+json"}
-
-          # Find the artifact by name across all runs
-          page = 1
-          artifact_id = None
-          while True:
-              url = f"https://api.github.com/repos/{REPO}/actions/artifacts?per_page=100&page={page}"
-              req = urllib.request.Request(url, headers=HEADERS)
-              with urllib.request.urlopen(req) as r:
-                  data = json.loads(r.read())
-              arts = data.get("artifacts", [])
-              if not arts:
-                  break
-              for a in arts:
-                  if a["name"] == NAME:
-                      artifact_id = a["id"]
-                      print(f"Found artifact: id={artifact_id}  name={a['name']}  size={a['size_in_bytes']}")
-                      break
-              if artifact_id:
-                  break
-              page += 1
-
-          if not artifact_id:
-              raise RuntimeError(f"Artifact '{NAME}' not found")
-
-          # Download zip
-          dl_url = f"https://api.github.com/repos/{REPO}/actions/artifacts/{artifact_id}/zip"
-          req = urllib.request.Request(dl_url, headers=HEADERS)
-          with urllib.request.urlopen(req) as r:
-              data = r.read()
-          print(f"Downloaded {len(data)//1024} KB")
-
-          # Unzip into stage0_output/
-          os.makedirs("stage0_output", exist_ok=True)
-          with zipfile.ZipFile(io.BytesIO(data)) as zf:
-              zf.extractall("stage0_output/")
-          print("Extracted to stage0_output/")
-          import subprocess
-          subprocess.run(["ls", "-lh", "stage0_output/"])
-          PY
-
-      - name: Verify Stage 0 outputs present
-        run: |
-          echo "--- Stage 0 outputs ---"
-          ls -lh stage0_output/
-          test -f stage0_output/hotspot_map.json        || { echo "ERROR: hotspot_map.json missing";        exit 1; }
-          test -f stage0_output/stage0_detections.json  || { echo "ERROR: stage0_detections.json missing";  exit 1; }
-          echo "Stage 0 outputs OK"
 
       - name: Generate SSH key pair
         id: keygen
@@ -150,11 +94,8 @@ jobs:
           pub_key = open("/tmp/vastai_key.pub").read().strip()
           print("Registering SSH key with Vast.ai...")
           vast_post("/ssh/", {"ssh_key": pub_key})
-          print("SSH key registered")
 
           excluded = [x.strip() for x in os.environ.get("EXCLUDED_OFFER_IDS","").split(",") if x.strip()]
-          if excluded:
-              print(f"Excluding offer IDs: {excluded}")
 
           query = {
               "verified":   {"eq": True},
@@ -169,16 +110,12 @@ jobs:
           }
           resp   = vast_get("/bundles/", {"q": json.dumps(query)})
           offers = resp.get("offers", [])
-          print(f"Raw offers: {len(offers)}")
-
           BAD_CPU = ["E5-", "E3-", "Opteron", "Xeon W3", "Xeon X5"]
           offers = [o for o in offers if not any(s in (o.get("cpu_name") or "") for s in BAD_CPU)]
           if excluded:
               offers = [o for o in offers if str(o["id"]) not in excluded]
-
           if not offers:
-              print("ERROR: No matching offers", file=sys.stderr)
-              sys.exit(1)
+              print("ERROR: No matching offers", file=sys.stderr); sys.exit(1)
 
           def score(o):
               dph = float(o.get("dph_total", 999))
@@ -201,7 +138,7 @@ jobs:
           OFFER_CPU:    ${{ steps.offer.outputs.offer_cpu }}
         run: |
           python3 - << 'PY'
-          import os, json, urllib.request, urllib.parse, time, sys
+          import os, json, urllib.request, time, sys
 
           API_KEY = os.environ["VAST_API_KEY"]
           BASE    = "https://console.vast.ai/api/v0"
@@ -210,7 +147,7 @@ jobs:
 
           def vast_get(path, params=None, base=None):
               url = f"{(base or BASE)}{path}"
-              if params: url += "?" + urllib.parse.urlencode(params)
+              if params: url += "?" + __import__("urllib.parse", fromlist=["urlencode"]).urlencode(params)
               with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as r:
                   return json.loads(r.read())
 
@@ -229,17 +166,11 @@ jobs:
           result = vast_put(f"/asks/{offer_id}/", {
               "client_id": "me",
               "image": "pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime",
-              "disk": 60,
-              "onstart": "",
-              "runtype": "ssh",
-              "ssh_key": pub_key,
-              "env": {},
+              "disk": 60, "onstart": "", "runtype": "ssh", "ssh_key": pub_key, "env": {},
           })
-
           instance_id = result.get("new_contract")
           if not instance_id:
-              print(f"ERROR: no instance ID: {result}", file=sys.stderr)
-              sys.exit(1)
+              print(f"ERROR: no instance ID: {result}", file=sys.stderr); sys.exit(1)
           print(f"Instance ID: {instance_id}")
 
           ip = port = None
@@ -248,15 +179,13 @@ jobs:
               resp = vast_get("/instances/", base=BASE_V1)
               inst = next((x for x in resp.get("instances", []) if x["id"] == instance_id), None)
               if not inst:
-                  print(f"  [{attempt+1}/24] not visible yet")
-                  continue
+                  print(f"  [{attempt+1}/24] not visible yet"); continue
               status    = inst.get("actual_status", "?")
               this_ip   = inst.get("ssh_host") or inst.get("public_ipaddr")
               this_port = inst.get("ssh_port", 22)
               print(f"  [{attempt+1}/24] status={status} ip={this_ip} port={this_port}")
               if status == "running" and this_ip:
-                  ip, port = this_ip, this_port
-                  break
+                  ip, port = this_ip, this_port; break
               if status in ("error", "failed", "stopped"):
                   print(f"ERROR: instance bad state: {status}", file=sys.stderr)
                   try: vast_delete(f"/instances/{instance_id}/", base=BASE_V1)
@@ -282,21 +211,15 @@ jobs:
           python3 - << 'PY'
           import os, socket, time, sys
           ip, port = os.environ["IP"], int(os.environ["PORT"])
-          print(f"Waiting for SSH on {ip}:{port}...")
           for i in range(30):
               try:
-                  s = socket.create_connection((ip, port), timeout=5)
-                  s.close()
-                  print(f"SSH port open after {(i+1)*5}s")
-                  break
+                  s = socket.create_connection((ip, port), timeout=5); s.close()
+                  print(f"SSH port open after {(i+1)*5}s"); break
               except Exception as e:
-                  print(f"  [{i+1}/30] not ready: {e}")
-                  time.sleep(5)
+                  print(f"  [{i+1}/30] not ready: {e}"); time.sleep(5)
           else:
-              print("ERROR: SSH never came up", file=sys.stderr)
-              sys.exit(1)
+              print("ERROR: SSH never came up", file=sys.stderr); sys.exit(1)
           PY
-          echo "Sleeping 20s for SSH daemon..."
           sleep 20
 
       - name: Install dependencies
@@ -305,21 +228,17 @@ jobs:
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=10 root@$IP"
-          echo "--- Waiting for SSH auth ---"
           for i in $(seq 1 24); do
             NPROC=$($SSH "nproc" 2>/dev/null) && break
-            echo "  SSH auth not ready ($i/24), retrying..."
-            sleep 5
+            echo "  SSH auth not ready ($i/24), retrying..."; sleep 5
           done
           if [ -z "$NPROC" ]; then echo "ERROR: SSH auth never succeeded"; exit 1; fi
           echo "nproc: $NPROC"
-          echo "--- Installing system packages ---"
           $SSH "apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends \
-            software-properties-common aria2 libimage-exiftool-perl > /dev/null && \
+            software-properties-common aria2 > /dev/null && \
             add-apt-repository -y ppa:savoury1/ffmpeg4 2>/dev/null && \
             apt-get update -qq 2>/dev/null && \
             apt-get install -y --no-install-recommends ffmpeg libgl1 libglib2.0-0"
-          echo "--- Installing Python packages ---"
           $SSH "pip install -q --break-system-packages 'numpy<2' ultralytics opencv-python-headless \
             google-auth google-auth-oauthlib google-api-python-client 2>/dev/null || \
             pip install -q 'numpy<2' ultralytics opencv-python-headless \
@@ -342,10 +261,8 @@ jobs:
           client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
           refresh_token = token_data["refresh_token"]
           token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
-          payload = json.dumps({
-              "client_id": client_id, "client_secret": client_secret,
-              "refresh_token": refresh_token, "grant_type": "refresh_token",
-          }).encode()
+          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
           r = _req.urlopen(_req.Request(token_uri, data=payload,
                            headers={"Content-Type": "application/json"}, method="POST"))
           tok = json.loads(r.read())
@@ -356,11 +273,13 @@ jobs:
           print(f"Access token obtained (expires_in={tok.get('expires_in')}s)")
           PY
 
-      - name: Download equirect_trim.mp4
+      - name: Download equirect_trim.mp4 and Stage 0 JSONs
         env:
-          IP:               ${{ steps.launch.outputs.ip }}
-          PORT:             ${{ steps.launch.outputs.port }}
-          EQUIRECT_FILE_ID: ${{ github.event.inputs.equirect_file_id }}
+          IP:                        ${{ steps.launch.outputs.ip }}
+          PORT:                      ${{ steps.launch.outputs.port }}
+          EQUIRECT_FILE_ID:          ${{ github.event.inputs.equirect_file_id }}
+          HOTSPOT_MAP_FILE_ID:       ${{ github.event.inputs.hotspot_map_file_id }}
+          STAGE0_DETECTIONS_FILE_ID: ${{ github.event.inputs.stage0_detections_file_id }}
         run: |
           ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
@@ -371,26 +290,28 @@ jobs:
             --dir=/tmp/ffa_stage1 --out=equirect_trim.mp4 \
             'https://www.googleapis.com/drive/v3/files/$EQUIRECT_FILE_ID?alt=media' 2>&1 | tail -5"
           $SSH "du -sh /tmp/ffa_stage1/equirect_trim.mp4"
+          echo "--- Downloading hotspot_map.json ---"
+          $SSH "aria2c -x 4 --file-allocation=none \
+            --header='Authorization: Bearer $ACCESS_TOKEN' \
+            --dir=/tmp/ffa_stage1 --out=hotspot_map.json \
+            'https://www.googleapis.com/drive/v3/files/$HOTSPOT_MAP_FILE_ID?alt=media' 2>&1 | tail -3"
+          echo "--- Downloading stage0_detections.json ---"
+          $SSH "aria2c -x 4 --file-allocation=none \
+            --header='Authorization: Bearer $ACCESS_TOKEN' \
+            --dir=/tmp/ffa_stage1 --out=stage0_detections.json \
+            'https://www.googleapis.com/drive/v3/files/$STAGE0_DETECTIONS_FILE_ID?alt=media' 2>&1 | tail -3"
+          $SSH "ls -lh /tmp/ffa_stage1/*.json"
 
-      - name: Upload Stage 1 module, Stage 0 outputs, and YOLO model
+      - name: Upload Stage 1 module and YOLO model
         env:
           IP:   ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-
           echo "--- Uploading stage1_candidate_gen.py ---"
           python3 -c "import base64; open('/tmp/s1_b64.txt','w').write(base64.b64encode(open('ball_tracker/stage1_candidate_gen.py','rb').read()).decode())"
           B64=$(cat /tmp/s1_b64.txt)
           $SSH "echo '$B64' | base64 -d > /tmp/ffa_stage1/stage1_candidate_gen.py && echo 'module uploaded OK'"
-
-          echo "--- Uploading Stage 0 outputs (hotspot_map.json, stage0_detections.json) ---"
-          scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
-              stage0_output/hotspot_map.json \
-              stage0_output/stage0_detections.json \
-              root@$IP:/tmp/ffa_stage1/
-          $SSH "ls -lh /tmp/ffa_stage1/hotspot_map.json /tmp/ffa_stage1/stage0_detections.json"
-
           echo "--- Downloading YOLO ball model ---"
           $SSH "pip install -q ultralytics gdown && \
             mkdir -p /tmp/ffa_stage1/models && \
@@ -451,8 +372,7 @@ jobs:
           API_KEY     = os.environ["VAST_API_KEY"]
           instance_id = os.environ.get("INSTANCE_ID", "")
           if not instance_id:
-              print("No instance ID — nothing to terminate")
-              exit(0)
+              print("No instance ID — nothing to terminate"); exit(0)
           headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
           req = urllib.request.Request(
               f"https://console.vast.ai/api/v0/instances/{instance_id}/",
