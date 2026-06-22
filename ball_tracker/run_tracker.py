@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FFA 360 Ball Tracker — v11 (Bootstrap Static Background Suppression)
+FFA 360 Ball Tracker — v12 (Multi-Timepoint Hotspot Discovery)
 =====================================================================
 Input:  equirect_trim.mp4
 Output: tracking.json  (always)
@@ -10,7 +10,7 @@ v11 replaces the reactive post-lock blacklist (v10c/d/e) with a proactive
 bootstrap suppressor:
 
   1. BOOTSTRAP PASS (pre warm-up):
-     Scan BOOTSTRAP_FRAMES frames of raw YOLO candidates.
+     Sample HOTSPOT_SAMPLE_COUNT timestamps evenly across the full clip.
      Cluster recurring detections by spherical proximity.
      Any cluster present in >= HOTSPOT_MIN_COVERAGE fraction of bootstrap
      frames is marked as a persistent background hotspot.
@@ -117,11 +117,11 @@ PITCH_PLAUSIBILITY_DECAY = 8.0
 PITCH_HARD_MAX           = 18.0  # v10b: hard ceiling
 
 # ---------------------------------------------------------------------------
-# Config — v11 bootstrap static background suppression
+# Config — v12 multi-timepoint hotspot discovery
 # ---------------------------------------------------------------------------
-BOOTSTRAP_FRAMES        = 150   # frames to scan before warm-up begins
+HOTSPOT_SAMPLE_COUNT    = 50    # evenly distributed timestamps to sample across full clip
 HOTSPOT_CLUSTER_RADIUS  = 5.0   # degrees: merge candidates within this radius
-HOTSPOT_MIN_COVERAGE    = 0.40  # fraction of bootstrap frames a cluster must appear in
+HOTSPOT_MIN_COVERAGE    = 0.40  # fraction of sampled timestamps a cluster must appear in
 HOTSPOT_SUPPRESS_RADIUS = 5.0   # degrees: suppression zone around each hotspot centre
 
 # Known fence zone for pre-warmup confirmation logging
@@ -297,46 +297,59 @@ class VelocityTracker:
 # ---------------------------------------------------------------------------
 # v11: Bootstrap static background map builder
 # ---------------------------------------------------------------------------
-def build_static_hotspot_map(bootstrap_candidates):
+def build_static_hotspot_map(sampled_candidates):
     """
-    bootstrap_candidates: list of per-frame lists, each [(yaw, pitch, conf), ...]
-    Returns list of hotspot dicts: {yaw, pitch, radius, frame_count, coverage_pct}
+    sampled_candidates: list of per-timestamp lists, each [(yaw, pitch, conf, crop_yaw), ...]
+    Returns list of hotspot dicts with full per-hotspot metadata.
     Uses greedy spherical clustering. A cluster must appear in
-    >= HOTSPOT_MIN_COVERAGE fraction of bootstrap frames to be flagged.
+    >= HOTSPOT_MIN_COVERAGE fraction of sampled timestamps to be flagged.
+    v12: candidates carry crop_yaw for source_crop_distribution logging.
     """
-    n_frames = len(bootstrap_candidates)
+    n_frames = len(sampled_candidates)
     if n_frames == 0:
         return []
 
-    # Build clusters: list of {centre_yaw, centre_pitch, frames: set}
+    # Build clusters: list of {yaw, pitch, timestamps: set, confs: list, crops: dict}
     clusters = []
 
-    for fi, frame_cands in enumerate(bootstrap_candidates):
-        for yaw, pitch, conf in frame_cands:
+    for fi, frame_cands in enumerate(sampled_candidates):
+        for item in frame_cands:
+            yaw, pitch, conf = item[0], item[1], item[2]
+            crop_yaw = item[3] if len(item) > 3 else None
             matched = False
             for cl in clusters:
                 if angular_distance(yaw, pitch, cl["yaw"], cl["pitch"]) < HOTSPOT_CLUSTER_RADIUS:
-                    # Update cluster centre as running mean
-                    n = len(cl["frames"])
+                    n = len(cl["timestamps"])
                     cl["yaw"]   = (cl["yaw"] * n + yaw)   / (n + 1)
                     cl["pitch"] = (cl["pitch"] * n + pitch) / (n + 1)
-                    cl["frames"].add(fi)
+                    cl["timestamps"].add(fi)
+                    cl["confs"].append(conf)
+                    if crop_yaw is not None:
+                        cl["crops"][str(crop_yaw)] = cl["crops"].get(str(crop_yaw), 0) + 1
                     matched = True
                     break
             if not matched:
-                clusters.append({"yaw": yaw, "pitch": pitch, "frames": {fi}})
+                clusters.append({
+                    "yaw": yaw, "pitch": pitch,
+                    "timestamps": {fi},
+                    "confs": [conf],
+                    "crops": {str(crop_yaw): 1} if crop_yaw is not None else {},
+                })
 
     hotspots = []
     for cl in clusters:
-        coverage = len(cl["frames"]) / n_frames
+        coverage = len(cl["timestamps"]) / n_frames
         if coverage >= HOTSPOT_MIN_COVERAGE:
+            mean_conf = round(sum(cl["confs"]) / len(cl["confs"]), 3) if cl["confs"] else 0.0
             hotspots.append({
-                "yaw":          round(cl["yaw"], 2),
-                "pitch":        round(cl["pitch"], 2),
-                "radius":       HOTSPOT_SUPPRESS_RADIUS,
-                "frame_count":  len(cl["frames"]),
-                "coverage_pct": round(100.0 * coverage, 1),
-                "hit_count":    0,
+                "yaw":                      round(cl["yaw"], 2),
+                "pitch":                    round(cl["pitch"], 2),
+                "radius":                   HOTSPOT_SUPPRESS_RADIUS,
+                "timestamp_count":          len(cl["timestamps"]),
+                "coverage_pct":             round(100.0 * coverage, 1),
+                "mean_conf":                mean_conf,
+                "source_crop_distribution": cl["crops"],
+                "hit_count":                0,
             })
 
     return hotspots
@@ -477,8 +490,8 @@ def run_tracker(equirect_path, output_path, json_path,
     person_model.to(device)
 
     print("=" * 70)
-    print("[v11 BOOTSTRAP STATIC BACKGROUND SUPPRESSION]")
-    print(f"  bootstrap_frames   : {BOOTSTRAP_FRAMES}")
+    print("[v12 MULTI-TIMEPOINT HOTSPOT DISCOVERY]")
+    print(f"  hotspot_sample_count : {HOTSPOT_SAMPLE_COUNT}")
     print(f"  cluster_radius     : {HOTSPOT_CLUSTER_RADIUS}°")
     print(f"  min_coverage       : {HOTSPOT_MIN_COVERAGE*100:.0f}%")
     print(f"  suppress_radius    : {HOTSPOT_SUPPRESS_RADIUS}°")
@@ -489,20 +502,33 @@ def run_tracker(equirect_path, output_path, json_path,
     os.environ["OPENCV_FFMPEG_READ_ATTEMPTS"] = "65536"
 
     # ====================================================================
-    # PASS 1: Bootstrap — scan first BOOTSTRAP_FRAMES for static hotspots
+    # PASS 1: Multi-timepoint hotspot discovery (v12)
+    # Sample HOTSPOT_SAMPLE_COUNT timestamps evenly across full clip.
     # ====================================================================
-    print(f"\n[v11] === BOOTSTRAP PASS (frames 0–{BOOTSTRAP_FRAMES-1}) ===")
+    print(f"\n[v12] === MULTI-TIMEPOINT HOTSPOT DISCOVERY PASS ===")
     cap = cv2.VideoCapture(equirect_path, cv2.CAP_FFMPEG)
     fps          = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f"[video] {total_frames} frames @ {fps:.2f} fps")
+    print(f"  hotspot_sample_count : {HOTSPOT_SAMPLE_COUNT}")
 
-    bootstrap_candidates = []   # per-frame lists of (yaw, pitch, conf)
-    for fi in range(min(BOOTSTRAP_FRAMES, total_frames)):
+    # Build evenly spaced sample frame indices (avoid first/last 5 frames)
+    _margin = 5
+    _sample_indices = sorted(set(
+        int(_margin + i * (total_frames - 2 * _margin) / max(HOTSPOT_SAMPLE_COUNT - 1, 1))
+        for i in range(HOTSPOT_SAMPLE_COUNT)
+    ))
+    _sample_indices = [fi for fi in _sample_indices if 0 <= fi < total_frames]
+    print(f"  sampling frames      : {_sample_indices[0]}…{_sample_indices[-1]} ({len(_sample_indices)} points)")
+
+    sampled_candidates = []   # per-timestamp lists of (yaw, pitch, conf, crop_yaw)
+    for _si, _fi in enumerate(_sample_indices):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, _fi)
         ret, frame = cap.read()
         if not ret:
-            break
-        raw = []
+            sampled_candidates.append([])
+            continue
+        _raw = []
         for crop_yaw in CROP_YAWS_DEG:
             crop = extract_crop_frame(frame, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
             res  = ball_model(crop, imgsz=YOLO_IMGSZ, conf=YOLO_CONF,
@@ -513,32 +539,37 @@ def run_tracker(equirect_path, output_path, json_path,
                 conf   = float(box.conf[0])
                 yaw_d, pitch_d = crop_pixel_to_yaw_pitch(
                     px, py, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
-                raw.append((yaw_d, pitch_d, conf))
-        deduped = dedupe_detections(raw)
-        # Apply pitch hard cap even in bootstrap
-        deduped = [(y, p, c) for y, p, c in deduped if p <= PITCH_HARD_MAX]
-        bootstrap_candidates.append(deduped)
-        if fi % 30 == 0:
-            print(f"  [bootstrap] frame {fi}  candidates={len(deduped)}")
+                _raw.append((yaw_d, pitch_d, conf, crop_yaw))
+        # Dedupe on yaw/pitch/conf, then re-attach crop_yaw and pitch-cap
+        _deduped_ypc = dedupe_detections([(_r[0], _r[1], _r[2]) for _r in _raw])
+        _deduped = []
+        for _yaw, _pitch, _conf in _deduped_ypc:
+            if _pitch > PITCH_HARD_MAX:
+                continue
+            _crop_src = next((_r[3] for _r in _raw if abs(_r[0]-_yaw)<0.01 and abs(_r[1]-_pitch)<0.01), None)
+            _deduped.append((_yaw, _pitch, _conf, _crop_src))
+        sampled_candidates.append(_deduped)
+        if _si % 10 == 0 or _si == len(_sample_indices) - 1:
+            print(f"  [hotspot scan] {_si+1}/{len(_sample_indices)}  frame={_fi}  candidates={len(_deduped)}")
     cap.release()
 
-    # Build hotspot map
-    hotspots = build_static_hotspot_map(bootstrap_candidates)
+    # Build hotspot map from sampled timestamps
+    hotspots = build_static_hotspot_map(sampled_candidates)
 
-    print(f"\n[v11] Bootstrap complete. Discovered {len(hotspots)} hotspot(s):")
+    print(f"\n[v12] Hotspot discovery complete. Found {len(hotspots)} hotspot(s):")
     confirmed_fence_hotspot = False
     for i, hs in enumerate(hotspots):
         print(f"  hotspot {i}: yaw={hs['yaw']:.2f}° pitch={hs['pitch']:.2f}° "
-              f"radius={hs['radius']}° frame_count={hs['frame_count']} "
-              f"coverage={hs['coverage_pct']:.1f}%")
+              f"coverage={hs['coverage_pct']:.1f}% timestamps={hs['timestamp_count']} "
+              f"mean_conf={hs['mean_conf']:.3f} crops={hs['source_crop_distribution']}")
         if angular_distance(hs["yaw"], hs["pitch"],
                             KNOWN_FENCE_YAW, KNOWN_FENCE_PITCH) < KNOWN_FENCE_CONFIRM_RADIUS:
             confirmed_fence_hotspot = True
             print(f"  *** FENCE HOTSPOT CONFIRMED (matches known {KNOWN_FENCE_YAW}°/{KNOWN_FENCE_PITCH}°)")
 
     if not confirmed_fence_hotspot:
-        print(f"  [v11] NOTE: known fence zone ({KNOWN_FENCE_YAW}°, {KNOWN_FENCE_PITCH}°) "
-              f"NOT found as hotspot — may not appear in bootstrap window")
+        print(f"  [v12] NOTE: known fence zone ({KNOWN_FENCE_YAW}°, {KNOWN_FENCE_PITCH}°) "
+              f"not found as hotspot on this clip")
 
     # ====================================================================
     # PASS 2: Main tracking
@@ -1001,12 +1032,19 @@ def run_tracker(equirect_path, output_path, json_path,
         ],
     }
     v11_bootstrap_metrics = {
-        "bootstrap_frames_scanned":     len(bootstrap_candidates),
+        "hotspot_sample_count":         len(sampled_candidates),
         "hotspots_discovered":          len(hotspots),
         "confirmed_fence_hotspot":      confirmed_fence_hotspot,
         "bootstrap_hotspots": [
-            {"yaw": hs["yaw"], "pitch": hs["pitch"], "radius": hs["radius"],
-             "frame_count": hs["frame_count"], "coverage_pct": hs["coverage_pct"]}
+            {
+                "yaw":                      hs["yaw"],
+                "pitch":                    hs["pitch"],
+                "radius":                   hs["radius"],
+                "timestamp_count":          hs["timestamp_count"],
+                "coverage_pct":             hs["coverage_pct"],
+                "mean_conf":                hs["mean_conf"],
+                "source_crop_distribution": hs["source_crop_distribution"],
+            }
             for hs in hotspots
         ],
     }
@@ -1018,7 +1056,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "state_transition_counts":   state_transition_counts,
     }
     metadata = {
-        "version": "v11",
+        "version": "v12",
         "metrics_only": metrics_only,
         "config": {
             "ball_model":           ball_model_path,
@@ -1029,7 +1067,7 @@ def run_tracker(equirect_path, output_path, json_path,
                                 "size": W_SIZE, "motion": W_MOTION, "edge": W_EDGE},
             "min_candidate_score":   MIN_CANDIDATE_SCORE,
             "pitch_hard_max":        PITCH_HARD_MAX,
-            "bootstrap_frames":      BOOTSTRAP_FRAMES,
+            "hotspot_sample_count":  HOTSPOT_SAMPLE_COUNT,
             "hotspot_cluster_radius": HOTSPOT_CLUSTER_RADIUS,
             "hotspot_min_coverage":  HOTSPOT_MIN_COVERAGE,
             "hotspot_suppress_radius": HOTSPOT_SUPPRESS_RADIUS,
@@ -1043,13 +1081,13 @@ def run_tracker(equirect_path, output_path, json_path,
     }
 
     print("=" * 70)
-    print("[v11 DETECTION METRICS]")
+    print("[v12 DETECTION METRICS]")
     for k, v in detection_metrics.items():
         print(f"  {k:44s}: {v}")
-    print("[v11 ASSOCIATION METRICS]")
+    print("[v12 ASSOCIATION METRICS]")
     for k, v in association_metrics.items():
         print(f"  {k:44s}: {v}")
-    print("[v11 BOOTSTRAP METRICS]")
+    print("[v12 HOTSPOT DISCOVERY METRICS]")
     for k, v in v11_bootstrap_metrics.items():
         print(f"  {k:44s}: {v}")
     print("=" * 70)
