@@ -1,0 +1,143 @@
+name: 360 Stage 2 — Temporal Linking
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage1_candidates_file_id:
+        description: 'Google Drive file ID for stage1_candidates.json'
+        required: true
+      hotspot_map_file_id:
+        description: 'Google Drive file ID for hotspot_map.json'
+        required: true
+
+jobs:
+  stage2-link:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install numpy requests google-auth google-auth-oauthlib google-api-python-client
+
+      - name: Get Drive access token
+        id: drive_token
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, requests
+
+          creds = json.loads(os.environ['YOUTUBE_CREDENTIALS'])
+          token = json.loads(os.environ['YOUTUBE_TOKEN'])
+
+          resp = requests.post('https://oauth2.googleapis.com/token', data={
+              'client_id':     creds['installed']['client_id'],
+              'client_secret': creds['installed']['client_secret'],
+              'refresh_token': token['refresh_token'],
+              'grant_type':    'refresh_token',
+          })
+          resp.raise_for_status()
+          access_token = resp.json()['access_token']
+
+          with open(os.environ['GITHUB_ENV'], 'a') as f:
+              f.write(f"DRIVE_TOKEN={access_token}\n")
+          print("Drive token obtained.")
+          EOF
+
+      - name: Download stage1_candidates.json
+        run: |
+          FILE_ID="${{ github.event.inputs.stage1_candidates_file_id }}"
+          curl -sL \
+            -H "Authorization: Bearer $DRIVE_TOKEN" \
+            "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media" \
+            -o stage1_candidates.json
+          echo "stage1_candidates.json: $(wc -c < stage1_candidates.json) bytes"
+
+      - name: Download hotspot_map.json
+        run: |
+          FILE_ID="${{ github.event.inputs.hotspot_map_file_id }}"
+          curl -sL \
+            -H "Authorization: Bearer $DRIVE_TOKEN" \
+            "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media" \
+            -o hotspot_map.json
+          echo "hotspot_map.json: $(wc -c < hotspot_map.json) bytes"
+
+      - name: Run fixture tests
+        run: |
+          python3 -m pytest ball_tracker/tests/test_stage2_fixture.py -v
+
+      - name: Run Stage 2 temporal linking
+        run: |
+          python3 ball_tracker/stage2_temporal_link.py \
+            --stage1-candidates stage1_candidates.json \
+            --hotspot-map hotspot_map.json \
+            --output-dir stage2_output
+
+      - name: Upload outputs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage2-output
+          path: stage2_output/
+          retention-days: 14
+
+      - name: Upload tracklets.json to Drive
+        run: |
+          python3 - <<'EOF'
+          import json, os, requests
+
+          OUTPUT_FOLDER = '1gHW29JbvUWnbvJTCC0J8O7r-O1IPZAd8'
+          token = os.environ['DRIVE_TOKEN']
+
+          for fname in ['tracklets.json', 'gaps.json']:
+              fpath = os.path.join('stage2_output', fname)
+              if not os.path.exists(fpath):
+                  print(f"WARN: {fname} not found, skipping upload")
+                  continue
+
+              # Check if file exists on Drive
+              r = requests.get(
+                  'https://www.googleapis.com/drive/v3/files',
+                  headers={'Authorization': f'Bearer {token}'},
+                  params={
+                      'q': f"name='{fname}' and '{OUTPUT_FOLDER}' in parents and trashed=false",
+                      'fields': 'files(id,name)',
+                  }
+              )
+              existing = r.json().get('files', [])
+
+              with open(fpath, 'rb') as f:
+                  data = f.read()
+
+              metadata = {'name': fname}
+              if existing:
+                  file_id = existing[0]['id']
+                  resp = requests.patch(
+                      f'https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=multipart',
+                      headers={'Authorization': f'Bearer {token}'},
+                      files={
+                          'metadata': (None, json.dumps(metadata), 'application/json'),
+                          'file':     (fname, data, 'application/json'),
+                      }
+                  )
+              else:
+                  metadata['parents'] = [OUTPUT_FOLDER]
+                  resp = requests.post(
+                      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+                      headers={'Authorization': f'Bearer {token}'},
+                      files={
+                          'metadata': (None, json.dumps(metadata), 'application/json'),
+                          'file':     (fname, data, 'application/json'),
+                      }
+                  )
+              resp.raise_for_status()
+              print(f"Uploaded {fname} → Drive ID: {resp.json().get('id')}")
+          EOF
