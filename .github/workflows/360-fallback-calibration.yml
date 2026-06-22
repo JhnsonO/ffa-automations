@@ -72,8 +72,8 @@ jobs:
           python3 ball_tracker/render_calibration.py \
             --input    calib_work/equirect_trim.mp4 \
             --frame    $FRAME \
-            --yaws     "-20,0,20" \
-            --pitches  "-5,0,5" \
+            --yaws=-20,0,20 \
+            --pitches=-5,0,5 \
             --h-fov    160 \
             --v-fov    45 \
             --output   calib_output/cylindrical_calibration.jpg
@@ -145,3 +145,4 @@ jobs:
 
           print(f"\nAll outputs: https://drive.google.com/drive/folders/{subfolder_id}")
           PY
+
