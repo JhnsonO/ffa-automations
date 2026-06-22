@@ -31,6 +31,10 @@ on:
         description: 'Wide view target FOV (degrees, 120 recommended)'
         required: false
         default: '120'
+      fallback_roll:
+        description: 'Horizon-levelling roll offset for this venue (degrees)'
+        required: false
+        default: '4'
 
 jobs:
   render:
@@ -127,6 +131,7 @@ jobs:
           FALLBACK_YAW: ${{ github.event.inputs.fallback_yaw }}
           FALLBACK_PITCH: ${{ github.event.inputs.fallback_pitch }}
           FALLBACK_FOV: ${{ github.event.inputs.fallback_fov }}
+          FALLBACK_ROLL: ${{ github.event.inputs.fallback_roll }}
         run: |
           echo "--- Rendering frames $START_FRAME to $END_FRAME ---"
           mkdir -p render_output
@@ -139,7 +144,8 @@ jobs:
             --output-debug   render_output/render_debug.mp4 \
             --fallback-yaw   $FALLBACK_YAW \
             --fallback-pitch $FALLBACK_PITCH \
-            --fallback-fov   $FALLBACK_FOV
+            --fallback-fov   $FALLBACK_FOV \
+            --fallback-roll  $FALLBACK_ROLL
           ls -lh render_output/
 
       - name: Upload render outputs as artifact
@@ -212,5 +218,7 @@ jobs:
 
           print(f"\nAll outputs at: https://drive.google.com/drive/folders/{subfolder_id}")
           PY
+
+
 
 
