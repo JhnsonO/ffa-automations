@@ -6,17 +6,18 @@ on:
       equirect_file_id:
         description: "Google Drive file ID — equirectangular video"
         required: true
+        default: "1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX"
       start_frame:
         description: "Start frame"
-        default: "0"
+        default: "700"
       end_frame:
         description: "End frame (-1 = full clip)"
-        default: "-1"
+        default: "1300"
       sample_interval:
         description: "Sample every N frames (default 15 ≈ 2/sec @ 30fps)"
         default: "15"
       yolo_person_weights:
-        description: "Person detector weights (default: yolov8n.pt — try yolov8s.pt for better recall)"
+        description: "Person detector weights (yolov8n.pt default; yolov8s.pt for better recall)"
         default: "yolov8n.pt"
       output_drive_folder_id:
         description: "Drive folder ID to upload activity.json (optional)"
@@ -30,30 +31,54 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          token: ${{ secrets.GH_PAT }}
 
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
-          pip install ultralytics opencv-python-headless numpy \
+          sudo apt-get install -y aria2 python3-pip python3-opencv
+          pip install --break-system-packages \
+            ultralytics opencv-python-headless numpy \
             google-auth google-auth-oauthlib google-api-python-client
 
       - name: Download equirect video from Drive
-        run: |
-          python scripts/drive_download.py
-          mv /tmp/source.360 equirect_trim.mp4
         env:
-          DRIVE_FILE_ID:         ${{ github.event.inputs.equirect_file_id }}
-          YOUTUBE_TOKEN:         ${{ secrets.YOUTUBE_TOKEN }}
-          YOUTUBE_CREDENTIALS:   ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          EQUIRECT_FILE_ID:    ${{ github.event.inputs.equirect_file_id }}
+        run: |
+          echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -c "
+          import json, urllib.request as _req
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          client_id     = token_data.get('client_id') or creds_data['installed']['client_id']
+          client_secret = token_data.get('client_secret') or creds_data['installed']['client_secret']
+          refresh_token = token_data['refresh_token']
+          token_uri     = token_data.get('token_uri', 'https://oauth2.googleapis.com/token')
+          payload = json.dumps({'client_id': client_id, 'client_secret': client_secret,
+                                'refresh_token': refresh_token, 'grant_type': 'refresh_token'}).encode()
+          r = _req.urlopen(_req.Request(token_uri, data=payload,
+                           headers={'Content-Type': 'application/json'}, method='POST'))
+          tok = json.loads(r.read())
+          if 'access_token' not in tok:
+              raise RuntimeError(f'Token refresh failed: {tok}')
+          open('/tmp/drive_token.txt', 'w').write(tok['access_token'])
+          print(f'Access token obtained (expires_in={tok.get(\"expires_in\")}s)')
+          "
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          mkdir -p work
+          aria2c -x 8 -s 8 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=work --out=equirect_trim.mp4 \
+            "https://www.googleapis.com/drive/v3/files/$EQUIRECT_FILE_ID?alt=media"
+          du -sh work/equirect_trim.mp4
 
       - name: Run player activity mapper
         run: |
-          python ball_tracker/player_activity.py \
-            --input           equirect_trim.mp4 \
+          python3 ball_tracker/player_activity.py \
+            --input           work/equirect_trim.mp4 \
             --output          activity.json \
             --start-frame     "${{ github.event.inputs.start_frame }}" \
             --end-frame       "${{ github.event.inputs.end_frame }}" \
@@ -68,17 +93,6 @@ jobs:
           name: activity-json-${{ github.event.inputs.start_frame }}-${{ github.event.inputs.end_frame }}
           path: activity.json
           retention-days: 30
-
-      - name: Upload activity.json to Drive (optional)
-        if: ${{ github.event.inputs.output_drive_folder_id != '' }}
-        run: |
-          python scripts/drive_upload.py \
-            --file    activity.json \
-            --folder  "${{ github.event.inputs.output_drive_folder_id }}" \
-            --name    "activity_${{ github.event.inputs.start_frame }}_${{ github.event.inputs.end_frame }}.json"
-        env:
-          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
-          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
 
       - name: Print summary
         run: |
@@ -119,3 +133,41 @@ jobs:
                     f"coverage={z['coverage']*100:.0f}%")
           print("=" * 75)
           EOF
+
+      - name: Upload activity.json to Drive (optional)
+        if: ${{ github.event.inputs.output_drive_folder_id != '' }}
+        env:
+          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          OUTPUT_FOLDER_ID:    ${{ github.event.inputs.output_drive_folder_id }}
+        run: |
+          python3 -c "
+          import json, urllib.request as _req, os
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+          import datetime
+
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          client_id     = token_data.get('client_id') or creds_data['installed']['client_id']
+          client_secret = token_data.get('client_secret') or creds_data['installed']['client_secret']
+          refresh_token = token_data['refresh_token']
+          token_uri     = token_data.get('token_uri', 'https://oauth2.googleapis.com/token')
+          payload = json.dumps({'client_id': client_id, 'client_secret': client_secret,
+                                'refresh_token': refresh_token, 'grant_type': 'refresh_token'}).encode()
+          r = _req.urlopen(_req.Request(token_uri, data=payload,
+                           headers={'Content-Type': 'application/json'}, method='POST'))
+          tok = json.loads(r.read())
+          creds = Credentials(token=tok['access_token'], refresh_token=refresh_token,
+                              token_uri=token_uri, client_id=client_id, client_secret=client_secret,
+                              scopes=['https://www.googleapis.com/auth/drive'])
+          drive = build('drive', 'v3', credentials=creds, cache_discovery=False)
+          sf = '${{ github.event.inputs.start_frame }}'
+          ef = '${{ github.event.inputs.end_frame }}'
+          media = MediaFileUpload('activity.json', mimetype='application/json', resumable=False)
+          f = drive.files().create(
+              body={'name': f'activity_{sf}_{ef}.json', 'parents': [os.environ['OUTPUT_FOLDER_ID']]},
+              media_body=media, fields='id,name').execute()
+          print(f'Uploaded: {f[\"name\"]}  id={f[\"id\"]}')
+          "
