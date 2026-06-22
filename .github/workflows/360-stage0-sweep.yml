@@ -365,30 +365,34 @@ jobs:
           path: stage0_output/
           retention-days: 14
 
-
       - name: Upload Stage 0 JSONs to Google Drive
         env:
           IP:   ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
-          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
-          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
         run: |
           ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+
           echo "--- Uploading hotspot_map.json to Drive ---"
-          HM_ID=$($SSH "curl -s -X POST 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart' \
+          HM_RESPONSE=$($SSH "curl -s -X POST \
+            'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart' \
             -H 'Authorization: Bearer $ACCESS_TOKEN' \
-            -F 'metadata={\"name\":\"hotspot_map.json\"}; type=application/json; charset=UTF-8' \
-            -F 'file=@/tmp/ffa_stage0/stage0_output/hotspot_map.json; type=application/json' \
-            | python3 -c \"import sys,json; print(json.load(sys.stdin)[\'id\'])\"")
-          echo "hotspot_map.json Drive ID: $HM_ID"
+            -F 'metadata={\"name\":\"hotspot_map.json\"};type=application/json;charset=UTF-8' \
+            -F 'file=@/tmp/ffa_stage0/stage0_output/hotspot_map.json;type=application/json'")
+          echo "hotspot_map response: $HM_RESPONSE"
+          HM_ID=$(echo "$HM_RESPONSE" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+          if [ -z "$HM_ID" ]; then echo "ERROR: hotspot_map upload returned no ID"; exit 1; fi
+
           echo "--- Uploading stage0_detections.json to Drive ---"
-          DET_ID=$($SSH "curl -s -X POST 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart' \
+          DET_RESPONSE=$($SSH "curl -s -X POST \
+            'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart' \
             -H 'Authorization: Bearer $ACCESS_TOKEN' \
-            -F 'metadata={\"name\":\"stage0_detections.json\"}; type=application/json; charset=UTF-8' \
-            -F 'file=@/tmp/ffa_stage0/stage0_output/stage0_detections.json; type=application/json' \
-            | python3 -c \"import sys,json; print(json.load(sys.stdin)[\'id\'])\"")
-          echo "stage0_detections.json Drive ID: $DET_ID"
+            -F 'metadata={\"name\":\"stage0_detections.json\"};type=application/json;charset=UTF-8' \
+            -F 'file=@/tmp/ffa_stage0/stage0_output/stage0_detections.json;type=application/json'")
+          echo "stage0_detections response: $DET_RESPONSE"
+          DET_ID=$(echo "$DET_RESPONSE" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+          if [ -z "$DET_ID" ]; then echo "ERROR: stage0_detections upload returned no ID"; exit 1; fi
+
           echo ""
           echo "=== STAGE 1 DRIVE IDS ==="
           echo "hotspot_map_file_id      : $HM_ID"
