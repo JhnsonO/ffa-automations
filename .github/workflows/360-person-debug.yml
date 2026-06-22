@@ -1,0 +1,125 @@
+name: Phase 2 - Person Detection Debug Montage
+
+on:
+  workflow_dispatch:
+    inputs:
+      equirect_file_id:
+        description: "Google Drive file ID - equirectangular video"
+        required: true
+        default: "1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX"
+      start_frame:
+        description: "Start frame"
+        default: "700"
+      end_frame:
+        description: "End frame (-1 = full clip)"
+        default: "1300"
+      sample_interval:
+        description: "Sample every N frames (default 15)"
+        default: "15"
+      yolo_person_weights:
+        description: "Person detector weights (yolov8n.pt or yolov8s.pt)"
+        default: "yolov8n.pt"
+
+jobs:
+  debug-montage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get install -y aria2 python3-pip python3-opencv
+          pip install --break-system-packages \
+            ultralytics opencv-python-headless numpy \
+            google-auth google-auth-oauthlib google-api-python-client
+
+      - name: Download equirect video from Drive
+        env:
+          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          EQUIRECT_FILE_ID:    ${{ github.event.inputs.equirect_file_id }}
+        run: |
+          echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -c "
+          import json, urllib.request as _req
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          client_id     = token_data.get('client_id') or creds_data['installed']['client_id']
+          client_secret = token_data.get('client_secret') or creds_data['installed']['client_secret']
+          refresh_token = token_data['refresh_token']
+          token_uri     = token_data.get('token_uri', 'https://oauth2.googleapis.com/token')
+          payload = json.dumps({'client_id': client_id, 'client_secret': client_secret,
+                                'refresh_token': refresh_token, 'grant_type': 'refresh_token'}).encode()
+          r = _req.urlopen(_req.Request(token_uri, data=payload,
+                           headers={'Content-Type': 'application/json'}, method='POST'))
+          tok = json.loads(r.read())
+          if 'access_token' not in tok:
+              raise RuntimeError(f'Token refresh failed: {tok}')
+          open('/tmp/drive_token.txt', 'w').write(tok['access_token'])
+          print(f'Access token obtained (expires_in={tok.get(\"expires_in\")}s)')
+          "
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          mkdir -p work
+          aria2c -x 8 -s 8 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=work --out=equirect_trim.mp4 \
+            "https://www.googleapis.com/drive/v3/files/$EQUIRECT_FILE_ID?alt=media"
+          du -sh work/equirect_trim.mp4
+
+      - name: Run person detection debug montage
+        run: |
+          python3 ball_tracker/debug_person_montage.py \
+            --input           work/equirect_trim.mp4 \
+            --output-video    debug_montage.mp4 \
+            --output-json     debug_summary.json \
+            --start-frame     "${{ github.event.inputs.start_frame }}" \
+            --end-frame       "${{ github.event.inputs.end_frame }}" \
+            --sample-interval "${{ github.event.inputs.sample_interval }}" \
+            --model           "${{ github.event.inputs.yolo_person_weights }}"
+        env:
+          YOLO_PERSON_WEIGHTS: ${{ github.event.inputs.yolo_person_weights }}
+
+      - name: Upload debug_summary.json as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-summary-${{ github.event.inputs.start_frame }}-${{ github.event.inputs.end_frame }}
+          path: debug_summary.json
+          retention-days: 30
+
+      - name: Upload debug_montage.mp4 as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-montage-${{ github.event.inputs.start_frame }}-${{ github.event.inputs.end_frame }}
+          path: debug_montage.mp4
+          retention-days: 7
+
+      - name: Print detection summary
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          d = json.load(open("debug_summary.json"))
+          cfg = d["config"]; t = d["totals"]
+          print("=" * 70)
+          print(f"MODEL          : {cfg['model']}")
+          print(f"IMGSZ          : {cfg['imgsz']}   CONF: {cfg['conf_threshold']}   CLASS: {cfg['person_class_id']} (person)")
+          print(f"PITCH GATE     : {cfg['pitch_min_deg']} to {cfg['pitch_max_deg']} deg")
+          print(f"FRAMES SAMPLED : {t['frames_sampled']}")
+          print(f"TOTAL RAW DETS : {t['total_raw_detections']}")
+          print(f"AFTER PITCH    : {t['after_pitch_filter']}  ({100*t['after_pitch_filter']//max(1,t['total_raw_detections'])}%)")
+          print(f"AFTER DEDUP    : {t['after_dedup']}")
+          print(f"WITH CLUSTER   : {t['frames_with_cluster']}/{t['frames_sampled']}  ({t['cluster_coverage_pct']}%)")
+          print()
+          print(f"{'FRAME':>6}  {'RAW':>4}  {'PITCH':>5}  {'DEDUP':>5}  CLUSTER")
+          print("-" * 70)
+          for r in d["frames"]:
+              cc = r["cluster_centre"]
+              cc_str = f"yaw={cc['yaw']:+.1f} p={cc['pitch']:+.1f} sz={cc['size']}" if cc else "NO CLUSTER"
+              print(f"{r['frame']:>6}  {r['raw_detections']:>4}  {r['pitch_pass']:>5}  {r['dedup']:>5}  {cc_str}")
+          print("=" * 70)
+          PYEOF
