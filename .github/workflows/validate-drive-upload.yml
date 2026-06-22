@@ -1,0 +1,100 @@
+name: Validate Drive Upload
+
+on:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          pip install -q google-auth google-auth-oauthlib google-api-python-client
+          echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 - << 'PY'
+          import os, json, urllib.request as _req
+          token_data = json.loads(open("/tmp/youtube_token.json").read())
+          creds_data = json.loads(open("/tmp/youtube_credentials.json").read())
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+          payload = json.dumps({
+              "client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token",
+          }).encode()
+          r = _req.urlopen(_req.Request(token_uri, data=payload,
+                           headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
+          with open("/tmp/drive_token.txt", "w") as f:
+              f.write(tok["access_token"])
+          print(f"Access token obtained (expires_in={tok.get('expires_in')}s)")
+          PY
+
+      - name: Create test payload
+        run: |
+          echo "{\"test\": true, \"workflow\": \"validate-drive-upload\", \"ts\": \"$(date -u +%Y%m%dT%H%M%SZ)\"}" \
+            > /tmp/drive_upload_test.json
+          echo "Test payload:"
+          cat /tmp/drive_upload_test.json
+
+      - name: Upload test file and verify returned ID
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+
+          RESPONSE=$(curl -s -X POST \
+            'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart' \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -F 'metadata={"name":"drive_upload_test.json"};type=application/json;charset=UTF-8' \
+            -F 'file=@/tmp/drive_upload_test.json;type=application/json')
+
+          echo "Raw Drive response: $RESPONSE"
+
+          FILE_ID=$(echo "$RESPONSE" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+
+          if [ -z "$FILE_ID" ]; then
+            echo "FAIL: Drive upload returned no file ID"
+            exit 1
+          fi
+
+          echo "PASS: file uploaded successfully"
+          echo "FILE_ID: $FILE_ID"
+          echo "View: https://drive.google.com/file/d/$FILE_ID/view"
+
+      - name: Clean up test file from Drive
+        if: always()
+        run: |
+          # Re-upload step exports FILE_ID only in its own shell scope.
+          # Re-derive it here for cleanup.
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          # List recent files and delete the test one by name
+          python3 - << 'PY'
+          import urllib.request, json, os
+          token = open("/tmp/drive_token.txt").read().strip()
+          headers = {"Authorization": f"Bearer {token}"}
+          url = "https://www.googleapis.com/drive/v3/files?q=name%3D'drive_upload_test.json'&fields=files(id,name)"
+          req = urllib.request.Request(url, headers=headers)
+          resp = json.loads(urllib.request.urlopen(req).read())
+          files = resp.get("files", [])
+          if not files:
+              print("No test file found to clean up")
+          else:
+              for f in files:
+                  fid = f["id"]
+                  del_req = urllib.request.Request(
+                      f"https://www.googleapis.com/drive/v3/files/{fid}",
+                      method="DELETE", headers=headers)
+                  try:
+                      urllib.request.urlopen(del_req)
+                      print(f"Deleted test file: {fid}")
+                  except Exception as e:
+                      print(f"Delete failed (non-fatal): {e}")
+          PY
