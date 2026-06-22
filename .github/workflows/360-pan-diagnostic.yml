@@ -27,6 +27,10 @@ on:
         description: 'Comma-separated yaw values'
         required: false
         default: '-90 -60 -30 0 30 60 90'
+      mode:
+        description: 'Diagnostic mode: sanity, pm30, full'
+        required: false
+        default: 'sanity'
 
 jobs:
   calibrate:
@@ -87,6 +91,13 @@ jobs:
           FOV:   ${{ github.event.inputs.fov }}
           ROLL:  ${{ github.event.inputs.roll }}
           YAWS:  ${{ github.event.inputs.yaws }}
+        env:
+          FRAME: ${{ github.event.inputs.frame }}
+          PITCH: ${{ github.event.inputs.pitch }}
+          FOV:   ${{ github.event.inputs.fov }}
+          ROLL:  ${{ github.event.inputs.roll }}
+          YAWS:  ${{ github.event.inputs.yaws }}
+          MODE:  ${{ github.event.inputs.mode }}
         run: |
           mkdir -p calib_output
           python3 ball_tracker/diag_pan.py \
@@ -96,6 +107,7 @@ jobs:
             --fov    $FOV \
             --roll   $ROLL \
             --yaws   $YAWS \
+            --mode   ${MODE:-sanity} \
             --output calib_output/pan_diagnostic.jpg
           ls -lh calib_output/
 
