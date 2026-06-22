@@ -4,6 +4,8 @@ FFA 360 Ball Tracker — v9 (Pitch Plausibility Scoring)
 =============================================
 Input:  equirect_trim.mp4
 Output: tracking.json  (always)
+    parser.add_argument("--seed-blacklist-zones", default="[]",
+                        help="JSON list of {yaw,pitch,radius} calibration blacklist zones")
         tracked.mp4    (only if --metrics-only is NOT set)
 
 v7 diagnosis: hard angular cap (MAX_FRAME_DELTA_DEG) is the wrong discriminator.
@@ -462,7 +464,8 @@ def score_candidate(candidate, kf, kf_initialised, ball_size_tracker, vel_tracke
 def run_tracker(equirect_path, output_path, json_path,
                 ball_model_path="models/football-ball-detection.pt",
                 person_model_path="yolov8s.pt",
-                metrics_only=False):
+                metrics_only=False,
+                seed_blacklist_zones=None):  # v10e: list of {yaw,pitch,radius} seeded from calibration
 
     device = get_device()
 
@@ -553,7 +556,20 @@ def run_tracker(equirect_path, output_path, json_path,
     static_lock_events        = []   # list of {start_frame, end_frame, yaw, pitch}
     static_lock_active        = False
     static_lock_start_frame   = None
-    static_blacklist          = []   # list of {yaw, pitch, permanent, first_lock_frame, hit_count}
+    # v10e: initialise blacklist from seeded calibration zones; dynamic zones appended later
+    _seed_zones = seed_blacklist_zones or []
+    static_blacklist = [
+        {
+            "yaw":              z["yaw"],
+            "pitch":            z["pitch"],
+            "radius":           z.get("radius", STATIC_BLACKLIST_RADIUS),
+            "permanent":        True,
+            "seeded":           True,
+            "first_lock_frame": -1,
+            "hit_count":        0,
+        }
+        for z in _seed_zones
+    ]  # dynamic detections appended below
     confirmed_ball_count      = 0    # tracks frames with confirmed ball (for grace period)
 
     # ---- Instrumentation ----
@@ -578,7 +594,8 @@ def run_tracker(equirect_path, output_path, json_path,
         "large_yaw_jump_count":        0,   # yaw delta > 30° (informational only, no reject)
         "accepted_pitches":            [],  # v9: pitch of every confirmed-ball frame
         "pitch_hard_rejections":       0,   # v10b: candidates above PITCH_HARD_MAX
-        "static_blacklist_hits":        0,   # v10c: candidates rejected by blacklist
+        "static_blacklist_hits":        0,   # dynamic static-lock blacklist hits
+        "seeded_blacklist_hits":         0,   # v10e: seeded calibration zone hits
     }
 
     frame_idx = 0
@@ -655,8 +672,23 @@ def run_tracker(equirect_path, output_path, json_path,
                 # Collect this frame's candidates (yaw, pitch, conf, area)
                 frame_candidates = []
                 for yaw_d, pitch_d, conf_d in deduped_balls:
-                    # v10b/v10c: hard pitch ceiling and blacklist — exclude before warm-up chain building
+                    # v10b: hard pitch ceiling — exclude before warmup chain building
                     if pitch_d > PITCH_HARD_MAX:
+                        instr["pitch_hard_rejections"] += 1
+                        continue
+                    # v10e: seeded + dynamic blacklist applied from frame 0 in warmup
+                    _wbl_hit = False
+                    for _bl in static_blacklist:
+                        if angular_distance(yaw_d, pitch_d, _bl["yaw"], _bl["pitch"]) < _bl.get("radius", STATIC_BLACKLIST_RADIUS):
+                            _bl["hit_count"] += 1
+                            if _bl.get("seeded"):
+                                instr["seeded_blacklist_hits"] += 1
+                            else:
+                                instr["static_blacklist_hits"] += 1
+                            _wbl_hit = True
+                            break
+                    if _wbl_hit:
+                        continue
                         instr["pitch_hard_rejections"] += 1
                         continue
                     raw = find_raw(yaw_d, pitch_d)
@@ -733,19 +765,20 @@ def run_tracker(equirect_path, output_path, json_path,
                     instr["pitch_hard_rejections"] += 1
                     instr["rejection_reasons"]["pitch_hard_max"] =                         instr["rejection_reasons"].get("pitch_hard_max", 0) + 1
                     continue
-                # v10d: permanent blacklist check — reject candidates near confirmed static-lock locations
+                # v10e: seeded + dynamic blacklist check
                 blacklisted = False
                 for bl in static_blacklist:
-                    if angular_distance(yaw_d, pitch_d, bl["yaw"], bl["pitch"]) < STATIC_BLACKLIST_RADIUS:
+                    if angular_distance(yaw_d, pitch_d, bl["yaw"], bl["pitch"]) < bl.get("radius", STATIC_BLACKLIST_RADIUS):
                         blacklisted = True
                         bl["hit_count"] += 1
-                        instr["static_blacklist_hits"] += 1
-                        instr["rejection_reasons"]["static_blacklist"] = \
-                            instr["rejection_reasons"].get("static_blacklist", 0) + 1
-                        print(f"[v10d] blacklist hit #{bl['hit_count']} at frame {frame_idx}: "
-                              f"candidate yaw={yaw_d:.2f} pitch={pitch_d:.2f} "
-                              f"(zone yaw={bl['yaw']:.2f} pitch={bl['pitch']:.2f}, "
-                              f"first locked frame {bl['first_lock_frame']})")
+                        if bl.get("seeded"):
+                            instr["seeded_blacklist_hits"] += 1
+                            instr["rejection_reasons"]["seeded_blacklist"] = \
+                                instr["rejection_reasons"].get("seeded_blacklist", 0) + 1
+                        else:
+                            instr["static_blacklist_hits"] += 1
+                            instr["rejection_reasons"]["static_blacklist"] = \
+                                instr["rejection_reasons"].get("static_blacklist", 0) + 1
                         break
                 if blacklisted:
                     continue
@@ -849,7 +882,9 @@ def run_tracker(equirect_path, output_path, json_path,
                                 static_blacklist.append({
                                     "yaw":              lock_yaw,
                                     "pitch":            lock_pitch,
+                                    "radius":           STATIC_BLACKLIST_RADIUS,
                                     "permanent":        True,
+                                    "seeded":           False,
                                     "first_lock_frame": frame_idx,
                                     "hit_count":        0,
                                 })
@@ -1037,10 +1072,12 @@ def run_tracker(equirect_path, output_path, json_path,
         "static_lock_event_count":          len(static_lock_events),
         "static_lock_events":               static_lock_events,
         "static_blacklist_hit_count":       instr["static_blacklist_hits"],
+        "seeded_blacklist_hit_count":        instr["seeded_blacklist_hits"],   # v10e
         "permanent_blacklist_zones":        [
             {
                 "yaw":              bl["yaw"],
                 "pitch":            bl["pitch"],
+                "seeded":           bl.get("seeded", False),
                 "first_lock_frame": bl["first_lock_frame"],
                 "hit_count":        bl["hit_count"],
             }
@@ -1058,7 +1095,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "frames_in_lost":            state_transition_counts.get(TrackerState.LOST, 0),
     }
     metadata = {
-        "version": "v10d",
+        "version": "v10e",
         "metrics_only": metrics_only,
         "config": {
             "ball_model":           ball_model_path,
@@ -1075,7 +1112,8 @@ def run_tracker(equirect_path, output_path, json_path,
             "static_lock_std_max":   STATIC_LOCK_STD_MAX,  # v10c
             "static_lock_grace":     STATIC_LOCK_GRACE,    # v10c
             "static_blacklist_radius": STATIC_BLACKLIST_RADIUS,  # v10c
-            "static_blacklist_permanent": True,  # v10d: entries never expire within a clip
+            "static_blacklist_permanent": True,
+            "seed_blacklist_zones":       seed_blacklist_zones or [],  # v10e
             "max_frame_delta_deg":   "REMOVED_v8",
             "kalman_init_frames":    KALMAN_INIT_FRAMES,
             "warmup_min_chain_len":  WARMUP_MIN_CHAIN_LEN,
@@ -1116,6 +1154,8 @@ if __name__ == "__main__":
     parser.add_argument("--metrics-only",   action="store_true",
                         help="Skip render, produce tracking.json only (~5x faster)")
     args = parser.parse_args()
+    import json as _json
+    _seed_zones = _json.loads(args.seed_blacklist_zones)
 
     run_tracker(
         equirect_path=args.input,
@@ -1124,4 +1164,5 @@ if __name__ == "__main__":
         ball_model_path=args.ball_model,
         person_model_path=args.person_model,
         metrics_only=args.metrics_only,
+        seed_blacklist_zones=_seed_zones,
     )
