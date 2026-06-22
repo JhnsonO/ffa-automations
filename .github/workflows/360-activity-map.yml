@@ -7,7 +7,7 @@ on:
         description: "Google Drive file ID — equirectangular video"
         required: true
       start_frame:
-        description: "Start frame (default 0)"
+        description: "Start frame"
         default: "0"
       end_frame:
         description: "End frame (-1 = full clip)"
@@ -15,14 +15,17 @@ on:
       sample_interval:
         description: "Sample every N frames (default 15 ≈ 2/sec @ 30fps)"
         default: "15"
+      yolo_person_weights:
+        description: "Person detector weights (default: yolov8n.pt — try yolov8s.pt for better recall)"
+        default: "yolov8n.pt"
       output_drive_folder_id:
-        description: "Drive folder ID to upload activity.json"
+        description: "Drive folder ID to upload activity.json (optional)"
         required: false
 
 jobs:
   activity:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -37,9 +40,6 @@ jobs:
         run: |
           pip install ultralytics opencv-python-headless numpy
 
-      - name: Install ffmpeg
-        run: sudo apt-get install -y ffmpeg
-
       - name: Download equirect video from Drive
         run: |
           python scripts/drive_download.py \
@@ -51,18 +51,19 @@ jobs:
       - name: Run player activity mapper
         run: |
           python ball_tracker/player_activity.py \
-            --input  equirect_trim.mp4 \
-            --output activity.json \
-            --start-frame "${{ github.event.inputs.start_frame }}" \
-            --end-frame   "${{ github.event.inputs.end_frame }}" \
-            --sample-interval "${{ github.event.inputs.sample_interval }}"
+            --input           equirect_trim.mp4 \
+            --output          activity.json \
+            --start-frame     "${{ github.event.inputs.start_frame }}" \
+            --end-frame       "${{ github.event.inputs.end_frame }}" \
+            --sample-interval "${{ github.event.inputs.sample_interval }}" \
+            --model           "${{ github.event.inputs.yolo_person_weights }}"
         env:
-          YOLO_MODEL: yolov8n.pt
+          YOLO_PERSON_WEIGHTS: ${{ github.event.inputs.yolo_person_weights }}
 
       - name: Upload activity.json as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: activity-json
+          name: activity-json-${{ github.event.inputs.start_frame }}-${{ github.event.inputs.end_frame }}
           path: activity.json
           retention-days: 30
 
@@ -80,16 +81,39 @@ jobs:
         run: |
           python3 - <<'EOF'
           import json
+
           with open("activity.json") as f:
               d = json.load(f)
-          s = d["summary"]
-          print("=" * 60)
-          print("PLAYER ACTIVITY MAP — SUMMARY")
-          print("=" * 60)
-          print(f"  Sampled frames   : {s['total_sampled']}")
-          print(f"  With cluster     : {s['frames_with_cluster']}")
-          print(f"  Mean active yaw  : {s['mean_active_yaw']:.1f}°")
-          print(f"  Mean active pitch : {s['mean_active_pitch']:.1f}°")
-          print(f"  Hotspot zones    : {len(d['hotspot_zones'])}")
-          print("=" * 60)
+
+          s  = d["summary"]
+          fr = d["frames"]
+
+          # Per-sample table: frame | players | cluster | yaw | pitch | conf
+          print("=" * 75)
+          print(f"{'FRAME':>6}  {'PLAYERS':>7}  {'CLUSTER':>7}  "
+                f"{'YAW':>7}  {'PITCH':>6}  {'CONF':>5}  {'MOT':>4}  {'CONV':>4}")
+          print("-" * 75)
+          for r in fr:
+              cc = r["cluster_centre"]
+              yaw_s   = f"{cc['yaw']:+.1f}" if cc else "  —"
+              pitch_s = f"{cc['pitch']:+.1f}" if cc else "  —"
+              print(f"{r['frame']:>6}  {len(r['players']):>7}  "
+                    f"{r['cluster_size']:>7}  "
+                    f"{yaw_s:>7}  {pitch_s:>6}  "
+                    f"{r['confidence']:.2f}  "
+                    f"{r.get('motion_score',0):.2f}  "
+                    f"{r.get('convergence_score',0):.2f}")
+
+          print("=" * 75)
+          print("SUMMARY")
+          print(f"  Total sampled      : {s['total_sampled']}")
+          print(f"  Frames w/ cluster  : {s['frames_with_cluster']} "
+                f"({100*s['frames_with_cluster']//max(1,s['total_sampled'])}%)")
+          print(f"  Mean active yaw    : {s['mean_active_yaw']:+.1f}°")
+          print(f"  Mean active pitch  : {s['mean_active_pitch']:+.1f}°")
+          print(f"  Hotspot zones      : {len(d['hotspot_zones'])}")
+          for z in d["hotspot_zones"]:
+              print(f"    yaw={z['yaw']:+.1f}° pitch={z['pitch']:+.1f}° "
+                    f"coverage={z['coverage']*100:.0f}%")
+          print("=" * 75)
           EOF
