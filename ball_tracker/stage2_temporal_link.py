@@ -89,13 +89,23 @@ def cosine_sim(a, b):
 # ── Hotspot helpers ───────────────────────────────────────────────────────────
 
 def build_static_regions(hotspot_map):
-    """Return list of (region_name, yaw, pitch, radius) for confirmed statics."""
+    """Return list of confirmed-static regions from hotspot_map.json.
+
+    Real schema (Stage 0 output):
+        hotspot_map["hotspot_regions"] = [
+            {"centre_yaw": ..., "centre_pitch": ..., "radius_deg": ..., "peak_duty": ...},
+        ]
+    The duty_cycle_threshold stored in the map is used as the confirmed-static
+    threshold; falls back to STATIC_HOTSPOT_DUTY constant if absent.
+    """
+    threshold = hotspot_map.get("duty_cycle_threshold", STATIC_HOTSPOT_DUTY)
     regions = []
-    for entry in hotspot_map.get("hotspots", []):
-        if entry.get("peak_duty", 0) >= STATIC_HOTSPOT_DUTY:
+    for entry in hotspot_map.get("hotspot_regions", []):
+        if entry.get("peak_duty", 0) >= threshold:
+            label = f"({entry['centre_yaw']:.1f},{entry['centre_pitch']:.1f})"
             regions.append({
-                "name":   entry.get("region", "unknown"),
-                "vec":    to_unit_vec(entry["yaw"], entry["pitch"]),
+                "name":   label,
+                "vec":    to_unit_vec(entry["centre_yaw"], entry["centre_pitch"]),
                 "radius": entry.get("radius_deg", 5.0),
             })
     return regions
@@ -233,21 +243,31 @@ class Tracklet:
         residuals = []
         vel_sims  = []
         prev_vec  = None
-        prev_vel  = np.zeros(3)
+        prev_vel  = np.zeros(3)  # speed * direction (same as Tracklet._prev_vel)
         has_v     = False
         for i, f in enumerate(obs_frames):
             vec = self.frames[f]["vec"]
             if prev_vec is not None:
                 delta = obs_frames[i] - obs_frames[i-1]
+                # Rodrigues spherical prediction — identical to Tracklet.predict()
                 predicted = prev_vec.copy()
-                if has_v and np.linalg.norm(prev_vel) > 1e-9:
-                    step = prev_vel * delta
-                    pred2 = prev_vec + step
-                    n = np.linalg.norm(pred2)
-                    if n > 1e-9:
-                        predicted = pred2 / n
+                if has_v:
+                    speed = float(np.linalg.norm(prev_vel))
+                    if speed > 1e-9:
+                        direction = prev_vel / speed
+                        angle_rad = math.radians(speed * delta)
+                        v, k = prev_vec, direction
+                        cos_a, sin_a = math.cos(angle_rad), math.sin(angle_rad)
+                        pred2 = v * cos_a + np.cross(k, v) * sin_a + k * np.dot(k, v) * (1 - cos_a)
+                        n = np.linalg.norm(pred2)
+                        if n > 1e-9:
+                            predicted = pred2 / n
                 residuals.append(great_circle_deg(predicted, vec))
-                vel_vec = tangent_plane_vec(prev_vec, vec, delta)
+                # Update velocity: angular_speed * tangent_direction
+                ang_dist = great_circle_deg(prev_vec, vec)
+                dir_vec  = tangent_plane_vec(prev_vec, vec, delta)
+                speed_new = ang_dist / delta if delta > 0 else 0.0
+                vel_vec   = dir_vec * speed_new
                 if has_v and np.linalg.norm(prev_vel) > 1e-9:
                     vel_sims.append(max(0.0, cosine_sim(prev_vel, vel_vec)))
                 prev_vel = vel_vec
@@ -461,10 +481,20 @@ def run(args):
     static_regions = build_static_regions(hmap)
 
     # Index candidates by frame
-    all_cands_by_frame = {}
-    for entry in stage1.get("frames", []):
-        fidx = entry["frame"]
-        all_cands_by_frame[fidx] = entry.get("candidates", [])
+    # Stage 1 real schema: frames is a dict keyed by string frame number
+    # e.g. {"0": [...], "1": [...]}
+    # Each value is directly a list of candidate dicts (not wrapped in "candidates")
+    frames_raw = stage1.get("frames", {})
+    if isinstance(frames_raw, dict):
+        all_cands_by_frame = {
+            int(k): v for k, v in frames_raw.items()
+        }
+    else:
+        # Fallback: list of {"frame": N, "candidates": [...]} records (fixture format)
+        all_cands_by_frame = {}
+        for entry in frames_raw:
+            fidx = entry["frame"]
+            all_cands_by_frame[fidx] = entry.get("candidates", [])
 
     all_frames = sorted(all_cands_by_frame.keys())
     if not all_frames:
