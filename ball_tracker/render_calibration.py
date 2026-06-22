@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
 """
-FFA 360 Fallback Calibration — v1
+FFA 360 Fallback Calibration — v2
 ===================================
-Renders a single-frame comparison montage across fallback FOV/pitch
-combinations, plus one cylindrical panoramic strip, to calibrate the
-WIDE_FALLBACK view in render_segment.py.
+Cylindrical-only calibration sweep.
+Tests yaw x pitch combinations for the WIDE_FALLBACK panoramic overview.
 
-For a given fallback frame (default: frame 1100, known LOST), renders:
-  Perspective grid (3 FOV x 3 pitch = 9 crops):
-    FOV:   120deg, 135deg, 150deg
-    Pitch:  -5deg,   0deg,  +5deg
-  Cylindrical panoramic strip (180deg horizontal, 40deg vertical band):
-    Rendered via ffmpeg v360 filter
+Projection methods (both included for comparison):
+  EQUIRECT BAND  — pure numpy crop of the equirectangular source at target
+                   yaw/pitch. Zero distortion. Widest possible horizontal
+                   coverage. Output is a horizontal strip.
+  CYLINDRICAL    — ffmpeg v360=e:c. True cylindrical projection. Slight
+                   vertical compression at edges vs equirect, but correct
+                   for side-on pitch overview.
 
-Outputs:
-  calibration_montage.jpg  -- labelled grid comparison image
+Grid: 3 yaw values x 3 pitch values = 9 panels, shown as two rows:
+  Row A: equirect band crops
+  Row B: cylindrical crops (via ffmpeg v360=e:c)
 
-Usage:
-  python3 render_calibration.py \
-    --input equirect_trim.mp4 \
-    --frame 1100 \
-    --fallback-yaw 0.0 \
-    --output calibration_montage.jpg
+Params:
+  --yaws   comma-separated yaw centres  (default: -20,0,20)
+  --pitches comma-separated pitches     (default: -5,0,5)
+  --h-fov  horizontal angular span for cylindrical (default: 160)
+  --v-fov  vertical angular span for cylindrical   (default: 45)
+  --frame  frame index to sample                   (default: 1100)
 """
 
 import argparse
@@ -35,156 +36,200 @@ import numpy as np
 
 FFMPEG = os.environ.get("FFMPEG_BIN", "/usr/bin/ffmpeg")
 
-OUTPUT_W = 1920
-OUTPUT_H = 1080
-
-PERSP_FOVS    = [120, 135, 150]
-PERSP_PITCHES = [-5, 0, 5]
-
 THUMB_W = 640
-THUMB_H = 360
-LABEL_H = 36
+THUMB_H = 240   # shorter — panoramic strips are wide not tall
+LABEL_H = 32
 FONT    = cv2.FONT_HERSHEY_SIMPLEX
-FS      = 0.75
+FS      = 0.65
 FT      = 2
+
+# Total output width = THUMB_W * n_yaws
+# We support up to 5 yaws comfortably
 
 
 def extract_frame(video_path, frame_idx):
     cap = cv2.VideoCapture(video_path)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps   = cap.get(cv2.CAP_PROP_FPS)
+    print(f"[calib] Video: {total} frames @ {fps:.2f} fps")
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
     ret, frame = cap.read()
     cap.release()
     if not ret:
-        raise RuntimeError(f"Could not read frame {frame_idx} from {video_path}")
+        raise RuntimeError(f"Could not read frame {frame_idx}")
     return frame
 
 
-def perspective_crop(equirect, yaw_deg, pitch_deg, fov_deg, out_w, out_h):
+def equirect_band_crop(equirect, yaw_deg, pitch_deg, h_span_deg, v_span_deg, out_w, out_h):
+    """
+    Crop a rectangular band from the equirectangular image.
+    Centred on (yaw_deg, pitch_deg), spanning h_span_deg x v_span_deg.
+    No distortion — pure pixel mapping from equirect coordinates.
+    """
     h_eq, w_eq = equirect.shape[:2]
-    f = (out_w / 2.0) / math.tan(math.radians(fov_deg / 2.0))
-    xs = np.linspace(0, out_w - 1, out_w)
-    ys = np.linspace(0, out_h - 1, out_h)
-    xv, yv = np.meshgrid(xs, ys)
-    rx = (xv - out_w / 2.0) / f
-    ry = -(yv - out_h / 2.0) / f
-    rz = np.ones_like(rx)
-    norm = np.sqrt(rx**2 + ry**2 + rz**2)
-    rx, ry, rz = rx / norm, ry / norm, rz / norm
-    cy = math.radians(yaw_deg)
-    wx = math.cos(cy) * rx + math.sin(cy) * rz
-    wy = ry
-    wz = -math.sin(cy) * rx + math.cos(cy) * rz
-    cp = math.radians(pitch_deg)
-    wy2 = math.cos(cp) * wy - math.sin(cp) * wz
-    wz2 = math.sin(cp) * wy + math.cos(cp) * wz
-    wx2 = wx
-    yaw_map   = np.arctan2(wx2, wz2)
-    pitch_map = np.arcsin(np.clip(wy2, -1, 1))
-    map_x = ((yaw_map / (2 * math.pi)) + 0.5) * w_eq
-    map_y = (0.5 - pitch_map / math.pi) * h_eq
-    return cv2.remap(equirect,
-                     map_x.astype(np.float32), map_y.astype(np.float32),
-                     interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
+
+    # Angular extent to pixel extent in equirect space
+    # Equirect: x = (yaw/360 + 0.5) * w, y = (0.5 - pitch/180) * h
+    cx = ((yaw_deg / 360.0) + 0.5) % 1.0 * w_eq
+    cy = (0.5 - pitch_deg / 180.0) * h_eq
+
+    half_w_px = (h_span_deg / 360.0) * w_eq / 2.0
+    half_h_px = (v_span_deg / 180.0) * h_eq / 2.0
+
+    # Build sample grid
+    xs = np.linspace(cx - half_w_px, cx + half_w_px, out_w)
+    ys = np.linspace(cy - half_h_px, cy + half_h_px, out_h)
+    map_x, map_y = np.meshgrid(xs, ys)
+
+    # Wrap x (yaw), clamp y (pitch)
+    map_x = (map_x % w_eq).astype(np.float32)
+    map_y = np.clip(map_y, 0, h_eq - 1).astype(np.float32)
+
+    return cv2.remap(equirect, map_x, map_y,
+                     interpolation=cv2.INTER_LINEAR,
+                     borderMode=cv2.BORDER_WRAP)
 
 
-def cylindrical_crop_via_ffmpeg(equirect_path, frame_idx, yaw_deg, pitch_deg,
-                                 h_fov_deg, v_fov_deg, out_w, out_h):
+def cylindrical_crop_ffmpeg(video_path, frame_idx, yaw_deg, pitch_deg,
+                             h_fov_deg, v_fov_deg, out_w, out_h):
+    """
+    True cylindrical projection via ffmpeg v360=e:c.
+    Extracts frame by index using -vf select filter (frame-accurate).
+    """
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
         tmp_path = tmp.name
-    t_sec = frame_idx / 29.97
+
+    # Use select filter for frame-accurate extraction (no -ss imprecision)
+    vf = (
+        f"select='eq(n\\,{frame_idx})',"
+        f"v360=e:c:"
+        f"yaw={yaw_deg}:pitch={pitch_deg}:roll=0:"
+        f"h_fov={h_fov_deg}:v_fov={v_fov_deg}:"
+        f"w={out_w}:h={out_h}:"
+        f"interp=lanczos"
+    )
     cmd = [
         FFMPEG, "-y",
-        "-ss", f"{t_sec:.4f}",
-        "-i", equirect_path,
+        "-i", video_path,
+        "-vf", vf,
         "-frames:v", "1",
-        "-vf", (
-            f"v360=e:flat:"
-            f"yaw={yaw_deg}:pitch={pitch_deg}:roll=0:"
-            f"h_fov={h_fov_deg}:v_fov={v_fov_deg}:"
-            f"w={out_w}:h={out_h}:"
-            f"interp=lanczos"
-        ),
+        "-vsync", "0",
         "-q:v", "2",
         tmp_path
     ]
     result = subprocess.run(cmd, capture_output=True)
-    if result.returncode != 0:
-        print(f"[calib] ffmpeg v360 failed: {result.stderr.decode()[-500:]}")
-        return np.full((out_h, out_w, 3), 80, dtype=np.uint8)
+    if result.returncode != 0 or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+        stderr_tail = result.stderr.decode(errors="replace")[-800:]
+        print(f"[calib] ffmpeg v360 FAILED (exit={result.returncode}):\n{stderr_tail}")
+        placeholder = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+        cv2.putText(placeholder, "ffmpeg v360 FAILED", (20, out_h//2),
+                    FONT, 0.8, (0,0,255), 2, cv2.LINE_AA)
+        cv2.putText(placeholder, "see workflow logs", (20, out_h//2+30),
+                    FONT, 0.6, (180,180,180), 1, cv2.LINE_AA)
+        return placeholder
     img = cv2.imread(tmp_path)
     os.unlink(tmp_path)
+    if img is None:
+        print(f"[calib] ffmpeg produced unreadable output at {tmp_path}")
+        return np.zeros((out_h, out_w, 3), dtype=np.uint8)
     return img
 
 
-def make_label(text, w, h=LABEL_H, bg=(30, 30, 30)):
+def make_label(text, w, h=LABEL_H, bg=(30, 30, 30), color=(255,255,255)):
     panel = np.zeros((h, w, 3), dtype=np.uint8)
     panel[:] = bg
     ts = cv2.getTextSize(text, FONT, FS, FT)[0]
     x = max(4, (w - ts[0]) // 2)
     y = h - 8
     cv2.putText(panel, text, (x+1, y+1), FONT, FS, (0,0,0), FT+1, cv2.LINE_AA)
-    cv2.putText(panel, text, (x, y),     FONT, FS, (255,255,255), FT, cv2.LINE_AA)
+    cv2.putText(panel, text, (x, y),     FONT, FS, color, FT, cv2.LINE_AA)
     return panel
 
 
-def build_perspective_grid(equirect, fallback_yaw):
-    rows = []
-    for fov in PERSP_FOVS:
-        cols = []
-        for pitch in PERSP_PITCHES:
-            crop = perspective_crop(equirect, fallback_yaw, pitch, fov, OUTPUT_W, OUTPUT_H)
-            thumb = cv2.resize(crop, (THUMB_W, THUMB_H))
-            label = make_label(f"PERSP  FOV={fov}deg  pitch={pitch:+d}deg  yaw={fallback_yaw:.0f}deg", THUMB_W)
-            cell = np.vstack([thumb, label])
-            cols.append(cell)
-        rows.append(np.hstack(cols))
-    return np.vstack(rows)
+def build_montage(video_path, equirect, frame_idx, yaws, pitches, h_fov, v_fov):
+    n_yaw   = len(yaws)
+    n_pitch = len(pitches)
+    total_w = THUMB_W * n_yaw
 
+    sections = []
 
-def build_cylindrical_panel(equirect_path, frame_idx, fallback_yaw, pitch=-5):
-    CYL_W = THUMB_W * 3
-    CYL_H = THUMB_H
-    H_FOV = 180.0
-    V_FOV = 40.0
-    crop = cylindrical_crop_via_ffmpeg(
-        equirect_path, frame_idx,
-        yaw_deg=fallback_yaw, pitch_deg=pitch,
-        h_fov_deg=H_FOV, v_fov_deg=V_FOV,
-        out_w=CYL_W, out_h=CYL_H
+    # ---- Section A: Equirect band crops ----
+    sec_label = make_label(
+        f"EQUIRECT BAND CROP  h_span={h_fov}deg  v_span={v_fov}deg  (zero distortion)",
+        total_w, h=40, bg=(10, 10, 60), color=(200, 220, 255)
     )
-    label = make_label(
-        f"CYLINDRICAL  H_FOV={H_FOV:.0f}deg  V_FOV={V_FOV:.0f}deg  pitch={pitch:+d}deg  yaw={fallback_yaw:.0f}deg  (minimal distortion)",
-        CYL_W, bg=(20, 40, 20)
+    sections.append(sec_label)
+
+    for pitch in pitches:
+        row_cells = []
+        for yaw in yaws:
+            crop = equirect_band_crop(equirect, yaw, pitch, h_fov, v_fov,
+                                       THUMB_W, THUMB_H)
+            label = make_label(
+                f"EQ  yaw={yaw:+d}  pitch={pitch:+d}",
+                THUMB_W, bg=(20, 20, 50)
+            )
+            row_cells.append(np.vstack([crop, label]))
+        sections.append(np.hstack(row_cells))
+
+    # Divider
+    sections.append(np.full((6, total_w, 3), 80, dtype=np.uint8))
+
+    # ---- Section B: Cylindrical crops ----
+    sec_label2 = make_label(
+        f"CYLINDRICAL  v360=e:c  h_fov={h_fov}deg  v_fov={v_fov}deg",
+        total_w, h=40, bg=(10, 40, 10), color=(180, 255, 180)
     )
-    return np.vstack([crop, label])
+    sections.append(sec_label2)
 
+    for pitch in pitches:
+        row_cells = []
+        for yaw in yaws:
+            print(f"[calib] Cylindrical yaw={yaw} pitch={pitch}...")
+            crop = cylindrical_crop_ffmpeg(video_path, frame_idx,
+                                            yaw, pitch, h_fov, v_fov,
+                                            THUMB_W, THUMB_H)
+            label = make_label(
+                f"CYL  yaw={yaw:+d}  pitch={pitch:+d}",
+                THUMB_W, bg=(10, 30, 10)
+            )
+            row_cells.append(np.vstack([crop, label]))
+        sections.append(np.hstack(row_cells))
 
-def build_montage(equirect, equirect_path, frame_idx, fallback_yaw):
-    header_w = THUMB_W * 3
+    # Header
     header = make_label(
-        f"FALLBACK CALIBRATION -- Frame {frame_idx}  |  Fallback yaw={fallback_yaw:.0f}deg",
-        header_w, h=50, bg=(10, 10, 60)
+        f"CYLINDRICAL FALLBACK CALIBRATION  frame={frame_idx}  h_fov={h_fov}deg  v_fov={v_fov}deg",
+        total_w, h=48, bg=(5, 5, 40), color=(255, 255, 100)
     )
-    grid = build_perspective_grid(equirect, fallback_yaw)
-    cyl  = build_cylindrical_panel(equirect_path, frame_idx, fallback_yaw)
-    divider = np.full((8, THUMB_W * 3, 3), 60, dtype=np.uint8)
-    return np.vstack([header, grid, divider, cyl])
+
+    return np.vstack([header] + sections)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input",        required=True)
-    ap.add_argument("--frame",        type=int, default=1100)
-    ap.add_argument("--fallback-yaw", type=float, default=0.0)
-    ap.add_argument("--output",       default="calibration_montage.jpg")
+    ap.add_argument("--input",    required=True)
+    ap.add_argument("--frame",    type=int, default=1100)
+    ap.add_argument("--yaws",     default="-20,0,20")
+    ap.add_argument("--pitches",  default="-5,0,5")
+    ap.add_argument("--h-fov",    type=float, default=160.0,
+                    help="Horizontal angular span in degrees")
+    ap.add_argument("--v-fov",    type=float, default=45.0,
+                    help="Vertical angular span in degrees")
+    ap.add_argument("--output",   default="cylindrical_calibration.jpg")
     args = ap.parse_args()
 
-    print(f"[calib] Extracting frame {args.frame} from {args.input}...")
+    yaws    = [int(x) for x in args.yaws.split(",")]
+    pitches = [int(x) for x in args.pitches.split(",")]
+
+    print(f"[calib] Frame={args.frame}  yaws={yaws}  pitches={pitches}")
+    print(f"[calib] h_fov={args.h_fov}  v_fov={args.v_fov}")
+
     equirect = extract_frame(args.input, args.frame)
     print(f"[calib] Equirect shape: {equirect.shape}")
-    print("[calib] Building perspective grid (9 crops)...")
-    print("[calib] Building cylindrical panoramic strip (ffmpeg v360)...")
-    montage = build_montage(equirect, args.input, args.frame, args.fallback_yaw)
+
+    montage = build_montage(args.input, equirect, args.frame,
+                             yaws, pitches, args.h_fov, args.v_fov)
+
     cv2.imwrite(args.output, montage, [cv2.IMWRITE_JPEG_QUALITY, 92])
     h, w = montage.shape[:2]
     size_kb = os.path.getsize(args.output) // 1024
