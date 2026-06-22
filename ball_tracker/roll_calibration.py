@@ -114,11 +114,11 @@ def main():
     parser.add_argument("--yaw",     type=float, default=0.0)
     parser.add_argument("--pitch",   type=float, default=5.0)
     parser.add_argument("--fov",     type=float, default=120.0)
-    parser.add_argument("--rolls",   default="-8,-4,0,4,8")
+    parser.add_argument("--rolls",   nargs='+', default=['-8','-4','0','4','8'])
     parser.add_argument("--output",  default="roll_calibration.jpg")
     args = parser.parse_args()
 
-    rolls = [float(r) for r in args.rolls.split(",")]
+    rolls = [float(r) for r in args.rolls]
     print(f"[roll_calib] Testing rolls: {rolls}")
     print(f"[roll_calib] Pose: yaw={args.yaw}° pitch={args.pitch}° fov={args.fov}°")
 
@@ -142,3 +142,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
