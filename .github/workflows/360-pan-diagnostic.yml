@@ -26,7 +26,7 @@ on:
       yaws:
         description: 'Comma-separated yaw values'
         required: false
-        default: '-90,-60,-30,0,30,60,90'
+        default: '-90 -60 -30 0 30 60 90'
 
 jobs:
   calibrate:
@@ -95,7 +95,7 @@ jobs:
             --pitch  $PITCH \
             --fov    $FOV \
             --roll   $ROLL \
-            --yaws   "$YAWS" \
+            --yaws   $YAWS \
             --output calib_output/pan_diagnostic.jpg
           ls -lh calib_output/
 
@@ -165,5 +165,7 @@ jobs:
 
           print(f"\nAll outputs: https://drive.google.com/drive/folders/{subfolder_id}")
           PY
+
+
 
 
