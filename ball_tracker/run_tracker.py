@@ -4,8 +4,6 @@ FFA 360 Ball Tracker — v9 (Pitch Plausibility Scoring)
 =============================================
 Input:  equirect_trim.mp4
 Output: tracking.json  (always)
-    parser.add_argument("--seed-blacklist-zones", default="[]",
-                        help="JSON list of {yaw,pitch,radius} calibration blacklist zones")
         tracked.mp4    (only if --metrics-only is NOT set)
 
 v7 diagnosis: hard angular cap (MAX_FRAME_DELTA_DEG) is the wrong discriminator.
@@ -1166,8 +1164,6 @@ if __name__ == "__main__":
     parser.add_argument("--metrics-only",   action="store_true",
                         help="Skip render, produce tracking.json only (~5x faster)")
     args = parser.parse_args()
-    import json as _json
-    _seed_zones = _json.loads(args.seed_blacklist_zones)
 
     run_tracker(
         equirect_path=args.input,
@@ -1176,5 +1172,5 @@ if __name__ == "__main__":
         ball_model_path=args.ball_model,
         person_model_path=args.person_model,
         metrics_only=args.metrics_only,
-        seed_blacklist_zones=_seed_zones,
+        seed_blacklist_zones=None,  # v10e: auto-loads seed_blacklist.json from cwd
     )
