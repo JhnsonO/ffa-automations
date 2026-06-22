@@ -1,29 +1,33 @@
 #!/usr/bin/env python3
 """
-FFA 360 Render Segment — v3
+FFA 360 Render Segment — v4
 ============================
 Pure render step. Reads tracking.json (pre-computed), renders a frame window
 as two outputs:
-  - render_clean.mp4  : 16:9 follow-cam, no overlays
-  - render_debug.mp4  : follow-cam + HUD overlay + equirect inset with ball marker
+  - render_clean.mp4  : follow-cam / equirect-band panoramic fallback, no overlays
+  - render_debug.mp4  : same + HUD overlay + equirect inset with ball marker
 
-v3: Replaces displacement-based StaticFallbackFSM with a tracker-state-aware
-wide playable-area fallback FSM.
+v4: WIDE_FALLBACK mode uses a fixed equirectangular band crop (numpy remap,
+no ffmpeg v360) instead of a perspective wide-FOV crop.
+    - Configurable per venue: fallback yaw, pitch, horizontal span, vertical span
+    - Default profile: yaw=0°, pitch=0°, h_span=160°, v_span=45°
+    - Output is letterboxed to OUTPUT_W × OUTPUT_H with black bars top/bottom
 
 Render modes:
-  FOLLOW        — Tracker confirmed ball this frame → EMA follow-cam
-  WIDE_FALLBACK — Tracker UNCERTAIN/LOST, or no confirmed ball for
-                  HOLD_BEFORE_FALLBACK frames → smooth lerp to configured
-                  wide pitch-facing view
+  FOLLOW        — Tracker confirmed ball this frame → EMA follow-cam (perspective)
+  WIDE_FALLBACK — Tracker UNCERTAIN/LOST → fixed equirect panoramic band
   REACQUIRE     — Tracker returns confirmed ball for REACQUIRE_MIN_FRAMES
                   consecutive frames → fast lerp back to follow-cam + EMA reset
 
-Config:
-  FALLBACK_YAW, FALLBACK_PITCH, FALLBACK_FOV  — manual wide view (v1)
-  HOLD_BEFORE_FALLBACK                         — frames to hold last pose before drifting
-  REACQUIRE_MIN_FRAMES                         — confirmed frames needed to exit fallback
-  FALLBACK_LERP_ALPHA                          — drift rate into wide view per frame
-  REACQUIRE_LERP_ALPHA                         — snap rate back to follow-cam per frame
+Config (overridable via CLI):
+  FALLBACK_YAW     — centre yaw of panoramic band (degrees)
+  FALLBACK_PITCH   — centre pitch of panoramic band (degrees)
+  FALLBACK_H_SPAN  — horizontal span of panoramic band (degrees)
+  FALLBACK_V_SPAN  — vertical span of panoramic band (degrees)
+  HOLD_BEFORE_FALLBACK   — frames to hold last pose before switching to band
+  REACQUIRE_MIN_FRAMES   — consecutive confirmed frames before exiting fallback
+  FALLBACK_LERP_ALPHA    — unused in v4 (band is fixed, no drift needed)
+  REACQUIRE_LERP_ALPHA   — snap rate back to follow-cam on reacquisition
 
 No detection, no Kalman — render-only step.
 
@@ -31,10 +35,14 @@ Usage:
   python3 render_segment.py \\
     --input equirect_trim.mp4 \\
     --tracking tracking.json \\
-    --start-frame 800 \\
-    --end-frame 1000 \\
+    --start-frame 700 \\
+    --end-frame 1300 \\
     --output-clean render_clean.mp4 \\
-    --output-debug render_debug.mp4
+    --output-debug render_debug.mp4 \\
+    --fallback-yaw 0 \\
+    --fallback-pitch 0 \\
+    --fallback-h-span 160 \\
+    --fallback-v-span 45
 """
 
 import argparse
@@ -68,15 +76,17 @@ HUD_COLOR    = (255, 255, 255)
 HUD_SHADOW   = (0, 0, 0)
 
 # ---------------------------------------------------------------------------
-# v3: Tracker-state-aware wide fallback config
+# v4: Wide fallback config — equirect band panoramic
+# Overridden by CLI args; these are the defaults for this camera profile.
 # ---------------------------------------------------------------------------
-FALLBACK_YAW             = 0.0    # wide view centre yaw (degrees) — point at pitch centre
-FALLBACK_PITCH           = -5.0   # wide view centre pitch (degrees)
-FALLBACK_FOV             = 100.0  # wide view FOV — broader than follow-cam
-HOLD_BEFORE_FALLBACK     = 30     # frames to hold last good pose before drifting to wide
-REACQUIRE_MIN_FRAMES     = 5      # consecutive confirmed frames before exiting fallback
-FALLBACK_LERP_ALPHA      = 0.03   # drift rate toward wide view per frame (slow, smooth)
-REACQUIRE_LERP_ALPHA     = 0.20   # snap rate back to follow-cam on reacquisition
+FALLBACK_YAW             = 0.0     # band centre yaw (degrees)
+FALLBACK_PITCH           = 0.0     # band centre pitch (degrees)
+FALLBACK_H_SPAN          = 160.0   # horizontal angular span (degrees)
+FALLBACK_V_SPAN          = 45.0    # vertical angular span (degrees)
+
+HOLD_BEFORE_FALLBACK     = 30      # frames to hold last good pose before entering band
+REACQUIRE_MIN_FRAMES     = 5       # consecutive confirmed frames before exiting fallback
+REACQUIRE_LERP_ALPHA     = 0.20    # snap rate back to follow-cam on reacquisition
 
 EMA_ALPHA_TRACKING       = 0.18
 EMA_ALPHA_LOSS           = 0.08
@@ -89,13 +99,11 @@ RENDER_WIDE_FALLBACK = "WIDE_FALLBACK"
 RENDER_REACQUIRE     = "REACQUIRE"
 
 STATE_COLORS = {
-    # Tracker states → bar colour
-    "TRACKING":         (0, 180, 0),
-    "UNCERTAIN":        (0, 160, 200),
-    "LOST":             (0, 0, 200),
-    "WARMING_UP":       (200, 160, 0),
-    "UNINITIALIZED":    (80, 80, 80),
-    # Render mode → bar colour
+    "TRACKING":           (0, 180, 0),
+    "UNCERTAIN":          (0, 160, 200),
+    "LOST":               (0, 0, 200),
+    "WARMING_UP":         (200, 160, 0),
+    "UNINITIALIZED":      (80, 80, 80),
     RENDER_FOLLOW:        (0, 180, 0),
     RENDER_WIDE_FALLBACK: (30, 30, 220),
     RENDER_REACQUIRE:     (0, 210, 140),
@@ -103,7 +111,7 @@ STATE_COLORS = {
 
 
 # ---------------------------------------------------------------------------
-# Geometry
+# Geometry — perspective crop (FOLLOW / REACQUIRE)
 # ---------------------------------------------------------------------------
 def extract_crop_frame(equirect_frame, yaw_deg, pitch_deg, fov_deg, out_w, out_h):
     h_eq, w_eq = equirect_frame.shape[:2]
@@ -133,6 +141,57 @@ def extract_crop_frame(equirect_frame, yaw_deg, pitch_deg, fov_deg, out_w, out_h
                      interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
 
 
+# ---------------------------------------------------------------------------
+# Geometry — equirect band crop (WIDE_FALLBACK)
+# Slices a yaw×pitch window straight from the equirectangular image.
+# No perspective distortion. Output letterboxed to out_w × out_h.
+# ---------------------------------------------------------------------------
+def extract_equirect_band(equirect_frame, centre_yaw_deg, centre_pitch_deg,
+                           h_span_deg, v_span_deg, out_w, out_h):
+    h_eq, w_eq = equirect_frame.shape[:2]
+
+    # Pixel extents of the band in the equirect
+    band_w = int(round(w_eq * h_span_deg / 360.0))
+    band_h = int(round(h_eq * v_span_deg / 180.0))
+    band_w = max(1, min(band_w, w_eq))
+    band_h = max(1, min(band_h, h_eq))
+
+    # Centre pixel in equirect
+    cx = int(((centre_yaw_deg / 360.0) + 0.5) % 1.0 * w_eq)
+    cy = int((0.5 - centre_pitch_deg / 180.0) * h_eq)
+    cy = max(band_h // 2, min(h_eq - band_h // 2, cy))
+
+    x0 = cx - band_w // 2
+    x1 = x0 + band_w
+    y0 = cy - band_h // 2
+    y1 = y0 + band_h
+
+    # Horizontal wrap
+    if x0 >= 0 and x1 <= w_eq:
+        band = equirect_frame[y0:y1, x0:x1]
+    else:
+        # Wrap around seam
+        x0_w = x0 % w_eq
+        cols_left  = w_eq - x0_w
+        cols_right = band_w - cols_left
+        left_strip  = equirect_frame[y0:y1, x0_w:]
+        right_strip = equirect_frame[y0:y1, :cols_right]
+        band = np.concatenate([left_strip, right_strip], axis=1)
+
+    # Resize band to fill output width; letterbox height
+    scale = out_w / band_w
+    render_h = int(round(band_h * scale))
+    render_h = min(render_h, out_h)
+
+    resized = cv2.resize(band, (out_w, render_h), interpolation=cv2.INTER_LINEAR)
+
+    # Letterbox onto black canvas
+    canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+    y_off  = (out_h - render_h) // 2
+    canvas[y_off:y_off + render_h, :] = resized
+    return canvas
+
+
 def yaw_pitch_to_equirect_pixel(yaw_deg, pitch_deg, w, h):
     x = int(((yaw_deg / 360.0) + 0.5) % 1.0 * w)
     y = int((0.5 - pitch_deg / 180.0) * h)
@@ -140,7 +199,6 @@ def yaw_pitch_to_equirect_pixel(yaw_deg, pitch_deg, w, h):
 
 
 def lerp_yaw(current, target, alpha):
-    """Lerp yaw taking shortest path across 360° seam."""
     diff = (target - current + 540) % 360 - 180
     return current + alpha * diff
 
@@ -159,11 +217,11 @@ def draw_text_shadowed(img, text, pos, scale, color, thick, shadow=HUD_SHADOW):
 
 
 def draw_hud(frame, frame_data, frame_idx, fps, cam_yaw, cam_pitch, cam_fov,
-             render_mode, hold_counter, reacquire_streak):
+             render_mode, hold_counter, reacquire_streak,
+             fallback_yaw, fallback_pitch, fallback_h_span, fallback_v_span):
     out = frame.copy()
     h, w = out.shape[:2]
 
-    # State bar — show render mode prominently
     tracker_state = frame_data.get("tracker_state", "?")
     loss_state    = frame_data.get("loss_state", "")
     bar_color = STATE_COLORS.get(render_mode, (80, 80, 80))
@@ -172,17 +230,20 @@ def draw_hud(frame, frame_data, frame_idx, fps, cam_yaw, cam_pitch, cam_fov,
     label = f"RENDER: {render_mode}   |   TRACKER: {tracker_state}   {loss_state}"
     draw_text_shadowed(out, label, (10, 30), HUD_SCALE * 1.05, (0, 0, 0), HUD_THICK)
 
-    # Frame / time
     t_sec = frame_idx / fps if fps else 0
     draw_text_shadowed(out, f"Frame {frame_idx}  t={t_sec:.2f}s",
                        (10, 78), HUD_SCALE, HUD_COLOR, HUD_THICK)
 
-    # Camera pose
-    draw_text_shadowed(out,
-                       f"Cam  yaw={cam_yaw:.1f}  pitch={cam_pitch:.1f}  fov={cam_fov:.0f}",
-                       (10, 106), HUD_SCALE, HUD_COLOR, HUD_THICK)
+    if render_mode == RENDER_WIDE_FALLBACK:
+        draw_text_shadowed(out,
+                           f"BAND  yaw={fallback_yaw:.0f}°  pitch={fallback_pitch:.0f}°  "
+                           f"h={fallback_h_span:.0f}°  v={fallback_v_span:.0f}°",
+                           (10, 106), HUD_SCALE, (80, 160, 255), HUD_THICK)
+    else:
+        draw_text_shadowed(out,
+                           f"Cam  yaw={cam_yaw:.1f}  pitch={cam_pitch:.1f}  fov={cam_fov:.0f}",
+                           (10, 106), HUD_SCALE, HUD_COLOR, HUD_THICK)
 
-    # Ball tracker position
     smoothed   = frame_data.get("smoothed") or {}
     ball_yaw   = smoothed.get("yaw", "?")
     ball_pitch = smoothed.get("pitch", "?")
@@ -192,7 +253,6 @@ def draw_hud(frame, frame_data, frame_idx, fps, cam_yaw, cam_pitch, cam_fov,
                        f"Ball yaw={ball_yaw}  pitch={ball_pitch}  score={score_str}",
                        (10, 134), HUD_SCALE, HUD_COLOR, HUD_THICK)
 
-    # Fallback counters
     if render_mode == RENDER_WIDE_FALLBACK:
         draw_text_shadowed(out,
                            f"hold_counter={hold_counter}  (fallback after {HOLD_BEFORE_FALLBACK}fr)",
@@ -202,10 +262,8 @@ def draw_hud(frame, frame_data, frame_idx, fps, cam_yaw, cam_pitch, cam_fov,
                            f"reacquire_streak={reacquire_streak}/{REACQUIRE_MIN_FRAMES}",
                            (10, 162), HUD_SCALE, (0, 220, 140), HUD_THICK)
 
-    # Detections
     dets = frame_data.get("detections", [])
-    draw_text_shadowed(out,
-                       f"Detections: {len(dets)}",
+    draw_text_shadowed(out, f"Detections: {len(dets)}",
                        (10, 190), HUD_SCALE, HUD_COLOR, HUD_THICK)
 
     # Crosshair — grey in fallback, cyan in follow/reacquire
@@ -242,105 +300,93 @@ def draw_equirect_inset(equirect_frame, frame_data, inset_w, inset_h):
 
 
 # ---------------------------------------------------------------------------
-# v3 Tracker-State-Aware Fallback FSM
+# v4 Tracker-State-Aware Fallback FSM
 # ---------------------------------------------------------------------------
 class WideAreaFallbackFSM:
     """
-    Driven by tracker state, not by measuring EMA displacement.
-
-    FOLLOW        : tracker confirmed ball → EMA follow-cam
+    FOLLOW        : tracker confirmed ball → EMA follow-cam (perspective)
     WIDE_FALLBACK : tracker not confirmed for HOLD_BEFORE_FALLBACK frames
-                    → slow lerp to (FALLBACK_YAW, FALLBACK_PITCH, FALLBACK_FOV)
+                    → fixed equirect band panoramic (no lerp needed — it's static)
     REACQUIRE     : tracker confirms ball for REACQUIRE_MIN_FRAMES consecutive frames
-                    → fast lerp back to follow-cam, then snap EMA
+                    → fast lerp back to follow-cam perspective, then snap EMA
     """
 
-    def __init__(self):
+    def __init__(self, fallback_yaw, fallback_pitch, fallback_h_span, fallback_v_span):
         self.mode              = RENDER_FOLLOW
         self.hold_counter      = 0
         self.reacquire_streak  = 0
-        # Pose held during fallback drift
-        self.fb_yaw            = FALLBACK_YAW
-        self.fb_pitch          = FALLBACK_PITCH
-        self.fb_fov            = OUTPUT_FOV
-        # Last confirmed EMA before entering fallback
-        self.last_follow_yaw   = None
-        self.last_follow_pitch = None
+        # Reacquire lerp pose (perspective, interpolates from band back to follow)
+        self.reacq_yaw         = fallback_yaw
+        self.reacq_pitch       = fallback_pitch
+        self.reacq_fov         = OUTPUT_FOV
+        # Fallback config (fixed per venue)
+        self.fallback_yaw      = fallback_yaw
+        self.fallback_pitch    = fallback_pitch
+        self.fallback_h_span   = fallback_h_span
+        self.fallback_v_span   = fallback_v_span
 
     def update(self, ema_yaw, ema_pitch, tracker_state, best_score):
         """
-        ema_yaw/pitch: current EMA camera position from tracker smoothed output
-        tracker_state: string from tracking.json
-        best_score:    float or None (None = no confirmed detection this frame)
-
         Returns (cam_yaw, cam_pitch, cam_fov, render_mode, hold_counter, reacquire_streak)
+        cam_yaw/pitch/fov are only used in FOLLOW and REACQUIRE (perspective).
+        In WIDE_FALLBACK the caller uses self.fallback_* directly.
         """
         confirmed = (best_score is not None)
 
         if self.mode == RENDER_FOLLOW:
-            self.last_follow_yaw   = ema_yaw
-            self.last_follow_pitch = ema_pitch
             if confirmed:
                 self.hold_counter     = 0
                 self.reacquire_streak = 0
-                # Normal follow
                 return ema_yaw, ema_pitch, OUTPUT_FOV, RENDER_FOLLOW, 0, 0
             else:
                 self.hold_counter += 1
                 if self.hold_counter >= HOLD_BEFORE_FALLBACK:
-                    # Enter fallback — initialise drift pose from current EMA
-                    self.mode    = RENDER_WIDE_FALLBACK
-                    self.fb_yaw  = ema_yaw
-                    self.fb_pitch = ema_pitch
-                    self.fb_fov  = OUTPUT_FOV
+                    self.mode             = RENDER_WIDE_FALLBACK
                     self.reacquire_streak = 0
-                # Still holding at last good pose
+                    # Prime reacquire lerp pose at fallback centre so transition
+                    # starts from the right place when ball returns
+                    self.reacq_yaw   = self.fallback_yaw
+                    self.reacq_pitch = self.fallback_pitch
+                    self.reacq_fov   = OUTPUT_FOV
                 return ema_yaw, ema_pitch, OUTPUT_FOV, RENDER_FOLLOW, self.hold_counter, 0
 
         elif self.mode == RENDER_WIDE_FALLBACK:
             if confirmed:
                 self.reacquire_streak += 1
                 if self.reacquire_streak >= REACQUIRE_MIN_FRAMES:
-                    # Enough consecutive confirmations — start reacquire
                     self.mode         = RENDER_REACQUIRE
                     self.hold_counter = 0
             else:
                 self.reacquire_streak = 0
-                # Drift toward wide fallback view
-                self.fb_yaw   = lerp_yaw(self.fb_yaw,   FALLBACK_YAW,   FALLBACK_LERP_ALPHA)
-                self.fb_pitch = lerp_pitch(self.fb_pitch, FALLBACK_PITCH, FALLBACK_LERP_ALPHA)
-                self.fb_fov   = lerp_pitch(self.fb_fov,   FALLBACK_FOV,   FALLBACK_LERP_ALPHA)
-
-            return (self.fb_yaw, self.fb_pitch, self.fb_fov,
+            # Band is fixed — cam_yaw/pitch/fov returned here are unused by caller in this mode
+            return (self.fallback_yaw, self.fallback_pitch, OUTPUT_FOV,
                     RENDER_WIDE_FALLBACK, self.hold_counter, self.reacquire_streak)
 
         elif self.mode == RENDER_REACQUIRE:
             if confirmed:
                 self.reacquire_streak += 1
-                # Fast lerp current fb pose toward live EMA
-                self.fb_yaw   = lerp_yaw(self.fb_yaw,    ema_yaw,   REACQUIRE_LERP_ALPHA)
-                self.fb_pitch = lerp_pitch(self.fb_pitch, ema_pitch, REACQUIRE_LERP_ALPHA)
-                self.fb_fov   = lerp_pitch(self.fb_fov,   OUTPUT_FOV, REACQUIRE_LERP_ALPHA)
+                # Fast lerp reacq pose toward live EMA
+                self.reacq_yaw   = lerp_yaw(self.reacq_yaw,   ema_yaw,    REACQUIRE_LERP_ALPHA)
+                self.reacq_pitch = lerp_pitch(self.reacq_pitch, ema_pitch, REACQUIRE_LERP_ALPHA)
+                self.reacq_fov   = lerp_pitch(self.reacq_fov,  OUTPUT_FOV, REACQUIRE_LERP_ALPHA)
 
-                # Once close enough, snap to FOLLOW and reset EMA
-                dist_yaw   = abs(((self.fb_yaw - ema_yaw + 540) % 360) - 180)
-                dist_pitch = abs(self.fb_pitch - ema_pitch)
+                dist_yaw   = abs(((self.reacq_yaw - ema_yaw + 540) % 360) - 180)
+                dist_pitch = abs(self.reacq_pitch - ema_pitch)
                 if dist_yaw < 3.0 and dist_pitch < 3.0:
                     self.mode             = RENDER_FOLLOW
                     self.hold_counter     = 0
                     self.reacquire_streak = 0
                     return ema_yaw, ema_pitch, OUTPUT_FOV, RENDER_FOLLOW, 0, 0
 
-                return (self.fb_yaw, self.fb_pitch, self.fb_fov,
+                return (self.reacq_yaw, self.reacq_pitch, self.reacq_fov,
                         RENDER_REACQUIRE, self.hold_counter, self.reacquire_streak)
             else:
-                # Lost ball again during reacquire — back to fallback
+                # Lost again during reacquire — back to band
                 self.mode             = RENDER_WIDE_FALLBACK
                 self.reacquire_streak = 0
-                return (self.fb_yaw, self.fb_pitch, self.fb_fov,
+                return (self.fallback_yaw, self.fallback_pitch, OUTPUT_FOV,
                         RENDER_WIDE_FALLBACK, self.hold_counter, 0)
 
-        # Fallthrough (should not reach)
         return ema_yaw, ema_pitch, OUTPUT_FOV, RENDER_FOLLOW, 0, 0
 
 
@@ -348,20 +394,20 @@ class WideAreaFallbackFSM:
 # Main render
 # ---------------------------------------------------------------------------
 def render_segment(equirect_path, tracking_path, start_frame, end_frame,
-                   output_clean, output_debug):
+                   output_clean, output_debug,
+                   fallback_yaw, fallback_pitch, fallback_h_span, fallback_v_span):
 
-    print("[render v3] Loading tracking.json...")
+    print("[render v4] Loading tracking.json...")
     with open(tracking_path) as f:
         tracking = json.load(f)
 
     fps         = float(tracking.get("fps", 29.97))
     frames_data = tracking.get("frames", [])
     total_tracked = len(frames_data)
-    print(f"[render v3] {total_tracked} frames @ {fps:.2f} fps")
-    print(f"[render v3] Rendering frames {start_frame}–{end_frame}")
-    print(f"[render v3] Fallback config: hold={HOLD_BEFORE_FALLBACK}fr "
-          f"reacquire={REACQUIRE_MIN_FRAMES}fr "
-          f"fallback=({FALLBACK_YAW},{FALLBACK_PITCH},{FALLBACK_FOV}°)")
+    print(f"[render v4] {total_tracked} frames @ {fps:.2f} fps")
+    print(f"[render v4] Rendering frames {start_frame}–{end_frame}")
+    print(f"[render v4] Fallback band: yaw={fallback_yaw}° pitch={fallback_pitch}° "
+          f"h={fallback_h_span}° v={fallback_v_span}°")
 
     end_frame = min(end_frame, total_tracked)
 
@@ -386,28 +432,26 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
     writer_clean = make_writer(output_clean)
     writer_debug = make_writer(output_debug)
 
-    # EMA state
     ema_yaw, ema_pitch = None, None
     ema_yaw_ref = 0.0
     prev_best_score = None
 
-    fsm = WideAreaFallbackFSM()
+    fsm = WideAreaFallbackFSM(fallback_yaw, fallback_pitch, fallback_h_span, fallback_v_span)
     rendered = 0
 
     for frame_idx in range(start_frame, end_frame):
         ret, equirect = cap.read()
         if not ret:
-            print(f"[render v3] Video ended at frame {frame_idx}")
+            print(f"[render v4] Video ended at frame {frame_idx}")
             break
 
-        frame_data   = frames_data[frame_idx] if frame_idx < len(frames_data) else {}
-        smoothed     = frame_data.get("smoothed") or {}
-        ball_yaw     = smoothed.get("yaw", 0.0)
-        ball_pitch   = smoothed.get("pitch", 0.0)
+        frame_data    = frames_data[frame_idx] if frame_idx < len(frames_data) else {}
+        smoothed      = frame_data.get("smoothed") or {}
+        ball_yaw      = smoothed.get("yaw", 0.0)
+        ball_pitch    = smoothed.get("pitch", 0.0)
         tracker_state = frame_data.get("tracker_state", "")
         best_score    = frame_data.get("best_score")
 
-        # EMA
         confirmed = best_score is not None
         alpha = EMA_ALPHA_TRACKING if confirmed else EMA_ALPHA_LOSS
 
@@ -415,16 +459,14 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
             ema_yaw, ema_pitch = ball_yaw, ball_pitch
             ema_yaw_ref = ball_yaw
         else:
-            # Reacquisition snap: prev was not confirmed, now is
             was_confirmed = prev_best_score is not None
             if confirmed and not was_confirmed:
-                # Snap EMA to confirmed position, skip lerp
                 ema_yaw   = ball_yaw
                 ema_pitch = ball_pitch
                 ema_yaw_ref = ball_yaw
             else:
                 dyaw = ball_yaw - ema_yaw_ref
-                if dyaw > 180:  ball_yaw -= 360
+                if dyaw > 180:   ball_yaw -= 360
                 elif dyaw < -180: ball_yaw += 360
                 ema_yaw_ref = ball_yaw
                 ema_yaw   = alpha * ball_yaw   + (1 - alpha) * ema_yaw
@@ -432,22 +474,33 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
 
         prev_best_score = best_score
 
-        # FSM
         cam_yaw, cam_pitch, cam_fov, render_mode, hold_ctr, reacq_streak = fsm.update(
             ema_yaw, ema_pitch, tracker_state, best_score
         )
 
-        # Lead offset only in FOLLOW/REACQUIRE
-        final_cam_yaw = cam_yaw + LEAD_DEG if render_mode != RENDER_WIDE_FALLBACK else cam_yaw
+        # Render frame
+        if render_mode == RENDER_WIDE_FALLBACK:
+            clean = extract_equirect_band(equirect,
+                                          fallback_yaw, fallback_pitch,
+                                          fallback_h_span, fallback_v_span,
+                                          OUTPUT_W, OUTPUT_H)
+        else:
+            final_cam_yaw = cam_yaw + LEAD_DEG
+            clean = extract_crop_frame(equirect, final_cam_yaw, cam_pitch, cam_fov,
+                                       OUTPUT_W, OUTPUT_H)
 
-        # Clean render
-        clean = extract_crop_frame(equirect, final_cam_yaw, cam_pitch, cam_fov, OUTPUT_W, OUTPUT_H)
         writer_clean.stdin.write(clean.tobytes())
 
         # Debug render
+        if render_mode == RENDER_WIDE_FALLBACK:
+            display_yaw, display_pitch, display_fov = fallback_yaw, fallback_pitch, OUTPUT_FOV
+        else:
+            display_yaw, display_pitch, display_fov = cam_yaw + LEAD_DEG, cam_pitch, cam_fov
+
         debug = draw_hud(clean, frame_data, frame_idx, fps,
-                         final_cam_yaw, cam_pitch, cam_fov,
-                         render_mode, hold_ctr, reacq_streak)
+                         display_yaw, display_pitch, display_fov,
+                         render_mode, hold_ctr, reacq_streak,
+                         fallback_yaw, fallback_pitch, fallback_h_span, fallback_v_span)
 
         if render_mode == RENDER_REACQUIRE and confirmed and (reacq_streak == REACQUIRE_MIN_FRAMES):
             draw_text_shadowed(debug, "*** REACQUIRE ***",
@@ -462,17 +515,17 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
 
         rendered += 1
         if rendered % 100 == 0:
-            print(f"[render v3] frame {frame_idx}  mode={render_mode}  "
-                  f"cam=({final_cam_yaw:.1f},{cam_pitch:.1f})  fov={cam_fov:.0f}")
+            print(f"[render v4] frame {frame_idx}  mode={render_mode}  "
+                  f"cam=({display_yaw:.1f},{display_pitch:.1f})")
 
     cap.release()
     writer_clean.stdin.close()
     writer_debug.stdin.close()
     writer_clean.wait()
     writer_debug.wait()
-    print(f"[render v3] Done. {rendered} frames rendered.")
-    print(f"[render v3] Clean : {output_clean}")
-    print(f"[render v3] Debug : {output_debug}")
+    print(f"[render v4] Done. {rendered} frames rendered.")
+    print(f"[render v4] Clean : {output_clean}")
+    print(f"[render v4] Debug : {output_debug}")
 
 
 # ---------------------------------------------------------------------------
@@ -480,12 +533,16 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input",         default="equirect_trim.mp4")
-    parser.add_argument("--tracking",      default="tracking.json")
-    parser.add_argument("--start-frame",   type=int, default=700)
-    parser.add_argument("--end-frame",     type=int, default=1300)
-    parser.add_argument("--output-clean",  default="render_clean.mp4")
-    parser.add_argument("--output-debug",  default="render_debug.mp4")
+    parser.add_argument("--input",            default="equirect_trim.mp4")
+    parser.add_argument("--tracking",         default="tracking.json")
+    parser.add_argument("--start-frame",      type=int,   default=700)
+    parser.add_argument("--end-frame",        type=int,   default=1300)
+    parser.add_argument("--output-clean",     default="render_clean.mp4")
+    parser.add_argument("--output-debug",     default="render_debug.mp4")
+    parser.add_argument("--fallback-yaw",     type=float, default=FALLBACK_YAW)
+    parser.add_argument("--fallback-pitch",   type=float, default=FALLBACK_PITCH)
+    parser.add_argument("--fallback-h-span",  type=float, default=FALLBACK_H_SPAN)
+    parser.add_argument("--fallback-v-span",  type=float, default=FALLBACK_V_SPAN)
     args = parser.parse_args()
 
     render_segment(
@@ -495,4 +552,8 @@ if __name__ == "__main__":
         end_frame=args.end_frame,
         output_clean=args.output_clean,
         output_debug=args.output_debug,
+        fallback_yaw=args.fallback_yaw,
+        fallback_pitch=args.fallback_pitch,
+        fallback_h_span=args.fallback_h_span,
+        fallback_v_span=args.fallback_v_span,
     )
