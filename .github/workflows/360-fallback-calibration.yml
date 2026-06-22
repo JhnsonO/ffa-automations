@@ -57,7 +57,7 @@ jobs:
           if 'access_token' not in tok:
               raise RuntimeError(f'Token refresh failed: {tok}')
           open('/tmp/drive_token.txt', 'w').write(tok['access_token'])
-          print(f'Token OK (expires_in={tok.get("expires_in")}s)')
+          print('Token OK')
           "
           ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
           mkdir -p calib_work
