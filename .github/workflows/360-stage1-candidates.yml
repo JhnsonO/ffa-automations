@@ -44,12 +44,57 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Download Stage 0 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ github.event.inputs.stage0_artifact_name }}
-          path: stage0_output/
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          repository: ${{ github.repository }}
+        env:
+          GH_PAT:                ${{ secrets.GH_PAT }}
+          STAGE0_ARTIFACT_NAME:  ${{ github.event.inputs.stage0_artifact_name }}
+        run: |
+          pip install -q requests
+          python3 - << 'PY'
+          import os, json, urllib.request, zipfile, io
+
+          TOKEN = os.environ["GH_PAT"]
+          NAME  = os.environ["STAGE0_ARTIFACT_NAME"]
+          REPO  = "JhnsonO/ffa-automations"
+          HEADERS = {"Authorization": f"token {TOKEN}", "Accept": "application/vnd.github+json"}
+
+          # Find the artifact by name across all runs
+          page = 1
+          artifact_id = None
+          while True:
+              url = f"https://api.github.com/repos/{REPO}/actions/artifacts?per_page=100&page={page}"
+              req = urllib.request.Request(url, headers=HEADERS)
+              with urllib.request.urlopen(req) as r:
+                  data = json.loads(r.read())
+              arts = data.get("artifacts", [])
+              if not arts:
+                  break
+              for a in arts:
+                  if a["name"] == NAME:
+                      artifact_id = a["id"]
+                      print(f"Found artifact: id={artifact_id}  name={a['name']}  size={a['size_in_bytes']}")
+                      break
+              if artifact_id:
+                  break
+              page += 1
+
+          if not artifact_id:
+              raise RuntimeError(f"Artifact '{NAME}' not found")
+
+          # Download zip
+          dl_url = f"https://api.github.com/repos/{REPO}/actions/artifacts/{artifact_id}/zip"
+          req = urllib.request.Request(dl_url, headers=HEADERS)
+          with urllib.request.urlopen(req) as r:
+              data = r.read()
+          print(f"Downloaded {len(data)//1024} KB")
+
+          # Unzip into stage0_output/
+          os.makedirs("stage0_output", exist_ok=True)
+          with zipfile.ZipFile(io.BytesIO(data)) as zf:
+              zf.extractall("stage0_output/")
+          print("Extracted to stage0_output/")
+          import subprocess
+          subprocess.run(["ls", "-lh", "stage0_output/"])
+          PY
 
       - name: Verify Stage 0 outputs present
         run: |
