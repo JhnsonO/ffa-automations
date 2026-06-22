@@ -1,0 +1,95 @@
+name: Phase 2 — Player Activity Map
+
+on:
+  workflow_dispatch:
+    inputs:
+      equirect_file_id:
+        description: "Google Drive file ID — equirectangular video"
+        required: true
+      start_frame:
+        description: "Start frame (default 0)"
+        default: "0"
+      end_frame:
+        description: "End frame (-1 = full clip)"
+        default: "-1"
+      sample_interval:
+        description: "Sample every N frames (default 15 ≈ 2/sec @ 30fps)"
+        default: "15"
+      output_drive_folder_id:
+        description: "Drive folder ID to upload activity.json"
+        required: false
+
+jobs:
+  activity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install ultralytics opencv-python-headless numpy
+
+      - name: Install ffmpeg
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Download equirect video from Drive
+        run: |
+          python scripts/drive_download.py \
+            --file-id "${{ github.event.inputs.equirect_file_id }}" \
+            --output equirect_trim.mp4
+        env:
+          GDRIVE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+
+      - name: Run player activity mapper
+        run: |
+          python ball_tracker/player_activity.py \
+            --input  equirect_trim.mp4 \
+            --output activity.json \
+            --start-frame "${{ github.event.inputs.start_frame }}" \
+            --end-frame   "${{ github.event.inputs.end_frame }}" \
+            --sample-interval "${{ github.event.inputs.sample_interval }}"
+        env:
+          YOLO_MODEL: yolov8n.pt
+
+      - name: Upload activity.json as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: activity-json
+          path: activity.json
+          retention-days: 30
+
+      - name: Upload activity.json to Drive (optional)
+        if: ${{ github.event.inputs.output_drive_folder_id != '' }}
+        run: |
+          python scripts/drive_upload.py \
+            --file    activity.json \
+            --folder  "${{ github.event.inputs.output_drive_folder_id }}" \
+            --name    "activity_${{ github.event.inputs.start_frame }}_${{ github.event.inputs.end_frame }}.json"
+        env:
+          GDRIVE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+
+      - name: Print summary
+        run: |
+          python3 - <<'EOF'
+          import json
+          with open("activity.json") as f:
+              d = json.load(f)
+          s = d["summary"]
+          print("=" * 60)
+          print("PLAYER ACTIVITY MAP — SUMMARY")
+          print("=" * 60)
+          print(f"  Sampled frames   : {s['total_sampled']}")
+          print(f"  With cluster     : {s['frames_with_cluster']}")
+          print(f"  Mean active yaw  : {s['mean_active_yaw']:.1f}°")
+          print(f"  Mean active pitch : {s['mean_active_pitch']:.1f}°")
+          print(f"  Hotspot zones    : {len(d['hotspot_zones'])}")
+          print("=" * 60)
+          EOF
