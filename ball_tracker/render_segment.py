@@ -1,38 +1,36 @@
 #!/usr/bin/env python3
 """
-FFA 360 Render Segment — v7
+FFA 360 Render Segment — v6
 ============================
-Pure render step. Reads tracking.json (pre-computed) and optional activity.json,
-renders a frame window as two outputs:
+Pure render step. Reads tracking.json (pre-computed), renders a frame window
+as two outputs:
   - render_clean.mp4  : follow-cam output, no overlays
   - render_debug.mp4  : same + HUD overlay + equirect inset with ball marker
 
 v5: Smooth zoom-out fallback — no hard cut.
-v6: EMA snap on reacquisition.
-v7: Activity-biased wide fallback.
-    When tracker is UNCERTAIN/LOST and camera is in wide mode, activity.json
-    cluster positions smoothly bias the fallback yaw/pitch toward active play.
-    - Activity target is EMA-smoothed (slow, α=ACTIVITY_EMA_ALPHA) — no snapping.
-    - Only applied when cluster confidence >= ACTIVITY_CONF_THRESHOLD.
-    - Below threshold: fixed fallback pose unchanged.
-    - FOLLOW behaviour is identical to v6 — no changes when ball is confirmed.
+    When ball confidence falls, the camera behaves like a human operator:
+      - holds the last follow direction briefly
+      - continuously widens FOV from follow FOV (90°) toward FALLBACK_FOV
+      - gradually lifts pitch toward FALLBACK_PITCH
+      - gently steers yaw toward FALLBACK_YAW (pitch centre)
+    All driven by a single t (0→1) over FALLBACK_ZOOM_FRAMES frames.
+    On reacquisition: t reverses back to 0 (zoom-in), EMA snaps, FOLLOW resumes.
+    One consistent perspective projection throughout — no projection swap.
 
-Render modes (HUD labels):
+Render modes:
   FOLLOW        — confirmed ball, EMA follow-cam, FOV=OUTPUT_FOV
-  WIDE_ACTIVITY — wide hold, activity cluster biasing yaw/pitch target
-  WIDE_FIXED    — wide hold, no confident activity cluster, fixed fallback pose
-  REACQUIRE     — ball reacquired, zooming back to follow
-  (internal: ZOOMING_OUT / ZOOMING_IN still used for animation logic)
+  ZOOMING_OUT   — ball lost, t advancing 0→1, FOV/pitch/yaw animating smoothly
+  WIDE_HOLD     — t=1, camera settled at wide overview, no ball
+  ZOOMING_IN    — ball reacquired, t reversing 1→0, camera returning to follow
+  (FOLLOW is re-entered when t reaches 0 and EMA is snapped)
 
 Config (overridable via CLI):
-  FALLBACK_YAW          — wide view target yaw (used when no activity)
-  FALLBACK_PITCH        — wide view target pitch
+  FALLBACK_YAW          — wide view target yaw
+  FALLBACK_PITCH        — wide view target pitch (lift upward, try +5 / +8)
   FALLBACK_FOV          — wide view target FOV (degrees) — 120° default
   HOLD_BEFORE_ZOOM      — frames of hold before zoom begins
   FALLBACK_ZOOM_FRAMES  — frames over which zoom-out animation completes (~1–1.5s)
   REACQUIRE_MIN_FRAMES  — consecutive confirmed frames before zoom-in begins
-  ACTIVITY_CONF_THRESHOLD — min cluster confidence to apply activity bias (0–1)
-  ACTIVITY_EMA_ALPHA    — smoothing rate for activity target (lower = slower)
 """
 
 import argparse
@@ -80,36 +78,23 @@ EMA_ALPHA_TRACKING    = 0.18
 EMA_ALPHA_LOSS        = 0.08
 
 # ---------------------------------------------------------------------------
-# v7 Activity bias config
-# ---------------------------------------------------------------------------
-ACTIVITY_CONF_THRESHOLD = 0.5   # min cluster confidence to apply activity bias
-ACTIVITY_EMA_ALPHA      = 0.04  # slow smoothing — ~25 frames to move meaningfully
-
-# ---------------------------------------------------------------------------
 # Render states
 # ---------------------------------------------------------------------------
-RENDER_FOLLOW        = "FOLLOW"
-RENDER_ZOOMING_OUT   = "ZOOMING_OUT"
-RENDER_WIDE_HOLD     = "WIDE_HOLD"
-RENDER_ZOOMING_IN    = "ZOOMING_IN"
-# HUD display labels (mapped from internal states)
-LABEL_FOLLOW         = "FOLLOW"
-LABEL_WIDE_ACTIVITY  = "WIDE_ACTIVITY"
-LABEL_WIDE_FIXED     = "WIDE_FIXED"
-LABEL_REACQUIRE      = "REACQUIRE"
+RENDER_FOLLOW      = "FOLLOW"
+RENDER_ZOOMING_OUT = "ZOOMING_OUT"
+RENDER_WIDE_HOLD   = "WIDE_HOLD"
+RENDER_ZOOMING_IN  = "ZOOMING_IN"
 
 STATE_COLORS = {
-    "TRACKING":          (0, 180, 0),
-    "UNCERTAIN":         (0, 160, 200),
-    "LOST":              (0, 0, 200),
-    "WARMING_UP":        (200, 160, 0),
-    "UNINITIALIZED":     (80, 80, 80),
-    LABEL_FOLLOW:        (0, 180, 0),
-    LABEL_WIDE_ACTIVITY: (200, 120, 0),
-    LABEL_WIDE_FIXED:    (30, 30, 180),
-    LABEL_REACQUIRE:     (0, 210, 140),
-    RENDER_ZOOMING_OUT:  (30, 120, 220),
-    RENDER_ZOOMING_IN:   (0, 210, 140),
+    "TRACKING":        (0, 180, 0),
+    "UNCERTAIN":       (0, 160, 200),
+    "LOST":            (0, 0, 200),
+    "WARMING_UP":      (200, 160, 0),
+    "UNINITIALIZED":   (80, 80, 80),
+    RENDER_FOLLOW:     (0, 180, 0),
+    RENDER_ZOOMING_OUT:(30, 120, 220),
+    RENDER_WIDE_HOLD:  (30, 30, 180),
+    RENDER_ZOOMING_IN: (0, 210, 140),
 }
 
 
@@ -119,75 +104,6 @@ STATE_COLORS = {
 def ease_inout(t):
     """Smooth cubic ease-in-out so zoom feels organic, not mechanical."""
     return t * t * (3.0 - 2.0 * t)
-
-
-# ---------------------------------------------------------------------------
-# Activity bias helper
-# ---------------------------------------------------------------------------
-class ActivityBias:
-    """
-    Loads activity.json and provides a smoothed yaw/pitch target for wide fallback.
-
-    - Builds a frame-sorted list of (frame, yaw, pitch, confidence) from
-      the per-frame cluster rows.
-    - On each update(frame_idx), finds the nearest sampled frame and reads
-      its cluster centre + confidence.
-    - If confidence >= threshold, EMA-smooths the target yaw/pitch.
-    - Returns (target_yaw, target_pitch, active:bool).
-    """
-
-    def __init__(self, activity_path, conf_threshold=ACTIVITY_CONF_THRESHOLD,
-                 ema_alpha=ACTIVITY_EMA_ALPHA):
-        self.conf_threshold = conf_threshold
-        self.ema_alpha      = ema_alpha
-        self._samples       = []   # list of (frame, yaw, pitch, conf)
-        self._ema_yaw       = None
-        self._ema_pitch     = None
-
-        if activity_path and os.path.isfile(activity_path):
-            with open(activity_path) as f:
-                data = json.load(f)
-            for row in data.get("frames", []):
-                frame  = row.get("frame")
-                centre = row.get("cluster_centre")
-                conf   = row.get("confidence", 0.0)
-                if frame is not None and centre and conf is not None:
-                    self._samples.append((frame, float(centre["yaw"]), float(centre["pitch"]), float(conf)))
-            self._samples.sort(key=lambda x: x[0])
-            print(f"[activity_bias] Loaded {len(self._samples)} samples from {activity_path}")
-        else:
-            print(f"[activity_bias] No activity.json — wide fallback will use fixed pose")
-
-    def _nearest(self, frame_idx):
-        """Return (yaw, pitch, conf) of the nearest sampled frame."""
-        if not self._samples:
-            return None, None, 0.0
-        best = min(self._samples, key=lambda x: abs(x[0] - frame_idx))
-        return best[1], best[2], best[3]
-
-    def update(self, frame_idx, fixed_yaw, fixed_pitch):
-        """
-        Returns (target_yaw, target_pitch, is_active).
-        is_active=True means a confident cluster is driving the bias.
-        Activity drives YAW only — pitch stays at fixed_pitch (avoids camera
-        pointing skyward at player foot-proxy projections which are +30–55°).
-        """
-        yaw, pitch, conf = self._nearest(frame_idx)
-        if yaw is None or conf < self.conf_threshold:
-            return fixed_yaw, fixed_pitch, False
-
-        # Initialise EMA on first confident sample
-        if self._ema_yaw is None:
-            self._ema_yaw   = yaw
-            self._ema_pitch = fixed_pitch
-        else:
-            diff = (yaw - self._ema_yaw + 540) % 360 - 180
-            self._ema_yaw = self._ema_yaw + self.ema_alpha * diff
-            # Pitch held at fixed_pitch — activity pitch values are foot-proxy
-            # equirect projections, not usable as camera pitch targets
-            self._ema_pitch = fixed_pitch
-
-        return self._ema_yaw, self._ema_pitch, True
 
 
 # ---------------------------------------------------------------------------
@@ -339,79 +255,48 @@ class SmoothZoomFallbackFSM:
     ZOOMING_OUT : ball lost (after hold) → t advances 0→1, camera animates to wide pose
     WIDE_HOLD   : t=1, camera at wide pose, waiting for ball
     ZOOMING_IN  : ball reacquired → t reverses 1→0, camera returns to follow pose
-
-    v7: wide pose target is replaced by activity bias when confidence is high enough.
     """
 
-    def __init__(self, fallback_yaw, fallback_pitch, fallback_fov, fallback_roll,
-                 activity_bias=None):
+    def __init__(self, fallback_yaw, fallback_pitch, fallback_fov, fallback_roll):
         self.mode              = RENDER_FOLLOW
         self.hold_counter      = 0
         self.reacquire_streak  = 0
-        self.zoom_t            = 0.0
-        self.zoom_start_yaw    = 0.0
+        self.zoom_t            = 0.0   # 0 = full follow, 1 = full wide
+        # Anchor poses for animation
+        self.zoom_start_yaw    = 0.0   # yaw/pitch/fov/roll at moment zoom-out began
         self.zoom_start_pitch  = 0.0
         self.zoom_start_fov    = OUTPUT_FOV
-        self.zoom_start_roll   = 0.0
-        # Fixed fallback targets (never mutated)
+        self.zoom_start_roll   = 0.0   # always 0 when leaving FOLLOW
+        # Fallback targets
         self.fallback_yaw      = fallback_yaw
         self.fallback_pitch    = fallback_pitch
         self.fallback_fov      = fallback_fov
         self.fallback_roll     = fallback_roll
-        # Live wide target (updated each frame via activity bias)
-        self._wide_yaw         = fallback_yaw
-        self._wide_pitch       = fallback_pitch
-        self._activity_bias    = activity_bias
-        self._activity_active  = False   # for HUD label
-
-    def _resolve_wide_target(self, frame_idx):
-        """Update live wide target from activity bias if available."""
-        if self._activity_bias is not None:
-            yaw, pitch, active = self._activity_bias.update(
-                frame_idx, self.fallback_yaw, self.fallback_pitch)
-            self._wide_yaw        = yaw
-            self._wide_pitch      = pitch
-            self._activity_active = active
-        else:
-            self._wide_yaw        = self.fallback_yaw
-            self._wide_pitch      = self.fallback_pitch
-            self._activity_active = False
 
     def _interp_pose(self, t):
-        """Interpolate from zoom-start pose to current wide target using eased t."""
+        """Interpolate from zoom-start pose to wide pose using eased t."""
         et = ease_inout(t)
-        yaw   = lerp_yaw(self.zoom_start_yaw,   self._wide_yaw,    et)
-        pitch = lerp_val(self.zoom_start_pitch,  self._wide_pitch,  et)
-        fov   = lerp_val(self.zoom_start_fov,    self.fallback_fov, et)
-        roll  = lerp_val(self.zoom_start_roll,   self.fallback_roll,et)
+        yaw   = lerp_yaw(self.zoom_start_yaw,   self.fallback_yaw,   et)
+        pitch = lerp_val(self.zoom_start_pitch,  self.fallback_pitch, et)
+        fov   = lerp_val(self.zoom_start_fov,    self.fallback_fov,   et)
+        roll  = lerp_val(self.zoom_start_roll,   self.fallback_roll,  et)
         return yaw, pitch, fov, roll
 
-    def _hud_label(self):
-        if self.mode == RENDER_FOLLOW:
-            return LABEL_FOLLOW
-        if self.mode == RENDER_ZOOMING_IN:
-            return LABEL_REACQUIRE
-        # ZOOMING_OUT or WIDE_HOLD
-        return LABEL_WIDE_ACTIVITY if self._activity_active else LABEL_WIDE_FIXED
-
-    def update(self, ema_yaw, ema_pitch, tracker_state, best_score, frame_idx=0):
+    def update(self, ema_yaw, ema_pitch, tracker_state, best_score):
         confirmed = (best_score is not None)
         dt_out = 1.0 / FALLBACK_ZOOM_FRAMES
-        dt_in  = 1.0 / FALLBACK_ZOOM_FRAMES
-
-        # Resolve wide target every frame (activity EMA ticks continuously)
-        self._resolve_wide_target(frame_idx)
-        hud_label = self._hud_label()
+        dt_in  = 1.0 / FALLBACK_ZOOM_FRAMES  # same speed back
 
         if self.mode == RENDER_FOLLOW:
             if confirmed:
                 self.hold_counter     = 0
                 self.reacquire_streak = 0
                 self.zoom_t           = 0.0
-                return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, hud_label, 0.0, 0, 0
+                return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, RENDER_FOLLOW, 0.0, 0, 0
             else:
                 self.hold_counter += 1
                 if self.hold_counter >= HOLD_BEFORE_ZOOM:
+                    # Begin zoom-out from current EMA position
                     self.mode             = RENDER_ZOOMING_OUT
                     self.zoom_t           = 0.0
                     self.zoom_start_yaw   = ema_yaw
@@ -419,7 +304,7 @@ class SmoothZoomFallbackFSM:
                     self.zoom_start_fov   = OUTPUT_FOV
                     self.zoom_start_roll  = 0.0
                     self.reacquire_streak = 0
-                return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, hud_label, 0.0, self.hold_counter, 0
+                return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, RENDER_FOLLOW, 0.0, self.hold_counter, 0
 
         elif self.mode == RENDER_ZOOMING_OUT:
             self.zoom_t = min(1.0, self.zoom_t + dt_out)
@@ -430,7 +315,7 @@ class SmoothZoomFallbackFSM:
                 self.reacquire_streak = 0
             if self.zoom_t >= 1.0:
                 self.mode = RENDER_WIDE_HOLD
-            return yaw, pitch, fov, roll, hud_label, self.zoom_t, self.hold_counter, self.reacquire_streak
+            return yaw, pitch, fov, roll, RENDER_ZOOMING_OUT, self.zoom_t, self.hold_counter, self.reacquire_streak
 
         elif self.mode == RENDER_WIDE_HOLD:
             yaw, pitch, fov, roll = self._interp_pose(1.0)
@@ -438,18 +323,20 @@ class SmoothZoomFallbackFSM:
                 self.reacquire_streak += 1
                 if self.reacquire_streak >= REACQUIRE_MIN_FRAMES:
                     self.mode             = RENDER_ZOOMING_IN
+                    # Anchor zoom-in FROM current wide pose
                     self.zoom_start_yaw   = yaw
                     self.zoom_start_pitch = pitch
                     self.zoom_start_fov   = fov
                     self.zoom_start_roll  = roll
             else:
                 self.reacquire_streak = 0
-            return yaw, pitch, fov, roll, hud_label, 1.0, self.hold_counter, self.reacquire_streak
+            return yaw, pitch, fov, roll, RENDER_WIDE_HOLD, 1.0, self.hold_counter, self.reacquire_streak
 
         elif self.mode == RENDER_ZOOMING_IN:
             if confirmed:
                 self.reacquire_streak += 1
                 self.zoom_t = max(0.0, self.zoom_t - dt_in)
+                # Interpolate from wide back toward live EMA (update target each frame)
                 et = ease_inout(self.zoom_t)
                 yaw   = lerp_yaw(ema_yaw,   self.zoom_start_yaw,   et)
                 pitch = lerp_val(ema_pitch,  self.zoom_start_pitch, et)
@@ -460,9 +347,10 @@ class SmoothZoomFallbackFSM:
                     self.hold_counter     = 0
                     self.reacquire_streak = 0
                     self.zoom_t           = 0.0
-                    return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, LABEL_FOLLOW, 0.0, 0, 0
-                return yaw, pitch, fov, roll, hud_label, self.zoom_t, self.hold_counter, self.reacquire_streak
+                    return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, RENDER_FOLLOW, 0.0, 0, 0
+                return yaw, pitch, fov, roll, RENDER_ZOOMING_IN, self.zoom_t, self.hold_counter, self.reacquire_streak
             else:
+                # Lost again — zoom back out from current position
                 cur_yaw, cur_pitch, cur_fov, roll = self._interp_pose(self.zoom_t)
                 self.mode             = RENDER_ZOOMING_OUT
                 self.zoom_start_yaw   = cur_yaw
@@ -470,9 +358,9 @@ class SmoothZoomFallbackFSM:
                 self.zoom_start_fov   = cur_fov
                 self.zoom_start_roll  = roll
                 self.reacquire_streak = 0
-                return cur_yaw, cur_pitch, cur_fov, roll, hud_label, self.zoom_t, self.hold_counter, 0
+                return cur_yaw, cur_pitch, cur_fov, roll, RENDER_ZOOMING_OUT, self.zoom_t, self.hold_counter, 0
 
-        return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, LABEL_FOLLOW, 0.0, 0, 0
+        return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, RENDER_FOLLOW, 0.0, 0, 0
 
 
 # ---------------------------------------------------------------------------
@@ -480,10 +368,9 @@ class SmoothZoomFallbackFSM:
 # ---------------------------------------------------------------------------
 def render_segment(equirect_path, tracking_path, start_frame, end_frame,
                    output_clean, output_debug,
-                   fallback_yaw, fallback_pitch, fallback_fov, fallback_roll,
-                   activity_path=None):
+                   fallback_yaw, fallback_pitch, fallback_fov, fallback_roll):
 
-    print("[render v7] Loading tracking.json...")
+    print("[render v6] Loading tracking.json...")
     with open(tracking_path) as f:
         tracking = json.load(f)
 
@@ -491,14 +378,12 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
     frames_data   = tracking.get("frames", [])
     total_tracked = len(frames_data)
     zoom_secs     = FALLBACK_ZOOM_FRAMES / fps
-    print(f"[render v7] {total_tracked} frames @ {fps:.2f} fps")
-    print(f"[render v7] Rendering frames {start_frame}–{end_frame}")
-    print(f"[render v7] Zoom: {FALLBACK_ZOOM_FRAMES} frames ({zoom_secs:.2f}s)  "
+    print(f"[render v6] {total_tracked} frames @ {fps:.2f} fps")
+    print(f"[render v6] Rendering frames {start_frame}–{end_frame}")
+    print(f"[render v6] Zoom: {FALLBACK_ZOOM_FRAMES} frames ({zoom_secs:.2f}s)  "
           f"hold={HOLD_BEFORE_ZOOM}fr")
-    print(f"[render v7] Wide target (fixed): yaw={fallback_yaw}° pitch={fallback_pitch}° "
+    print(f"[render v6] Wide target: yaw={fallback_yaw}° pitch={fallback_pitch}° "
           f"fov={fallback_fov}° roll={fallback_roll}°")
-
-    activity_bias = ActivityBias(activity_path) if activity_path else ActivityBias(None)
 
     end_frame = min(end_frame, total_tracked)
 
@@ -527,14 +412,13 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
     ema_yaw_ref = 0.0
     prev_best_score = None
 
-    fsm = SmoothZoomFallbackFSM(fallback_yaw, fallback_pitch, fallback_fov, fallback_roll,
-                                 activity_bias=activity_bias)
+    fsm = SmoothZoomFallbackFSM(fallback_yaw, fallback_pitch, fallback_fov, fallback_roll)
     rendered = 0
 
     for frame_idx in range(start_frame, end_frame):
         ret, equirect = cap.read()
         if not ret:
-            print(f"[render v7] Video ended at frame {frame_idx}")
+            print(f"[render v6] Video ended at frame {frame_idx}")
             break
 
         frame_data    = frames_data[frame_idx] if frame_idx < len(frames_data) else {}
@@ -567,16 +451,12 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
         prev_best_score = best_score
 
         cam_yaw, cam_pitch, cam_fov, cam_roll, render_mode, zoom_t, hold_ctr, reacq_streak = fsm.update(
-            ema_yaw, ema_pitch, tracker_state, best_score, frame_idx=frame_idx
+            ema_yaw, ema_pitch, tracker_state, best_score
         )
 
         # Lead offset only when fully in follow (fades out during zoom)
         lead = LEAD_DEG * (1.0 - zoom_t)
         final_cam_yaw = cam_yaw + lead
-
-        # Wide target for HUD display (activity bias resolved value)
-        disp_wide_yaw   = fsm._wide_yaw
-        disp_wide_pitch = fsm._wide_pitch
 
         clean = extract_crop_frame(equirect, final_cam_yaw, cam_pitch, cam_fov,
                                    OUTPUT_W, OUTPUT_H, roll_deg=cam_roll)
@@ -585,7 +465,7 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
         debug = draw_hud(clean, frame_data, frame_idx, fps,
                          final_cam_yaw, cam_pitch, cam_fov,
                          render_mode, zoom_t, hold_ctr, reacq_streak,
-                         disp_wide_yaw, disp_wide_pitch, fallback_fov)
+                         fallback_yaw, fallback_pitch, fallback_fov)
 
         inset = draw_equirect_inset(equirect, frame_data, INSET_W, INSET_H)
         iy = OUTPUT_H - INSET_H - INSET_Y_OFF
@@ -595,7 +475,7 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
 
         rendered += 1
         if rendered % 100 == 0:
-            print(f"[render v7] frame {frame_idx}  mode={render_mode}  "
+            print(f"[render v6] frame {frame_idx}  mode={render_mode}  "
                   f"cam=({final_cam_yaw:.1f},{cam_pitch:.1f})  fov={cam_fov:.1f}  t={zoom_t:.2f}")
 
     cap.release()
@@ -603,9 +483,9 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
     writer_debug.stdin.close()
     writer_clean.wait()
     writer_debug.wait()
-    print(f"[render v7] Done. {rendered} frames rendered.")
-    print(f"[render v7] Clean : {output_clean}")
-    print(f"[render v7] Debug : {output_debug}")
+    print(f"[render v6] Done. {rendered} frames rendered.")
+    print(f"[render v6] Clean : {output_clean}")
+    print(f"[render v6] Debug : {output_debug}")
 
 
 # ---------------------------------------------------------------------------
@@ -615,8 +495,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input",           default="equirect_trim.mp4")
     parser.add_argument("--tracking",        default="tracking.json")
-    parser.add_argument("--activity",        default=None,
-                        help="Path to activity.json for wide fallback bias (optional)")
     parser.add_argument("--start-frame",     type=int,   default=700)
     parser.add_argument("--end-frame",       type=int,   default=1300)
     parser.add_argument("--output-clean",    default="render_clean.mp4")
@@ -638,7 +516,5 @@ if __name__ == "__main__":
         fallback_pitch=args.fallback_pitch,
         fallback_fov=args.fallback_fov,
         fallback_roll=args.fallback_roll,
-        activity_path=args.activity,
     )
-
 
