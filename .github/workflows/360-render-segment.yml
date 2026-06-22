@@ -20,21 +20,17 @@ on:
         required: true
         default: '1000'
       fallback_yaw:
-        description: 'Fallback band centre yaw (degrees)'
+        description: 'Wide view target yaw (degrees)'
         required: false
         default: '0'
       fallback_pitch:
-        description: 'Fallback band centre pitch (degrees)'
+        description: 'Wide view target pitch — lift for far-side coverage (try 5 or 8)'
         required: false
-        default: '0'
-      fallback_h_span:
-        description: 'Fallback band horizontal span (degrees)'
+        default: '5'
+      fallback_fov:
+        description: 'Wide view target FOV (degrees, 120 recommended)'
         required: false
-        default: '160'
-      fallback_v_span:
-        description: 'Fallback band vertical span (degrees)'
-        required: false
-        default: '45'
+        default: '120'
 
 jobs:
   render:
@@ -130,22 +126,20 @@ jobs:
           END_FRAME: ${{ github.event.inputs.end_frame }}
           FALLBACK_YAW: ${{ github.event.inputs.fallback_yaw }}
           FALLBACK_PITCH: ${{ github.event.inputs.fallback_pitch }}
-          FALLBACK_H_SPAN: ${{ github.event.inputs.fallback_h_span }}
-          FALLBACK_V_SPAN: ${{ github.event.inputs.fallback_v_span }}
+          FALLBACK_FOV: ${{ github.event.inputs.fallback_fov }}
         run: |
           echo "--- Rendering frames $START_FRAME to $END_FRAME ---"
           mkdir -p render_output
           python3 ball_tracker/render_segment.py \
-            --input           render_work/equirect_trim.mp4 \
-            --tracking        render_work/tracking.json \
-            --start-frame     $START_FRAME \
-            --end-frame       $END_FRAME \
-            --output-clean    render_output/render_clean.mp4 \
-            --output-debug    render_output/render_debug.mp4 \
-            --fallback-yaw    $FALLBACK_YAW \
-            --fallback-pitch  $FALLBACK_PITCH \
-            --fallback-h-span $FALLBACK_H_SPAN \
-            --fallback-v-span $FALLBACK_V_SPAN
+            --input          render_work/equirect_trim.mp4 \
+            --tracking       render_work/tracking.json \
+            --start-frame    $START_FRAME \
+            --end-frame      $END_FRAME \
+            --output-clean   render_output/render_clean.mp4 \
+            --output-debug   render_output/render_debug.mp4 \
+            --fallback-yaw   $FALLBACK_YAW \
+            --fallback-pitch $FALLBACK_PITCH \
+            --fallback-fov   $FALLBACK_FOV
           ls -lh render_output/
 
       - name: Upload render outputs as artifact
@@ -218,4 +212,5 @@ jobs:
 
           print(f"\nAll outputs at: https://drive.google.com/drive/folders/{subfolder_id}")
           PY
+
 
