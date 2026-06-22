@@ -1,0 +1,100 @@
+name: 360 Signal Comparison Diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      tracking_file_id:
+        description: 'Google Drive file ID for tracking.json'
+        required: true
+        default: '1imgH6LNwmism6dwlNNc_UfJ_bFlApKa1'
+      activity_json_path:
+        description: 'Repo path to activity JSON (e.g. ball_tracker/activity_700_1300.json)'
+        required: true
+        default: 'ball_tracker/activity_700_1300.json'
+      start_frame:
+        description: 'Start frame'
+        required: true
+        default: '700'
+      end_frame:
+        description: 'End frame'
+        required: true
+        default: '1300'
+
+jobs:
+  signal-diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Install dependencies
+        run: |
+          pip install --break-system-packages matplotlib numpy 2>/dev/null || \
+          pip3 install matplotlib numpy
+
+      - name: Download tracking.json from Drive
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          TRACKING_FILE_ID: ${{ github.event.inputs.tracking_file_id }}
+        run: |
+          pip install -q google-auth google-auth-oauthlib google-api-python-client
+          echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -c "
+          import json, urllib.request as _req
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          client_id     = token_data.get('client_id') or creds_data['installed']['client_id']
+          client_secret = token_data.get('client_secret') or creds_data['installed']['client_secret']
+          refresh_token = token_data['refresh_token']
+          token_uri     = token_data.get('token_uri', 'https://oauth2.googleapis.com/token')
+          payload = json.dumps({'client_id': client_id, 'client_secret': client_secret,
+                                'refresh_token': refresh_token, 'grant_type': 'refresh_token'}).encode()
+          r = _req.urlopen(_req.Request(token_uri, data=payload,
+                           headers={'Content-Type': 'application/json'}, method='POST'))
+          tok = json.loads(r.read())
+          if 'access_token' not in tok:
+              raise RuntimeError(f'Token refresh failed: {tok}')
+          open('/tmp/drive_token.txt', 'w').write(tok['access_token'])
+          print(f'Token OK (expires_in={tok.get(\"expires_in\")}s)')
+          "
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          mkdir -p diag_work
+          aria2c -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=diag_work --out=tracking.json \
+            "https://www.googleapis.com/drive/v3/files/$TRACKING_FILE_ID?alt=media"
+          du -sh diag_work/tracking.json
+
+      - name: Copy activity.json from repo
+        run: |
+          SRC="${{ github.event.inputs.activity_json_path }}"
+          if [ -f "$SRC" ]; then
+            cp "$SRC" diag_work/activity.json
+            echo "Copied $SRC"
+          else
+            echo "ERROR: $SRC not found in repo"
+            exit 1
+          fi
+
+      - name: Run signal comparison diagnostic
+        run: |
+          mkdir -p diag_output
+          python3 ball_tracker/signal_comparison_diag.py \
+            --tracking diag_work/tracking.json \
+            --activity diag_work/activity.json \
+            --start    ${{ github.event.inputs.start_frame }} \
+            --end      ${{ github.event.inputs.end_frame }} \
+            --output   diag_output/signal_comparison.png
+
+      - name: Upload diagnostic output as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: signal-diag-${{ github.run_id }}
+          path: diag_output/
+          retention-days: 14
