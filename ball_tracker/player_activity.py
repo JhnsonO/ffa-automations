@@ -92,7 +92,7 @@ YOLO_IMGSZ      = 1280
 
 # Pitch filter — exclude crowd in stands and ground clutter
 PITCH_MIN_DEG = -25.0
-PITCH_MAX_DEG =  20.0
+PITCH_MAX_DEG = 55.0
 
 # Deduplication across crop-overlap zones (~20° per seam at 110° FOV / 90° spacing)
 DEDUP_RADIUS_DEG = 8.0
