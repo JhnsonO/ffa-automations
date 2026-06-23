@@ -4,6 +4,29 @@
 
 Read `docs/ai-project-state.md`. It is the source of truth for current stage, frozen files, known evidence, gates, and next action.
 
+## Operating model
+
+Unless the user explicitly overrides this arrangement:
+
+- **ChatGPT is the technical lead and reviewer.** ChatGPT owns architecture, sequencing, acceptance gates, diagnosis of outputs, and updates to decision-level project state.
+- **Claude is the scoped implementation worker.** Claude implements only the active bounded task from the user and/or `docs/ai-project-state.md`.
+- **The user owns product trade-offs and final approval.** Do not treat a successful workflow as product acceptance.
+
+Claude must not independently redesign the architecture, start adjacent work, tune thresholds, change frozen modules, or choose the next roadmap item. If implementation produces a decision rather than a direct coding action, stop and report it for review.
+
+## New-chat bootstrap
+
+A fresh Claude chat does not require a large handover. The user will normally provide a short task prompt.
+
+Before acting:
+
+1. Read `CLAUDE.md`.
+2. Read `docs/ai-project-state.md`.
+3. Read only the files explicitly needed for the active task.
+4. State the current gate and exact files to change in no more than three lines, then proceed.
+
+Do not request previous chat history, create a long handover, or inspect broad logs unless the active task cannot be completed without them.
+
 ## Bound the work
 
 - Read only files needed for the requested task; use targeted search and line ranges.
@@ -11,6 +34,7 @@ Read `docs/ai-project-state.md`. It is the source of truth for current stage, fr
 - Do not redesign adjacent systems, refactor frozen production code, or add optional work without a decision-changing reason.
 - Keep diagnostics, experiments, and rendering isolated.
 - No credentials, API keys, or private tokens in code, commits, artifacts, or responses.
+- One Claude chat should normally complete one bounded build ticket. Stop after the requested artifact, failed run, or decision-changing result.
 
 ## Communication
 
