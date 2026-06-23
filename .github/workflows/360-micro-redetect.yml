@@ -1,0 +1,74 @@
+name: 360 Micro Re-detect Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - run/micro-redetect
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install numpy pillow requests opencv-python-headless \
+                      "ultralytics>=8.0" gdown
+
+      - name: Install ffmpeg
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Download YOLO ball model
+        run: |
+          gdown -O football-ball-detection.pt \
+            'https://drive.google.com/uc?id=1isw4wx-MK9h9LMr36VvIWlJD6ppUvw7V'
+          ls -lh football-ball-detection.pt
+
+      - name: Download clip from Drive
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: python3 ball_tracker/download_clip.py
+
+      - name: Download Stage 2 outputs from Drive
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: python3 ball_tracker/download_stage2_outputs.py
+
+      - name: Probe clip metadata
+        run: |
+          ffprobe -v quiet -show_streams clip.mp4 2>/dev/null \
+            | grep -E "width|height|r_frame_rate|nb_frames" | head -6
+
+      - name: Run micro re-detect probe
+        run: |
+          python3 ball_tracker/micro_redetect.py \
+            clip.mp4 tracklets.json football-ball-detection.pt micro_redetect_panel.png
+
+      - name: Upload panel to Drive
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: |
+          python3 ball_tracker/upload_to_drive.py \
+            micro_redetect_panel.png \
+            "micro_redetect_panel.png" \
+            "1gHW29JbvUWnbvJTCC0J8O7r-O1IPZAd8"
+
+      - name: Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: micro-redetect-panel
+          path: micro_redetect_panel.png
+          retention-days: 7
