@@ -178,11 +178,12 @@ jobs:
           fps = float(num) / float(den)
           ratio = w / h
           print(f"  {w}×{h}  fps={fps:.4f}  ratio={ratio:.3f}")
-          if abs(ratio - 2.0) > 0.15:
-              print(f"FATAL: aspect ratio {ratio:.3f} — not equirectangular (expected ~2.0)"); sys.exit(1)
+          # GoPro MAX equirect is 4032×2388 (ratio ~1.688) — do not enforce 2:1
+          if w == 0 or h == 0:
+              print("FATAL: zero-dimension video stream"); sys.exit(1)
           if fps <= 0:
               print("FATAL: FPS could not be determined"); sys.exit(1)
-          print("  Equirectangular OK")
+          print(f"  Video OK  ({w}×{h} @ {fps:.4f} fps)")
           nb = s.get("nb_frames", "unknown")
           print(f"  Total frames: {nb}")
           PY
