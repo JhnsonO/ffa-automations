@@ -1,0 +1,108 @@
+name: 360 Track B - Quarantined Candidate Audit
+
+on:
+  push:
+    branches:
+      - "run/track-b-quarantined-*"
+
+jobs:
+  track-b-quarantined:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      EQUIRECT_FILE_ID: 1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX
+      STAGE1_CANDIDATES_FILE_ID: 19feQa2zx3YcqU4LIP6MNOG_q8vyi8TmJ
+      HOTSPOT_MAP_FILE_ID: 1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run quarantine fixture tests
+        run: python3 ball_tracker/tests/test_stage1b_quarantine.py
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0 aria2
+          pip install --quiet 'numpy<2' pillow opencv-python-headless
+
+      - name: Get temporary Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          token_data = json.loads(os.environ['YOUTUBE_TOKEN'])
+          creds_data = json.loads(os.environ['YOUTUBE_CREDENTIALS'])
+          client_id = token_data.get('client_id') or creds_data['installed']['client_id']
+          client_secret = token_data.get('client_secret') or creds_data['installed']['client_secret']
+          refresh_token = token_data['refresh_token']
+          token_uri = token_data.get('token_uri', 'https://oauth2.googleapis.com/token')
+          payload = json.dumps({
+              'client_id': client_id,
+              'client_secret': client_secret,
+              'refresh_token': refresh_token,
+              'grant_type': 'refresh_token',
+          }).encode()
+          req = urllib.request.Request(
+              token_uri, data=payload,
+              headers={'Content-Type': 'application/json'}, method='POST')
+          response = json.loads(urllib.request.urlopen(req).read())
+          if 'access_token' not in response:
+              raise RuntimeError('Drive token refresh failed')
+          open('/tmp/drive_token.txt', 'w').write(response['access_token'])
+          print('Drive access token acquired')
+          PY
+
+      - name: Download source inputs
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          mkdir -p /tmp/ffa_trackb/input /tmp/ffa_trackb/out
+          aria2c -q -x 8 -s 8 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/ffa_trackb/input --out=equirect_trim.mp4 \
+            "https://www.googleapis.com/drive/v3/files/$EQUIRECT_FILE_ID?alt=media"
+          aria2c -q -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/ffa_trackb/input --out=stage1_candidates.json \
+            "https://www.googleapis.com/drive/v3/files/$STAGE1_CANDIDATES_FILE_ID?alt=media"
+          aria2c -q -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/ffa_trackb/input --out=hotspot_map.json \
+            "https://www.googleapis.com/drive/v3/files/$HOTSPOT_MAP_FILE_ID?alt=media"
+          ls -lh /tmp/ffa_trackb/input/
+
+      - name: Build reversible quarantined candidate view
+        run: |
+          python3 ball_tracker/stage1b_static_quarantine.py \
+            --stage1-candidates /tmp/ffa_trackb/input/stage1_candidates.json \
+            --hotspot-map /tmp/ffa_trackb/input/hotspot_map.json \
+            --output-dir /tmp/ffa_trackb/quarantine \
+            --stage1-file-id "$STAGE1_CANDIDATES_FILE_ID" \
+            --hotspot-map-file-id "$HOTSPOT_MAP_FILE_ID"
+
+      - name: Generate Track B review packs
+        run: |
+          GITHUB_SHA=${{ github.sha }} \
+          EQUIRECT_FILE_ID=$EQUIRECT_FILE_ID \
+          STAGE1_FILE_ID=$STAGE1_CANDIDATES_FILE_ID \
+          HOTSPOT_FILE_ID=$HOTSPOT_MAP_FILE_ID \
+          python3 ball_tracker/track_b_pack_gen.py \
+            --equirect /tmp/ffa_trackb/input/equirect_trim.mp4 \
+            --stage1-candidates /tmp/ffa_trackb/quarantine/stage1_candidates_quarantined.json \
+            --output-dir /tmp/ffa_trackb/out \
+            --equirect-file-id "$EQUIRECT_FILE_ID" \
+            --stage1-id "$STAGE1_CANDIDATES_FILE_ID" \
+            --hotspot-id "$HOTSPOT_MAP_FILE_ID"
+          cp /tmp/ffa_trackb/quarantine/stage1b_quarantine_report.json /tmp/ffa_trackb/out/
+          cp /tmp/ffa_trackb/quarantine/stage1b_quarantine_report.txt /tmp/ffa_trackb/out/
+          ls -lh /tmp/ffa_trackb/out/
+
+      - name: Upload review artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: track-b-quarantined-${{ github.run_id }}
+          path: /tmp/ffa_trackb/out/
+          retention-days: 30
