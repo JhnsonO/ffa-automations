@@ -20,26 +20,76 @@ jobs:
           sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0 aria2
           pip install --quiet 'numpy<2' pillow opencv-python-headless requests
 
+      - name: Preflight - verify GH_PAT can read Actions artifacts
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, sys, json
+
+          token = os.environ.get("GH_PAT", "")
+          if not token:
+              print("FATAL: GH_PAT secret is empty or not set")
+              print("FIX: add a classic PAT with repo scope (or fine-grained PAT with Actions read) as GH_PAT in repo secrets")
+              sys.exit(1)
+
+          # Check /user to confirm token is valid at all
+          try:
+              req = urllib.request.Request(
+                  "https://api.github.com/user",
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+              )
+              with urllib.request.urlopen(req) as r:
+                  status = r.status
+                  user_data = json.loads(r.read())
+              print(f"Token auth OK: HTTP {status}, login={user_data.get('login', 'unknown')}")
+          except urllib.error.HTTPError as e:
+              print(f"FATAL: GH_PAT failed /user check: HTTP {e.code}")
+              print("GH_PAT missing, invalid, expired, or lacks Actions read access")
+              sys.exit(1)
+
+          # Check artifact metadata (does not download; confirms Actions read access)
+          try:
+              req2 = urllib.request.Request(
+                  "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7830052466",
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+              )
+              with urllib.request.urlopen(req2) as r2:
+                  status2 = r2.status
+                  art = json.loads(r2.read())
+              print(f"Artifact metadata OK: HTTP {status2}, name={art.get('name')}, expired={art.get('expired')}, size={art.get('size_in_bytes',0)//1024}KB")
+          except urllib.error.HTTPError as e:
+              print(f"FATAL: GH_PAT cannot read artifact 7830052466: HTTP {e.code}")
+              print("GH_PAT missing, invalid, expired, or lacks Actions read access")
+              sys.exit(1)
+
+          print("Preflight PASSED: token valid and artifact accessible")
+          PY
+
       - name: Download Stage 1c artifact from run 28046275937
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           mkdir -p /tmp/stage1c_input
           python3 - << 'PY'
-          import os, urllib.request, zipfile, io
+          import os, urllib.request, urllib.error, zipfile, io, sys
 
           token = os.environ["GH_PAT"]
-          req = urllib.request.Request(
-              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7830052466/zip",
-              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
-          )
-          opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
-          with opener.open(req) as r:
-              data = r.read()
+          try:
+              req = urllib.request.Request(
+                  "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7830052466/zip",
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+              )
+              opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
+              with opener.open(req) as r:
+                  data = r.read()
+          except urllib.error.HTTPError as e:
+              print(f"FATAL: artifact download failed: HTTP {e.code}")
+              print("GH_PAT missing, invalid, expired, or lacks Actions read access")
+              sys.exit(1)
           with zipfile.ZipFile(io.BytesIO(data)) as z:
               z.extractall("/tmp/stage1c_input")
-          import os as _os
-          files = _os.listdir("/tmp/stage1c_input")
+          files = os.listdir("/tmp/stage1c_input")
           print(f"Extracted: {files}")
           PY
           ls -lh /tmp/stage1c_input/
