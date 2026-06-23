@@ -1,0 +1,117 @@
+name: Stage 2 Visual Contact Sheet
+
+on:
+  workflow_dispatch:
+
+jobs:
+  contact-sheet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install numpy pillow requests
+
+      - name: Install ffmpeg
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Download clip from Drive
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, requests, os
+
+          creds = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
+          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
+
+          # Refresh access token
+          resp = requests.post("https://oauth2.googleapis.com/token", data={
+              "client_id": creds["installed"]["client_id"],
+              "client_secret": creds["installed"]["client_secret"],
+              "refresh_token": token_data["refresh_token"],
+              "grant_type": "refresh_token",
+          })
+          resp.raise_for_status()
+          access_token = resp.json()["access_token"]
+
+          # Download clip
+          file_id = "1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX"
+          url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+          headers = {"Authorization": f"Bearer {access_token}"}
+
+          print("Downloading clip...")
+          with requests.get(url, headers=headers, stream=True) as r:
+              r.raise_for_status()
+              total = 0
+              with open("clip.mp4", "wb") as f:
+                  for chunk in r.iter_content(chunk_size=8*1024*1024):
+                      f.write(chunk)
+                      total += len(chunk)
+                      print(f"  {total/1e6:.1f} MB", flush=True)
+          print(f"Downloaded {total/1e6:.1f} MB")
+          PYEOF
+
+      - name: Probe clip
+        run: ffprobe -v quiet -print_format json -show_streams clip.mp4 | python3 -c "import json,sys; d=json.load(sys.stdin); v=[s for s in d['streams'] if s['codec_type']=='video'][0]; print(f\"Resolution: {v['width']}x{v['height']}, FPS: {v['r_frame_rate']}, frames: {v.get('nb_frames','?')}\")"
+
+      - name: Copy contact sheet script
+        run: cp ball_tracker/make_contact_sheet.py . 2>/dev/null || true
+
+      - name: Generate contact sheet
+        run: python3 make_contact_sheet.py clip.mp4 stage2_contact_sheet.png
+
+      - name: Upload contact sheet to Drive
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, requests, os
+
+          creds = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
+          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
+
+          resp = requests.post("https://oauth2.googleapis.com/token", data={
+              "client_id": creds["installed"]["client_id"],
+              "client_secret": creds["installed"]["client_secret"],
+              "refresh_token": token_data["refresh_token"],
+              "grant_type": "refresh_token",
+          })
+          resp.raise_for_status()
+          access_token = resp.json()["access_token"]
+          headers = {"Authorization": f"Bearer {access_token}"}
+
+          FOLDER_ID = "1gHW29JbvUWnbvJTCC0J8O7r-O1IPZAd8"
+          meta = {"name": "stage2_contact_sheet.png", "parents": [FOLDER_ID]}
+          with open("stage2_contact_sheet.png", "rb") as f:
+              data = f.read()
+
+          resp = requests.post(
+              "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+              headers=headers,
+              files={
+                  "metadata": ("meta.json", json.dumps(meta), "application/json"),
+                  "file": ("stage2_contact_sheet.png", data, "image/png"),
+              }
+          )
+          resp.raise_for_status()
+          file_info = resp.json()
+          print(f"Uploaded: {file_info['name']} (id={file_info['id']})")
+          PYEOF
+
+      - name: Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage2-contact-sheet
+          path: stage2_contact_sheet.png
+          retention-days: 7
