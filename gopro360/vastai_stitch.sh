@@ -252,7 +252,7 @@ stdbuf -oL -eL ffmpeg -y -v info \
   "${OUTPUT_EQUIRECT}" > "${STDOUT}" 2>&1 &
 FFMPEG_PID=$!
 
-MIN_SPEED=1.7          # below this → reject instance and redispatch
+MIN_SPEED=1.6          # below this → reject instance and redispatch
 SPEED_CHECK_TICK=9    # check at tick 9 = 45s in (speed stable by then)
 SPEED_CHECKED=0
 
@@ -605,4 +605,5 @@ touch "${WORKDIR}/DONE"
 echo "${YT_URL_LINE}" > "${WORKDIR}/RESULT_URL" || true
 log "Done. Instance will now terminate."
 # Keep WORKDIR intact — instance is terminating anyway, no need to clean up
+
 
