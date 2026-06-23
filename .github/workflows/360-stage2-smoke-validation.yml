@@ -1,0 +1,155 @@
+name: 360 Stage 2 — Smoke Validation (Stage 1d input)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  stage2-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet numpy pytest pillow
+
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - << 'PY'
+          import json, urllib.request, os
+          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
+          creds_data = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
+          r = urllib.request.urlopen(urllib.request.Request(token_uri, data=payload,
+              headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
+          open("/tmp/drive_access_token.txt", "w").write(tok["access_token"])
+          print(f"Drive token OK (expires_in={tok.get('expires_in')}s)")
+          PY
+
+      - name: Download Stage 1d artifact (7834602065) — redirect-safe
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/stage1d
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, sys
+          token  = os.environ["GH_PAT"]
+          art_id = "7834602065"   # track-b-stage1d-geo-filtered-28059894072
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+
+          opener = urllib.request.build_opener(NoRedirect())
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{art_id}/zip",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          try:
+              opener.open(req)
+              blob_url = None
+          except urllib.error.HTTPError as redir:
+              blob_url = redir.headers.get("Location")
+          if not blob_url:
+              print("FATAL: no redirect URL from GH artifact endpoint"); sys.exit(1)
+
+          print(f"Downloading artifact {art_id}...")
+          with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+              data = r.read()
+          print(f"  Downloaded {len(data)/1e6:.1f} MB")
+
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/stage1d")
+          print("  Extracted:", os.listdir("/tmp/stage1d"))
+
+          target = "/tmp/stage1d/stage1_candidates_geo_filtered.json"
+          if not os.path.exists(target):
+              print(f"FATAL: {target} not in artifact"); sys.exit(1)
+          size = os.path.getsize(target)
+          print(f"  stage1_candidates_geo_filtered.json  {size/1e6:.1f} MB  OK")
+          PY
+
+      - name: Download hotspot map from Drive
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          curl -fsSL \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://www.googleapis.com/drive/v3/files/1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M?alt=media" \
+            -o /tmp/stage1d/hotspot_map.json
+          echo "hotspot_map.json: $(wc -c < /tmp/stage1d/hotspot_map.json) bytes"
+
+      - name: Run Stage 2 fixture tests
+        run: python3 -m pytest ball_tracker/tests/test_stage2_fixture.py -v
+
+      - name: Run Stage 2 temporal linking (unchanged thresholds)
+        run: |
+          mkdir -p /tmp/stage2_out
+          python3 ball_tracker/stage2_temporal_link.py \
+            --stage1-candidates /tmp/stage1d/stage1_candidates_geo_filtered.json \
+            --hotspot-map       /tmp/stage1d/hotspot_map.json \
+            --output-dir        /tmp/stage2_out \
+            2>&1 | tee /tmp/stage2_out/stage2_console.txt
+          echo "--- tracklets.json ---"
+          python3 - << 'PY'
+          import json
+          from collections import Counter
+          with open("/tmp/stage2_out/tracklets.json") as f:
+              t = json.load(f)["tracklets"]
+          counts = Counter(x["status"] for x in t)
+          print(f"Total: {len(t)}  " + "  ".join(f"{k}={v}" for k,v in sorted(counts.items())))
+          anchors = sorted([x for x in t if x["status"]=="anchor"],
+                           key=lambda x: -(x.get("anchor_strength_candidate") or 0))
+          print("\nTop 10 anchors by strength:")
+          for a in anchors[:10]:
+              astr = a.get("anchor_strength_candidate")
+              print(f"  {a['id']}  disp={a['net_displacement_deg']:.2f}°  "
+                    f"str={f'{astr:.3f}' if astr else '—'}  obs={a['observation_count']}  "
+                    f"sh={a['confirmed_static_hotspot_frac']:.2f}")
+          with open("/tmp/stage2_out/gaps.json") as f:
+              gaps = json.load(f)["gaps"]
+          print(f"\nGaps: {len(gaps)}")
+          from collections import Counter as C
+          rc = C(g["gap_reason"] for g in gaps)
+          for r,n in rc.most_common():
+              print(f"  {r}: {n}")
+          PY
+
+      - name: Generate review pack
+        run: |
+          mkdir -p /tmp/stage2_review
+          python3 ball_tracker/stage2_review_pack.py \
+            --tracklets /tmp/stage2_out/tracklets.json \
+            --output-dir /tmp/stage2_review
+
+      - name: Collect outputs
+        run: |
+          mkdir -p final_output
+          cp /tmp/stage2_out/tracklets.json        final_output/
+          cp /tmp/stage2_out/gaps.json             final_output/
+          cp /tmp/stage2_out/stage2_console.txt    final_output/
+          cp /tmp/stage2_review/stage2_review_pack.png    final_output/
+          cp /tmp/stage2_review/stage2_review_summary.txt final_output/
+          echo "=== final_output ==="
+          ls -lh final_output/
+
+      - name: Mark smoke validation ready
+        run: echo "STAGE 2 SMOKE VALIDATION COMPLETE — AWAITING HUMAN REVIEW"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage2-smoke-validation-${{ github.run_id }}
+          path: final_output/
+          retention-days: 30
