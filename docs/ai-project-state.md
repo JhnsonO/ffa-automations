@@ -144,7 +144,7 @@ This run is CPU-only, uses no YOLO, does not touch Stage 2 or renderer logic, an
 
 ## Stage 1c — detection geometry preservation
 
-**Status: COMPLETED — VERIFIED (local)**
+**Status: DISPATCHED — UNVERIFIED**
 
 Implemented:
 - `ball_tracker/stage1_candidate_gen.py` — `detection_geometry` sub-object added to every candidate.
@@ -154,7 +154,9 @@ Implemented:
 - `ball_tracker/track_b_pack_gen.py` — `detection_geometry` passed through to manifest `candidate_samples.frames` records when present.
 - `ball_tracker/tests/test_stage1c_geometry.py` — 4 fixture tests; all pass locally.
 
-No candidate removed or reweighted. No filtering logic added. No workflow dispatched (not needed for this change). Schema backward-compatible.
+No candidate removed or reweighted. No filtering logic added. Schema backward-compatible.
+
+**Dispatch:** Actions run `28041924767` on `main` @ `fc988f05`. Workflow: `360-stage1-candidates.yml`. Inputs: same Drive IDs as previous successful run (equirect `1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX`, hotspot `1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M`, stage0 `1d_4K5dWFaABjTH_CFL8kYwn1zxJpFRrF`). Artifact name: `stage1-candidates-28041924767`. Status: DISPATCHED — UNVERIFIED. Awaiting quarantine + Track B.
 
 ## Next gate
 
@@ -179,4 +181,6 @@ Do not tune Stage 2, smoke render, or modify the renderer before this review.
 - **2026-06-23:** Built and reviewed original Track B; confirmed static-background contamination.
 - **2026-06-23:** Built and verified reversible Stage 1b confirmed-static quarantine; quarantined Track B branch run dispatched.
 - **2026-06-23:** Stage 1c — detection geometry preservation implemented and tested. `detection_geometry` sub-object in every Stage 1 candidate; null for Stage 0 reuse; carried through Track B manifest.
+- **2026-06-23:** Stage 1c full run dispatched on `main` @ `fc988f05` (Actions run `28041924767`). STAGE 1C OUTPUT READY — AWAITING QUARANTINE + TRACK B once artifact verified.
+
 
