@@ -175,6 +175,12 @@ Smoke test path (active):
 
 **Next action: dispatch `360-stage1-candidates.yml` with `smoke_test: true` and the standard Drive IDs. Do not dispatch full run until smoke artifact is reviewed.**
 
+**Smoke test dispatched: Actions run `28045327124` — DISPATCHED — UNVERIFIED**
+- Branch: `main` @ `b21675b`
+- Inputs: `smoke_test=true`, `max_frames` override=50, standard Drive IDs.
+- Artifact name: `stage1-smoke-28045327124` (expected).
+- Acceptance checks pending: GPU allowlisted + not Blackwell; CUDA ok True; model on CUDA; preflight passes; 50 frames complete; `n_new_detected > 0`; artifact contains `stage1_candidates.json`, `stage1_report.txt`, `run_summary.json`.
+
 ## Next gate
 
 1. Obtain the quarantined Track B artifact.
@@ -201,5 +207,6 @@ Do not tune Stage 2, smoke render, or modify the renderer before this review.
 - **2026-06-23:** Stage 1c full run dispatched on `main` @ `fc988f05` (Actions run `28041924767`). STAGE 1C OUTPUT READY — AWAITING QUARANTINE + TRACK B once artifact verified.
 - **2026-06-23:** Stage 1c run aborted — RTX PRO 4000 Blackwell GPU incompatible with PyTorch 2.1.0-cuda11.8. Stage 1c paused. GPU preflight + observability hardening applied to `stage1_candidate_gen.py` and `360-stage1-candidates.yml`.
 - **2026-06-23:** GPU smoke-test path added. GPU allowlist (3090/4090/A40/A100/L40) + Blackwell rejection in offer selection. `smoke_test: true` input runs preflight + 10 frames on real data. NMS counter switched to Ultralytics logger handler. State: AWAITING COMPATIBLE GPU SMOKE TEST.
+- **2026-06-23:** Smoke frame cap raised to 50 (guarantees fresh YOLO inference beyond Stage 0 reuse). Smoke test dispatched: run `28045327124` on `main` @ `b21675b`. DISPATCHED — UNVERIFIED.
 
 
