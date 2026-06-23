@@ -1,0 +1,142 @@
+name: 360 Track B - Quarantined (Stage 1c)
+
+on:
+  push:
+    branches:
+      - 'run/track-b-stage1c-*'
+  workflow_dispatch:
+
+jobs:
+  track-b-stage1c:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0 aria2
+          pip install --quiet 'numpy<2' pillow opencv-python-headless requests
+
+      - name: Download Stage 1c artifact from run 28046275937
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/stage1c_input
+          # Download artifact zip via GitHub API
+          python3 - << 'PY'
+          import os, urllib.request, zipfile, io
+
+          token = os.environ["GH_TOKEN"]
+          # Get artifact download URL
+          req = urllib.request.Request(
+              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7830052466/zip",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+          )
+          # GitHub redirects to S3; follow redirect
+          opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
+          with opener.open(req) as r:
+              data = r.read()
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/stage1c_input")
+          import os
+          files = os.listdir("/tmp/stage1c_input")
+          print(f"Extracted: {files}")
+          PY
+          ls -lh /tmp/stage1c_input/
+
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - << 'PY'
+          import json, urllib.request, os
+          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
+          creds_data = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
+          r = urllib.request.urlopen(urllib.request.Request(token_uri, data=payload,
+              headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
+          open("/tmp/drive_access_token.txt", "w").write(tok["access_token"])
+          print(f"Drive token OK (expires_in={tok.get('expires_in')}s)")
+          PY
+
+      - name: Download hotspot map from Drive
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          aria2c -q -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/stage1c_input --out=hotspot_map.json \
+            "https://www.googleapis.com/drive/v3/files/1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M?alt=media"
+          ls -lh /tmp/stage1c_input/
+
+      - name: Download equirect_trim.mp4 from Drive
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          aria2c -x 8 -s 8 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/stage1c_input --out=equirect_trim.mp4 \
+            "https://www.googleapis.com/drive/v3/files/1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX?alt=media"
+          du -sh /tmp/stage1c_input/equirect_trim.mp4
+
+      - name: Run Stage 1b fixture tests
+        run: python3 ball_tracker/tests/test_stage1b_quarantine.py
+
+      - name: Run Stage 1b static quarantine
+        run: |
+          mkdir -p /tmp/stage1b_output
+          python3 ball_tracker/stage1b_static_quarantine.py \
+            --stage1-candidates /tmp/stage1c_input/stage1_candidates.json \
+            --hotspot-map       /tmp/stage1c_input/hotspot_map.json \
+            --output-dir        /tmp/stage1b_output \
+            --stage1-file-id    "stage1c-run-28046275937-artifact-7830052466" \
+            --hotspot-map-file-id "1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M"
+          ls -lh /tmp/stage1b_output/
+
+      - name: Run Track B pack generation
+        env:
+          EQUIRECT_FILE_ID:  "1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX"
+          STAGE1_FILE_ID:    "stage1c-run-28046275937-artifact-7830052466"
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          mkdir -p /tmp/trackb_output
+          EQUIRECT_FILE_ID="1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX" \
+          STAGE1_FILE_ID="stage1c-run-28046275937-artifact-7830052466" \
+          python3 ball_tracker/track_b_pack_gen.py \
+            --equirect          /tmp/stage1c_input/equirect_trim.mp4 \
+            --stage1-candidates /tmp/stage1b_output/stage1_candidates_quarantined.json \
+            --output-dir        /tmp/trackb_output \
+            --equirect-file-id  "1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX" \
+            --stage1-id         "stage1c-run-28046275937-artifact-7830052466"
+          ls -lh /tmp/trackb_output/
+
+      - name: Collect all outputs
+        run: |
+          mkdir -p final_output
+          cp /tmp/stage1b_output/stage1_candidates_quarantined.json  final_output/ || echo "WARN: quarantined json missing"
+          cp /tmp/stage1b_output/stage1b_quarantine_report.json      final_output/ || echo "WARN: quarantine report json missing"
+          cp /tmp/stage1b_output/stage1b_quarantine_report.txt       final_output/ || echo "WARN: quarantine report txt missing"
+          cp /tmp/trackb_output/candidate_precision_review_pack.png     final_output/ || echo "WARN: precision pack missing"
+          cp /tmp/trackb_output/zero_candidate_coverage_review_pack.png final_output/ || echo "WARN: coverage pack missing"
+          cp /tmp/trackb_output/track_b_manifest.json                   final_output/ || echo "WARN: manifest missing"
+          cp /tmp/trackb_output/track_b_report.txt                      final_output/ || echo "WARN: report missing"
+          cp /tmp/trackb_output/run_summary.json                        final_output/ || echo "WARN: run_summary missing"
+          echo "=== final_output ==="
+          ls -lh final_output/
+
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: track-b-stage1c-quarantined-${{ github.run_id }}
+          path: final_output/
+          retention-days: 30
