@@ -13,215 +13,30 @@ on:
         required: true
         default: ''
         type: string
-      excluded_offer_ids:
-        description: 'Comma-separated Vast.ai offer IDs to skip'
-        required: false
-        default: '36492149'
-        type: string
 
 jobs:
   track-b-packs:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Generate SSH key pair
-        id: keygen
-        run: |
-          pip install -q cryptography
-          python3 - << 'PY'
-          from cryptography.hazmat.primitives import serialization
-          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-          import os
-          key  = Ed25519PrivateKey.generate()
-          priv = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
-          pub  = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
-          os.makedirs("/tmp", exist_ok=True)
-          with open("/tmp/vastai_key",     "wb") as f: f.write(priv)
-          with open("/tmp/vastai_key.pub", "wb") as f: f.write(pub + b" ffa-trackb\n")
-          os.chmod("/tmp/vastai_key", 0o600)
-          print("SSH keypair generated")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write("pub_key=" + pub.decode() + " ffa-trackb\n")
-          PY
-
-      - name: Search for Vast.ai offer
-        id: offer
-        env:
-          VAST_API_KEY:       ${{ secrets.VASTAI_API_KEY }}
-          EXCLUDED_OFFER_IDS: ${{ github.event.inputs.excluded_offer_ids }}
-        run: |
-          python3 - << 'PY'
-          import os, json, urllib.request, urllib.parse, sys
-
-          API_KEY = os.environ["VAST_API_KEY"]
-          BASE    = "https://console.vast.ai/api/v0"
-          headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
-
-          def vast_get(path, params=None):
-              url = f"{BASE}{path}"
-              if params: url += "?" + urllib.parse.urlencode(params)
-              with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as r:
-                  return json.loads(r.read())
-
-          def vast_post(path, data):
-              req = urllib.request.Request(f"{BASE}{path}", data=json.dumps(data).encode(), method="POST", headers=headers)
-              with urllib.request.urlopen(req) as r: return json.loads(r.read())
-
-          pub_key = open("/tmp/vastai_key.pub").read().strip()
-          print("Registering SSH key...")
-          vast_post("/ssh/", {"ssh_key": pub_key})
-
-          excluded = [x.strip() for x in os.environ.get("EXCLUDED_OFFER_IDS","").split(",") if x.strip()]
-          query = {
-              "verified":   {"eq": True},  "rentable":   {"eq": True},
-              "cpu_cores":  {"gte": 16},   "cpu_ram":    {"gte": 32768},
-              "cpu_ghz":    {"gte": 3.5},  "disk_space": {"gte": 80},
-              "inet_down":  {"gte": 800},
-          }
-          resp   = vast_get("/bundles/", {"q": json.dumps(query)})
-          offers = resp.get("offers", [])
-          BAD_CPU = ["E5-", "E3-", "Opteron", "Xeon W3", "Xeon X5"]
-          offers = [o for o in offers if not any(s in (o.get("cpu_name") or "") for s in BAD_CPU)]
-          if excluded:
-              offers = [o for o in offers if str(o["id"]) not in excluded]
-          if not offers:
-              print("ERROR: No matching offers", file=sys.stderr); sys.exit(1)
-
-          offers.sort(key=lambda o: float(o.get("dph_total", 999)))
-          best = offers[0]
-          print(f"Selected: id={best['id']} cpu={best.get('cpu_name')} dph=${best.get('dph_total')}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"offer_id={best['id']}\noffer_cpu={best.get('cpu_name','unknown')}\noffer_dph={best.get('dph_total','?')}\n")
-          PY
-
-      - name: Launch Vast.ai instance
-        id: launch
-        env:
-          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
-          OFFER_ID:     ${{ steps.offer.outputs.offer_id }}
-          OFFER_CPU:    ${{ steps.offer.outputs.offer_cpu }}
-        run: |
-          python3 - << 'PY'
-          import os, json, urllib.request, time, sys
-
-          API_KEY = os.environ["VAST_API_KEY"]
-          BASE    = "https://console.vast.ai/api/v0"
-          BASE_V1 = "https://cloud.vast.ai/api/v1"
-          headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
-
-          def vast_get(path, params=None, base=None):
-              url = f"{(base or BASE)}{path}"
-              if params: url += "?" + __import__("urllib.parse", fromlist=["urlencode"]).urlencode(params)
-              with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as r:
-                  return json.loads(r.read())
-
-          def vast_put(path, data):
-              req = urllib.request.Request(f"{BASE}{path}", data=json.dumps(data).encode(), method="PUT", headers=headers)
-              with urllib.request.urlopen(req) as r: return json.loads(r.read())
-
-          def vast_delete(path, base=None):
-              req = urllib.request.Request(f"{(base or BASE)}{path}", method="DELETE", headers=headers)
-              with urllib.request.urlopen(req, timeout=10) as r: return json.loads(r.read())
-
-          offer_id = os.environ["OFFER_ID"]
-          pub_key  = open("/tmp/vastai_key.pub").read().strip()
-
-          print(f"Creating instance on offer {offer_id} ({os.environ['OFFER_CPU']})...")
-          result = vast_put(f"/asks/{offer_id}/", {
-              "client_id": "me", "image": "pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime",
-              "disk": 60, "onstart": "", "runtype": "ssh", "ssh_key": pub_key, "env": {},
-          })
-          instance_id = result.get("new_contract")
-          if not instance_id:
-              print(f"ERROR: no instance ID: {result}", file=sys.stderr); sys.exit(1)
-          print(f"Instance ID: {instance_id}")
-
-          ip = port = None
-          for attempt in range(24):
-              time.sleep(10)
-              resp = vast_get("/instances/", base=BASE_V1)
-              inst = next((x for x in resp.get("instances", []) if x["id"] == instance_id), None)
-              if not inst:
-                  print(f"  [{attempt+1}/24] not visible yet"); continue
-              status    = inst.get("actual_status", "?")
-              this_ip   = inst.get("ssh_host") or inst.get("public_ipaddr")
-              this_port = inst.get("ssh_port", 22)
-              print(f"  [{attempt+1}/24] status={status} ip={this_ip} port={this_port}")
-              if status == "running" and this_ip:
-                  ip, port = this_ip, this_port; break
-              if status in ("error", "failed", "stopped"):
-                  print(f"ERROR: instance bad state: {status}", file=sys.stderr)
-                  try: vast_delete(f"/instances/{instance_id}/", base=BASE_V1)
-                  except: pass
-                  sys.exit(1)
-
-          if not ip:
-              print("ERROR: instance never reached running state", file=sys.stderr)
-              try: vast_delete(f"/instances/{instance_id}/", base=BASE_V1)
-              except: pass
-              sys.exit(1)
-
-          print(f"Instance ready: {ip}:{port}  id={instance_id}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"ip={ip}\nport={port}\ninstance_id={instance_id}\n")
-          PY
-
-      - name: Wait for SSH
-        env:
-          IP:   ${{ steps.launch.outputs.ip }}
-          PORT: ${{ steps.launch.outputs.port }}
-        run: |
-          python3 - << 'PY'
-          import os, socket, time, sys
-          ip, port = os.environ["IP"], int(os.environ["PORT"])
-          for i in range(30):
-              try:
-                  s = socket.create_connection((ip, port), timeout=5); s.close()
-                  print(f"SSH port open after {(i+1)*5}s"); break
-              except Exception as e:
-                  print(f"  [{i+1}/30] not ready: {e}"); time.sleep(5)
-          else:
-              print("ERROR: SSH never came up", file=sys.stderr); sys.exit(1)
-          PY
-          sleep 20
-
       - name: Install dependencies
-        env:
-          IP:   ${{ steps.launch.outputs.ip }}
-          PORT: ${{ steps.launch.outputs.port }}
         run: |
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=10 root@$IP"
-          for i in $(seq 1 24); do
-            NPROC=$($SSH "nproc" 2>/dev/null) && break
-            echo "  SSH auth not ready ($i/24), retrying..."; sleep 5
-          done
-          if [ -z "$NPROC" ]; then echo "ERROR: SSH auth never succeeded"; exit 1; fi
-          echo "nproc: $NPROC"
-          $SSH "apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends \
-            software-properties-common aria2 > /dev/null && \
-            add-apt-repository -y ppa:savoury1/ffmpeg4 2>/dev/null && \
-            apt-get update -qq 2>/dev/null && \
-            apt-get install -y --no-install-recommends ffmpeg libgl1 libglib2.0-0"
-          $SSH "pip install -q --break-system-packages 'numpy<2' pillow opencv-python-headless \
-            google-auth google-auth-oauthlib google-api-python-client 2>/dev/null || \
-            pip install -q 'numpy<2' pillow opencv-python-headless \
-            google-auth google-auth-oauthlib google-api-python-client"
-          $SSH "python3 -c \"import cv2, PIL; print('Imports OK')\""
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0 aria2
+          pip install --quiet 'numpy<2' pillow opencv-python-headless
 
       - name: Get Drive access token
         env:
           YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
         run: |
-          pip install -q google-auth google-auth-oauthlib google-api-python-client
           echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
           echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
           python3 - << 'PY'
-          import os, json, urllib.request as _req
+          import json, urllib.request as _req
           token_data = json.loads(open("/tmp/youtube_token.json").read())
           creds_data = json.loads(open("/tmp/youtube_credentials.json").read())
           client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
@@ -240,77 +55,60 @@ jobs:
           print(f"Access token obtained (expires_in={tok.get('expires_in')}s)")
           PY
 
-      - name: Download inputs
+      - name: Download inputs from Drive
         env:
-          IP:                        ${{ steps.launch.outputs.ip }}
-          PORT:                      ${{ steps.launch.outputs.port }}
           EQUIRECT_FILE_ID:          ${{ github.event.inputs.equirect_file_id }}
           STAGE1_CANDIDATES_FILE_ID: ${{ github.event.inputs.stage1_candidates_file_id }}
         run: |
           ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          $SSH "mkdir -p /tmp/ffa_trackb"
+          mkdir -p /tmp/ffa_trackb
 
           echo "--- Downloading equirect_trim.mp4 ---"
-          $SSH "aria2c -x 8 -s 8 --file-allocation=none \
-            --header='Authorization: Bearer $ACCESS_TOKEN' \
+          aria2c -x 8 -s 8 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
             --dir=/tmp/ffa_trackb --out=equirect_trim.mp4 \
-            'https://www.googleapis.com/drive/v3/files/$EQUIRECT_FILE_ID?alt=media' 2>&1 | tail -5"
-          $SSH "du -sh /tmp/ffa_trackb/equirect_trim.mp4"
+            "https://www.googleapis.com/drive/v3/files/$EQUIRECT_FILE_ID?alt=media"
+          du -sh /tmp/ffa_trackb/equirect_trim.mp4
 
           echo "--- Downloading stage1_candidates.json ---"
-          $SSH "aria2c -x 4 --file-allocation=none \
-            --header='Authorization: Bearer $ACCESS_TOKEN' \
+          aria2c -x 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
             --dir=/tmp/ffa_trackb --out=stage1_candidates.json \
-            'https://www.googleapis.com/drive/v3/files/$STAGE1_CANDIDATES_FILE_ID?alt=media' 2>&1 | tail -3"
+            "https://www.googleapis.com/drive/v3/files/$STAGE1_CANDIDATES_FILE_ID?alt=media"
 
-          $SSH "ls -lh /tmp/ffa_trackb/"
-
-      - name: Upload pack generator script
-        env:
-          IP:   ${{ steps.launch.outputs.ip }}
-          PORT: ${{ steps.launch.outputs.port }}
-        run: |
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          python3 -c "import base64; open('/tmp/packgen_b64.txt','w').write(base64.b64encode(open('ball_tracker/track_b_pack_gen.py','rb').read()).decode())"
-          $SSH "echo '$(cat /tmp/packgen_b64.txt)' | base64 -d > /tmp/ffa_trackb/track_b_pack_gen.py && echo 'pack_gen OK'"
+          ls -lh /tmp/ffa_trackb/
 
       - name: Generate Track B packs
         env:
-          IP:                        ${{ steps.launch.outputs.ip }}
-          PORT:                      ${{ steps.launch.outputs.port }}
           EQUIRECT_FILE_ID:          ${{ github.event.inputs.equirect_file_id }}
           STAGE1_CANDIDATES_FILE_ID: ${{ github.event.inputs.stage1_candidates_file_id }}
         run: |
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=60 -o ServerAliveInterval=30 root@$IP"
-          $SSH "cd /tmp/ffa_trackb && \
-            GITHUB_SHA=${{ github.sha }} \
-            EQUIRECT_FILE_ID=$EQUIRECT_FILE_ID \
-            STAGE1_FILE_ID=$STAGE1_CANDIDATES_FILE_ID \
-            python3 track_b_pack_gen.py \
-              --equirect      equirect_trim.mp4 \
-              --stage1-candidates stage1_candidates.json \
-              --output-dir    /tmp/ffa_trackb/out \
-              --equirect-file-id  $EQUIRECT_FILE_ID \
-              --stage1-id         $STAGE1_CANDIDATES_FILE_ID"
-          $SSH "ls -lh /tmp/ffa_trackb/out/"
+          mkdir -p /tmp/ffa_trackb/out
+          GITHUB_SHA=${{ github.sha }} \
+          EQUIRECT_FILE_ID=$EQUIRECT_FILE_ID \
+          STAGE1_FILE_ID=$STAGE1_CANDIDATES_FILE_ID \
+          python3 ball_tracker/track_b_pack_gen.py \
+            --equirect          /tmp/ffa_trackb/equirect_trim.mp4 \
+            --stage1-candidates /tmp/ffa_trackb/stage1_candidates.json \
+            --output-dir        /tmp/ffa_trackb/out \
+            --equirect-file-id  "$EQUIRECT_FILE_ID" \
+            --stage1-id         "$STAGE1_CANDIDATES_FILE_ID"
+          ls -lh /tmp/ffa_trackb/out/
 
-      - name: Pull outputs
-        env:
-          IP:   ${{ steps.launch.outputs.ip }}
-          PORT: ${{ steps.launch.outputs.port }}
+      - name: Copy outputs to workspace
         run: |
           mkdir -p track_b_output
-          for fname in track_b_manifest.json \
-                       candidate_precision_review_pack.png \
-                       zero_candidate_coverage_review_pack.png \
-                       track_b_report.txt \
-                       run_summary.json; do
-            scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
-                root@$IP:/tmp/ffa_trackb/out/$fname track_b_output/ \
-              || echo "WARN: $fname not found on remote"
-          done
-          echo "=== pulled outputs ==="
+          cp /tmp/ffa_trackb/out/track_b_manifest.json                    track_b_output/ \
+            || echo "WARN: track_b_manifest.json not found"
+          cp /tmp/ffa_trackb/out/candidate_precision_review_pack.png      track_b_output/ \
+            || echo "WARN: candidate_precision_review_pack.png not found"
+          cp /tmp/ffa_trackb/out/zero_candidate_coverage_review_pack.png  track_b_output/ \
+            || echo "WARN: zero_candidate_coverage_review_pack.png not found"
+          cp /tmp/ffa_trackb/out/track_b_report.txt                       track_b_output/ \
+            || echo "WARN: track_b_report.txt not found"
+          cp /tmp/ffa_trackb/out/run_summary.json                         track_b_output/ \
+            || echo "WARN: run_summary.json not found"
+          echo "=== workspace outputs ==="
           ls -lh track_b_output/
 
       - name: Upload outputs to Google Drive
@@ -350,7 +148,8 @@ jobs:
               token_uri=token_uri, client_id=client_id, client_secret=client_secret,
               scopes=["https://www.googleapis.com/auth/drive"],
           )
-          creds.expiry = datetime.datetime.utcnow() + datetime.timedelta(seconds=int(tok.get("expires_in", 3600)))
+          creds.expiry = datetime.datetime.utcnow() + datetime.timedelta(
+              seconds=int(tok.get("expires_in", 3600)))
           drive = build("drive", "v3", credentials=creds, cache_discovery=False)
 
           run_id = os.environ.get("GITHUB_RUN_ID", "unknown")
@@ -386,26 +185,3 @@ jobs:
           name: track-b-packs-${{ github.run_id }}
           path: track_b_output/
           retention-days: 30
-
-      - name: Terminate Vast.ai instance
-        if: always()
-        env:
-          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
-          INSTANCE_ID:  ${{ steps.launch.outputs.instance_id }}
-        run: |
-          python3 - << 'PY'
-          import os, urllib.request, json
-          API_KEY     = os.environ["VAST_API_KEY"]
-          instance_id = os.environ.get("INSTANCE_ID", "")
-          if not instance_id:
-              print("No instance ID — nothing to terminate"); exit(0)
-          headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-          req = urllib.request.Request(
-              f"https://console.vast.ai/api/v0/instances/{instance_id}/",
-              method="DELETE", headers=headers)
-          try:
-              urllib.request.urlopen(req, timeout=15)
-              print(f"Instance {instance_id} terminated OK")
-          except Exception as e:
-              print(f"Terminate failed (may already be gone): {e}")
-          PY
