@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 23 June 2026  
+**Last reconciled:** 23 June 2026 (full Stage 1c run dispatched)  
 **Authority:** Compact source of truth for AI work. Replace obsolete state rather than adding chat transcripts. Update after every decision, code/workflow change, completed/failed run, or artifact.
 
 ## Start here
@@ -144,9 +144,17 @@ This run is CPU-only, uses no YOLO, does not touch Stage 2 or renderer logic, an
 
 ## Stage 1c — detection geometry preservation
 
-**Status: STAGE 1C — AWAITING COMPATIBLE GPU SMOKE TEST**
+**Status: STAGE 1C — FULL RUN DISPATCHED — UNVERIFIED**
 
-Previous dispatch (Actions run `28041924767`) aborted: RTX PRO 4000 Blackwell GPU incompatible with PyTorch 2.1.0-cuda11.8. No valid Stage 1c artifact.
+Previous full run (Actions run `28041924767`) aborted: RTX PRO 4000 Blackwell GPU incompatible with PyTorch 2.1.0-cuda11.8. No valid Stage 1c artifact.
+
+**Full run dispatched: Actions run `28046275937` — DISPATCHED — UNVERIFIED**
+- Branch: `main` @ HEAD
+- Inputs: `smoke_test=false`, `max_frames` unset (full clip), standard Drive IDs.
+- GPU selected: RTX 4090 (allowlisted ✓), offer id=42214650, $0.445/hr.
+- Artifact name: `stage1-candidates-28046275937` (expected).
+- Startup check: GPU allowlisted confirmed; CUDA/preflight/first-progress pending (run still provisioning at check time).
+- Acceptance pending: CUDA true; model on CUDA; preflight passes; full 3,597-frame run; `stage1_candidates.json` with `detection_geometry`; `stage1_report.txt`; `run_summary.json`.
 
 Implemented (unchanged):
 - `ball_tracker/stage1_candidate_gen.py` — `detection_geometry` sub-object on every candidate; null for Stage 0 reuse; schema backward-compatible.
@@ -173,13 +181,8 @@ Smoke test path (active):
 - Uploads `stage1_output/` (inc. `run_summary.json`) as artifact `stage1-smoke-<run_id>`.
 - Artifact will show GPU name, PyTorch + CUDA versions, CUDA available, model device, preflight elapsed, and at least one 100-frame progress line (or end-of-run summary for short runs).
 
-**Next action: dispatch `360-stage1-candidates.yml` with `smoke_test: true` and the standard Drive IDs. Do not dispatch full run until smoke artifact is reviewed.**
+**Next action: paste run `28046275937` artifact for review. Update state with GPU, PyTorch/CUDA versions, duration, spf, detection count, artifact ID.**
 
-**Smoke test dispatched: Actions run `28045327124` — DISPATCHED — UNVERIFIED**
-- Branch: `main` @ `b21675b`
-- Inputs: `smoke_test=true`, `max_frames` override=50, standard Drive IDs.
-- Artifact name: `stage1-smoke-28045327124` (expected).
-- Acceptance checks pending: GPU allowlisted + not Blackwell; CUDA ok True; model on CUDA; preflight passes; 50 frames complete; `n_new_detected > 0`; artifact contains `stage1_candidates.json`, `stage1_report.txt`, `run_summary.json`.
 
 ## Next gate
 
@@ -208,5 +211,7 @@ Do not tune Stage 2, smoke render, or modify the renderer before this review.
 - **2026-06-23:** Stage 1c run aborted — RTX PRO 4000 Blackwell GPU incompatible with PyTorch 2.1.0-cuda11.8. Stage 1c paused. GPU preflight + observability hardening applied to `stage1_candidate_gen.py` and `360-stage1-candidates.yml`.
 - **2026-06-23:** GPU smoke-test path added. GPU allowlist (3090/4090/A40/A100/L40) + Blackwell rejection in offer selection. `smoke_test: true` input runs preflight + 10 frames on real data. NMS counter switched to Ultralytics logger handler. State: AWAITING COMPATIBLE GPU SMOKE TEST.
 - **2026-06-23:** Smoke frame cap raised to 50 (guarantees fresh YOLO inference beyond Stage 0 reuse). Smoke test dispatched: run `28045327124` on `main` @ `b21675b`. DISPATCHED — UNVERIFIED.
+- **2026-06-23:** Smoke test PASSED (RTX 4090, CUDA ok, fresh detections, geometry output verified). Full Stage 1c run dispatched: Actions run `28046275937` on `main`, `smoke_test=false`, full clip, standard Drive IDs. GPU: RTX 4090 allowlisted. DISPATCHED — UNVERIFIED. Pending: paste artifact → update GPU/PyTorch/CUDA/duration/spf/count → set STAGE 1C OUTPUT READY — AWAITING QUARANTINE + TRACK B.
+
 
 
