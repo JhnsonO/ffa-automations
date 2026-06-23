@@ -22,27 +22,24 @@ jobs:
 
       - name: Download Stage 1c artifact from run 28046275937
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           mkdir -p /tmp/stage1c_input
-          # Download artifact zip via GitHub API
           python3 - << 'PY'
           import os, urllib.request, zipfile, io
 
-          token = os.environ["GH_TOKEN"]
-          # Get artifact download URL
+          token = os.environ["GH_PAT"]
           req = urllib.request.Request(
               "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7830052466/zip",
               headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
           )
-          # GitHub redirects to S3; follow redirect
           opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
           with opener.open(req) as r:
               data = r.read()
           with zipfile.ZipFile(io.BytesIO(data)) as z:
               z.extractall("/tmp/stage1c_input")
-          import os
-          files = os.listdir("/tmp/stage1c_input")
+          import os as _os
+          files = _os.listdir("/tmp/stage1c_input")
           print(f"Extracted: {files}")
           PY
           ls -lh /tmp/stage1c_input/
@@ -105,8 +102,8 @@ jobs:
 
       - name: Run Track B pack generation
         env:
-          EQUIRECT_FILE_ID:  "1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX"
-          STAGE1_FILE_ID:    "stage1c-run-28046275937-artifact-7830052466"
+          EQUIRECT_FILE_ID: "1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX"
+          STAGE1_FILE_ID: "stage1c-run-28046275937-artifact-7830052466"
           GITHUB_SHA: ${{ github.sha }}
         run: |
           mkdir -p /tmp/trackb_output
