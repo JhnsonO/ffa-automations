@@ -361,8 +361,8 @@ jobs:
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=60 -o ServerAliveInterval=30 root@$IP"
           # Smoke test overrides max_frames unconditionally
           if [ "$SMOKE_TEST" = "true" ]; then
-            MAXARG="--max-frames 10"
-            echo "--- SMOKE TEST MODE: max_frames=10 ---"
+            MAXARG="--max-frames 50"
+            echo "--- SMOKE TEST MODE: max_frames=50 ---"
           else
             MAXARG=""
             if [ -n "$MAX_FRAMES" ]; then MAXARG="--max-frames $MAX_FRAMES"; fi
