@@ -144,7 +144,9 @@ This run is CPU-only, uses no YOLO, does not touch Stage 2 or renderer logic, an
 
 ## Stage 1c — detection geometry preservation
 
-**Status: DISPATCHED — UNVERIFIED**
+**Status: PAUSED — GPU preflight / observability hardening required**
+
+Previous dispatch (Actions run `28041924767`) aborted: selected instance was an RTX PRO 4000 Blackwell GPU whose architecture is unsupported by the PyTorch 2.1.0-cuda11.8 image. Run produced NMS timeout warnings and no meaningful detection output. No valid Stage 1c artifact exists.
 
 Implemented:
 - `ball_tracker/stage1_candidate_gen.py` — `detection_geometry` sub-object added to every candidate.
@@ -156,7 +158,14 @@ Implemented:
 
 No candidate removed or reweighted. No filtering logic added. Schema backward-compatible.
 
-**Dispatch:** Actions run `28041924767` on `main` @ `fc988f05`. Workflow: `360-stage1-candidates.yml`. Inputs: same Drive IDs as previous successful run (equirect `1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX`, hotspot `1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M`, stage0 `1d_4K5dWFaABjTH_CFL8kYwn1zxJpFRrF`). Artifact name: `stage1-candidates-28041924767`. Status: DISPATCHED — UNVERIFIED. Awaiting quarantine + Track B.
+**Observability hardening added (2026-06-23, pre-redispatch):**
+- Startup env banner: Python, PyTorch, CUDA runtime, `cuda.is_available()`, device, GPU name, model placement.
+- Preflight: single small inference before full processing; confirms model on CUDA; logs elapsed time; exits code 2 if GPU unavailable or unsupported — no silent CPU fallback.
+- Progress every 100 frames: processed/total, %, elapsed, spf, ETA, raw detections, kept candidates, pitch rejections, NMS warning count.
+- `PYTHONUNBUFFERED=1 python3 -u` in workflow for live log streaming.
+- `run_summary.json` written at end of every run: device/GPU, versions, frame count, duration, avg spf, candidate totals, warning/error counters.
+
+**Do not redispatch until a compatible GPU offer is confirmed (RTX 3090/4090/A100/A40 recommended; avoid Blackwell series with PyTorch 2.1.0-cuda11.8).**
 
 ## Next gate
 
@@ -182,5 +191,6 @@ Do not tune Stage 2, smoke render, or modify the renderer before this review.
 - **2026-06-23:** Built and verified reversible Stage 1b confirmed-static quarantine; quarantined Track B branch run dispatched.
 - **2026-06-23:** Stage 1c — detection geometry preservation implemented and tested. `detection_geometry` sub-object in every Stage 1 candidate; null for Stage 0 reuse; carried through Track B manifest.
 - **2026-06-23:** Stage 1c full run dispatched on `main` @ `fc988f05` (Actions run `28041924767`). STAGE 1C OUTPUT READY — AWAITING QUARANTINE + TRACK B once artifact verified.
+- **2026-06-23:** Stage 1c run aborted — RTX PRO 4000 Blackwell GPU incompatible with PyTorch 2.1.0-cuda11.8. Stage 1c paused. GPU preflight + observability hardening applied to `stage1_candidate_gen.py` and `360-stage1-candidates.yml`.
 
 

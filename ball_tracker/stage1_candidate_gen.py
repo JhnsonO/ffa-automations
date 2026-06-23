@@ -52,6 +52,57 @@ import time
 import cv2
 import numpy as np
 
+# ── Optional torch — imported lazily so dry-run doesn't require GPU env ──────
+def _torch_env_banner():
+    """Print Python/PyTorch/CUDA environment and return (device_str, gpu_name)."""
+    import platform
+    print(f"[stage1] Python  : {platform.python_version()}")
+    try:
+        import torch
+        print(f"[stage1] PyTorch : {torch.__version__}")
+        cuda_ver = torch.version.cuda if torch.version.cuda else "n/a"
+        print(f"[stage1] CUDA rt : {cuda_ver}")
+        avail = torch.cuda.is_available()
+        print(f"[stage1] CUDA ok : {avail}")
+        if avail:
+            dev = torch.device("cuda")
+            gpu = torch.cuda.get_device_name(0)
+        else:
+            dev = torch.device("cpu")
+            gpu = None
+        print(f"[stage1] Device  : {dev}  gpu={gpu or 'none'}")
+        return str(dev), gpu, torch.__version__, cuda_ver
+    except ImportError:
+        print("[stage1] PyTorch NOT importable")
+        return "cpu", None, "n/a", "n/a"
+
+
+def _preflight_check(model, device_str):
+    """
+    Run one tiny detector inference and confirm it executes on the expected device.
+    Exits with code 2 if CUDA was expected but inference ran on CPU or timed out.
+    """
+    import time as _time
+    print("[stage1] Preflight: running single-inference check ...")
+    dummy = np.zeros((64, 64, 3), dtype=np.uint8)
+    t_pre = _time.time()
+    try:
+        results = model.predict(dummy, conf=0.5, imgsz=64, verbose=False)
+        elapsed = _time.time() - t_pre
+        # Verify the model's parameters are on the expected device
+        try:
+            import torch
+            actual_device = next(model.model.parameters()).device
+            print(f"[stage1] Preflight OK: {elapsed*1000:.0f} ms  model_device={actual_device}")
+            if device_str == "cuda" and "cuda" not in str(actual_device):
+                print(f"[stage1] PREFLIGHT FAIL: expected CUDA but model is on {actual_device}", file=sys.stderr)
+                sys.exit(2)
+        except Exception as e:
+            print(f"[stage1] Preflight device check skipped ({e}); elapsed={elapsed*1000:.0f} ms")
+    except Exception as exc:
+        print(f"[stage1] PREFLIGHT FAIL: inference raised {exc}", file=sys.stderr)
+        sys.exit(2)
+
 # ── Detector config — identical to Stage 0 / run_tracker.py cheap path ────────
 CROP_YAWS_DEG    = [0, 90, 180, 270]
 CROP_FOV_DEG     = 110
@@ -342,6 +393,9 @@ def process_candidate(yaw, pitch, raw_conf, source, crop_yaw,
 def run_stage1(args):
     t0 = time.time()
 
+    # ── Environment banner (req 1) ────────────────────────────────────────────
+    _device_str, _gpu_name, _torch_ver, _cuda_ver = _torch_env_banner()
+
     # ── Load Stage 0 outputs ──────────────────────────────────────────────────
     print(f"[stage1] Loading hotspot map: {args.hotspot_map}")
     hm, bin_lookup = load_hotspot_map(args.hotspot_map)
@@ -373,6 +427,11 @@ def run_stage1(args):
             raise RuntimeError(f"Detector weights not found: {args.weights}")
         print(f"[stage1] Loading detector: {args.weights}")
         model = load_detector(args.weights)
+        # ── Preflight check (req 2) ───────────────────────────────────────────
+        if _device_str != "cuda":
+            print("[stage1] PREFLIGHT FAIL: CUDA is not available — refusing to run on CPU.", file=sys.stderr)
+            sys.exit(2)
+        _preflight_check(model, _device_str)
 
     # ── Per-frame processing ──────────────────────────────────────────────────
     all_candidates = {}        # frame_idx -> [candidate_dict, ...]
@@ -383,6 +442,7 @@ def run_stage1(args):
     n_new_detected       = 0   # detections from re-running the detector
     n_pitch_rejected     = 0   # dropped by hard pitch filter
     n_kept               = 0   # after pitch filter, penalty applied
+    n_nms_warnings       = 0   # NMS timeout / warning count
 
     fence_weighted_total = 0.0  # weighted_conf sum for candidates near fence
     fence_raw_total      = 0.0  # raw_conf sum for candidates near fence
@@ -416,7 +476,11 @@ def run_stage1(args):
                 if not ret:
                     all_candidates[frame_idx] = []
                     continue
-                dets = detect_ball_candidates(model, frame)
+                import warnings as _warnings
+                with _warnings.catch_warnings(record=True) as _w:
+                    _warnings.simplefilter("always")
+                    dets = detect_ball_candidates(model, frame)
+                n_nms_warnings += sum(1 for w in _w if "NMS" in str(w.message) or "nms" in str(w.message).lower())
             for det in dets:
                 yaw, pitch, conf, crop_yaw, bbox_xyxy, crop_w, crop_h = det
                 geom = _make_detection_geometry(
@@ -451,10 +515,20 @@ def run_stage1(args):
         all_candidates[frame_idx] = frame_cands
         n_frames_processed += 1
 
-        if (n_frames_processed % 500) == 0:
+        if (n_frames_processed % 100) == 0:
             el = time.time() - t0
-            print(f"[stage1] {n_frames_processed}/{total_frames} frames  "
-                  f"kept={n_kept}  pitch_rej={n_pitch_rejected}  {el:.1f}s")
+            pct = 100.0 * n_frames_processed / total_frames if total_frames else 0.0
+            spf = el / n_frames_processed if n_frames_processed else 0.0
+            remaining = (total_frames - n_frames_processed) * spf
+            # n_raw_so_far = detections before pitch filter (counters updated per-frame)
+            n_raw_so_far = n_s0_reuse + n_new_detected
+            print(
+                f"[stage1] {n_frames_processed}/{total_frames} ({pct:.1f}%)  "
+                f"elapsed={el:.1f}s  spf={spf:.3f}s  ETA={remaining:.0f}s  "
+                f"raw={n_raw_so_far}  kept={n_kept}  pitch_rej={n_pitch_rejected}  "
+                f"nms_warn={n_nms_warnings}",
+                flush=True,
+            )
 
     cap.release()
 
@@ -505,6 +579,28 @@ def run_stage1(args):
         f.write(report)
     print("\n" + report)
     print(f"\n[stage1] Done in {time.time()-t0:.1f}s. Outputs in {args.output_dir}/")
+
+    # ── run_summary.json (req 5) ──────────────────────────────────────────────
+    duration = time.time() - t0
+    summary = {
+        "device":          _device_str,
+        "gpu_name":        _gpu_name,
+        "torch_version":   _torch_ver,
+        "cuda_version":    _cuda_ver,
+        "total_frames":    total_frames,
+        "frames_processed": n_frames_processed,
+        "duration_s":      round(duration, 2),
+        "avg_spf":         round(duration / n_frames_processed, 4) if n_frames_processed else None,
+        "n_s0_reuse":      n_s0_reuse,
+        "n_new_detected":  n_new_detected,
+        "n_pitch_rejected": n_pitch_rejected,
+        "n_kept":          n_kept,
+        "n_nms_warnings":  n_nms_warnings,
+    }
+    out_summary = os.path.join(args.output_dir, "run_summary.json")
+    with open(out_summary, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"[stage1] run_summary.json -> {out_summary}")
 
 
 def build_report(n_frames, n_raw, n_s0_reuse, n_new, n_pitch_rej, pitch_rej_pct,

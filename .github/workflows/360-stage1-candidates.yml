@@ -333,7 +333,7 @@ jobs:
           MAXARG=""
           if [ -n "$MAX_FRAMES" ]; then MAXARG="--max-frames $MAX_FRAMES"; fi
           echo "--- Running Stage 1 candidate generation ---"
-          $SSH "cd /tmp/ffa_stage1 && python3 stage1_candidate_gen.py \
+          $SSH "cd /tmp/ffa_stage1 && PYTHONUNBUFFERED=1 python3 -u stage1_candidate_gen.py \
             --input              equirect_trim.mp4 \
             --hotspot-map        hotspot_map.json \
             --stage0-detections  stage0_detections.json \
