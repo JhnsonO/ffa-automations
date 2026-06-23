@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 23 June 2026 (Track B Stage 1c blocked: GH_PAT auth)  
+**Last reconciled:** 23 June 2026 (GH_PAT refreshed; ready to dispatch Track B Stage 1c)  
 **Authority:** Compact source of truth for AI work. Replace obsolete state rather than adding chat transcripts. Update after every decision, code/workflow change, completed/failed run, or artifact.
 
 ## Start here
@@ -135,7 +135,7 @@ Artifact ID: (previous run) — (~11.4 MB)
 
 ## Track B — quarantined audit (Stage 1c geometry-preserved output)
 
-**Status: TRACK B STAGE 1C — BLOCKED: GH_PAT AUTHENTICATION**
+**Status: TRACK B STAGE 1C — GH_PAT REFRESHED — READY TO DISPATCH**
 
 Run ID: `28048960467` — failed (HTTP 401 on artifact download)  
 Blocking cause: `GH_PAT` secret missing, expired, or lacks Actions read scope.  
@@ -231,6 +231,7 @@ Do not tune Stage 2, smoke render, or modify the renderer before this review.
 - **2026-06-23:** Smoke test PASSED (RTX 4090, CUDA ok, fresh detections, geometry output verified). Full Stage 1c run dispatched: Actions run `28046275937` on `main`, `smoke_test=false`, full clip, standard Drive IDs. GPU: RTX 4090 allowlisted. DISPATCHED — UNVERIFIED. Pending: paste artifact → update GPU/PyTorch/CUDA/duration/spf/count → set STAGE 1C OUTPUT READY — AWAITING QUARANTINE + TRACK B.
 - **2026-06-23:** Stage 1c VERIFIED COMPLETE — run `28046275937`, artifact `7830052466`, RTX 4090, 3,597 frames, 6,436 fresh detections with `detection_geometry`, 462 Stage 0 reuse with null geometry. Track B quarantined workflow built (`360-track-b-stage1c-quarantined.yml`) and dispatched: run `28048960467`. Self-contained chain: GitHub artifact download → Stage 1b quarantine inline → Track B pack gen. Status: TRACK B GEOMETRY REVIEW READY — AWAITING HUMAN REVIEW.
 - **2026-06-23:** Track B Stage 1c blocked: GH_PAT HTTP 401 on artifact download. Workflow updated with preflight (logs login + artifact metadata HTTP status; clear failure message). No dispatch. Status: TRACK B STAGE 1C — BLOCKED: GH_PAT AUTHENTICATION.
+- **2026-06-23:** GH_PAT verified valid (login=JhnsonO, artifact 7830052466 accessible, not expired). GH_PAT repo secret updated via secrets API. Status: TRACK B STAGE 1C — GH_PAT REFRESHED — READY TO DISPATCH.
 
 
 
