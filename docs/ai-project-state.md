@@ -7,8 +7,8 @@
 
 1. Read this file and `CLAUDE.md`.
 2. Read only active-task files using targeted searches/line ranges.
-3. Preserve the frozen boundaries.
-4. A dispatch is not a result: record `DISPATCHED — UNVERIFIED` only after an actual workflow run starts.
+3. Preserve frozen boundaries.
+4. A dispatch is not a result. Record `DISPATCHED — UNVERIFIED` only after a real run starts.
 
 ## Product invariant
 
@@ -33,7 +33,7 @@ Offline 360° football post-production. The camera follows only a credible fused
 
 `stage1_candidates.json` is frame-indexed. Candidates retain `yaw`, `pitch`, `raw_conf`, `penalty`, `weighted_conf`, `source`, `crop_yaw`, and `region`.
 
-Original YOLO `xyxy` dimensions are not retained. Stage 1 uses yaw-only perspective crops at 0°, 90°, 180°, 270°, FoV 110°, output 1280×720. Any Stage 1 geometry check must reproduce that exact convention.
+Original YOLO `xyxy` dimensions are not retained. Stage 1 uses yaw-only perspective crops at 0°, 90°, 180°, 270°, FoV 110°, output 1280×720. Any Stage 1 geometry check must reproduce that convention.
 
 ### Stage 2
 
@@ -93,40 +93,55 @@ Independent. Do not bundle renderer edits into Stage 2 or Track B.
 
 ### Track B — detector-quality audit
 
-**Status: BRANCH TRIGGER COMMITTED — AWAITING ACTIONS ACKNOWLEDGEMENT**
+**Status: COMPLETED — REVIEWED FOR PRECISION; RECALL INCONCLUSIVE**
 
-Canonical implementation:
+Canonical files:
 
 - `ball_tracker/track_b_pack_gen.py` (v2)
 - `.github/workflows/360-track-b-audit.yml` (v2)
 
-Audit design:
+Completed artifact:
 
-1. Runs on `ubuntu-latest`; no Vast.ai.
-2. Manifest records reviewed rank, yaw/pitch, source/crop yaw, sample type, candidate count, and hidden strata.
-3. Candidate review pack is 60 samples: 50 top-ranked plus 10 second-ranked candidates from multi-candidate frames, temporally spread.
-4. Candidate tiles show frame ID, a centre reticle, and label slots only: `ball_at_centre / ball_nearby_but_offset / not_ball / occluded_or_unclear`.
-5. Zero-candidate pack is 15 temporally stratified rows, each showing fixed Stage 1 yaw crops at 0/90/180/270° with zero-candidate label slots.
-6. No YOLO, no `tracking.json`, and no automatic quality conclusion before review.
+- GitHub Actions run `28034071184`, artifact `7824231279`.
+- Generated 60 candidate-centred samples (50 top-ranked + 10 second-ranked) and 15 zero-candidate rows.
 
-One-off dispatch route committed because the available GitHub connector cannot call the manual workflow-dispatch endpoint:
+Manual review finding:
 
-- Branch: `run/track-b-audit-20260623`
-- Commit: `80b03336ada21d3e15897f2d160cad130ae409cd`
-- Workflow: `.github/workflows/360-track-b-branch-dispatch.yml`
-- Inputs fixed to the current clip and `stage1_candidates.json` Drive IDs.
-- Output: GitHub Actions artifact `track-b-packs-{run_id}` containing `candidate_precision_review_pack.png`, `zero_candidate_coverage_review_pack.png`, `track_b_manifest.json`, `track_b_report.txt`, and `run_summary.json`.
+- The candidate pool is heavily polluted by the known static/background problem. **35 of 60** reviewed candidates sit at the same fence location near `(-77.4°, -3.9°)` and are visibly not the ball.
+- **44 of 60** samples are hotspot-adjacent, while only 5 are hotspot-neutral; the current candidate pack is therefore dominated by known static/background false evidence rather than a balanced residual-detector assessment.
+- No reviewed tile provides credible `ball_at_centre` evidence. Several tiles show a real ball elsewhere in the crop, confirming mislocalised/false candidate centres.
 
-The branch-trigger commit has been made. A single immediate status check returned no check record yet, so do not claim completion or retry dispatch in a loop. Do not create another trigger branch.
+What Track B proves:
 
-## Next gate
+- Current candidate precision is unacceptable before static/background contamination is removed.
+- Stage 1 geometry is not the issue; the detector/candidate field is the issue.
 
-1. Obtain the branch-triggered Track B Actions result/artifact.
-2. Set status to `COMPLETED — AWAITING REVIEW` only after the job finishes and the artifact exists.
-3. Review and label both packs.
-4. Then choose exactly one response: candidate filtering/detector mitigation, targeted recovery strategy, or a bounded Stage 1 data-contract improvement.
+What Track B does **not** yet prove:
 
-Do not tune Stage 2, run smoke rendering, or modify the renderer before Track B review.
+- Recall / missed-ball rate. The zero-candidate pack yielded only 2 early, 2 mid, and 11 late rows because false static candidates prevent many earlier/mid frames from qualifying as zero-candidate. At the current 4× wide 110° crop format, it cannot support a reliable missed-ball count.
+
+## Next gate — Stage 1b confirmed-static quarantine
+
+Build a **separate, reversible Stage 1b adapter**. Do not modify Stage 1 generation, Stage 2, or renderer.
+
+Purpose: remove only candidates inside **generic confirmed-static regions** from the active candidate pool so later diagnostics/tracking are not flooded by proven fixed background detections.
+
+Requirements:
+
+1. Input: `stage1_candidates.json` and Stage 0 `hotspot_map.json` using the existing confirmed-static rule (`peak_duty` against the map threshold), not hard-coded coordinates.
+2. Output: `stage1_candidates_quarantined.json` plus `stage1b_quarantine_report.txt/json`.
+3. Preserve all original candidates in a `quarantined_candidates`/audit field with reason and region; do not silently delete evidence.
+4. Active `frames` must contain only candidates eligible for temporal linking or residual precision audit.
+5. Report counts by region, frame, raw/weighted confidence, and number of frames newly becoming zero-candidate.
+6. No detector rerun and no model/threshold change.
+
+Then rerun Track B against the quarantined output:
+
+- Candidate pack must measure remaining non-static candidate precision.
+- Zero-candidate pack must include frames that became empty after quarantine, giving a meaningful missed-ball audit.
+- Keep the clean manual-label UI and manifest provenance.
+
+Only after that review may we choose between detector mitigation, targeted recovery, a Stage 1 data-contract improvement, or Stage 2 work.
 
 ## Efficient AI work protocol
 
@@ -139,6 +154,5 @@ Do not tune Stage 2, run smoke rendering, or modify the renderer before Track B 
 
 - **2026-06-23:** Added living project-state file and `CLAUDE.md` operating contract.
 - **2026-06-23:** Reviewed micro re-detect panel. Ruled out Stage 1 geometry/serialisation; confirmed detector-quality failure for T0001/T0088.
-- **2026-06-23:** Track B generator/workflow added, but pre-dispatch review found an unnecessary Vast.ai workflow, review-bias leakage, no explicit centre/label UI, and top-only candidate sampling. Status corrected from `DISPATCHED — UNVERIFIED` to `IMPLEMENTED — REWORK REQUIRED — NOT DISPATCHED`.
-- **2026-06-23:** Track B v2 — all six pre-dispatch corrections applied. ubuntu-latest runner, non-top quota (10 tiles), reticle, clean tile headers, manifest rank/source/strata fields.
-- **2026-06-23:** Branch-trigger dispatch committed for Track B using the current Drive clip and Stage 1 candidate file; awaiting Actions acknowledgement/artifact.
+- **2026-06-23:** Track B generator/workflow added, then corrected: ubuntu-latest runner, non-top quota, reticle, clean headers, and manifest provenance.
+- **2026-06-23:** Reviewed Track B artifact. Confirmed heavy static/background candidate contamination and no credible centred-ball samples; recall remains inconclusive. Released reversible Stage 1b confirmed-static quarantine as the next bounded gate.
