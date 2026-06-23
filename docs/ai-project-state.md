@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 23 June 2026 (Stage 1c verified; Track B Stage 1c quarantined dispatched)  
+**Last reconciled:** 23 June 2026 (Track B Stage 1c blocked: GH_PAT auth)  
 **Authority:** Compact source of truth for AI work. Replace obsolete state rather than adding chat transcripts. Update after every decision, code/workflow change, completed/failed run, or artifact.
 
 ## Start here
@@ -135,9 +135,13 @@ Artifact ID: (previous run) — (~11.4 MB)
 
 ## Track B — quarantined audit (Stage 1c geometry-preserved output)
 
-**Status: TRACK B GEOMETRY REVIEW READY — AWAITING HUMAN REVIEW**
+**Status: TRACK B STAGE 1C — BLOCKED: GH_PAT AUTHENTICATION**
 
-Run ID: `28048960467` — dispatched 2026-06-23T18:45Z  
+Run ID: `28048960467` — failed (HTTP 401 on artifact download)  
+Blocking cause: `GH_PAT` secret missing, expired, or lacks Actions read scope.  
+Fix required: replace `GH_PAT` in repo secrets with a classic PAT (`repo` scope) or fine-grained PAT (this repo + Actions read). Then dispatch `360-track-b-stage1c-quarantined.yml`.
+
+Workflow updated (commit `79ad0511`): preflight now logs HTTP status and login before download; fails with clear message `GH_PAT missing, invalid, expired, or lacks Actions read access` instead of Python traceback.  
 Artifact: `track-b-stage1c-quarantined-28048960467` (pending completion)  
 Workflow: `.github/workflows/360-track-b-stage1c-quarantined.yml`
 
@@ -226,6 +230,7 @@ Do not tune Stage 2, smoke render, or modify the renderer before this review.
 - **2026-06-23:** Smoke frame cap raised to 50 (guarantees fresh YOLO inference beyond Stage 0 reuse). Smoke test dispatched: run `28045327124` on `main` @ `b21675b`. DISPATCHED — UNVERIFIED.
 - **2026-06-23:** Smoke test PASSED (RTX 4090, CUDA ok, fresh detections, geometry output verified). Full Stage 1c run dispatched: Actions run `28046275937` on `main`, `smoke_test=false`, full clip, standard Drive IDs. GPU: RTX 4090 allowlisted. DISPATCHED — UNVERIFIED. Pending: paste artifact → update GPU/PyTorch/CUDA/duration/spf/count → set STAGE 1C OUTPUT READY — AWAITING QUARANTINE + TRACK B.
 - **2026-06-23:** Stage 1c VERIFIED COMPLETE — run `28046275937`, artifact `7830052466`, RTX 4090, 3,597 frames, 6,436 fresh detections with `detection_geometry`, 462 Stage 0 reuse with null geometry. Track B quarantined workflow built (`360-track-b-stage1c-quarantined.yml`) and dispatched: run `28048960467`. Self-contained chain: GitHub artifact download → Stage 1b quarantine inline → Track B pack gen. Status: TRACK B GEOMETRY REVIEW READY — AWAITING HUMAN REVIEW.
+- **2026-06-23:** Track B Stage 1c blocked: GH_PAT HTTP 401 on artifact download. Workflow updated with preflight (logs login + artifact metadata HTTP status; clear failure message). No dispatch. Status: TRACK B STAGE 1C — BLOCKED: GH_PAT AUTHENTICATION.
 
 
 
