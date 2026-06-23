@@ -31,6 +31,11 @@ on:
         required: false
         default: ''
         type: string
+      attempt_num:
+        description: 'Redispatch attempt counter — do not set manually'
+        required: false
+        default: '1'
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -197,7 +202,11 @@ jobs:
                   return json.loads(r.read())
 
           def redispatch():
-              """Re-dispatch this workflow so we get a fresh attempt."""
+              """Re-dispatch this workflow so we get a fresh attempt (max 3 total)."""
+              attempt = int("${{ github.event.inputs.attempt_num }}" or "1")
+              if attempt >= 3:
+                  print(f"ERROR: Already on attempt {attempt}/3 — giving up to avoid burning credit. Manual retry required.", file=sys.stderr)
+                  sys.exit(1)
               payload = json.dumps({
                   "ref": "${{ github.ref_name }}",
                   "inputs": {
@@ -207,6 +216,7 @@ jobs:
                       "test_duration_sec":   "${{ github.event.inputs.test_duration_sec }}",
                       "dry_run":             "${{ github.event.inputs.dry_run }}",
                       "excluded_offer_ids":  "${{ github.event.inputs.excluded_offer_ids }}",
+                      "attempt_num":         str(attempt + 1),
                   }
               }).encode()
               req = urllib.request.Request(
@@ -400,11 +410,18 @@ jobs:
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          echo "SSH never came up on this host — instance was a dud. Re-dispatching a fresh run with the same inputs..."
+          ATTEMPT_NUM="${{ github.event.inputs.attempt_num }}"
+          ATTEMPT_NUM="${ATTEMPT_NUM:-1}"
+          if [ "$ATTEMPT_NUM" -ge 3 ]; then
+            echo "ERROR: SSH failure on attempt ${ATTEMPT_NUM}/3 — giving up to avoid burning credit. Manual retry required."
+            exit 1
+          fi
+          NEXT_ATTEMPT=$((ATTEMPT_NUM + 1))
+          echo "SSH never came up on this host — instance was a dud. Re-dispatching attempt ${NEXT_ATTEMPT}/3..."
           curl -s -X POST -H "Authorization: token ${GH_PAT}" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-upload.yml/dispatches" \
-            -d '{"ref":"${{ github.ref_name }}","inputs":{"media_id":"${{ github.event.inputs.media_id }}","filename":"${{ github.event.inputs.filename }}","captured_at":"${{ github.event.inputs.captured_at }}"}}'
+            -d "{"ref":"${{ github.ref_name }}","inputs":{"media_id":"${{ github.event.inputs.media_id }}","filename":"${{ github.event.inputs.filename }}","captured_at":"${{ github.event.inputs.captured_at }}","attempt_num":"${NEXT_ATTEMPT}"}}"
           echo "Fresh run dispatched. Failing this run (dud host already terminated below)."
           exit 1
 
@@ -521,14 +538,21 @@ jobs:
                 exit 0
                 ;;
               BENCHMARK_FAILED)
-                echo "[poll $i] Benchmark failed — redispatching on a fresh offer..."
+                ATTEMPT_NUM="${{ github.event.inputs.attempt_num }}"
+                ATTEMPT_NUM="${ATTEMPT_NUM:-1}"
+                if [ "$ATTEMPT_NUM" -ge 3 ]; then
+                  echo "ERROR: Benchmark failed on attempt ${ATTEMPT_NUM}/3 — giving up to avoid burning credit. Manual retry required."
+                  exit 1
+                fi
+                NEXT_ATTEMPT=$((ATTEMPT_NUM + 1))
+                echo "[poll $i] Benchmark failed — redispatching attempt ${NEXT_ATTEMPT}/3 on a fresh offer..."
                 PREV_EXCLUDED="${{ github.event.inputs.excluded_offer_ids }}"
                 THIS_OFFER="${{ steps.launch.outputs.used_offer_id }}"
                 NEW_EXCLUDED="${PREV_EXCLUDED:+${PREV_EXCLUDED},}${THIS_OFFER}"
                 curl -s -X POST -H "Authorization: token ${{ secrets.GH_PAT }}" \
                   -H "Accept: application/vnd.github.v3+json" \
                   "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-upload.yml/dispatches" \
-                  -d "{\"ref\":\"${{ github.ref_name }}\",\"inputs\":{\"media_id\":\"${{ github.event.inputs.media_id }}\",\"filename\":\"${{ github.event.inputs.filename }}\",\"captured_at\":\"${{ github.event.inputs.captured_at }}\",\"test_duration_sec\":\"${{ github.event.inputs.test_duration_sec }}\",\"dry_run\":\"${{ github.event.inputs.dry_run }}\",\"excluded_offer_ids\":\"${NEW_EXCLUDED}\"}}"
+                  -d "{\"ref\":\"${{ github.ref_name }}\",\"inputs\":{\"media_id\":\"${{ github.event.inputs.media_id }}\",\"filename\":\"${{ github.event.inputs.filename }}\",\"captured_at\":\"${{ github.event.inputs.captured_at }}\",\"test_duration_sec\":\"${{ github.event.inputs.test_duration_sec }}\",\"dry_run\":\"${{ github.event.inputs.dry_run }}\",\"excluded_offer_ids\":\"${NEW_EXCLUDED}\",\"attempt_num\":\"${NEXT_ATTEMPT}\"}}"
                 echo "Fresh run dispatched excluding offers: ${NEW_EXCLUDED}"
                 exit 1
                 ;;
@@ -582,5 +606,6 @@ jobs:
           else:
               print(f"WARNING: could not terminate {INSTANCE_ID} via any endpoint — terminate manually")
           PY
+
 
 
