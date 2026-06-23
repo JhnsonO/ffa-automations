@@ -207,6 +207,13 @@ def load_detector(weights_path):
 
 
 def detect_ball_candidates(model, equirect_frame):
+    """
+    Run YOLO on each perspective crop and return raw detections.
+
+    Each entry in the returned list is a tuple:
+        (yaw, pitch, conf, crop_yaw, bbox_xyxy, crop_w, crop_h)
+    where bbox_xyxy = [x1, y1, x2, y2] in crop-pixel coordinates.
+    """
     raw = []
     for crop_yaw in CROP_YAWS_DEG:
         crop = extract_crop_frame(equirect_frame, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
@@ -218,21 +225,82 @@ def detect_ball_candidates(model, equirect_frame):
             for box in r.boxes:
                 conf = float(box.conf[0])
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
-                cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
-                yaw, pitch = crop_pixel_to_yaw_pitch(cx, cy, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
-                raw.append((yaw, pitch, conf, crop_yaw))
-    return dedupe_detections(raw)
+                cx, cy_px = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                yaw, pitch = crop_pixel_to_yaw_pitch(cx, cy_px, crop_yaw, CROP_FOV_DEG, CROP_W, CROP_H)
+                raw.append((yaw, pitch, conf, crop_yaw, [x1, y1, x2, y2], CROP_W, CROP_H))
+    # Deduplicate using (yaw, pitch, conf) only — geometry kept on first surviving hit
+    return _dedupe_with_geometry(raw)
+
+
+def _dedupe_with_geometry(raw, thresh_deg=DEDUP_THRESH_DEG):
+    """
+    Deduplication that preserves geometry alongside each surviving detection.
+    Mirrors dedupe_detections() logic exactly; highest-conf wins per cluster.
+    """
+    kept = []  # each entry: (yaw, pitch, conf, crop_yaw, bbox_xyxy, crop_w, crop_h)
+    for det in sorted(raw, key=lambda d: -d[2]):
+        yaw, pitch = det[0], det[1]
+        if all(angular_distance(yaw, pitch, k[0], k[1]) > thresh_deg for k in kept):
+            kept.append(det)
+    return kept
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Detection geometry helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_detection_geometry(x1, y1, x2, y2, crop_w, crop_h):
+    """
+    Build the detection_geometry sub-object for a new YOLO detection.
+
+    All values are in crop-pixel coordinates.  No rounding on bbox_xyxy to
+    preserve raw detector output; derived scalars are rounded to 2 dp.
+    """
+    w = x2 - x1
+    h = y2 - y1
+    area = w * h
+    aspect = round(w / h, 4) if h > 0 else None
+    return {
+        "bbox_xyxy":       [round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)],
+        "bbox_width_px":   round(w, 2),
+        "bbox_height_px":  round(h, 2),
+        "bbox_area_px":    round(area, 2),
+        "bbox_aspect_ratio": aspect,
+        "crop_width_px":   crop_w,
+        "crop_height_px":  crop_h,
+    }
+
+
+def _null_detection_geometry():
+    """
+    Explicit null geometry for Stage 0 reused detections where raw box
+    coordinates are unavailable.  All fields present, all values null.
+    """
+    return {
+        "bbox_xyxy":         None,
+        "bbox_width_px":     None,
+        "bbox_height_px":    None,
+        "bbox_area_px":      None,
+        "bbox_aspect_ratio": None,
+        "crop_width_px":     None,
+        "crop_height_px":    None,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Candidate processing
 # ─────────────────────────────────────────────────────────────────────────────
 def process_candidate(yaw, pitch, raw_conf, source, crop_yaw,
-                      hm, bin_lookup, pitch_min, pitch_max):
+                      hm, bin_lookup, pitch_min, pitch_max,
+                      detection_geometry=None):
     """
     Apply pitch hard-filter then hotspot penalty.
 
     Returns a dict ready for stage1_candidates.json, or None if pitch-rejected.
+
+    detection_geometry must be the output of _make_detection_geometry() for
+    new detections, or _null_detection_geometry() for Stage 0 reused
+    detections.  If omitted (legacy callers / dry-run), null geometry is used.
     """
     # Hard pitch filter — drop before any further processing
     if pitch < pitch_min or pitch > pitch_max:
@@ -249,6 +317,9 @@ def process_candidate(yaw, pitch, raw_conf, source, crop_yaw,
             region_label = f"({r['centre_yaw']:.1f},{r['centre_pitch']:.1f})"
             break
 
+    if detection_geometry is None:
+        detection_geometry = _null_detection_geometry()
+
     return {
         "yaw":           round(yaw, 3),
         "pitch":         round(pitch, 3),
@@ -258,6 +329,10 @@ def process_candidate(yaw, pitch, raw_conf, source, crop_yaw,
         "source":        source,        # "stage0_reuse" | "new_detection"
         "crop_yaw":      crop_yaw,
         "region":        region_label,  # None if not near any hotspot region
+        # ── Stage 1c: detector box geometry ─────────────────────────────────
+        # Present for new_detection; all fields null for stage0_reuse.
+        # Do not filter or re-weight on these fields here; evidence only.
+        "detection_geometry": detection_geometry,
     }
 
 
@@ -317,13 +392,19 @@ def run_stage1(args):
         if args.max_frames and frame_idx >= args.max_frames:
             break
 
-        candidates_raw = []   # (yaw, pitch, conf, crop_yaw, source)
+        # Each entry: (yaw, pitch, conf, crop_yaw, source, geometry_or_none)
+        candidates_raw = []
 
         if frame_idx in s0_frame_set:
             # ── Reuse Stage 0 detections ──────────────────────────────────────
             for det in s0_frames[frame_idx]:
                 # det: [yaw, pitch, conf, crop_yaw, [yb, pb]]
-                candidates_raw.append((det[0], det[1], det[2], det[3], "stage0_reuse"))
+                # Stage 0 did not record bbox; geometry is explicitly null.
+                candidates_raw.append((
+                    det[0], det[1], det[2], det[3],
+                    "stage0_reuse",
+                    _null_detection_geometry(),
+                ))
             n_s0_reuse += len(s0_frames[frame_idx])
         else:
             # ── Detect on this frame ───────────────────────────────────────────
@@ -336,16 +417,24 @@ def run_stage1(args):
                     all_candidates[frame_idx] = []
                     continue
                 dets = detect_ball_candidates(model, frame)
-            for (yaw, pitch, conf, crop_yaw) in dets:
-                candidates_raw.append((yaw, pitch, conf, crop_yaw, "new_detection"))
+            for det in dets:
+                yaw, pitch, conf, crop_yaw, bbox_xyxy, crop_w, crop_h = det
+                geom = _make_detection_geometry(
+                    bbox_xyxy[0], bbox_xyxy[1], bbox_xyxy[2], bbox_xyxy[3],
+                    crop_w, crop_h,
+                )
+                candidates_raw.append((yaw, pitch, conf, crop_yaw, "new_detection", geom))
             n_new_detected += len(dets)
 
         # ── Apply pitch filter + penalty ──────────────────────────────────────
         frame_cands = []
-        for (yaw, pitch, raw_conf, crop_yaw, source) in candidates_raw:
-            cand = process_candidate(yaw, pitch, raw_conf, source, crop_yaw,
-                                     hm, bin_lookup,
-                                     args.pitch_min_deg, args.pitch_max_deg)
+        for (yaw, pitch, raw_conf, crop_yaw, source, geom) in candidates_raw:
+            cand = process_candidate(
+                yaw, pitch, raw_conf, source, crop_yaw,
+                hm, bin_lookup,
+                args.pitch_min_deg, args.pitch_max_deg,
+                detection_geometry=geom,
+            )
             if cand is None:
                 n_pitch_rejected += 1
                 continue

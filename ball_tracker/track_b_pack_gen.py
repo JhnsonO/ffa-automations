@@ -143,6 +143,9 @@ def _make_cand_record(fi, cands, lbls, cand, rank, fps, sample_type):
         "reviewed_pitch":    round(cand["pitch"], 3),
         "reviewed_source":   cand.get("source"),
         "reviewed_crop_yaw": cand.get("crop_yaw"),
+        # Stage 1c: pass detection_geometry through when present; None otherwise.
+        # Do not filter or re-weight on this field here.
+        "detection_geometry": cand.get("detection_geometry"),
     }
 
 

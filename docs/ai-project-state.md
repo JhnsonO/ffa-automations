@@ -142,12 +142,26 @@ A one-off local-chain run eliminates the fragile Drive handoff: it downloads the
 
 This run is CPU-only, uses no YOLO, does not touch Stage 2 or renderer logic, and does not need a new Drive file ID.
 
+## Stage 1c — detection geometry preservation
+
+**Status: COMPLETED — VERIFIED (local)**
+
+Implemented:
+- `ball_tracker/stage1_candidate_gen.py` — `detection_geometry` sub-object added to every candidate.
+  - New YOLO detections: `bbox_xyxy`, `bbox_width_px`, `bbox_height_px`, `bbox_area_px`, `bbox_aspect_ratio`, `crop_width_px`, `crop_height_px` — all populated from raw detector output.
+  - Stage 0 reused detections: all geometry fields present but explicitly `null` (no invented values).
+  - Old files without `detection_geometry` load cleanly via `.get()`.
+- `ball_tracker/track_b_pack_gen.py` — `detection_geometry` passed through to manifest `candidate_samples.frames` records when present.
+- `ball_tracker/tests/test_stage1c_geometry.py` — 4 fixture tests; all pass locally.
+
+No candidate removed or reweighted. No filtering logic added. No workflow dispatched (not needed for this change). Schema backward-compatible.
+
 ## Next gate
 
 1. Obtain the quarantined Track B artifact.
 2. Review candidate pack: this is now the residual non-static precision measurement.
 3. Review zero-candidate pack: this now includes the 1,344 frames emptied by quarantine, so it is the first meaningful missed-ball/recall check.
-4. Only then choose exactly one path: detector false-positive mitigation, targeted recovery for misses, bounded Stage 1 data-contract improvement, or Stage 2 work.
+4. Only then choose exactly one path: detector false-positive mitigation, targeted recovery for misses, bounded Stage 1 data-contract improvement (using geometry evidence), or Stage 2 work.
 
 Do not tune Stage 2, smoke render, or modify the renderer before this review.
 
@@ -164,4 +178,5 @@ Do not tune Stage 2, smoke render, or modify the renderer before this review.
 - **2026-06-23:** Ruled out Stage 1 geometry/serialisation with micro re-detect; confirmed detector candidate-quality failure.
 - **2026-06-23:** Built and reviewed original Track B; confirmed static-background contamination.
 - **2026-06-23:** Built and verified reversible Stage 1b confirmed-static quarantine; quarantined Track B branch run dispatched.
+- **2026-06-23:** Stage 1c — detection geometry preservation implemented and tested. `detection_geometry` sub-object in every Stage 1 candidate; null for Stage 0 reuse; carried through Track B manifest.
 
