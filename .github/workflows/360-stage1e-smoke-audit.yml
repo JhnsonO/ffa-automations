@@ -1,0 +1,238 @@
+name: 360 Stage 1e - Visual Consistency Smoke Audit
+
+on:
+  push:
+    branches:
+      - 'run/stage1e-smoke-*'
+  workflow_dispatch:
+    inputs:
+      max_candidates:
+        description: 'Max candidates to score (default 100 for smoke; 0 = full run)'
+        default: '100'
+
+jobs:
+  stage1e-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0 aria2
+          pip install --quiet 'numpy<2' pillow opencv-python-headless requests ultralytics
+
+      - name: Preflight - verify GH_PAT
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, sys, json
+          token = os.environ.get("GH_PAT", "")
+          if not token:
+              print("FATAL: GH_PAT not set"); sys.exit(1)
+          try:
+              req = urllib.request.Request(
+                  "https://api.github.com/user",
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+              with urllib.request.urlopen(req) as r:
+                  user = json.loads(r.read())
+              print(f"Token OK: login={user.get('login')}")
+          except urllib.error.HTTPError as e:
+              print(f"FATAL: GH_PAT check failed: HTTP {e.code}"); sys.exit(1)
+
+          # Stage 1d artifact (from the geo-filtered run)
+          for art_id in ["7834062743"]:
+              try:
+                  req2 = urllib.request.Request(
+                      f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{art_id}",
+                      headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+                  with urllib.request.urlopen(req2) as r2:
+                      art = json.loads(r2.read())
+                  print(f"Artifact {art_id} OK: name={art.get('name')}, expired={art.get('expired')}")
+              except urllib.error.HTTPError as e:
+                  print(f"FATAL: artifact {art_id}: HTTP {e.code}"); sys.exit(1)
+          print("Preflight PASSED")
+          PY
+
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - << 'PY'
+          import json, urllib.request, os
+          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
+          creds_data = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
+          r = urllib.request.urlopen(urllib.request.Request(token_uri, data=payload,
+              headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
+          open("/tmp/drive_access_token.txt", "w").write(tok["access_token"])
+          print(f"Drive token OK (expires_in={tok.get('expires_in')}s)")
+          PY
+
+      - name: Download Stage 1d artifact (track-b-stage1c-quarantined run)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/stage1d_input
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, sys
+          token = os.environ["GH_PAT"]
+          # Artifact 7834062743 = track-b-stage1c-quarantined-28058548998
+          # Contains stage1_candidates_quarantined.json (Stage 1b output used as Stage 1d base)
+          art_id = "7834062743"
+          try:
+              class NoRedirect(urllib.request.HTTPRedirectHandler):
+                  def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+              opener = urllib.request.build_opener(NoRedirect())
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{art_id}/zip",
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+              try:
+                  opener.open(req)
+                  blob_url = None
+              except urllib.error.HTTPError as redir:
+                  blob_url = redir.headers.get("Location")
+              if not blob_url:
+                  print("FATAL: no redirect"); sys.exit(1)
+              with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+                  data = r.read()
+              print(f"Downloaded {len(data)} bytes")
+          except urllib.error.HTTPError as e:
+              print(f"FATAL: {e.code}"); sys.exit(1)
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/stage1d_input")
+          print("Extracted:", os.listdir("/tmp/stage1d_input"))
+          PY
+          ls -lh /tmp/stage1d_input/
+
+      - name: Download Stage 1c raw candidates artifact (for Stage 1b→1d re-run)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/stage1c_input
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, sys
+          token = os.environ["GH_PAT"]
+          art_id = "7830052466"  # Stage 1c candidates (pre-quarantine)
+          try:
+              class NoRedirect(urllib.request.HTTPRedirectHandler):
+                  def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+              opener = urllib.request.build_opener(NoRedirect())
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{art_id}/zip",
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+              try:
+                  opener.open(req)
+                  blob_url = None
+              except urllib.error.HTTPError as redir:
+                  blob_url = redir.headers.get("Location")
+              if not blob_url:
+                  print("FATAL: no redirect"); sys.exit(1)
+              with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+                  data = r.read()
+              print(f"Downloaded {len(data)} bytes")
+          except urllib.error.HTTPError as e:
+              print(f"FATAL: {e.code}"); sys.exit(1)
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/stage1c_input")
+          print("Extracted:", os.listdir("/tmp/stage1c_input"))
+          PY
+          ls -lh /tmp/stage1c_input/
+
+      - name: Download hotspot map from Drive
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          aria2c -q -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/stage1c_input --out=hotspot_map.json \
+            "https://www.googleapis.com/drive/v3/files/1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M?alt=media"
+
+      - name: Download equirect_trim.mp4 from Drive
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          aria2c -x 8 -s 8 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/stage1c_input --out=equirect_trim.mp4 \
+            "https://www.googleapis.com/drive/v3/files/1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX?alt=media"
+          du -sh /tmp/stage1c_input/equirect_trim.mp4
+
+      - name: Download YOLO ball detector weights from Drive
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          mkdir -p /tmp/models
+          aria2c -q -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/models --out=football-ball-detection.pt \
+            "https://www.googleapis.com/drive/v3/files/1isw4wx-MK9h9LMr36VvIWlJD6ppUvw7V?alt=media"
+          ls -lh /tmp/models/football-ball-detection.pt
+
+      - name: Run Stage 1b static quarantine
+        run: |
+          mkdir -p /tmp/stage1b_output
+          python3 ball_tracker/stage1b_static_quarantine.py \
+            --stage1-candidates /tmp/stage1c_input/stage1_candidates.json \
+            --hotspot-map       /tmp/stage1c_input/hotspot_map.json \
+            --output-dir        /tmp/stage1b_output \
+            --stage1-file-id    "stage1c-run-28046275937-artifact-7830052466" \
+            --hotspot-map-file-id "1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M"
+
+      - name: Run Stage 1d geometry filter
+        run: |
+          mkdir -p /tmp/stage1d_output
+          python3 ball_tracker/stage1d_geometry_filter.py \
+            --stage1b-candidates /tmp/stage1b_output/stage1_candidates_quarantined.json \
+            --output-dir         /tmp/stage1d_output \
+            --area-max-px        100.0 \
+            --ar-max             1.25 \
+            --input-file-id      "stage1b-from-stage1c-run-28046275937-artifact-7830052466"
+          ls -lh /tmp/stage1d_output/
+
+      - name: Run Stage 1e fixture tests
+        run: python3 ball_tracker/tests/test_stage1e_visual_consistency.py
+
+      - name: Run Stage 1e smoke audit (100 candidates)
+        run: |
+          mkdir -p /tmp/stage1e_output
+          MAX="${{ github.event.inputs.max_candidates }}"
+          MAX="${MAX:-100}"
+          if [ "$MAX" = "0" ]; then MAX_ARG=""; else MAX_ARG="--max-candidates $MAX"; fi
+          python3 ball_tracker/stage1e_visual_consistency.py \
+            --stage1d-candidates /tmp/stage1d_output/stage1_candidates_geo_filtered.json \
+            --equirect           /tmp/stage1c_input/equirect_trim.mp4 \
+            --weights            /tmp/models/football-ball-detection.pt \
+            --output-dir         /tmp/stage1e_output \
+            --input-file-id      "stage1d-geo-filtered-from-stage1c-run-28046275937" \
+            $MAX_ARG
+          ls -lh /tmp/stage1e_output/
+
+      - name: Collect outputs
+        run: |
+          mkdir -p final_output
+          cp /tmp/stage1e_output/stage1_candidates_stage1e.json  final_output/ || echo "WARN: annotated json missing"
+          cp /tmp/stage1e_output/stage1e_report.json             final_output/ || echo "WARN: report json missing"
+          cp /tmp/stage1e_output/stage1e_report.txt              final_output/ || echo "WARN: report txt missing"
+          cp /tmp/stage1e_output/stage1e_audit_pack.png          final_output/ || echo "WARN: audit pack missing"
+          echo "=== final_output ==="
+          ls -lh final_output/
+
+      - name: Mark smoke audit ready
+        run: echo "STAGE 1E SMOKE AUDIT READY — AWAITING HUMAN REVIEW"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage1e-smoke-audit-${{ github.run_id }}
+          path: final_output/
+          retention-days: 30
