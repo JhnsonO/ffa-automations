@@ -2,6 +2,9 @@ name: Stage 2 Visual Contact Sheet
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - run/contact-sheet
 
 jobs:
   contact-sheet:
@@ -34,7 +37,6 @@ jobs:
           creds = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
           token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
 
-          # Refresh access token
           resp = requests.post("https://oauth2.googleapis.com/token", data={
               "client_id": creds["installed"]["client_id"],
               "client_secret": creds["installed"]["client_secret"],
@@ -44,7 +46,6 @@ jobs:
           resp.raise_for_status()
           access_token = resp.json()["access_token"]
 
-          # Download clip
           file_id = "1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX"
           url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
           headers = {"Authorization": f"Bearer {access_token}"}
@@ -62,13 +63,10 @@ jobs:
           PYEOF
 
       - name: Probe clip
-        run: ffprobe -v quiet -print_format json -show_streams clip.mp4 | python3 -c "import json,sys; d=json.load(sys.stdin); v=[s for s in d['streams'] if s['codec_type']=='video'][0]; print(f\"Resolution: {v['width']}x{v['height']}, FPS: {v['r_frame_rate']}, frames: {v.get('nb_frames','?')}\")"
-
-      - name: Copy contact sheet script
-        run: cp ball_tracker/make_contact_sheet.py . 2>/dev/null || true
+        run: ffprobe -v quiet -print_format json -show_streams clip.mp4 | python3 -c "import json,sys; d=json.load(sys.stdin); v=[s for s in d['streams'] if s['codec_type']=='video'][0]; print(f\"Resolution: {v['width']}x{v['height']}, FPS: {v['r_frame_rate']}\")"
 
       - name: Generate contact sheet
-        run: python3 make_contact_sheet.py clip.mp4 stage2_contact_sheet.png
+        run: python3 ball_tracker/make_contact_sheet.py clip.mp4 stage2_contact_sheet.png
 
       - name: Upload contact sheet to Drive
         env:
@@ -115,5 +113,3 @@ jobs:
           name: stage2-contact-sheet
           path: stage2_contact_sheet.png
           retention-days: 7
-
-# v2
