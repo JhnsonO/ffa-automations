@@ -1,0 +1,131 @@
+name: 360 Stage 1b - Static Quarantine
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage1_candidates_file_id:
+        description: 'Drive ID of stage1_candidates.json'
+        required: true
+        default: '19feQa2zx3YcqU4LIP6MNOG_q8vyi8TmJ'
+        type: string
+      hotspot_map_file_id:
+        description: 'Drive ID of Stage 0 hotspot_map.json'
+        required: true
+        default: '1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M'
+        type: string
+  push:
+    branches:
+      - 'run/stage1b-quarantine-*'
+
+jobs:
+  quarantine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Resolve inputs
+        id: inputs
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            STAGE1_ID='${{ github.event.inputs.stage1_candidates_file_id }}'
+            HOTSPOT_ID='${{ github.event.inputs.hotspot_map_file_id }}'
+          else
+            STAGE1_ID='19feQa2zx3YcqU4LIP6MNOG_q8vyi8TmJ'
+            HOTSPOT_ID='1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M'
+          fi
+          echo "stage1_id=$STAGE1_ID" >> "$GITHUB_OUTPUT"
+          echo "hotspot_id=$HOTSPOT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Run Stage 1b fixture tests
+        run: python3 ball_tracker/tests/test_stage1b_quarantine.py
+
+      - name: Install transfer dependency
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends aria2
+          python3 -m pip install --quiet requests
+
+      - name: Get temporary Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - <<'PY'
+          import json, urllib.request
+          token_data = json.loads(__import__('os').environ['YOUTUBE_TOKEN'])
+          creds_data = json.loads(__import__('os').environ['YOUTUBE_CREDENTIALS'])
+          client_id = token_data.get('client_id') or creds_data['installed']['client_id']
+          client_secret = token_data.get('client_secret') or creds_data['installed']['client_secret']
+          refresh_token = token_data['refresh_token']
+          token_uri = token_data.get('token_uri', 'https://oauth2.googleapis.com/token')
+          data = json.dumps({
+              'client_id': client_id,
+              'client_secret': client_secret,
+              'refresh_token': refresh_token,
+              'grant_type': 'refresh_token',
+          }).encode()
+          request = urllib.request.Request(
+              token_uri, data=data,
+              headers={'Content-Type': 'application/json'}, method='POST')
+          response = json.loads(urllib.request.urlopen(request).read())
+          if 'access_token' not in response:
+              raise RuntimeError('Drive token refresh failed')
+          open('/tmp/drive_access_token.txt', 'w').write(response['access_token'])
+          print('Drive access token acquired')
+          PY
+
+      - name: Download Stage 1 and hotspot-map inputs
+        env:
+          STAGE1_ID: ${{ steps.inputs.outputs.stage1_id }}
+          HOTSPOT_ID: ${{ steps.inputs.outputs.hotspot_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          mkdir -p /tmp/stage1b/input /tmp/stage1b/output
+          aria2c -q -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/stage1b/input --out=stage1_candidates.json \
+            "https://www.googleapis.com/drive/v3/files/$STAGE1_ID?alt=media"
+          aria2c -q -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/stage1b/input --out=hotspot_map.json \
+            "https://www.googleapis.com/drive/v3/files/$HOTSPOT_ID?alt=media"
+          ls -lh /tmp/stage1b/input/
+
+      - name: Run reversible Stage 1b quarantine
+        env:
+          STAGE1_ID: ${{ steps.inputs.outputs.stage1_id }}
+          HOTSPOT_ID: ${{ steps.inputs.outputs.hotspot_id }}
+        run: |
+          python3 ball_tracker/stage1b_static_quarantine.py \
+            --stage1-candidates /tmp/stage1b/input/stage1_candidates.json \
+            --hotspot-map /tmp/stage1b/input/hotspot_map.json \
+            --output-dir /tmp/stage1b/output \
+            --stage1-file-id "$STAGE1_ID" \
+            --hotspot-map-file-id "$HOTSPOT_ID"
+          ls -lh /tmp/stage1b/output/
+
+      - name: Upload outputs to Drive
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          FOLDER_ID='1gHW29JbvUWnbvJTCC0J8O7r-O1IPZAd8'
+          for name in stage1_candidates_quarantined.json stage1b_quarantine_report.json stage1b_quarantine_report.txt; do
+            stem="${name%.*}"
+            ext="${name##*.}"
+            python3 ball_tracker/upload_to_drive.py \
+              "/tmp/stage1b/output/$name" \
+              "${stem}-${GITHUB_RUN_ID}.${ext}" \
+              "$FOLDER_ID"
+          done
+
+      - name: Upload outputs as GitHub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage1b-quarantine-${{ github.run_id }}
+          path: /tmp/stage1b/output/
+          retention-days: 30
