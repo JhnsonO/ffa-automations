@@ -17,7 +17,7 @@ Offline 360° football post-production. The camera follows only a credible fused
 - Ball evidence first; temporal evidence may strengthen it.
 - Player activity is a search/recovery prior only; it must never set camera yaw or pitch.
 - Wide fallback is allowed only after fused evidence fails.
-- Keep diagnostics, experiments, and renderer changes separate.
+- Keep diagnostics, experiments, and rendering isolated.
 
 ## Frozen / do-not-break
 
@@ -103,30 +103,33 @@ Multi-timepoint hotspot scan and renderer wide-fallback remain independent. Do n
 
 ### Track B — detector-quality audit
 
-**Released as the next active task.**
+**Status: DISPATCHED — UNVERIFIED**
 
-The existing `ball_tracker/detector_audit.py` / `.github/workflows/360-detector-audit.yml` are not a valid ground-truth gate: they sample uniformly and reference fence-corrupted v11 `tracking.json`.
+Script: `ball_tracker/track_b_pack_gen.py` (v1)  
+Workflow: `.github/workflows/360-track-b-audit.yml` (updated)  
+Commit: `5042d7e5115dbcf66b9f33c8172d0e1f5ebb2ee7`
 
-Replace them with a manifest-driven stratified audit that uses the clip and Stage 1 candidate observables, not tracker output as truth:
+Inputs required (workflow dispatch):
+- `equirect_file_id` — Drive ID of `equirect_trim.mp4`
+- `stage1_candidates_file_id` — Drive ID of `stage1_candidates.json`
 
-- temporal coverage across the clip;
-- no-candidate, one-candidate, and multi-candidate frames;
-- high / medium / low top weighted confidence;
-- candidate yaw/pitch coverage;
-- hotspot-adjacent versus neutral candidates;
-- detector-empty and cluttered/player-near frames.
+Expected outputs (Drive folder `1gHW29JbvUWnbvJTCC0J8O7r-O1IPZAd8`):
+- `candidate_precision_review_pack-{run_id}.png` — 60 tiles, 10×6 grid
+- `zero_candidate_coverage_review_pack-{run_id}.png` — 15 rows × 4 crops
+- `track_b_manifest-{run_id}.json` — deterministic manifest (seed=42)
+- `track_b_report-{run_id}.txt` — stratum counts only
+- `run_summary-{run_id}.json`
 
-For every sample, show a clean candidate-centred review tile and record only:
+No YOLO. No tracking.json. Uses `stage1_candidates.json` penalty field for hotspot strata.
 
-`ball_at_centre` / `ball_nearby_but_offset` / `not_ball` / `occluded_or_unclear`.
-
-Do not show scores in manual-review tiles. Alternate candidates/predictions may appear only in a separate analysis panel. Do not use v11 `tracking.json` as labels or sampling truth.
+Do not accept results until PNG packs are reviewed. Do not tune Stage 2, smoke render, or modify the renderer before review is complete.
 
 ## Next gate
 
-1. Build and run the bounded, manifest-driven Track B audit.
-2. Review label counts and error modes.
-3. Then choose exactly one response: candidate filtering/detector mitigation, targeted recovery strategy, or a bounded Stage 1 data-contract improvement.
+1. Dispatch `360 Track B - Detector Review Packs` workflow with equirect + stage1_candidates Drive IDs.
+2. Review `candidate_precision_review_pack.png` (60 tiles) and `zero_candidate_coverage_review_pack.png` (15 rows).
+3. Update this file to `COMPLETED — AWAITING REVIEW`, then to `ACCEPTED`/`REJECTED` after labels assigned.
+4. Then choose exactly one response: candidate filtering/detector mitigation, targeted recovery strategy, or bounded Stage 1 data-contract improvement.
 
 Do not tune Stage 2, dispatch smoke rendering, or modify the renderer before Track B is reviewed.
 
@@ -142,3 +145,5 @@ Do not tune Stage 2, dispatch smoke rendering, or modify the renderer before Tra
 
 - **2026-06-23:** Added living project-state file and `CLAUDE.md` operating contract.
 - **2026-06-23:** Reviewed micro re-detect panel. Ruled out Stage 1 geometry/serialisation as root cause; confirmed detector-quality failure for T0001/T0088; released manifest-driven Track B audit as the next gate.
+- **2026-06-23:** Built Track B review pack generator (`track_b_pack_gen.py`, `360-track-b-audit.yml` updated). No YOLO. 60-tile candidate pack + 15-row zero-coverage pack. Status: DISPATCHED — UNVERIFIED. Commit: `5042d7e`.
+
