@@ -1,4 +1,4 @@
-name: 360 Track B - Detector Audit
+name: 360 Track B - Detector Review Packs
 
 on:
   workflow_dispatch:
@@ -13,11 +13,6 @@ on:
         required: true
         default: ''
         type: string
-      hotspot_map_file_id:
-        description: 'Drive ID of hotspot_map.json (optional — leave blank to skip)'
-        required: false
-        default: ''
-        type: string
       excluded_offer_ids:
         description: 'Comma-separated Vast.ai offer IDs to skip'
         required: false
@@ -25,9 +20,9 @@ on:
         type: string
 
 jobs:
-  track-b-audit:
+  track-b-packs:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -83,10 +78,9 @@ jobs:
           excluded = [x.strip() for x in os.environ.get("EXCLUDED_OFFER_IDS","").split(",") if x.strip()]
           query = {
               "verified":   {"eq": True},  "rentable":   {"eq": True},
-              "cpu_cores":  {"gte": 32},   "cpu_ram":    {"gte": 65536},
-              "cpu_ghz":    {"gte": 4.5},  "disk_space": {"gte": 80},
-              "inet_down":  {"gte": 800},  "gpu_frac":   {"eq": 1},
-              "num_gpus":   {"eq": 1},
+              "cpu_cores":  {"gte": 16},   "cpu_ram":    {"gte": 32768},
+              "cpu_ghz":    {"gte": 3.5},  "disk_space": {"gte": 80},
+              "inet_down":  {"gte": 800},
           }
           resp   = vast_get("/bundles/", {"q": json.dumps(query)})
           offers = resp.get("offers", [])
@@ -97,15 +91,9 @@ jobs:
           if not offers:
               print("ERROR: No matching offers", file=sys.stderr); sys.exit(1)
 
-          def score(o):
-              dph = float(o.get("dph_total", 999))
-              gpu = (o.get("gpu_name") or "").lower()
-              bonus = 0.05 if any(g in gpu for g in ["3090","3080","4090","4080","4070","a100","a40","a10"]) else 0.0
-              return dph - bonus
-
-          offers.sort(key=score)
+          offers.sort(key=lambda o: float(o.get("dph_total", 999)))
           best = offers[0]
-          print(f"Selected: id={best['id']} gpu={best.get('gpu_name')} cpu={best.get('cpu_name')} dph=${best.get('dph_total')}")
+          print(f"Selected: id={best['id']} cpu={best.get('cpu_name')} dph=${best.get('dph_total')}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"offer_id={best['id']}\noffer_cpu={best.get('cpu_name','unknown')}\noffer_dph={best.get('dph_total','?')}\n")
           PY
@@ -218,11 +206,11 @@ jobs:
             add-apt-repository -y ppa:savoury1/ffmpeg4 2>/dev/null && \
             apt-get update -qq 2>/dev/null && \
             apt-get install -y --no-install-recommends ffmpeg libgl1 libglib2.0-0"
-          $SSH "pip install -q --break-system-packages 'numpy<2' ultralytics opencv-python-headless \
+          $SSH "pip install -q --break-system-packages 'numpy<2' pillow opencv-python-headless \
             google-auth google-auth-oauthlib google-api-python-client 2>/dev/null || \
-            pip install -q 'numpy<2' ultralytics opencv-python-headless \
+            pip install -q 'numpy<2' pillow opencv-python-headless \
             google-auth google-auth-oauthlib google-api-python-client"
-          $SSH "python3 -c \"import cv2, ultralytics; print('Imports OK')\""
+          $SSH "python3 -c \"import cv2, PIL; print('Imports OK')\""
 
       - name: Get Drive access token
         env:
@@ -258,7 +246,6 @@ jobs:
           PORT:                      ${{ steps.launch.outputs.port }}
           EQUIRECT_FILE_ID:          ${{ github.event.inputs.equirect_file_id }}
           STAGE1_CANDIDATES_FILE_ID: ${{ github.event.inputs.stage1_candidates_file_id }}
-          HOTSPOT_MAP_FILE_ID:       ${{ github.event.inputs.hotspot_map_file_id }}
         run: |
           ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
@@ -277,70 +264,36 @@ jobs:
             --dir=/tmp/ffa_trackb --out=stage1_candidates.json \
             'https://www.googleapis.com/drive/v3/files/$STAGE1_CANDIDATES_FILE_ID?alt=media' 2>&1 | tail -3"
 
-          if [ -n "$HOTSPOT_MAP_FILE_ID" ]; then
-            echo "--- Downloading hotspot_map.json ---"
-            $SSH "aria2c -x 4 --file-allocation=none \
-              --header='Authorization: Bearer $ACCESS_TOKEN' \
-              --dir=/tmp/ffa_trackb --out=hotspot_map.json \
-              'https://www.googleapis.com/drive/v3/files/$HOTSPOT_MAP_FILE_ID?alt=media' 2>&1 | tail -3"
-          else
-            echo "--- No hotspot map provided, skipping ---"
-          fi
-
           $SSH "ls -lh /tmp/ffa_trackb/"
 
-      - name: Upload scripts and YOLO model
+      - name: Upload pack generator script
         env:
           IP:   ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+          python3 -c "import base64; open('/tmp/packgen_b64.txt','w').write(base64.b64encode(open('ball_tracker/track_b_pack_gen.py','rb').read()).decode())"
+          $SSH "echo '$(cat /tmp/packgen_b64.txt)' | base64 -d > /tmp/ffa_trackb/track_b_pack_gen.py && echo 'pack_gen OK'"
 
-          echo "--- Uploading track_b_manifest.py ---"
-          python3 -c "import base64; open('/tmp/manifest_b64.txt','w').write(base64.b64encode(open('ball_tracker/track_b_manifest.py','rb').read()).decode())"
-          $SSH "echo '$(cat /tmp/manifest_b64.txt)' | base64 -d > /tmp/ffa_trackb/track_b_manifest.py && echo 'manifest OK'"
-
-          echo "--- Uploading track_b_audit.py ---"
-          python3 -c "import base64; open('/tmp/audit_b64.txt','w').write(base64.b64encode(open('ball_tracker/track_b_audit.py','rb').read()).decode())"
-          $SSH "echo '$(cat /tmp/audit_b64.txt)' | base64 -d > /tmp/ffa_trackb/track_b_audit.py && echo 'audit OK'"
-
-          echo "--- Downloading YOLO ball model ---"
-          $SSH "mkdir -p /tmp/ffa_trackb/models && \
-            if [ ! -f /tmp/ffa_trackb/models/football-ball-detection.pt ]; then \
-              pip install -q gdown && \
-              gdown -O /tmp/ffa_trackb/models/football-ball-detection.pt \
-                'https://drive.google.com/uc?id=1isw4wx-MK9h9LMr36VvIWlJD6ppUvw7V'; \
-            else echo 'model already present'; fi && \
-            ls -lh /tmp/ffa_trackb/models/football-ball-detection.pt"
-
-      - name: Build stratified manifest
+      - name: Generate Track B packs
         env:
-          IP:   ${{ steps.launch.outputs.ip }}
-          PORT: ${{ steps.launch.outputs.port }}
-        run: |
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ServerAliveInterval=15 root@$IP"
-          $SSH "cd /tmp/ffa_trackb && python3 track_b_manifest.py \
-            --stage1-candidates stage1_candidates.json \
-            --output track_b_manifest.json"
-          $SSH "ls -lh /tmp/ffa_trackb/track_b_manifest.json && echo 'manifest OK'"
-
-      - name: Run Track B detector audit
-        env:
-          IP:   ${{ steps.launch.outputs.ip }}
-          PORT: ${{ steps.launch.outputs.port }}
+          IP:                        ${{ steps.launch.outputs.ip }}
+          PORT:                      ${{ steps.launch.outputs.port }}
+          EQUIRECT_FILE_ID:          ${{ github.event.inputs.equirect_file_id }}
+          STAGE1_CANDIDATES_FILE_ID: ${{ github.event.inputs.stage1_candidates_file_id }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=60 -o ServerAliveInterval=30 root@$IP"
-          HOTSPOT_ARG=""
-          if $SSH "test -f /tmp/ffa_trackb/hotspot_map.json"; then
-            HOTSPOT_ARG="--hotspot-map hotspot_map.json"
-          fi
-          $SSH "cd /tmp/ffa_trackb && FFMPEG_BIN=/usr/bin/ffmpeg python3 track_b_audit.py \
-            --equirect      equirect_trim.mp4 \
-            --manifest      track_b_manifest.json \
-            --ball-model    models/football-ball-detection.pt \
-            --output        track_b_audit.json \
-            $HOTSPOT_ARG"
-          $SSH "ls -lh /tmp/ffa_trackb/track_b_audit.json && echo 'audit OK'"
+          $SSH "cd /tmp/ffa_trackb && \
+            GITHUB_SHA=${{ github.sha }} \
+            EQUIRECT_FILE_ID=$EQUIRECT_FILE_ID \
+            STAGE1_FILE_ID=$STAGE1_CANDIDATES_FILE_ID \
+            python3 track_b_pack_gen.py \
+              --equirect      equirect_trim.mp4 \
+              --stage1-candidates stage1_candidates.json \
+              --output-dir    /tmp/ffa_trackb/out \
+              --equirect-file-id  $EQUIRECT_FILE_ID \
+              --stage1-id         $STAGE1_CANDIDATES_FILE_ID"
+          $SSH "ls -lh /tmp/ffa_trackb/out/"
 
       - name: Pull outputs
         env:
@@ -348,24 +301,23 @@ jobs:
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           mkdir -p track_b_output
-          scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
-              root@$IP:/tmp/ffa_trackb/track_b_manifest.json track_b_output/
-          scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
-              root@$IP:/tmp/ffa_trackb/track_b_audit.json track_b_output/
-          echo "outputs pulled:"
+          for fname in track_b_manifest.json \
+                       candidate_precision_review_pack.png \
+                       zero_candidate_coverage_review_pack.png \
+                       track_b_report.txt \
+                       run_summary.json; do
+            scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
+                root@$IP:/tmp/ffa_trackb/out/$fname track_b_output/ \
+              || echo "WARN: $fname not found on remote"
+          done
+          echo "=== pulled outputs ==="
           ls -lh track_b_output/
-
-      - name: Upload outputs as GitHub artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: track-b-audit-${{ github.run_id }}
-          path: track_b_output/
-          retention-days: 30
 
       - name: Upload outputs to Google Drive
         env:
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
           YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
+          GITHUB_RUN_ID:       ${{ github.run_id }}
         run: |
           pip install -q google-auth google-auth-oauthlib google-api-python-client
           echo "$YOUTUBE_CREDENTIALS" > youtube_credentials.json
@@ -402,20 +354,38 @@ jobs:
           drive = build("drive", "v3", credentials=creds, cache_discovery=False)
 
           run_id = os.environ.get("GITHUB_RUN_ID", "unknown")
-          for fname in ["track_b_manifest.json", "track_b_audit.json"]:
+          uploads = [
+              ("track_b_manifest.json",                    "application/json"),
+              ("candidate_precision_review_pack.png",       "image/png"),
+              ("zero_candidate_coverage_review_pack.png",   "image/png"),
+              ("track_b_report.txt",                        "text/plain"),
+              ("run_summary.json",                          "application/json"),
+          ]
+          drive_ids = {}
+          for fname, mime in uploads:
               fpath = f"track_b_output/{fname}"
               if not os.path.isfile(fpath):
                   print(f"SKIP {fname} — not found"); continue
               stem, ext = fname.rsplit(".", 1)
-              media = MediaFileUpload(fpath, mimetype="application/json", resumable=True)
+              media = MediaFileUpload(fpath, mimetype=mime, resumable=True)
               uploaded = drive.files().create(
                   body={"name": f"{stem}-{run_id}.{ext}", "parents": [FOLDER_ID]},
                   media_body=media, fields="id,name,size"
               ).execute()
               size_kb = int(uploaded.get("size", 0)) // 1024
               print(f"Uploaded: {uploaded['name']} ({size_kb}KB)  id={uploaded['id']}")
+              drive_ids[fname] = uploaded["id"]
+
           print(f"Drive folder: https://drive.google.com/drive/folders/{FOLDER_ID}")
+          print(f"Drive IDs: {json.dumps(drive_ids, indent=2)}")
           PY
+
+      - name: Upload outputs as GitHub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: track-b-packs-${{ github.run_id }}
+          path: track_b_output/
+          retention-days: 30
 
       - name: Terminate Vast.ai instance
         if: always()
