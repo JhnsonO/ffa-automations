@@ -442,7 +442,22 @@ def run_stage1(args):
     n_new_detected       = 0   # detections from re-running the detector
     n_pitch_rejected     = 0   # dropped by hard pitch filter
     n_kept               = 0   # after pitch filter, penalty applied
-    n_nms_warnings       = 0   # NMS timeout / warning count
+    n_nms_warnings       = 0   # NMS log lines captured from Ultralytics logger
+
+    # Intercept Ultralytics logger for NMS warning lines
+    import logging as _logging
+    class _NMSCounter(_logging.Handler):
+        def __init__(self): super().__init__(); self.count = 0
+        def emit(self, record):
+            msg = record.getMessage().lower()
+            if "nms" in msg and ("time" in msg or "warn" in msg or "limit" in msg):
+                self.count += 1
+    _nms_handler = _NMSCounter()
+    try:
+        _ul_logger = _logging.getLogger("ultralytics")
+        _ul_logger.addHandler(_nms_handler)
+    except Exception:
+        _nms_handler = None
 
     fence_weighted_total = 0.0  # weighted_conf sum for candidates near fence
     fence_raw_total      = 0.0  # raw_conf sum for candidates near fence
@@ -476,11 +491,7 @@ def run_stage1(args):
                 if not ret:
                     all_candidates[frame_idx] = []
                     continue
-                import warnings as _warnings
-                with _warnings.catch_warnings(record=True) as _w:
-                    _warnings.simplefilter("always")
-                    dets = detect_ball_candidates(model, frame)
-                n_nms_warnings += sum(1 for w in _w if "NMS" in str(w.message) or "nms" in str(w.message).lower())
+                dets = detect_ball_candidates(model, frame)
             for det in dets:
                 yaw, pitch, conf, crop_yaw, bbox_xyxy, crop_w, crop_h = det
                 geom = _make_detection_geometry(
@@ -531,6 +542,14 @@ def run_stage1(args):
             )
 
     cap.release()
+
+    # Sync NMS warning count from Ultralytics logger handler
+    if _nms_handler is not None:
+        n_nms_warnings = _nms_handler.count
+        try:
+            _ul_logger.removeHandler(_nms_handler)
+        except Exception:
+            pass
 
     # ── Compute stats ─────────────────────────────────────────────────────────
     n_raw_total  = n_s0_reuse + n_new_detected  # before pitch filter

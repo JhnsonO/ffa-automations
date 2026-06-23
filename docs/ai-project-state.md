@@ -144,28 +144,36 @@ This run is CPU-only, uses no YOLO, does not touch Stage 2 or renderer logic, an
 
 ## Stage 1c — detection geometry preservation
 
-**Status: PAUSED — GPU preflight / observability hardening required**
+**Status: STAGE 1C — AWAITING COMPATIBLE GPU SMOKE TEST**
 
-Previous dispatch (Actions run `28041924767`) aborted: selected instance was an RTX PRO 4000 Blackwell GPU whose architecture is unsupported by the PyTorch 2.1.0-cuda11.8 image. Run produced NMS timeout warnings and no meaningful detection output. No valid Stage 1c artifact exists.
+Previous dispatch (Actions run `28041924767`) aborted: RTX PRO 4000 Blackwell GPU incompatible with PyTorch 2.1.0-cuda11.8. No valid Stage 1c artifact.
 
-Implemented:
-- `ball_tracker/stage1_candidate_gen.py` — `detection_geometry` sub-object added to every candidate.
-  - New YOLO detections: `bbox_xyxy`, `bbox_width_px`, `bbox_height_px`, `bbox_area_px`, `bbox_aspect_ratio`, `crop_width_px`, `crop_height_px` — all populated from raw detector output.
-  - Stage 0 reused detections: all geometry fields present but explicitly `null` (no invented values).
-  - Old files without `detection_geometry` load cleanly via `.get()`.
-- `ball_tracker/track_b_pack_gen.py` — `detection_geometry` passed through to manifest `candidate_samples.frames` records when present.
-- `ball_tracker/tests/test_stage1c_geometry.py` — 4 fixture tests; all pass locally.
+Implemented (unchanged):
+- `ball_tracker/stage1_candidate_gen.py` — `detection_geometry` sub-object on every candidate; null for Stage 0 reuse; schema backward-compatible.
+- `ball_tracker/track_b_pack_gen.py` — geometry passed through to Track B manifest.
+- `ball_tracker/tests/test_stage1c_geometry.py` — 4 fixture tests pass.
 
-No candidate removed or reweighted. No filtering logic added. Schema backward-compatible.
-
-**Observability hardening added (2026-06-23, pre-redispatch):**
+Observability hardening (active):
 - Startup env banner: Python, PyTorch, CUDA runtime, `cuda.is_available()`, device, GPU name, model placement.
-- Preflight: single small inference before full processing; confirms model on CUDA; logs elapsed time; exits code 2 if GPU unavailable or unsupported — no silent CPU fallback.
-- Progress every 100 frames: processed/total, %, elapsed, spf, ETA, raw detections, kept candidates, pitch rejections, NMS warning count.
-- `PYTHONUNBUFFERED=1 python3 -u` in workflow for live log streaming.
-- `run_summary.json` written at end of every run: device/GPU, versions, frame count, duration, avg spf, candidate totals, warning/error counters.
+- Preflight: single dummy inference; confirms model on CUDA; logs elapsed ms; exits code 2 on CPU fallback.
+- Progress every 100 frames: processed/total, %, elapsed, spf, ETA, raw, kept, pitch_rej, nms_warn.
+- `PYTHONUNBUFFERED=1 python3 -u` in workflow.
+- `run_summary.json` at end of every run.
+- NMS warning count captured via Ultralytics logger handler (not Python `warnings` module).
 
-**Do not redispatch until a compatible GPU offer is confirmed (RTX 3090/4090/A100/A40 recommended; avoid Blackwell series with PyTorch 2.1.0-cuda11.8).**
+GPU selection hardening (active, `360-stage1-candidates.yml`):
+- Allowlist: RTX 3090, RTX 4090, A40, A100, L40/L40S.
+- Blackwell rejection: strings `blackwell`, `b100`, `b200`, `gb200`, `rtx pro 4000 b`.
+- Scoring preference order: A100/A40 > 4090/L40 > 3090.
+- If no allowlisted offer found, workflow exits with error listing available GPU names.
+
+Smoke test path (active):
+- `smoke_test: true` input in `360-stage1-candidates.yml`.
+- Overrides max_frames to 10; uses same real clip, hotspot map, stage0 detections, model.
+- Uploads `stage1_output/` (inc. `run_summary.json`) as artifact `stage1-smoke-<run_id>`.
+- Artifact will show GPU name, PyTorch + CUDA versions, CUDA available, model device, preflight elapsed, and at least one 100-frame progress line (or end-of-run summary for short runs).
+
+**Next action: dispatch `360-stage1-candidates.yml` with `smoke_test: true` and the standard Drive IDs. Do not dispatch full run until smoke artifact is reviewed.**
 
 ## Next gate
 
@@ -192,5 +200,6 @@ Do not tune Stage 2, smoke render, or modify the renderer before this review.
 - **2026-06-23:** Stage 1c — detection geometry preservation implemented and tested. `detection_geometry` sub-object in every Stage 1 candidate; null for Stage 0 reuse; carried through Track B manifest.
 - **2026-06-23:** Stage 1c full run dispatched on `main` @ `fc988f05` (Actions run `28041924767`). STAGE 1C OUTPUT READY — AWAITING QUARANTINE + TRACK B once artifact verified.
 - **2026-06-23:** Stage 1c run aborted — RTX PRO 4000 Blackwell GPU incompatible with PyTorch 2.1.0-cuda11.8. Stage 1c paused. GPU preflight + observability hardening applied to `stage1_candidate_gen.py` and `360-stage1-candidates.yml`.
+- **2026-06-23:** GPU smoke-test path added. GPU allowlist (3090/4090/A40/A100/L40) + Blackwell rejection in offer selection. `smoke_test: true` input runs preflight + 10 frames on real data. NMS counter switched to Ultralytics logger handler. State: AWAITING COMPATIBLE GPU SMOKE TEST.
 
 

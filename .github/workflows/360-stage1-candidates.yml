@@ -38,6 +38,14 @@ on:
         required: false
         default: ''
         type: string
+      smoke_test:
+        description: 'Smoke test only (preflight + 10 frames). Overrides max_frames. Use to verify GPU before full run.'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   stage1:
@@ -114,13 +122,33 @@ jobs:
           offers = [o for o in offers if not any(s in (o.get("cpu_name") or "") for s in BAD_CPU)]
           if excluded:
               offers = [o for o in offers if str(o["id"]) not in excluded]
+
+          # GPU allowlist: only architectures known-compatible with pytorch/pytorch:2.1.0-cuda11.8
+          # Reject Blackwell (B100, B200, RTX PRO 4000 Blackwell, GB200) — unsupported by CUDA 11.8
+          BLACKWELL_REJECT = ["blackwell", "b100", "b200", "gb200", "rtx pro 4000 b"]
+          GPU_ALLOWLIST    = ["3090", "4090", "a40", "a100", "l40"]
+          def gpu_ok(o):
+              g = (o.get("gpu_name") or "").lower()
+              if any(b in g for b in BLACKWELL_REJECT):
+                  return False
+              return any(a in g for a in GPU_ALLOWLIST)
+          allowed = [o for o in offers if gpu_ok(o)]
+          if not allowed:
+              names = list({o.get("gpu_name","?") for o in offers[:10]})
+              print(f"ERROR: No offers match GPU allowlist {GPU_ALLOWLIST}. Available GPUs (sample): {names}", file=sys.stderr)
+              sys.exit(1)
+          offers = allowed
           if not offers:
               print("ERROR: No matching offers", file=sys.stderr); sys.exit(1)
 
           def score(o):
               dph = float(o.get("dph_total", 999))
               gpu = (o.get("gpu_name") or "").lower()
-              bonus = 0.05 if any(g in gpu for g in ["3090","3080","4090","4080","4070","a100","a40","a10"]) else 0.0
+              # Prefer A100/A40 (most reliable CUDA 11.8 compat) then 4090/3090/L40
+              if any(g in gpu for g in ["a100", "a40"]):      bonus = 0.10
+              elif any(g in gpu for g in ["4090", "l40"]):    bonus = 0.07
+              elif "3090" in gpu:                              bonus = 0.05
+              else:                                            bonus = 0.0
               return dph - bonus
 
           offers.sort(key=score)
@@ -328,10 +356,17 @@ jobs:
           PITCH_MIN_DEG: ${{ github.event.inputs.pitch_min_deg }}
           PITCH_MAX_DEG: ${{ github.event.inputs.pitch_max_deg }}
           MAX_FRAMES:    ${{ github.event.inputs.max_frames }}
+          SMOKE_TEST:    ${{ github.event.inputs.smoke_test }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=60 -o ServerAliveInterval=30 root@$IP"
-          MAXARG=""
-          if [ -n "$MAX_FRAMES" ]; then MAXARG="--max-frames $MAX_FRAMES"; fi
+          # Smoke test overrides max_frames unconditionally
+          if [ "$SMOKE_TEST" = "true" ]; then
+            MAXARG="--max-frames 10"
+            echo "--- SMOKE TEST MODE: max_frames=10 ---"
+          else
+            MAXARG=""
+            if [ -n "$MAX_FRAMES" ]; then MAXARG="--max-frames $MAX_FRAMES"; fi
+          fi
           echo "--- Running Stage 1 candidate generation ---"
           $SSH "cd /tmp/ffa_stage1 && PYTHONUNBUFFERED=1 python3 -u stage1_candidate_gen.py \
             --input              equirect_trim.mp4 \
@@ -357,7 +392,7 @@ jobs:
       - name: Upload Stage 1 outputs as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: stage1-candidates-${{ github.run_id }}
+          name: stage1-${{ github.event.inputs.smoke_test == 'true' && 'smoke' || 'candidates' }}-${{ github.run_id }}
           path: stage1_output/
           retention-days: 14
 
