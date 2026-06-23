@@ -93,35 +93,38 @@ Independent. Do not bundle renderer edits into Stage 2 or Track B.
 
 ### Track B — detector-quality audit
 
-**Status: IMPLEMENTED — READY TO DISPATCH**
+**Status: BRANCH TRIGGER COMMITTED — AWAITING ACTIONS ACKNOWLEDGEMENT**
 
-Current files:
+Canonical implementation:
 
 - `ball_tracker/track_b_pack_gen.py` (v2)
 - `.github/workflows/360-track-b-audit.yml` (v2)
 
-All six pre-dispatch corrections applied:
+Audit design:
 
-1. Workflow runs on `ubuntu-latest`; Vast.ai removed entirely.
-2. Manifest records `reviewed_rank`, `reviewed_yaw/pitch`, `reviewed_source/crop_yaw`, `sample_type`. 10-tile non-top quota (`NON_TOP_QUOTA=10`) samples rank-1 candidates from multi-candidate frames, spread across temporal thirds.
-3. Candidate tiles show a red crosshair reticle at the candidate centre, plus 2×2 label-slot grid: `ball_at_centre / ball_nearby_but_offset / not_ball / occluded_or_unclear`.
-4. Tile headers show frame ID only — no confidence strata, hotspot labels, scores, or anchor status on any tile.
-5. Zero-candidate pack uses temporal stratification only; no pitch-zone claims. Four crops at Stage 1 fixed yaws (0/90/180/270°) give horizontal spatial coverage.
-6. Manifest records: `seed`, `sample_type`, `frame_idx`, `reviewed_rank`, `reviewed_yaw`, `reviewed_pitch`, `reviewed_source`, `reviewed_crop_yaw`, `candidate_count`, `strata` (hidden provenance).
+1. Runs on `ubuntu-latest`; no Vast.ai.
+2. Manifest records reviewed rank, yaw/pitch, source/crop yaw, sample type, candidate count, and hidden strata.
+3. Candidate review pack is 60 samples: 50 top-ranked plus 10 second-ranked candidates from multi-candidate frames, temporally spread.
+4. Candidate tiles show frame ID, a centre reticle, and label slots only: `ball_at_centre / ball_nearby_but_offset / not_ball / occluded_or_unclear`.
+5. Zero-candidate pack is 15 temporally stratified rows, each showing fixed Stage 1 yaw crops at 0/90/180/270° with zero-candidate label slots.
+6. No YOLO, no `tracking.json`, and no automatic quality conclusion before review.
 
-Expected outputs after dispatch:
+One-off dispatch route committed because the available GitHub connector cannot call the manual workflow-dispatch endpoint:
 
-- `candidate_precision_review_pack.png` — 60 tiles (50 top + 10 non-top).
-- `zero_candidate_coverage_review_pack.png` — 15 zero-candidate rows × 4 crops.
-- `track_b_manifest.json`, `track_b_report.txt`, `run_summary.json`.
+- Branch: `run/track-b-audit-20260623`
+- Commit: `80b03336ada21d3e15897f2d160cad130ae409cd`
+- Workflow: `.github/workflows/360-track-b-branch-dispatch.yml`
+- Inputs fixed to the current clip and `stage1_candidates.json` Drive IDs.
+- Output: GitHub Actions artifact `track-b-packs-{run_id}` containing `candidate_precision_review_pack.png`, `zero_candidate_coverage_review_pack.png`, `track_b_manifest.json`, `track_b_report.txt`, and `run_summary.json`.
 
-No YOLO and no `tracking.json` in Track B. No automatic quality conclusion before human labels are reviewed.
+The branch-trigger commit has been made. A single immediate status check returned no check record yet, so do not claim completion or retry dispatch in a loop. Do not create another trigger branch.
 
 ## Next gate
 
-1. Dispatch `360-track-b-audit` with the two Drive IDs. Record `DISPATCHED — UNVERIFIED`.
-2. Review both packs and label the results.
-3. Only then choose one response: candidate filtering/detector mitigation, targeted recovery strategy, or a bounded Stage 1 data-contract improvement.
+1. Obtain the branch-triggered Track B Actions result/artifact.
+2. Set status to `COMPLETED — AWAITING REVIEW` only after the job finishes and the artifact exists.
+3. Review and label both packs.
+4. Then choose exactly one response: candidate filtering/detector mitigation, targeted recovery strategy, or a bounded Stage 1 data-contract improvement.
 
 Do not tune Stage 2, run smoke rendering, or modify the renderer before Track B review.
 
@@ -137,4 +140,5 @@ Do not tune Stage 2, run smoke rendering, or modify the renderer before Track B 
 - **2026-06-23:** Added living project-state file and `CLAUDE.md` operating contract.
 - **2026-06-23:** Reviewed micro re-detect panel. Ruled out Stage 1 geometry/serialisation; confirmed detector-quality failure for T0001/T0088.
 - **2026-06-23:** Track B generator/workflow added, but pre-dispatch review found an unnecessary Vast.ai workflow, review-bias leakage, no explicit centre/label UI, and top-only candidate sampling. Status corrected from `DISPATCHED — UNVERIFIED` to `IMPLEMENTED — REWORK REQUIRED — NOT DISPATCHED`.
-- **2026-06-23:** Track B v2 — all six pre-dispatch corrections applied. ubuntu-latest runner, non-top quota (10 tiles), reticle, clean tile headers, manifest rank/source/strata fields. Status → `IMPLEMENTED — READY TO DISPATCH`.
+- **2026-06-23:** Track B v2 — all six pre-dispatch corrections applied. ubuntu-latest runner, non-top quota (10 tiles), reticle, clean tile headers, manifest rank/source/strata fields.
+- **2026-06-23:** Branch-trigger dispatch committed for Track B using the current Drive clip and Stage 1 candidate file; awaiting Actions acknowledgement/artifact.
