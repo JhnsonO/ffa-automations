@@ -1,0 +1,89 @@
+name: 360 Track B - Branch Dispatch
+
+on:
+  push:
+    branches:
+      - "run/track-b-audit-*"
+
+jobs:
+  track-b-packs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      EQUIRECT_FILE_ID: 1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX
+      STAGE1_CANDIDATES_FILE_ID: 19feQa2zx3YcqU4LIP6MNOG_q8vyi8TmJ
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0 aria2
+          pip install --quiet 'numpy<2' pillow opencv-python-headless
+
+      - name: Get temporary Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 - <<'PY'
+          import json, urllib.request
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          client_id = token_data.get('client_id') or creds_data['installed']['client_id']
+          client_secret = token_data.get('client_secret') or creds_data['installed']['client_secret']
+          refresh_token = token_data['refresh_token']
+          token_uri = token_data.get('token_uri', 'https://oauth2.googleapis.com/token')
+          payload = json.dumps({
+              'client_id': client_id,
+              'client_secret': client_secret,
+              'refresh_token': refresh_token,
+              'grant_type': 'refresh_token',
+          }).encode()
+          req = urllib.request.Request(
+              token_uri, data=payload,
+              headers={'Content-Type': 'application/json'}, method='POST')
+          response = json.loads(urllib.request.urlopen(req).read())
+          if 'access_token' not in response:
+              raise RuntimeError('Drive token refresh failed')
+          open('/tmp/drive_token.txt', 'w').write(response['access_token'])
+          print('Drive access token acquired')
+          PY
+
+      - name: Download audit inputs
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          mkdir -p /tmp/ffa_trackb/out
+          aria2c -q -x 8 -s 8 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/ffa_trackb --out=equirect_trim.mp4 \
+            "https://www.googleapis.com/drive/v3/files/$EQUIRECT_FILE_ID?alt=media"
+          aria2c -q -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/ffa_trackb --out=stage1_candidates.json \
+            "https://www.googleapis.com/drive/v3/files/$STAGE1_CANDIDATES_FILE_ID?alt=media"
+          ls -lh /tmp/ffa_trackb/
+
+      - name: Generate review packs
+        run: |
+          GITHUB_SHA=${{ github.sha }} \
+          EQUIRECT_FILE_ID=$EQUIRECT_FILE_ID \
+          STAGE1_FILE_ID=$STAGE1_CANDIDATES_FILE_ID \
+          python3 ball_tracker/track_b_pack_gen.py \
+            --equirect /tmp/ffa_trackb/equirect_trim.mp4 \
+            --stage1-candidates /tmp/ffa_trackb/stage1_candidates.json \
+            --output-dir /tmp/ffa_trackb/out \
+            --equirect-file-id "$EQUIRECT_FILE_ID" \
+            --stage1-id "$STAGE1_CANDIDATES_FILE_ID"
+          ls -lh /tmp/ffa_trackb/out/
+
+      - name: Upload review artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: track-b-packs-${{ github.run_id }}
+          path: /tmp/ffa_trackb/out/
+          retention-days: 30
