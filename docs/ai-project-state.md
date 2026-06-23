@@ -1,65 +1,61 @@
 # FFA 360 Ball Tracker — AI Project State
 
 **Last reconciled:** 23 June 2026  
-**Authority:** This file is the compact source of truth for AI work on this repository. It supersedes older chat summaries where they conflict. Update it in the same change, or immediately after, whenever a meaningful decision, code change, workflow result, artifact, or acceptance gate changes.
+**Authority:** Compact source of truth for AI work. It supersedes older chat summaries where they conflict. Update this file after every meaningful decision, code/workflow change, completed/failed run, or new artefact.
 
 ## Start here
 
-1. Read this file first.
-2. Read only the files listed under the active task; do not fetch broad logs or unrelated modules.
-3. Preserve frozen files and boundaries below.
-4. After work, update **Current state**, **Next gate**, and **Change log**.
+1. Read this file and `CLAUDE.md` first.
+2. Read only the files named by the active task; use targeted searches/line ranges.
+3. Preserve frozen boundaries.
+4. Replace obsolete state rather than accumulating chat history.
 
 ## Product invariant
 
-This is an **offline** 360° football post-production pipeline. The camera follows only a credible fused ball path. Future frames and targeted re-runs may be used.
+Offline 360° football post-production. The camera follows only a credible fused ball path.
 
-- Ball evidence first; temporal evidence can strengthen it.
-- Player activity is a **search/recovery prior only**. It must never directly set camera yaw or pitch.
-- Wide fallback is allowed only after fused evidence fails, not because a single detector is weak.
-- Keep diagnostics, experiments, and production rendering separate.
+- Ball evidence first; temporal evidence may strengthen it.
+- Player activity is a search/recovery prior only; it must never set camera yaw or pitch.
+- Wide fallback is allowed only after fused evidence fails.
+- Keep diagnostics, experiments, and renderer changes separate.
 
 ## Frozen / do-not-break
 
-- `ball_tracker/run_tracker.py` v11 is the honest baseline. Do not modify it for Stage 2, Track A, Track B, diagnostics, or smoke tests.
-- v11 bootstrap static suppression is the foundation; reported confirmed coverage was 11.34% and it eliminated the known fence lock honestly.
-- Stage 2 is a separate module, not "v12" and not wired into the renderer.
-- No activity-driven renderer targets. Existing v6 safe fallback remains unchanged.
-- Never put tokens, credentials, secrets, or private keys in code, state docs, commits, or chat output.
+- `ball_tracker/run_tracker.py` v11 is the honest baseline. Do not modify it for Stage 2, diagnostics, Track A, Track B, or smoke tests.
+- v11 static suppression remains intact; its reported confirmed coverage was 11.34% and it eliminated the known fence lock honestly.
+- Stage 2 remains a separate module, never called v12 and not wired into the renderer.
+- Existing v6 safe fallback remains unchanged.
+- Never place secrets, tokens, credentials, or private keys in code, docs, commits, artefacts, or responses.
 
-## Key data contracts
+## Key contracts
 
 ### Stage 1
 
-`stage1_candidates.json` contains a frame-indexed candidate dictionary. Candidate fields include:
+`stage1_candidates.json` is frame-indexed. Candidates retain `yaw`, `pitch`, `raw_conf`, `penalty`, `weighted_conf`, `source`, `crop_yaw`, and `region`.
 
-`yaw`, `pitch`, `raw_conf`, `penalty`, `weighted_conf`, `source`, `crop_yaw`, `region`.
-
-Original YOLO `xyxy` box dimensions are **not persisted**. Stage 1 uses four yaw-only perspective crops at 0°, 90°, 180°, and 270°, with 110° FoV and 1280×720 output. Any geometry diagnostic that claims to reproduce Stage 1 must use that exact projection convention.
+Original YOLO `xyxy` dimensions are not retained. Stage 1 uses yaw-only perspective crops at 0°, 90°, 180°, 270°, FoV 110°, output 1280×720. Any Stage 1 geometry check must reproduce that exact convention.
 
 ### Stage 2
 
-`tracklets.json` observations are raw associated Stage 1 candidates only. Each `frames[]` observation holds `frame`, `yaw`, `pitch`, `weighted_conf`, `score`, and `alternates`.
+`tracklets.json` observations are raw associated Stage 1 candidates only: `frame`, `yaw`, `pitch`, `weighted_conf`, `score`, `alternates`.
 
-Kalman/predicted positions are transient for association; they are not persisted as observations. Gap records are separate in `gaps.json`.
+Kalman/predicted positions are transient association aids, not persisted observations. Gaps are stored separately in `gaps.json`.
 
-## Accepted results
+## Accepted evidence
 
-### Stage 0 / Stage 1
+### Stage 1 candidate generation
 
-Stage 1 is accepted for the current ~2 minute clip:
+Accepted for the current ~2-minute clip:
 
 - 3,597 frames processed.
-- 10,504 raw candidates: 703 reused from Stage 0 and 9,801 newly detected.
-- 3,607 pitch-rejected (34.3%); 6,897 retained.
-- Weighted-confidence reduction: 56.5%.
-- Known fence region near `(-77.4°, -3.9°)`: 3,478 retained candidates but 90.0% confidence suppression.
+- 10,504 raw candidates (703 Stage 0 reuse, 9,801 newly detected).
+- 3,607 pitch-rejected; 6,897 retained.
+- 56.5% weighted-confidence reduction.
+- Known fence region near `(-77.4°, -3.9°)` remains down-weighted, not hard-deleted.
 
-The fence is intentionally down-weighted rather than hard-deleted. A temporal linker must therefore explicitly reject static hotspot tracklets; continuity alone cannot be treated as proof of a ball.
+Therefore temporal continuity alone is not ball proof; static hotspot tracklets require explicit static rejection.
 
-## Current implementation status
-
-### Stage 2 temporal linking
+### Stage 2 implementation
 
 Implemented separately:
 
@@ -67,94 +63,82 @@ Implemented separately:
 - `.github/workflows/360-stage2-link.yml`
 - `ball_tracker/tests/test_stage2_fixture.py`
 
-It links candidates into tracklets, carries alternates, computes static-region occupancy / spread / displacement / persistence features, emits `tracklets.json` and `gaps.json`, and has static-hotspot rejection logic.
+It links candidates into tracklets, preserves alternates, calculates static-region/residual/motion features, and emits `tracklets.json` plus `gaps.json`.
 
-**Important:** automatic `anchor` status is provisional only. Smooth movement plus detector confidence has already proven insufficient evidence of a real ball.
+**Automatic `anchor` status is provisional only.** Smooth candidate motion and high detector confidence are not sufficient evidence of a real ball.
 
-### Tracklet verification decisions
+## Verified tracklet decisions
 
-- `T0066`: confirmed static false lock. Treat as `untrusted_static`; retain as a labelled calibration example for the future general static classifier. Do not hard-code it as an exception.
-- `T0001`, `T0017`, `T0088`: not permitted as anchors, smoke-render inputs, or Stage 2 configuration evidence. They require explicit visual evidence.
-- No smoke render and no new Stage 2 tuning until the current micro probe is reviewed.
+- `T0066`: confirmed static false lock. Keep as `untrusted_static` and a labelled calibration example for a future general static classifier; do not hard-code it as a special-case exception.
+- `T0001`: verified detector false-positive/mislocalised tracklet. Never use as anchor, smoke input, or Stage 2 tuning evidence.
+- `T0017`: rejected by visual pack; no credible candidate-centre ball correspondence. Never use as anchor, smoke input, or Stage 2 tuning evidence.
+- `T0088`: verified detector false-positive/mislocalised tracklet. Nearby visible balls do not rescue it because the candidate centre is not on the ball.
 
-### Verification artifacts
+No smoke render is permitted from these tracklets.
 
-Completed:
+## Micro re-detection gate
 
-- Stage 2 contact sheet.
-- Candidate-centred verification pack for T0001, T0017, T0088, with tight and context views plus separate analysis panels.
+**Status: COMPLETED — REVIEWED**
 
-Review rule: label clean review tiles before viewing alternates or predictions. Valid labels are:
-
-`ball_at_centre` / `ball_nearby_but_offset` / `not_ball` / `occluded_or_unclear`.
-
-A tracklet cannot become verified if it has repeated `not_ball` labels or relies mostly on `ball_nearby_but_offset` / `occluded_or_unclear`.
-
-### Current live gate: micro re-detection
-
-Implemented on `main`:
+Implemented:
 
 - `ball_tracker/micro_redetect.py`
 - `.github/workflows/360-micro-redetect.yml`
 
-Probe frames:
+Probes: T0088 frames 952, 977, 990; T0001 frame 14 control.
 
-- T0088: frames 952, 977, 990.
-- T0001: frame 14 (control).
+Result:
 
-The probe re-runs the same model and fixed Stage 1 crop geometry, displays stored-coordinate markers, raw re-detected boxes/centres, and a candidate-centred context crop. A run was reported as dispatched; its result has **not yet been reviewed or recorded here**.
+- Stored coordinates and fresh Stage 1 re-detection agree within 0.00–0.58° on all four probes.
+- Therefore Stage 1 mapping/serialisation/projection is not the root cause.
+- In every probe, the visible ball is offset from the stored marker; the fresh detector repeats the same wrong/mislocalised target rather than detecting the ball at its visible location.
 
-Interpretation:
-
-| Observation | Diagnosis |
-|---|---|
-| Box covers ball; stored marker elsewhere | Mapping / serialisation / geometry defect |
-| Box covers non-ball and stored marker matches it | Detector false positive |
-| No box near ball | Detector miss |
-| Box and stored marker agree near ball | Stage 2 association is the next suspect |
+**Diagnosis: detector candidate-quality failure, not a Stage 1 geometry bug and not a Stage 2 association bug.**
 
 ## Parallel tracks
 
 ### Track A — hotspot / fallback
 
-Multi-timepoint hotspot scan and renderer wide-fallback work remain independent from Stage 2. Do not bundle renderer edits into any Stage 2 or diagnostic task.
+Multi-timepoint hotspot scan and renderer wide-fallback remain independent. Do not bundle renderer edits into Stage 2 or Track B.
 
 ### Track B — detector-quality audit
 
-The existing `ball_tracker/detector_audit.py` and `.github/workflows/360-detector-audit.yml` are **not valid as a ground-truth gate** because they sample uniformly and cross-reference fence-corrupted v11 `tracking.json`.
+**Released as the next active task.**
 
-Before Track B is run, replace it with a manifest-driven, stratified audit derived from Stage 1 observable features:
+The existing `ball_tracker/detector_audit.py` / `.github/workflows/360-detector-audit.yml` are not a valid ground-truth gate: they sample uniformly and reference fence-corrupted v11 `tracking.json`.
+
+Replace them with a manifest-driven stratified audit that uses the clip and Stage 1 candidate observables, not tracker output as truth:
 
 - temporal coverage across the clip;
-- zero / one / multiple-candidate frames;
+- no-candidate, one-candidate, and multi-candidate frames;
 - high / medium / low top weighted confidence;
 - candidate yaw/pitch coverage;
 - hotspot-adjacent versus neutral candidates;
-- detector-empty and cluttered frames.
+- detector-empty and cluttered/player-near frames.
 
-Use `stage1_candidates.json` and the clip; hotspot data may be annotated. Do **not** require v11 `tracking.json` as truth.
+For every sample, show a clean candidate-centred review tile and record only:
+
+`ball_at_centre` / `ball_nearby_but_offset` / `not_ball` / `occluded_or_unclear`.
+
+Do not show scores in manual-review tiles. Alternate candidates/predictions may appear only in a separate analysis panel. Do not use v11 `tracking.json` as labels or sampling truth.
 
 ## Next gate
 
-1. Retrieve and review `micro_redetect_panel.png`.
-2. Record the diagnosis in this file.
-3. Only then choose one bounded follow-up:
-   - mapping/serialisation investigation;
-   - detector false-positive mitigation;
-   - detector miss / recovery strategy; or
-   - Stage 2 association investigation.
+1. Build and run the bounded, manifest-driven Track B audit.
+2. Review label counts and error modes.
+3. Then choose exactly one response: candidate filtering/detector mitigation, targeted recovery strategy, or a bounded Stage 1 data-contract improvement.
 
-Do not dispatch Track B or change tracking/rendering merely to bypass this gate.
+Do not tune Stage 2, dispatch smoke rendering, or modify the renderer before Track B is reviewed.
 
 ## Efficient AI work protocol
 
-- Prefer targeted function/line reads and one existing workflow pattern over broad file reads.
-- Batch independent reads. Do not narrate routine tool calls.
-- Do not inspect full logs unless a run fails or an exact decision requires them.
-- For a build request, return only: **Changed**, **Verified**, **Dispatched**, and one genuine **Risk** if needed.
-- Poll once shortly after a dispatch for an immediate failure; then stop polling until asked or until a result is supplied.
-- A workflow dispatch is not a completed result. Mark it `DISPATCHED — UNVERIFIED` until an artifact or run outcome is inspected.
+- Batch independent targeted reads; avoid broad logs and unrelated files.
+- Do not narrate routine tool calls.
+- For a task result, report only **Changed**, **Verified**, **Dispatched**, and a genuine **Risk** if one exists.
+- Poll once shortly after dispatch for a quick failure; otherwise wait for the supplied result.
+- Mark a dispatch `DISPATCHED — UNVERIFIED`; only a reviewed artefact can become accepted/rejected.
 
 ## Change log
 
-- **2026-06-23:** Added this living state file. Recorded Stage 1 acceptance, Stage 2 boundaries, verified-tracklet restrictions, Track A/B requirements, and the pending micro re-detection gate.
+- **2026-06-23:** Added living project-state file and `CLAUDE.md` operating contract.
+- **2026-06-23:** Reviewed micro re-detect panel. Ruled out Stage 1 geometry/serialisation as root cause; confirmed detector-quality failure for T0001/T0088; released manifest-driven Track B audit as the next gate.
