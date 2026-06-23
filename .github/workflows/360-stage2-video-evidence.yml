@@ -193,7 +193,6 @@ jobs:
           mkdir -p /tmp/stage2_evidence
           python3 ball_tracker/stage2_video_evidence_pack.py \
             --tracklets    /tmp/stage2_out/tracklets.json \
-            --candidates   /tmp/stage1d/stage1_candidates_geo_filtered.json \
             --video        /tmp/video/equirect_trim.mp4 \
             --output-dir   /tmp/stage2_evidence \
             --max-crops-per-tracklet 10
