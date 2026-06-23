@@ -76,13 +76,28 @@ jobs:
 
           token = os.environ["GH_PAT"]
           try:
+              # Step 1: get redirect URL from GitHub (do not forward auth to redirect)
+              import http.client
+              class NoRedirect(urllib.request.HTTPRedirectHandler):
+                  def redirect_request(self, req, fp, code, msg, headers, newurl):
+                      return None
+              opener = urllib.request.build_opener(NoRedirect())
               req = urllib.request.Request(
                   "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7830052466/zip",
                   headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
               )
-              opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
-              with opener.open(req) as r:
+              try:
+                  opener.open(req)
+                  blob_url = None
+              except urllib.error.HTTPError as redir:
+                  blob_url = redir.headers.get("Location")
+              if not blob_url:
+                  print("FATAL: no redirect location returned for artifact zip")
+                  sys.exit(1)
+              # Step 2: fetch blob URL without Authorization header
+              with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
                   data = r.read()
+              print(f"Downloaded artifact: {len(data)} bytes")
           except urllib.error.HTTPError as e:
               print(f"FATAL: artifact download failed: HTTP {e.code}")
               print("GH_PAT missing, invalid, expired, or lacks Actions read access")
