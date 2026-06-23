@@ -128,7 +128,10 @@ The intended Stage 1b Drive upload did not surface through the connected Drive s
 
 ## Track B — quarantined audit
 
-**Status: BRANCH TRIGGER COMMITTED — AWAITING ARTIFACT**
+**Status: COMPLETED — AWAITING REVIEW**
+
+Run ID:  — succeeded 2026-06-23T15:52Z  
+Artifact ID:  —  (~11.4 MB)
 
 A one-off local-chain run eliminates the fragile Drive handoff: it downloads the original Stage 1 + hotspot map, builds the same Stage 1b local output, and feeds it directly into Track B.
 
@@ -161,3 +164,4 @@ Do not tune Stage 2, smoke render, or modify the renderer before this review.
 - **2026-06-23:** Ruled out Stage 1 geometry/serialisation with micro re-detect; confirmed detector candidate-quality failure.
 - **2026-06-23:** Built and reviewed original Track B; confirmed static-background contamination.
 - **2026-06-23:** Built and verified reversible Stage 1b confirmed-static quarantine; quarantined Track B branch run dispatched.
+
