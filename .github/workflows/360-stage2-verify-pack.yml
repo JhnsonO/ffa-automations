@@ -1,0 +1,64 @@
+name: Stage 2 Verification Pack
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - run/verify-pack
+
+jobs:
+  verify-pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install numpy pillow requests opencv-python-headless
+
+      - name: Install ffmpeg
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Download clip from Drive
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: python3 ball_tracker/download_clip.py
+
+      - name: Download Stage 2 outputs from Drive
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: python3 ball_tracker/download_stage2_outputs.py
+
+      - name: Probe clip
+        run: ffprobe -v quiet -show_streams clip.mp4 2>/dev/null | grep -E "width|height|r_frame_rate" | head -5
+
+      - name: Generate verification pack
+        run: |
+          python3 ball_tracker/make_verification_pack.py \
+            clip.mp4 tracklets.json gaps.json stage2_verification_pack.png
+
+      - name: Upload to Drive
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: |
+          python3 ball_tracker/upload_to_drive.py \
+            stage2_verification_pack.png \
+            "stage2_verification_pack.png" \
+            "1gHW29JbvUWnbvJTCC0J8O7r-O1IPZAd8"
+
+      - name: Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage2-verification-pack
+          path: stage2_verification_pack.png
+          retention-days: 7
