@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 23 June 2026 (full Stage 1c run dispatched)  
+**Last reconciled:** 23 June 2026 (Stage 1c verified; Track B Stage 1c quarantined dispatched)  
 **Authority:** Compact source of truth for AI work. Replace obsolete state rather than adding chat transcripts. Update after every decision, code/workflow change, completed/failed run, or artifact.
 
 ## Start here
@@ -126,12 +126,27 @@ Verified Stage 1b artifact: Actions run `28035387017`, artifact `7824742847`.
 
 The intended Stage 1b Drive upload did not surface through the connected Drive search, so downstream work must not depend on a Drive ID for the quarantined output.
 
-## Track B — quarantined audit
+## Track B — quarantined audit (Stage 1b on original Stage 1)
 
 **Status: COMPLETED — AWAITING REVIEW**
 
-Run ID:  — succeeded 2026-06-23T15:52Z  
-Artifact ID:  —  (~11.4 MB)
+Run ID: (previous run, original Stage 1 input) — succeeded 2026-06-23T15:52Z  
+Artifact ID: (previous run) — (~11.4 MB)
+
+## Track B — quarantined audit (Stage 1c geometry-preserved output)
+
+**Status: TRACK B GEOMETRY REVIEW READY — AWAITING HUMAN REVIEW**
+
+Run ID: `28048960467` — dispatched 2026-06-23T18:45Z  
+Artifact: `track-b-stage1c-quarantined-28048960467` (pending completion)  
+Workflow: `.github/workflows/360-track-b-stage1c-quarantined.yml`
+
+Input chain:
+- Stage 1c source: Actions run `28046275937`, artifact `7830052466` (RTX 4090, full 3,597 frames, geometry verified).
+- Stage 1b quarantine applied inline (same rules, same hotspot map `1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M`).
+- Track B pack gen v2 applied to quarantined output; `detection_geometry` preserved in manifest.
+
+Expected outputs in artifact: `candidate_precision_review_pack.png`, `zero_candidate_coverage_review_pack.png`, `track_b_manifest.json`, `track_b_report.txt`, `run_summary.json`, Stage 1b quarantine reports.
 
 A one-off local-chain run eliminates the fragile Drive handoff: it downloads the original Stage 1 + hotspot map, builds the same Stage 1b local output, and feeds it directly into Track B.
 
@@ -144,17 +159,15 @@ This run is CPU-only, uses no YOLO, does not touch Stage 2 or renderer logic, an
 
 ## Stage 1c — detection geometry preservation
 
-**Status: STAGE 1C — FULL RUN DISPATCHED — UNVERIFIED**
+**Status: STAGE 1C — VERIFIED COMPLETE**
 
 Previous full run (Actions run `28041924767`) aborted: RTX PRO 4000 Blackwell GPU incompatible with PyTorch 2.1.0-cuda11.8. No valid Stage 1c artifact.
 
-**Full run dispatched: Actions run `28046275937` — DISPATCHED — UNVERIFIED**
-- Branch: `main` @ HEAD
-- Inputs: `smoke_test=false`, `max_frames` unset (full clip), standard Drive IDs.
-- GPU selected: RTX 4090 (allowlisted ✓), offer id=42214650, $0.445/hr.
-- Artifact name: `stage1-candidates-28046275937` (expected).
-- Startup check: GPU allowlisted confirmed; CUDA/preflight/first-progress pending (run still provisioning at check time).
-- Acceptance pending: CUDA true; model on CUDA; preflight passes; full 3,597-frame run; `stage1_candidates.json` with `detection_geometry`; `stage1_report.txt`; `run_summary.json`.
+**Full run VERIFIED: Actions run `28046275937`, artifact `7830052466`**
+- GPU: RTX 4090 (allowlisted ✓), offer id=42214650, $0.445/hr.
+- Full 3,597 frames completed.
+- `stage1_candidates.json` contains `detection_geometry` on all 6,436 fresh detections; 462 Stage 0 reuse candidates have explicit null geometry.
+- All acceptance criteria met.
 
 Implemented (unchanged):
 - `ball_tracker/stage1_candidate_gen.py` — `detection_geometry` sub-object on every candidate; null for Stage 0 reuse; schema backward-compatible.
@@ -181,7 +194,7 @@ Smoke test path (active):
 - Uploads `stage1_output/` (inc. `run_summary.json`) as artifact `stage1-smoke-<run_id>`.
 - Artifact will show GPU name, PyTorch + CUDA versions, CUDA available, model device, preflight elapsed, and at least one 100-frame progress line (or end-of-run summary for short runs).
 
-**Next action: paste run `28046275937` artifact for review. Update state with GPU, PyTorch/CUDA versions, duration, spf, detection count, artifact ID.**
+**Next action: review Track B quarantined artifact from run `28048960467`.**
 
 
 ## Next gate
@@ -212,6 +225,7 @@ Do not tune Stage 2, smoke render, or modify the renderer before this review.
 - **2026-06-23:** GPU smoke-test path added. GPU allowlist (3090/4090/A40/A100/L40) + Blackwell rejection in offer selection. `smoke_test: true` input runs preflight + 10 frames on real data. NMS counter switched to Ultralytics logger handler. State: AWAITING COMPATIBLE GPU SMOKE TEST.
 - **2026-06-23:** Smoke frame cap raised to 50 (guarantees fresh YOLO inference beyond Stage 0 reuse). Smoke test dispatched: run `28045327124` on `main` @ `b21675b`. DISPATCHED — UNVERIFIED.
 - **2026-06-23:** Smoke test PASSED (RTX 4090, CUDA ok, fresh detections, geometry output verified). Full Stage 1c run dispatched: Actions run `28046275937` on `main`, `smoke_test=false`, full clip, standard Drive IDs. GPU: RTX 4090 allowlisted. DISPATCHED — UNVERIFIED. Pending: paste artifact → update GPU/PyTorch/CUDA/duration/spf/count → set STAGE 1C OUTPUT READY — AWAITING QUARANTINE + TRACK B.
+- **2026-06-23:** Stage 1c VERIFIED COMPLETE — run `28046275937`, artifact `7830052466`, RTX 4090, 3,597 frames, 6,436 fresh detections with `detection_geometry`, 462 Stage 0 reuse with null geometry. Track B quarantined workflow built (`360-track-b-stage1c-quarantined.yml`) and dispatched: run `28048960467`. Self-contained chain: GitHub artifact download → Stage 1b quarantine inline → Track B pack gen. Status: TRACK B GEOMETRY REVIEW READY — AWAITING HUMAN REVIEW.
 
 
 
