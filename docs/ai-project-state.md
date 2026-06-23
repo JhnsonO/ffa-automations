@@ -93,38 +93,35 @@ Independent. Do not bundle renderer edits into Stage 2 or Track B.
 
 ### Track B — detector-quality audit
 
-**Status: IMPLEMENTED — REWORK REQUIRED — NOT DISPATCHED**
+**Status: IMPLEMENTED — READY TO DISPATCH**
 
 Current files:
 
-- `ball_tracker/track_b_pack_gen.py`
-- `.github/workflows/360-track-b-audit.yml`
+- `ball_tracker/track_b_pack_gen.py` (v2)
+- `.github/workflows/360-track-b-audit.yml` (v2)
 
-The current implementation must be corrected before dispatch:
+All six pre-dispatch corrections applied:
 
-1. Use a standard GitHub Actions runner. This no-YOLO diagnostic is modest CPU/image work; do not provision Vast.ai or relay Drive access through external compute.
-2. Candidate review is currently top-candidate-per-frame only. The manifest must identify the reviewed candidate and its rank; reserve a bounded quota for non-top candidates in multi-candidate frames so Stage 2-relevant false candidates are audited.
-3. Manual-review tiles need a clear centre reticle and visible label slots for:
-   `ball_at_centre` / `ball_nearby_but_offset` / `not_ball` / `occluded_or_unclear`.
-4. Clean review tiles must show only frame ID and centre reticle. Do not show confidence-derived strata such as `high_conf` / `low_conf`, hotspot category, scores, alternates, predictions, or anchor status; retain those only in the manifest/report.
-5. Zero-candidate pack: temporal stratification is valid. Each row’s four Stage 1 fixed yaw crops provides horizontal spatial coverage. Do not claim unknown ball pitch-zone stratification without ground truth.
-6. `track_b_manifest.json` must record deterministic seed, sample type, frame, reviewed candidate index/rank, yaw/pitch, source/crop_yaw, candidate count, and hidden strata. It must retain enough provenance to recreate every tile.
+1. Workflow runs on `ubuntu-latest`; Vast.ai removed entirely.
+2. Manifest records `reviewed_rank`, `reviewed_yaw/pitch`, `reviewed_source/crop_yaw`, `sample_type`. 10-tile non-top quota (`NON_TOP_QUOTA=10`) samples rank-1 candidates from multi-candidate frames, spread across temporal thirds.
+3. Candidate tiles show a red crosshair reticle at the candidate centre, plus 2×2 label-slot grid: `ball_at_centre / ball_nearby_but_offset / not_ball / occluded_or_unclear`.
+4. Tile headers show frame ID only — no confidence strata, hotspot labels, scores, or anchor status on any tile.
+5. Zero-candidate pack uses temporal stratification only; no pitch-zone claims. Four crops at Stage 1 fixed yaws (0/90/180/270°) give horizontal spatial coverage.
+6. Manifest records: `seed`, `sample_type`, `frame_idx`, `reviewed_rank`, `reviewed_yaw`, `reviewed_pitch`, `reviewed_source`, `reviewed_crop_yaw`, `candidate_count`, `strata` (hidden provenance).
 
-Expected outputs after corrected dispatch:
+Expected outputs after dispatch:
 
-- `candidate_precision_review_pack.png` — 60 individual candidate samples.
-- `zero_candidate_coverage_review_pack.png` — 15 zero-candidate rows with four Stage 1 crops each.
+- `candidate_precision_review_pack.png` — 60 tiles (50 top + 10 non-top).
+- `zero_candidate_coverage_review_pack.png` — 15 zero-candidate rows × 4 crops.
 - `track_b_manifest.json`, `track_b_report.txt`, `run_summary.json`.
 
 No YOLO and no `tracking.json` in Track B. No automatic quality conclusion before human labels are reviewed.
 
 ## Next gate
 
-1. Correct the Track B generator/workflow only to satisfy the six pre-dispatch requirements above.
-2. Commit the corrections and update this file to `IMPLEMENTED — READY TO DISPATCH`.
-3. Dispatch with the two Drive IDs. Then record `DISPATCHED — UNVERIFIED`.
-4. Review both packs and label the results.
-5. Only then choose one response: candidate filtering/detector mitigation, targeted recovery strategy, or a bounded Stage 1 data-contract improvement.
+1. Dispatch `360-track-b-audit` with the two Drive IDs. Record `DISPATCHED — UNVERIFIED`.
+2. Review both packs and label the results.
+3. Only then choose one response: candidate filtering/detector mitigation, targeted recovery strategy, or a bounded Stage 1 data-contract improvement.
 
 Do not tune Stage 2, run smoke rendering, or modify the renderer before Track B review.
 
@@ -140,3 +137,4 @@ Do not tune Stage 2, run smoke rendering, or modify the renderer before Track B 
 - **2026-06-23:** Added living project-state file and `CLAUDE.md` operating contract.
 - **2026-06-23:** Reviewed micro re-detect panel. Ruled out Stage 1 geometry/serialisation; confirmed detector-quality failure for T0001/T0088.
 - **2026-06-23:** Track B generator/workflow added, but pre-dispatch review found an unnecessary Vast.ai workflow, review-bias leakage, no explicit centre/label UI, and top-only candidate sampling. Status corrected from `DISPATCHED — UNVERIFIED` to `IMPLEMENTED — REWORK REQUIRED — NOT DISPATCHED`.
+- **2026-06-23:** Track B v2 — all six pre-dispatch corrections applied. ubuntu-latest runner, non-top quota (10 tiles), reticle, clean tile headers, manifest rank/source/strata fields. Status → `IMPLEMENTED — READY TO DISPATCH`.
