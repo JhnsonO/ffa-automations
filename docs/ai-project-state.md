@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 24 June 2026 (ball-likeness score re-built with mandatory FP controls; dispatched run 28106409106)
+**Last reconciled:** 24 June 2026 (geometry metadata propagation implemented and dispatched)
 **Authority:** Living source of truth for AI work. Replace obsolete state rather than appending chat transcripts.
 
 ## Start here
@@ -269,7 +269,7 @@ Retain raw audit evidence only.
 
 ## Active gate and next action
 
-**TEMPORAL BALL-LIKENESS SCORE — OUT-OF-SAMPLE VALIDATION AWAITING REVIEW**
+**GEOMETRY METADATA PROPAGATION — AWAITING SMOKE VERIFICATION**
 
 ### Run 28087760893 — decision-gate outcome
 
@@ -366,13 +366,41 @@ Per-anchor page (3 rows: EARLY / MID / LATE):
 
 No automatic verdicts. No changes to filtering, radii, thresholds, linking, renderer, Stage 1, 1b, or 2.
 
-**Next action:** Review `ball-likeness-score-28106409106` artifact: `ball_likeness_scores.csv` (ranked unclear anchors), `ball_likeness_review_pack.png` (top-8 + bottom-8 unclear + T0093/T0080 mandatory FP controls), `ball_likeness_summary.txt` (formula, feature values, FP rank check). Decision: does the score cleanly separate unclear anchors and rank confirmed FPs low?
+**Next action:** Review `geometry-propagation-smoke-<run_id>` artifact. Check `tier_a_experimental_summary.txt` for `geo_coverage_fraction`. If > 0.0 and no missing keys: propagation VERIFIED. Re-run `stage2_ball_likeness_score.py` with geometry features now available; bbox shape features can be evaluated.
 
-### Ball-likeness score diagnostic — DISPATCHED — UNVERIFIED
+### Ball-likeness score diagnostic — OUT-OF-SAMPLE VALIDATION FAILED
+
+Temporal ball-likeness score failed out-of-sample validation. Known false positives
+T0079, T0093, and T0080 score too highly. Do not tune weights or create a temporal filter.
+Score approach parked; geometry-based scoring path blocked pending geometry propagation fix.
 
 - `ball_tracker/stage2_ball_likeness_score.py` (commit c0d6d004)
 - `.github/workflows/360-stage2-ball-likeness-score.yml` (commit afec0433)
-- Workflow: `360-stage2-ball-likeness-score` run `28106409106` — DISPATCHED — UNVERIFIED
+- Run `28106409106` — OUT-OF-SAMPLE VALIDATION FAILED (T0079/T0093/T0080 false positive rank too high)
+
+### Geometry metadata propagation — DISPATCHED — UNVERIFIED
+
+**Root cause confirmed:** `stage2_temporal_link.py` `Tracklet.finalise()` builds frame records
+with only `frame/yaw/pitch/weighted_conf/score/alternates` — `detection_geometry` from
+Stage 1c candidates is never passed through the Tracklet object.
+
+**Fix (scoped — no tracking logic changes):**
+- `stage2_temporal_link.py` remains frozen.
+- `stage2_tier_a_experimental_output.py`: adds Step 3 (geometry propagation) after the linker.
+  Builds a `(frame, yaw_4dp, pitch_4dp) → detection_geometry` index from filtered candidates,
+  then injects into each tracklet observation. Null preserved for Stage 0 reuse / unmatched obs.
+- `ball_tracker/tests/test_geometry_propagation.py`: 7 fixture tests (all pass locally).
+- `.github/workflows/360-stage2-geometry-propagation-smoke.yml`: smoke workflow.
+
+**Changed files:**
+- `ball_tracker/stage2_tier_a_experimental_output.py`
+- `ball_tracker/tests/test_geometry_propagation.py` (new)
+- `.github/workflows/360-stage2-geometry-propagation-smoke.yml` (new)
+
+**Smoke workflow:** `360-stage2-geometry-propagation-smoke` — DISPATCHED — UNVERIFIED
+- Runs unit tests + slices first 200 frames from artifact `7841528502`
+- Acceptance: `geo_coverage_fraction > 0.0`, `geometry_matched > 0`, no missing `detection_geometry` keys
+- Artifact: `geometry-propagation-smoke-<run_id>`
 
 Formula: score = 0.35*norm(obs_count) + 0.30*norm(spatial_spread_deg) + 0.20*norm(vel_consistency) + 0.15*norm(net_disp_deg). Normalisation: min-max over full anchor population (ball+FP+unclear); missing → 0.0. Training labels: likely_ball=T0001/T0025; confirmed FPs from committed CSV. Out-of-sample: 11 unclear anchors. Mandatory FP controls in review pack: T0093, T0080. Source: committed `ball_tracker/data/tier_a_anchor_adjudication_filled.csv`. No automatic verdicts. No changes to filtering, radii, thresholds, linking, renderer, Stage 1, 1b, 2, or production outputs.
 
@@ -450,6 +478,7 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 
 ## Compact change log
 
+- **2026-06-24:** Geometry metadata propagation implemented. `stage2_tier_a_experimental_output.py` updated with Step 3 post-link geometry stitch (frozen linker untouched). 7 fixture tests added (all pass). Smoke workflow `360-stage2-geometry-propagation-smoke` dispatched — UNVERIFIED. Ball-likeness score parked (T0079/T0093/T0080 FP rank too high; do not tune weights).
 - **2026-06-24:** Label analysis complete (final labels). Filled CSV committed (fd8adab7): 2 ball, 13 FP, 11 unclear. Analysis run locally: top features obs_count (2.78), span_frames (2.73), spatial_spread_deg (1.92), vel_consistency (1.69). FP T0093/T0080 highest-anchor-strength FPs — watch in validation. Ball-likeness score validation approved as next step.
 - **2026-06-24:** Ball-likeness score re-built: mandatory FP controls (T0093, T0080) added to review pack; switched to committed CSV source. Run 28106409106 — DISPATCHED — UNVERIFIED.
 - **2026-06-24:** Ball-likeness score diagnostic built and dispatched: `stage2_ball_likeness_score.py` + `360-stage2-ball-likeness-score.yml`. Formula: 0.35*obs_count + 0.30*spatial_spread + 0.20*vel_consistency + 0.15*net_disp (min-max normalised). Outputs: ranked CSV, top-8/bottom-8 visual pack, FP rank check. Run 28104903880.
