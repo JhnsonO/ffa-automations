@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 24 June 2026 — multi-cue pose review completed; pose-guided candidate-selection diagnostic ready for manual dispatch.
+**Last reconciled:** 24 June 2026 — FootAndBall benchmark completed; detector-agnostic backward-anchor path and modern-YOLO adapter added.
 
 ## Start here
 
@@ -33,9 +33,11 @@ Frame-indexed candidates include `yaw`, `pitch`, `raw_conf`, `penalty`, `weighte
 
 Fresh Stage 1c detections carry bbox geometry; Stage 0 reuse carries explicit nulls. Stage 1 uses four yaw-only 110° crops at 1280×720.
 
-### Stage 2 tracklets
+### Experimental modern-football detector candidates
 
-Observations contain raw associated candidates. For Tier A experimental output only, `detection_geometry` is post-link propagated without changing the frozen linker.
+Any future Ultralytics-compatible football checkpoint must emit detector candidates with:
+- `yaw`, `pitch`, `football_conf`, `crop_yaw`, `detection_geometry`, and `source`.
+- These are experiment-only and are not consumed by Stage 1/1b/2 or the renderer.
 
 ## Verified evidence
 
@@ -72,62 +74,78 @@ Run `28107675223`, artifact `7853375656`:
 
 Frozen linker remains untouched.
 
-### Multi-cue visual review — COMPLETED
+### Multi-cue pose / candidate-fusion diagnostics — COMPLETED, NOT PRODUCTION
 
-Run `28109857417`, artifact `7854364494` completed after PNG-only packaging.
+- Pose provides useful context but cannot independently identify the ball.
+- Candidate fusion is not a valid production direction because it partly rewards agreement with the old tracklet, making it circular.
+- Do not create more score packs or tune weights around legacy Stage 2 observations.
 
-Finding: pose/person detection and lower-body keypoints work on the selected crop samples. They are useful as **frame-level context**. The existing vertical playable-view band is not useful as a discriminator because Stage 1 already applies equivalent pitch bounds. Bbox shape alone is also insufficient.
+### FootAndBall benchmark — COMPLETED, REJECTED FOR THIS FOOTAGE
 
-Decision: do not add another global tracklet score or another model. Test pose at **candidate-selection level** inside a frame, with a raw-confidence fallback for aerial/occluded play.
+Run `28114044649`, artifact `7856116823`.
+
+Finding: FootAndBall detected players but did not provide reliable ball detections on the fixed 30 cropped samples from the current 360 footage. Do not swap to FootAndBall.
 
 ## Active gate and next action
 
-# POSE-GUIDED CANDIDATE SELECTION DIAGNOSTIC — READY FOR MANUAL DISPATCH
+# MODERN FOOTBALL YOLO + BACKWARD ANCHOR PROPAGATION — CHECKPOINT SELECTION / BENCHMARK
 
 ### Active files
 
-- `ball_tracker/experiments/pose_guided_candidate_selection.py`
-- `.github/workflows/360-pose-candidate-selection-diagnostic.yml`
+- `ball_tracker/experiments/backward_anchor_propagation.py`
+- `ball_tracker/tests/test_backward_anchor_propagation.py`
+- `ball_tracker/experiments/football_yolo_backward_adapter.py`
+- `.github/workflows/360-footandball-benchmark.yml` (completed benchmark; keep as evidence, do not extend)
 
-### Fixed sample
+### What is already built
 
-10 tracklets / early-mid-late observations only:
-- likely ball: `T0001`, `T0025`
-- known false positives: `T0093`, `T0080`, `T0079`, `T0036`
-- unclear: `T0130`, `T0030`, `T0090`, `T0175`
+1. **Backward-anchor propagation core**
+   - Starts from an independently credible later anchor.
+   - Walks backwards using only future chosen path motion + current detector confidence.
+   - Does not use old Stage 2 tracklets as evidence.
+   - Stops after a configured short gap rather than inventing a path.
 
-### What it tests
+2. **Modern football-YOLO adapter**
+   - Accepts a future Ultralytics-compatible football `.pt` checkpoint.
+   - Runs four 110° perspective crops over equirectangular footage.
+   - Converts boxes to spherical yaw/pitch candidates.
+   - Feeds candidates into backward-anchor propagation.
+   - Experiment-only: no production integration.
 
-For every selected observation, compare:
+### Required next implementation
 
-- **blue:** highest raw detector-confidence candidate in the same Stage 1 crop;
-- **green:** pose-guided choice when a candidate has nearby detected lower-body keypoints;
-- **magenta:** existing Stage 2-associated candidate.
+Select one verified modern football-specific Ultralytics checkpoint and build a one-off benchmark using the same fixed sample and source-video download pattern already proven by the FootAndBall workflow.
 
-Pose is never a hard rejection. When no candidate has usable lower-body support, green deliberately equals blue (`RAW_FALLBACK_NO_LOWER_BODY_SUPPORT`) so aerial/occluded play is not penalised.
-
-Outputs:
-- one PNG review page per tracklet;
-- CSV showing raw vs pose-guided choice, whether either matches the existing associated candidate, lower-body distance and selection mode;
-- readme explaining that the result is diagnostic only.
-
-### Acceptance question
-
-Across the known examples, does green visibly demote static/fence/tree-style candidates **without** repeatedly overriding plausible likely-ball selections? Review visually; no automatic verdict or pipeline modification follows from this run.
+Acceptance criteria:
+- checkpoint loads successfully in Actions;
+- output includes raw candidate JSON and a visual overlay / contact sheet;
+- compare only against current detector evidence on the fixed sample;
+- decide keep/reject once; no threshold-tuning loop;
+- if it wins visually, run backward-anchor propagation from a manually verified later anchor and inspect the reconstructed path.
 
 ### Explicitly out of scope
 
-- full-video pose inference;
-- model training or fine-tuning;
-- detector swap/threshold change;
-- production candidate filtering or suppression;
-- Stage 1/1b/2 or renderer changes;
-- follow-cam integration.
+- production detector swap;
+- altering Stage 1/1b/2, Tier A, or renderer;
+- automatic follow-cam activation;
+- tuning global scores or thresholds;
+- using legacy Stage 2 path agreement as proof;
+- full model training before the MAX2 benchmark footage arrives.
+
+## Immediate plan for Johnson
+
+1. Buy/receive the GoPro MAX2 and record a controlled daytime benchmark clip at the usual setup.
+2. Include easy passes, aerials, shots, ball near fence, ball behind players, and low-contrast moments.
+3. Preserve the raw 8K source and one short trimmed equirectangular test file.
+4. Use that as the permanent detector benchmark before any fine-tuning.
 
 ## Compact change log
 
-- **2026-06-24:** Added pose-guided candidate-selection diagnostic and manual workflow. It compares raw vs pose-supported candidate selection with an explicit raw fallback.
+- **2026-06-24:** Added detector-agnostic backward-anchor propagation core and unit tests (`1a65c6f`, `8e52546`).
+- **2026-06-24:** Added modern football-YOLO to spherical-candidate/backward-path adapter (`99b533f`); no checkpoint selected or production wiring added.
+- **2026-06-24:** FootAndBall benchmark completed (run `28114044649`, artifact `7856116823`) and rejected for current 360 footage.
+- **2026-06-24:** Candidate-fusion diagnostic rejected as partly circular; stop legacy-tracklet score experiments.
+- **2026-06-24:** Pose candidate-selection diagnostic completed; pose is context only, not a ball decision engine.
 - **2026-06-24:** Multi-cue visual review completed (run `28109857417`, artifact `7854364494`); pose useful, vertical band/bbox shape not discriminative enough alone.
 - **2026-06-24:** Geometry propagation smoke verified (run `28107675223`, artifact `7853375656`).
 - **2026-06-24:** Temporal ball-likeness score rejected; do not tune further.
-- **2026-06-24:** Tier A human review: only T0001/T0025 remain likely-ball; no follow-cam approval.
