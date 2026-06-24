@@ -155,20 +155,19 @@ def build_tier_a_locations(report):
             ("centre_unit", centre_unit),
         ]))
 
-    # C005 Sub1 — centre computed ONLY from the three named members
-    sub1_points = []
-    sub1_found = []
-    # Members may be listed under any cluster; locate by id across all clusters.
-    all_members = {}
-    for c in report["clusters"]:
-        for m in c.get("members", []):
-            all_members[m["id"]] = m
-    for mid in C005_SUB1_MEMBER_IDS:
-        if mid not in all_members:
-            raise KeyError(f"C005 Sub1 member {mid} not found in repeated-static report")
-        m = all_members[mid]
-        sub1_points.append((m["median_yaw_deg"], m["median_pitch_deg"]))
-        sub1_found.append(mid)
+    # C005 Sub1 — centre computed from hardcoded approved coordinates.
+    # These are the reviewed median_yaw/median_pitch values from the approved
+    # discovered-static audit (artifact 7841215970, run 28078249103).
+    # Runtime lookup is intentionally avoided: the fresh Stage 2 run inside this
+    # workflow may assign different tracklet IDs, so the member IDs cannot be
+    # resolved against the live report.
+    C005_SUB1_APPROVED_COORDS = {
+        "T0307": (-134.725, -22.623),
+        "T0343": (-134.672, -22.627),
+        "T0348": (-134.709, -22.870),
+    }
+    sub1_points = list(C005_SUB1_APPROVED_COORDS.values())
+    sub1_found  = list(C005_SUB1_APPROVED_COORDS.keys())
     c_yaw, c_pitch, c_unit = _centre_from_points(sub1_points)
     radius, raw, max_dist = _derive_radius(c_unit, sub1_points)
     locations.append(OrderedDict([
@@ -350,3 +349,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
