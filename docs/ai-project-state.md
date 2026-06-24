@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 24 June 2026  
+**Last reconciled:** 24 June 2026 (updated)  
 **Authority:** Living source of truth for AI work. Replace obsolete state rather than appending chat transcripts.
 
 ## Start here
@@ -269,30 +269,47 @@ Retain raw audit evidence only.
 
 ## Active gate and next action
 
-**STAGE 1 TIER A STATIC-LOCATION DRY-RUN — SAFETY CHECK FIX REQUIRED**
+**STAGE 1 TIER A STATIC-LOCATION DRY-RUN — OUTSIDE-TIER-A MOTION REVIEW REQUIRED**
 
-Comparator safety defect identified from artifact `7844649525`:
+### Run 28087760893 — decision-gate outcome
 
-- Prior comparator used `is_continuous = has_frame_support OR has_spatial_support OR has_linked_support`.
-- Several credible-motion windows were marked `is_continuous=true` with `has_frame_support=true` but `has_spatial_support=false` and `has_linked_support=false`.
-- Frame-only support does not confirm spatial/linked continuity and must not count.
+Safety check applied (corrected comparator: `is_continuous = spatial OR linked`). 43 credible-motion windows checked.
 
-**Fix applied (commit `bfb0d07`):**
+**Reclassification applied (decision gate 24 June 2026):**
 
-- `ball_tracker/stage2_tier_a_dry_run_compare.py` — corrected comparator:
-  - `is_continuous = has_spatial_support OR has_linked_support` (frame support is diagnostic only)
-  - Explicit outcome categories: `spatial_or_linked_continuous`, `frame_only_unsupported`, `no_support`
-  - Acceptance verdict: FAIL if any window is `frame_only_unsupported` or `no_support`; exits with code 1
-- `ball_tracker/tests/test_tier_a_continuity.py` — 5 fixture tests (commit `2b80e6c`):
-  - frame-only support fails continuity ✓
-  - spatial support passes ✓
-  - linked support passes ✓
-  - no support fails ✓
-  - linked-far + frame-only still frame_only_unsupported ✓
-- All 5 fixture tests PASS locally.
+10 frame-only windows split into two categories:
 
-**Next action:** Dispatch `360-tier-a-dry-run` workflow (workflow_dispatch on main) and paste artifact.
-No other files changed. Filter, manifest, action radii, Stage 1, Stage 1b, Stage 2 linker, renderer, thresholds, workflow inputs all untouched.
+**Tier-A-origin (expected collateral — NOT genuine-motion safety failures):**
+These original tracklets are themselves inside a reviewed Tier A action radius. Their candidates were correctly removed. They are excluded from the genuine-motion safety denominator.
+- T0236, T0292, T0306, T0316, T0335, T0338, T0409 (7 windows, `expected_removed_tier_a_origin_track`)
+
+**Outside-Tier-A (genuine safety review required):**
+These are outside all Tier A suppression radii. Frame continuity present but spatial/linked continuity absent. Evidence collection required before any verdict.
+- T0275 passing net_disp=17.145° frames=2175-2190 nearest_frame_dist=2.064°
+- T0334 passing net_disp=42.102° frames=2369-2378 nearest_frame_dist=21.311°
+- T0394 passing net_disp=5.902°  frames=2650-2669 nearest_frame_dist=5.182°
+
+**Genuine-motion denominator result:** 36 windows (43 − 7 Tier-A-origin). 33 spatial_or_linked_continuous. 3 outside-Tier-A unresolved.
+
+### Comparator update (commit `2de4097`)
+
+`ball_tracker/stage2_tier_a_dry_run_compare.py`:
+- `TIER_A_ORIGIN_IDS` frozenset: T0236/T0292/T0306/T0316/T0335/T0338/T0409
+- 4th outcome: `expected_removed_tier_a_origin_track`
+- Genuine-motion denominator excludes Tier-A-origin windows
+- Acceptance FAIL gated on genuine (non-Tier-A-origin) unsafe windows only
+
+### Visual review dispatched
+
+- `ball_tracker/stage2_outside_tier_a_motion_review.py` (commit `260fd54`)
+- `.github/workflows/360-outside-tier-a-motion-review.yml` (commit `fb14bf8`)
+- Workflow: `360-outside-tier-a-motion-review` — DISPATCHED — UNVERIFIED (run TBD)
+
+Outputs per window (T0275/T0334/T0394): early/mid/late perspective crops; original + dry-run candidates overlaid; original + dry-run linked track overlaid; equirect thumb; blank verdict table.
+
+**Next action:** Paste artifact from `360-outside-tier-a-motion-review` run. Review `outside_tier_a_motion_review.png` and annotate verdict table (likely real ball / likely clutter / unclear) for T0275, T0334, T0394.
+
+No suppression activation. No comparator rule changes. No filter, radii, linker, thresholds, renderer, or frozen file changes.
 
 Reviewed suppression candidates (Tier A evidence, no runtime suppression approved):
 - C001, C002, C003, C004, C008 — tight, previously identified
@@ -332,7 +349,8 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 
 ## Compact change log
 
-- **2026-06-24:** Comparator safety fix: `is_continuous` corrected to `spatial OR linked` only; frame-only is diagnostic; outcome categories added; FAIL verdict on unsafe windows. 5 fixture tests added and PASS. Commits `bfb0d07` (comparator) + `2b80e6c` (tests). Gate: SAFETY CHECK FIX REQUIRED — AWAITING RE-DISPATCH.
+- **2026-06-24:** Outside-Tier-A motion review dispatched for T0275/T0334/T0394. Comparator updated with TIER_A_ORIGIN_IDS reclassification and genuine-motion denominator (commit `2de4097`). Review script + workflow added (commits `260fd54`, `fb14bf8`). Gate: OUTSIDE-TIER-A MOTION REVIEW REQUIRED.
+- **2026-06-24:** Comparator safety fix: `is_continuous` corrected to `spatial OR linked` only; frame-only is diagnostic; outcome categories added; FAIL verdict on unsafe windows. 5 fixture tests added and PASS. Commits `bfb0d07` (comparator) + `2b80e6c` (tests). Run 28087760893: 43 windows checked, 33 continuous, 7 Tier-A-origin expected, 3 outside-Tier-A unresolved.
 - **2026-06-24:** Wide-cluster diagnosis reviewed. C005 split into Sub1 (suppression candidate), Sub2 (annotation-only), Sub3 (removed). C006 confirmed suppression candidate. C007 removed. C009/T0143 annotation-only standalone; T0379/T0279 removed. Gate: AWAITING ACTION-LAYER DESIGN DECISION.
 - **2026-06-24:** Wide cluster diagnosis dispatched for C005, C006, C007, C009 (`stage2_wide_cluster_diagnosis.py` + `360-stage2-wide-cluster-diagnosis.yml`).
 - **2026-06-24:** Annotation layer verified (run `28078249103`, artifact `7841215970`). eligible=152, matched=139, T0373 unmatched. Tight clusters C001–C004, C008 flagged as future suppression candidates. C005/C007/C009 wide; C006 mid-range; all require diagnosis.
@@ -347,3 +365,4 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 - **2026-06-24:** Stage 1 Tier A static-location dry-run INVALIDATED (run 28084047416). Defects: cluster-ID instability + tracklet-ID motion comparison. Fixed: frozen location manifest (LOC_001…LOC_C005_SUB1), frame/spatial continuity check. Workflow updated; repeated-static audit step removed. AWAITING RE-DISPATCH.
 - **2026-06-24:** Track B Stage 1c quarantined audit COMPLETED — REVIEWED. Run 28079006609, artifact 7841528502. Residual precision dominated by scene false positives. Zero-candidate pack requires per-frame labelling. Gate: STAGE 1 RESIDUAL FALSE-POSITIVE MITIGATION — AWAITING TIER A DRY-RUN DECISION.
 - **2026-06-23:** Track B Stage 1c self-contained workflow failed before processing at artifact-download authentication; blocked.
+
