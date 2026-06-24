@@ -62,12 +62,22 @@ A dispatch is `DISPATCHED — UNVERIFIED` until its artifact or outcome is inspe
 
 ### Reconciliation rule
 
-The state file is a living source of truth, not a chat diary.
+`docs/ai-project-state.md` is the living source of truth. It is not a chat diary.
 
-Before ending a task, reconcile the document:
+After every completed task, failed run, workflow dispatch, material finding, or decision:
 
-- replace or remove statements made obsolete by the change;
-- keep only one current status for each active workstream;
-- make the active gate and next action unambiguous;
-- verify run IDs, artifact IDs, data contracts, and workflow assumptions are not contradicted elsewhere;
-- move superseded history to the compact change log rather than leaving conflicting active instructions.
+1. Update the active status and next action in place.
+2. Replace or remove any section that now contradicts the new reality. Do not leave stale active instructions alongside new ones.
+3. Do not merely append a changelog entry when an earlier section is wrong — fix the earlier section first.
+4. Update `CLAUDE.md` only when the operating protocol itself changes.
+
+Before ending any task, verify the state document contains no contradictions involving:
+
+- current active task and gate;
+- run IDs and artifact IDs;
+- workflow dispatch status (`DISPATCHED — UNVERIFIED` until artifact inspected);
+- GPU or runtime assumptions used by active workflows;
+- Stage 1 geometry data contract;
+- next action.
+
+A fresh chat should need only `CLAUDE.md` + `docs/ai-project-state.md`, then targeted active-task files — nothing else.
