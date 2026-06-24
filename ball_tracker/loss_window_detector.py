@@ -84,28 +84,65 @@ def _point_from_candidate(
 
 
 def _normalise_frames(payload: Any) -> list[Mapping[str, Any]]:
+    """
+    Accept three Stage 1 payload shapes:
+
+    1. A raw list of frame objects (unit-test form).
+    2. An object whose "frames" value is a list of frame objects.
+    3. An object whose "frames" value is a dict mapping string frame-number
+       keys to candidate lists — the real stage1_candidates.json shape
+       produced by stage1_candidate_gen.py.
+    """
     frames: Any
+
     if isinstance(payload, list):
+        # Shape 1: bare list of frame objects
         frames = payload
-    elif isinstance(payload, Mapping):
-        frames = payload.get("frames")
-    else:
+        normalised: list[Mapping[str, Any]] = []
+        for position, frame in enumerate(frames):
+            if not isinstance(frame, Mapping):
+                raise ValueError(
+                    f"Frame at list position {position} must be a JSON object."
+                )
+            normalised.append(frame)
+        return normalised
+
+    if not isinstance(payload, Mapping):
         raise ValueError(
             "Stage 1 candidates JSON must be a list of frame objects or an "
-            'object containing a "frames" list.'
+            'object containing a "frames" key.'
         )
-    if not isinstance(frames, list):
-        raise ValueError(
-            'Stage 1 candidates JSON must contain a list under "frames".'
-        )
-    normalised: list[Mapping[str, Any]] = []
-    for position, frame in enumerate(frames):
-        if not isinstance(frame, Mapping):
+
+    frames = payload.get("frames")
+
+    if isinstance(frames, dict):
+        # Shape 3: {"frames": {"0": [...], "1": [...], ...}}
+        # Convert to sorted list of synthetic frame objects.
+        try:
+            keyed = sorted(frames.items(), key=lambda kv: int(kv[0]))
+        except (TypeError, ValueError) as exc:
             raise ValueError(
-                f"Frame at list position {position} must be a JSON object."
-            )
-        normalised.append(frame)
-    return normalised
+                f'frames dict has non-integer key: {exc}'
+            ) from exc
+        return [
+            {"frame_index": int(k), "candidates": v if isinstance(v, list) else []}
+            for k, v in keyed
+        ]
+
+    if isinstance(frames, list):
+        # Shape 2: {"frames": [...]}
+        normalised = []
+        for position, frame in enumerate(frames):
+            if not isinstance(frame, Mapping):
+                raise ValueError(
+                    f"Frame at list position {position} must be a JSON object."
+                )
+            normalised.append(frame)
+        return normalised
+
+    raise ValueError(
+        'Stage 1 candidates JSON must contain a list or dict under "frames".'
+    )
 
 
 def detect_loss_windows(
