@@ -1,0 +1,91 @@
+name: 360 FootAndBall Benchmark
+
+# One-off model comparison. Read-only against existing inputs; no production tracker files changed.
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg aria2
+          python3 -m pip install --quiet --upgrade pip
+          python3 -m pip install --quiet 'numpy<2' pillow opencv-python-headless torch torchvision tqdm scipy google-auth google-auth-oauthlib requests
+
+      - name: Download existing Tier A source artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/tier_a
+          gh api --method GET \
+            -H 'Accept: application/vnd.github+json' \
+            /repos/${{ github.repository }}/actions/artifacts/7846400233/zip > /tmp/tier_a.zip
+          unzip -q /tmp/tier_a.zip -d /tmp/tier_a
+          test -f /tmp/tier_a/tracklets_tier_a_experimental.json
+
+      - name: Download source video using existing Drive helper
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          DRIVE_FILE_ID: 1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX
+        run: |
+          python3 scripts/drive_download.py
+          ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of default=noprint_wrappers=1 /tmp/source.360
+
+      - name: Build fixed 30-crop reel
+        run: |
+          mkdir -p /tmp/benchmark
+          python3 - <<'PY'
+          import cv2, json, sys
+          sys.path.insert(0,'.')
+          from ball_tracker.experiments.pose_guided_candidate_selection import extract_crop, nearest_crop_yaw, selected_observations
+          ids=['T0001','T0025','T0093','T0080','T0079','T0036','T0130','T0030','T0090','T0175']
+          tracks={t['id']:t for t in json.load(open('/tmp/tier_a/tracklets_tier_a_experimental.json'))['tracklets']}
+          cap=cv2.VideoCapture('/tmp/source.360')
+          out=cv2.VideoWriter('/tmp/benchmark/fixed_30_crops.avi',cv2.VideoWriter_fourcc(*'MJPG'),5,(1280,720))
+          manifest=[]
+          for tid in ids:
+              for phase,obs in selected_observations(tracks[tid]):
+                  cap.set(cv2.CAP_PROP_POS_FRAMES,int(obs['frame']))
+                  ok,eq=cap.read()
+                  if not ok: raise RuntimeError(f'Cannot read frame {obs["frame"]}')
+                  crop=extract_crop(eq,nearest_crop_yaw(float(obs['yaw'])))
+                  cv2.putText(crop,f'{tid} {phase} source frame {obs["frame"]}',(20,42),cv2.FONT_HERSHEY_SIMPLEX,0.85,(255,255,255),2,cv2.LINE_AA)
+                  out.write(crop)
+                  manifest.append({'tracklet_id':tid,'phase':phase,'frame':obs['frame']})
+          cap.release(); out.release()
+          json.dump(manifest,open('/tmp/benchmark/sample_manifest.json','w'),indent=2)
+          print('Fixed samples:',len(manifest))
+          PY
+
+      - name: Run FootAndBall
+        run: |
+          git clone --depth 1 https://github.com/jac99/FootAndBall.git /tmp/FootAndBall
+          test -f /tmp/FootAndBall/models/model_20201019_1416_final.pth
+          cd /tmp/FootAndBall
+          python3 run_detector.py \
+            --path /tmp/benchmark/fixed_30_crops.avi \
+            --weights models/model_20201019_1416_final.pth \
+            --out_video /tmp/benchmark/footandball_overlay.avi \
+            --device cpu \
+            --ball_threshold 0.20 \
+            --player_threshold 0.35
+          ffmpeg -y -loglevel error -i /tmp/benchmark/footandball_overlay.avi -c:v libx264 -pix_fmt yuv420p /tmp/benchmark/footandball_overlay.mp4
+          printf '%s\n' 'One-off FootAndBall benchmark.' 'Compare footandball_overlay.mp4 against the same sample evidence from prior diagnostic packs.' 'No tracker or threshold was changed.' > /tmp/benchmark/README.txt
+
+      - name: Upload benchmark
+        uses: actions/upload-artifact@v4
+        with:
+          name: footandball-benchmark-${{ github.run_id }}
+          path: /tmp/benchmark/
+          retention-days: 30
