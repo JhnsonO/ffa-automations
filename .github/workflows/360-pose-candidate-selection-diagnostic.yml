@@ -68,7 +68,15 @@ jobs:
           ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of default=noprint_wrappers=1 /tmp/video/equirect_trim.mp4
 
       - name: Preflight pose model
-        run: python3 ball_tracker/experiments/pose_guided_candidate_selection.py --preflight
+        run: |
+          # The script validates its normal inputs at argparse level before entering
+          # preflight mode, so pass real paths while only loading the pose model.
+          python3 ball_tracker/experiments/pose_guided_candidate_selection.py \
+            --preflight \
+            --stage1-candidates /tmp/tier_a_input/stage1_candidates_tier_a_experimental.json \
+            --tracklets /tmp/tier_a_input/tracklets_tier_a_experimental.json \
+            --video /tmp/video/equirect_trim.mp4 \
+            --output-dir /tmp/pose_selection_preflight
 
       - name: Build pose-guided candidate selection review
         run: |
