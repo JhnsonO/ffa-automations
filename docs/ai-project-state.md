@@ -287,7 +287,7 @@ Removed from reviewed discovered-location list (raw audit evidence retained):
 
 Any action layer requires a separate approval. Action radii must be conservative and must never use discovery radius.
 
-**Parallel blocked workstream:** repair and re-dispatch the Stage 1c → Stage 1b → Track B self-contained workflow. Do not treat it as complete until its artifact is inspected.
+**Parallel workstream:** Stage 1c → Stage 1b → Track B self-contained workflow DISPATCHED — UNVERIFIED. Run ID: 28079006609. Do not treat it as complete until its artifact is inspected.
 
 No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 2 linking, renderer, or hotspot-map behaviour.
 
@@ -311,4 +311,5 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 - **2026-06-24:** Stage 2 static-motion audit built and reviewed; annotation-only.
 - **2026-06-23:** Stage 1c geometry preservation verified on full RTX 4090 run `28046275937` / artifact `7830052466`.
 - **2026-06-23:** Stage 1b confirmed-static quarantine verified on run `28035387017` / artifact `7824742847`.
-- **2026-06-23:** Track B Stage 1c self-contained workflow failed before processing at artifact-download authentication; remains blocked pending a successful re-dispatch.
+- **2026-06-24:** Track B Stage 1c self-contained workflow re-dispatched. Run ID: 28079006609. DISPATCHED — UNVERIFIED.
+- **2026-06-23:** Track B Stage 1c self-contained workflow failed before processing at artifact-download authentication; blocked.
