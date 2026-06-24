@@ -128,13 +128,13 @@ jobs:
 
       - name: Preflight pose model
         run: |
-          python3 ball_tracker/experiments/multi_cue_diagnostic.py \
+          python3 ball_tracker/experiments/multi_cue_diagnostic_runner.py \
             --preflight --pose-model yolov8n-pose.pt --device cpu
 
       - name: Build multi-cue visual diagnostic
         run: |
           mkdir -p /tmp/multi_cue_output
-          python3 ball_tracker/experiments/multi_cue_diagnostic.py \
+          python3 ball_tracker/experiments/multi_cue_diagnostic_runner.py \
             --stage1-candidates /tmp/tier_a_input/stage1_candidates_tier_a_experimental.json \
             --tracklets /tmp/tier_a_input/tracklets_tier_a_experimental.json \
             --video /tmp/video/equirect_trim.mp4 \
