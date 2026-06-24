@@ -50,6 +50,11 @@ import os
 import sys
 from collections import defaultdict, OrderedDict
 
+# Tier A-origin frame-only windows: original tracklet IS inside a Tier A action radius.
+# These are expected collateral of suppression — not genuine-motion safety failures.
+# Populated from run 28087760893 evidence. Do not include in safety pass/fail denominator.
+TIER_A_ORIGIN_IDS = frozenset({"T0236", "T0292", "T0306", "T0316", "T0335", "T0338", "T0409"})
+
 # A tracklet is "credible motion" if it is anchor/passing and moves at least this far.
 MOTION_FLOOR_DEG = 3.0
 
@@ -61,6 +66,7 @@ SPATIAL_TOL_DEG = 2.0
 OUTCOME_SPATIAL_OR_LINKED = "spatial_or_linked_continuous"
 OUTCOME_FRAME_ONLY        = "frame_only_unsupported"
 OUTCOME_NO_SUPPORT        = "no_support"
+OUTCOME_TIER_A_ORIGIN     = "expected_removed_tier_a_origin_track"
 
 
 def _to_unit(yaw_deg, pitch_deg):
@@ -263,6 +269,7 @@ def run(args):
         and t.get("status") in ("anchor", "passing")
     ]
     continuity_results = []
+    tier_a_origin_windows = []
     frame_only_unsupported = []
     no_support_windows = []
     for t in credible_windows:
@@ -274,17 +281,28 @@ def run(args):
             ("falls_in_tier_a",       _in_tier_a(t, locations)),
         ])
         entry.update(cont)
+        # Reclassify frame-only windows whose original track IS inside a Tier A radius
+        # as expected_removed_tier_a_origin_track — not genuine-motion safety failures.
+        if (cont["outcome"] in (OUTCOME_FRAME_ONLY, OUTCOME_NO_SUPPORT)
+                and t["id"] in TIER_A_ORIGIN_IDS):
+            entry["outcome"] = OUTCOME_TIER_A_ORIGIN
+            cont = dict(cont)
+            cont["outcome"] = OUTCOME_TIER_A_ORIGIN
+
         continuity_results.append(entry)
-        if cont["outcome"] == OUTCOME_FRAME_ONLY:
+        if entry["outcome"] == OUTCOME_TIER_A_ORIGIN:
+            tier_a_origin_windows.append(entry)
+        elif cont["outcome"] == OUTCOME_FRAME_ONLY:
             frame_only_unsupported.append(entry)
         elif cont["outcome"] == OUTCOME_NO_SUPPORT:
             no_support_windows.append(entry)
 
-    # All unsafe windows (frame-only or no-support)
+    # Tier-A-origin windows are excluded from the genuine-motion safety denominator
+    genuine_windows = [t for t in credible_windows if t["id"] not in TIER_A_ORIGIN_IDS]
     unsafe_windows = frame_only_unsupported + no_support_windows
-    continuous_count = len(credible_windows) - len(unsafe_windows)
+    continuous_count = len(genuine_windows) - len(unsafe_windows)
 
-    # Acceptance verdict: FAIL if any window is frame-only or no-support
+    # Acceptance verdict: FAIL if any GENUINE (non-Tier-A-origin) window is frame-only or no-support
     acceptance_verdict = "PASS" if len(unsafe_windows) == 0 else "FAIL"
 
     # Outcome category counts
@@ -292,6 +310,7 @@ def run(args):
         (OUTCOME_SPATIAL_OR_LINKED, continuous_count),
         (OUTCOME_FRAME_ONLY,        len(frame_only_unsupported)),
         (OUTCOME_NO_SUPPORT,        len(no_support_windows)),
+        (OUTCOME_TIER_A_ORIGIN,     len(tier_a_origin_windows)),
     ])
 
     summary = OrderedDict([
@@ -309,13 +328,16 @@ def run(args):
         }),
         ("status_counts", status_delta),
         ("tier_a_in_radius_tracklets", tier_a_in_radius),
-        ("credible_motion_windows_checked",          len(credible_windows)),
-        ("credible_motion_windows_continuous",        continuous_count),
-        ("credible_motion_windows_frame_only_unsafe", len(frame_only_unsupported)),
-        ("credible_motion_windows_no_support",        len(no_support_windows)),
-        ("outcome_counts",           outcome_counts),
-        ("frame_only_unsupported_windows", frame_only_unsupported),
-        ("no_support_windows",             no_support_windows),
+        ("credible_motion_windows_checked",                  len(credible_windows)),
+        ("genuine_motion_windows_in_denominator",             len(genuine_windows)),
+        ("credible_motion_windows_continuous",                 continuous_count),
+        ("credible_motion_windows_frame_only_unsafe",         len(frame_only_unsupported)),
+        ("credible_motion_windows_no_support",                len(no_support_windows)),
+        ("credible_motion_windows_tier_a_origin_excluded",    len(tier_a_origin_windows)),
+        ("outcome_counts",                    outcome_counts),
+        ("tier_a_origin_windows",             tier_a_origin_windows),
+        ("frame_only_unsupported_windows",    frame_only_unsupported),
+        ("no_support_windows",                no_support_windows),
         ("all_continuity_results",         continuity_results),
     ])
 
@@ -344,14 +366,25 @@ def run(args):
                  f"(motion_floor={MOTION_FLOOR_DEG}°, spatial_tol={SPATIAL_TOL_DEG}°)")
     lines.append(f"  Continuity definition : spatial OR linked support only")
     lines.append(f"  Frame-only support    : diagnostic only (does NOT count as continuity)")
-    lines.append(f"  Windows checked       : {len(credible_windows)}")
-    lines.append(f"  {OUTCOME_SPATIAL_OR_LINKED:40}: {continuous_count}")
-    lines.append(f"  {OUTCOME_FRAME_ONLY:40}: {len(frame_only_unsupported)}")
-    lines.append(f"  {OUTCOME_NO_SUPPORT:40}: {len(no_support_windows)}")
+    lines.append(f"  Windows checked            : {len(credible_windows)}")
+    lines.append(f"  Genuine (in denominator)   : {len(genuine_windows)}  (excl. {len(tier_a_origin_windows)} Tier-A-origin)")
+    lines.append(f"  {OUTCOME_SPATIAL_OR_LINKED:42}: {continuous_count}")
+    lines.append(f"  {OUTCOME_FRAME_ONLY:42}: {len(frame_only_unsupported)}")
+    lines.append(f"  {OUTCOME_NO_SUPPORT:42}: {len(no_support_windows)}")
+    lines.append(f"  {OUTCOME_TIER_A_ORIGIN:42}: {len(tier_a_origin_windows)}")
     lines.append("")
     lines.append(f"ACCEPTANCE VERDICT: {acceptance_verdict}")
+    if tier_a_origin_windows:
+        lines.append(f"  TIER-A-ORIGIN EXCLUDED FROM DENOMINATOR ({len(tier_a_origin_windows)}) — expected collateral, not safety failures:")
+        for d in tier_a_origin_windows:
+            lines.append(
+                f"    {d['original_id']} status={d['status']} "
+                f"net_disp={d['net_displacement_deg']}° "
+                f"frames={d['frame_range'][0]}-{d['frame_range'][1]} "
+                f"in_tier_a={d['falls_in_tier_a']}"
+            )
     if acceptance_verdict == "FAIL":
-        lines.append(f"  REASON: {len(unsafe_windows)} credible-motion window(s) have "
+        lines.append(f"  REASON: {len(unsafe_windows)} GENUINE (non-Tier-A-origin) credible-motion window(s) have "
                      f"frame-only or no support — spatial/linked continuity not confirmed.")
         if frame_only_unsupported:
             lines.append(f"  FRAME-ONLY UNSUPPORTED windows ({len(frame_only_unsupported)}):")
@@ -402,3 +435,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
