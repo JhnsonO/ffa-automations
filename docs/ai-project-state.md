@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 24 June 2026 — FootAndBall benchmark completed; detector-agnostic backward-anchor path and modern-YOLO adapter added.
+**Last reconciled:** 25 June 2026 — Architecture redesigned; pragmatic hybrid AI model adopted; Phase A+B scope locked with VLM-as-targeted-detector and backtracking cost model.
 
 ## Start here
 
@@ -18,134 +18,182 @@ Offline 360° football post-production. The camera follows only a credible **fus
 - Wide fallback is allowed only after fused ball evidence fails.
 - Experiments stay separate from the renderer and production pipeline.
 
+## AI model — pragmatic hybrid
+
+- **ChatGPT** generates code files, schemas, architecture documents. No usage limits.
+- **Claude** verifies against live repo, runs tests, pushes commits, dispatches workflows. Cannot be replaced for anything requiring repo access or execution.
+- ChatGPT output is verified by Claude before any commit. Claude is the skeptic, not a relay.
+
+## Architecture — locked 25 June 2026
+
+### Target pipeline
+
+```
+equirectangular video
+→ detector interface (yolo_backend | vlm_backend | yolo_finetuned_backend)
+→ loss_windows.json (gap labeller, read-only)
+→ bidirectional resolver (forward from last anchor + backward from re-acquisition anchor)
+→ ai_review_queue.json (only unresolved / disagreeing windows)
+→ vlm_reviewer (corridor-gated, targeted calls only)
+→ ai_decisions.json
+→ tracking_final.json
+→ renderer (local wide fallback, not generic pitch-centre)
+→ render_clean.mp4 + render_debug.mp4
+```
+
+### Detector interface — all backends emit this shared schema
+
+```json
+{
+  "frame": int,
+  "yaw": float,
+  "pitch": float,
+  "conf": float,
+  "source": "yolo|vlm|yolo_finetuned",
+  "crop_yaw": float,
+  "detection_geometry": {
+    "bbox_xyxy": [x1,y1,x2,y2],
+    "bbox_area_px": float,
+    "bbox_aspect_ratio": float
+  }
+}
+```
+
+### Backtracking cost model
+
+VLM calls are corridor-gated by physics, not blanket per-frame:
+
+1. Re-acquisition anchor must clear quality gate (conf, geometry, not in fence quarantine, stable 2–3 frames).
+2. Backward trace walks from anchor; each step checks only 1–2 crops along the physically plausible displacement corridor.
+3. Forward trace walks from last trusted anchor toward the gap.
+4. Where forward + backward agree → resolve without VLM.
+5. Where they disagree or a borderline YOLO candidate sits in both corridors → VLM adjudicates that frame only.
+6. Estimated: 60–120 VLM calls per 30-min session ≈ £0.10–0.30.
+
+### Anchor quality gate (required before backtracking)
+
+- YOLO conf above borderline threshold
+- bbox_area_px and bbox_aspect_ratio within ball-plausible range
+- Not in Stage 1b fence quarantine zone
+- Detection stable across 2–3 consecutive frames
+
+### Renderer — local wide fallback (replaces generic pitch-centre)
+
+```
+credible follow (normal FOV ~90°)
+→ hold last trusted yaw/pitch + widen FOV locally
+→ keep searching / wait for re-acquisition
+→ only fall to generic wide if no trusted position exists at all
+```
+
+### Merge gate — camera path NOT wired to resolver/VLM decisions yet
+
+Resolver and VLM outputs write JSON only. Camera path reads `tracking_final.json` only after Johnson visually approves one full debug session.
+
 ## Frozen / do-not-break
 
-- `ball_tracker/run_tracker.py` v11 remains the honest baseline.
-- Stage 1b quarantine, Stage 2 temporal linker, Tier A filter, and renderer are frozen for the active task.
-- Stage 2 remains separate from the renderer and is not called v12.
-- No threshold, suppression, score, model, or follow-cam activation is approved.
+- `ball_tracker/run_tracker.py` v11 — honest baseline, do not modify.
+- Stage 1b quarantine, Stage 2 temporal linker, Tier A filter — frozen.
+- Stage 2 remains separate from renderer.
+- No threshold, suppression, or follow-cam activation without explicit approval.
+- Detector interface backends are additive; do not alter existing Stage 1 candidate schema.
 
 ## Current data contracts
 
-### Stage 1 candidates
+### Stage 1 candidates (existing, frozen)
 
 Frame-indexed candidates include `yaw`, `pitch`, `raw_conf`, `penalty`, `weighted_conf`, `source`, `crop_yaw`, `region`, and `detection_geometry`.
 
 Fresh Stage 1c detections carry bbox geometry; Stage 0 reuse carries explicit nulls. Stage 1 uses four yaw-only 110° crops at 1280×720.
 
-### Experimental modern-football detector candidates
+### New artifacts (Phase A+B)
 
-Any future Ultralytics-compatible football checkpoint must emit detector candidates with:
-- `yaw`, `pitch`, `football_conf`, `crop_yaw`, `detection_geometry`, and `source`.
-- These are experiment-only and are not consumed by Stage 1/1b/2 or the renderer.
+- `loss_windows.json` — labelled gap windows, read-only, no camera effect
+- `bidirectional_repairs.json` — resolved gaps with forward/backward evidence
+- `ai_review_queue.json` — unresolved windows for VLM
+- `ai_review_packs/` — visual crops + minimap per window
+- `ai_decisions.json` — VLM responses, confidence, reasoning
+- `tracking_final.json` — merged final path (camera-safe after visual approval)
+- `render_debug.mp4` — decision overlay showing why each frame was chosen
 
 ## Verified evidence
 
 ### Candidate-quality diagnosis
 
-Generic detector candidate quality is the main limit, not projection or serialisation. Stored/fresh re-detections agree within 0.00–0.58°, but generic detections repeatedly attach to fence, mount, net, turf texture and player/body clutter.
+Generic detector candidate quality is the main limit. Generic detections attach to fence, mount, net, turf texture, and player/body clutter.
 
 ### Stage 1b static quarantine — VERIFIED
 
-Run `28035387017`, artifact `7824742847`: 6,897 candidates before; 3,470 quarantined; 3,427 remain; 1,344 genuinely zero-candidate frames. No detector rerun or threshold tuning.
+Run `28035387017`, artifact `7824742847`: 6,897 → 3,427 after quarantine; 1,344 zero-candidate frames.
 
 ### Tier A experimental output — REVIEWED, NOT PRODUCTION
 
-Tier A reduces known static clutter but does not establish trusted ball tracking: 520 → 182 total tracklets; anchors 41 → 26; passing 153 → 35; fragments 326 → 121.
+520 → 182 tracklets; only 2 of 41 anchors human-verified as likely ball. Insufficient to approve follow-cam.
 
-Human anchor triage:
-- likely ball: `T0001`, `T0025`
-- likely false positive: 13
-- unclear: 11
+### Temporal ball-likeness score — FAILED
 
-This is insufficient to approve a follow-cam bridge.
-
-### Temporal ball-likeness score — FAILED OUT-OF-SAMPLE VALIDATION
-
-Known false positives `T0079`, `T0093`, and `T0080` ranked too highly. Do not tune or activate that score further.
+Known false positives ranked too highly. Do not tune or activate further.
 
 ### Geometry propagation — VERIFIED
 
-Run `28107675223`, artifact `7853375656`:
-- 158/158 observations carry a `detection_geometry` key
-- 145 populated geometry observations
-- 13 source-null geometry observations preserved
-- geometry coverage 91.77%
+Run `28107675223`, artifact `7853375656`: 158/158 observations carry detection_geometry; 91.77% populated.
 
-Frozen linker remains untouched.
+### FootAndBall benchmark — REJECTED
 
-### Multi-cue pose / candidate-fusion diagnostics — COMPLETED, NOT PRODUCTION
+Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. Do not use.
 
-- Pose provides useful context but cannot independently identify the ball.
-- Candidate fusion is not a valid production direction because it partly rewards agreement with the old tracklet, making it circular.
-- Do not create more score packs or tune weights around legacy Stage 2 observations.
+### Backward-anchor propagation — BUILT, NOT BENCHMARKED
 
-### FootAndBall benchmark — COMPLETED, REJECTED FOR THIS FOOTAGE
+`ball_tracker/experiments/backward_anchor_propagation.py` + unit tests. Detector-agnostic. Not wired to production.
 
-Run `28114044649`, artifact `7856116823`.
+### Modern football-YOLO adapter — BUILT, NO CHECKPOINT SELECTED
 
-Finding: FootAndBall detected players but did not provide reliable ball detections on the fixed 30 cropped samples from the current 360 footage. Do not swap to FootAndBall.
+`ball_tracker/experiments/football_yolo_backward_adapter.py`. Experiment only.
 
 ## Active gate and next action
 
-# MODERN FOOTBALL YOLO + BACKWARD ANCHOR PROPAGATION — CHECKPOINT SELECTION / BENCHMARK
+### PHASE A — LOCAL WIDE FALLBACK + LOSS WINDOW DETECTOR
 
-### Active files
+**ChatGPT produces:**
+1. Updated `ball_tracker/render_segment.py` — local wide fallback state machine
+2. `ball_tracker/loss_window_detector.py` — reads Stage 1 candidates, writes `loss_windows.json`
+3. `ball_tracker/tests/test_loss_window_detector.py`
+4. `loss_windows.json` schema (embedded in detector file as dataclass/TypedDict)
 
-- `ball_tracker/experiments/backward_anchor_propagation.py`
-- `ball_tracker/tests/test_backward_anchor_propagation.py`
-- `ball_tracker/experiments/football_yolo_backward_adapter.py`
-- `.github/workflows/360-footandball-benchmark.yml` (completed benchmark; keep as evidence, do not extend)
+**Claude verifies and pushes:**
+- Schema matches existing candidate data contract
+- No modification to frozen files
+- Unit tests pass
+- One workflow dispatch to produce `loss_windows.json` on existing candidates
 
-### What is already built
+**Acceptance:** `loss_windows.json` produced, renderer holds+widens on loss rather than snapping to pitch-centre. Debug clip shows local hold behaviour.
 
-1. **Backward-anchor propagation core**
-   - Starts from an independently credible later anchor.
-   - Walks backwards using only future chosen path motion + current detector confidence.
-   - Does not use old Stage 2 tracklets as evidence.
-   - Stops after a configured short gap rather than inventing a path.
+### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE (after Phase A accepted)
 
-2. **Modern football-YOLO adapter**
-   - Accepts a future Ultralytics-compatible football `.pt` checkpoint.
-   - Runs four 110° perspective crops over equirectangular footage.
-   - Converts boxes to spherical yaw/pitch candidates.
-   - Feeds candidates into backward-anchor propagation.
-   - Experiment-only: no production integration.
+**ChatGPT produces:**
+1. `ball_tracker/bidirectional_resolver.py` — forward + backward corridor traces, writes `bidirectional_repairs.json`
+2. `ball_tracker/detector_interface.py` — shared schema, `yolo_backend`, `vlm_backend` stub
+3. `ball_tracker/vlm_reviewer.py` — reads queue, calls API (key from env), writes `ai_decisions.json`
+4. `ball_tracker/pack_generator.py` — visual packs for unresolved windows
+5. Tests for resolver and detector interface
+6. Updated `tracking_final.json` merge logic (writes JSON only, no camera wiring)
 
-### Required next implementation
+**Claude verifies and pushes:** schemas consistent, frozen boundaries intact, VLM stub runnable without API key, unit tests pass.
 
-Select one verified modern football-specific Ultralytics checkpoint and build a one-off benchmark using the same fixed sample and source-video download pattern already proven by the FootAndBall workflow.
-
-Acceptance criteria:
-- checkpoint loads successfully in Actions;
-- output includes raw candidate JSON and a visual overlay / contact sheet;
-- compare only against current detector evidence on the fixed sample;
-- decide keep/reject once; no threshold-tuning loop;
-- if it wins visually, run backward-anchor propagation from a manually verified later anchor and inspect the reconstructed path.
-
-### Explicitly out of scope
-
-- production detector swap;
-- altering Stage 1/1b/2, Tier A, or renderer;
-- automatic follow-cam activation;
-- tuning global scores or thresholds;
-- using legacy Stage 2 path agreement as proof;
-- full model training before the MAX2 benchmark footage arrives.
+**Acceptance:** bidirectional resolver closes short gaps on existing candidates without VLM; VLM queue contains only residual unresolved windows; camera path unchanged until visual approval.
 
 ## Immediate plan for Johnson
 
-1. Buy/receive the GoPro MAX2 and record a controlled daytime benchmark clip at the usual setup.
-2. Include easy passes, aerials, shots, ball near fence, ball behind players, and low-contrast moments.
-3. Preserve the raw 8K source and one short trimmed equirectangular test file.
-4. Use that as the permanent detector benchmark before any fine-tuning.
+1. Receive Phase A ChatGPT output → paste files to Claude for verification and push.
+2. Eyeball Phase A debug clip → approve local wide fallback.
+3. Receive Phase B ChatGPT output → paste to Claude for verification and push.
+4. Run VLM reviewer on one short test window (pennies) → inspect `ai_decisions.json`.
+5. When satisfied → approve merge gate → wire `tracking_final.json` to renderer.
+6. GoPro MAX2 when committed → record benchmark clip → fine-tune YOLO → add `yolo_finetuned_backend`.
 
 ## Compact change log
 
-- **2026-06-24:** Added detector-agnostic backward-anchor propagation core and unit tests (`1a65c6f`, `8e52546`).
-- **2026-06-24:** Added modern football-YOLO to spherical-candidate/backward-path adapter (`99b533f`); no checkpoint selected or production wiring added.
-- **2026-06-24:** FootAndBall benchmark completed (run `28114044649`, artifact `7856116823`) and rejected for current 360 footage.
-- **2026-06-24:** Candidate-fusion diagnostic rejected as partly circular; stop legacy-tracklet score experiments.
-- **2026-06-24:** Pose candidate-selection diagnostic completed; pose is context only, not a ball decision engine.
-- **2026-06-24:** Multi-cue visual review completed (run `28109857417`, artifact `7854364494`); pose useful, vertical band/bbox shape not discriminative enough alone.
-- **2026-06-24:** Geometry propagation smoke verified (run `28107675223`, artifact `7853375656`).
-- **2026-06-24:** Temporal ball-likeness score rejected; do not tune further.
+- **2026-06-25:** Architecture redesigned; pragmatic hybrid model adopted; Phase A+B scope locked; VLM-as-targeted-detector with backtracking cost model; CLAUDE.md updated.
+- **2026-06-24:** FootAndBall benchmark rejected; backward-anchor propagation and football-YOLO adapter built (experiments only).
+- **2026-06-24:** Candidate-fusion, pose selection, temporal ball-likeness score all rejected.
+- **2026-06-24:** Geometry propagation verified (run `28107675223`).
