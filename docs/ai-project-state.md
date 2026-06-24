@@ -253,6 +253,25 @@ Outputs written by `run()`:
 Next decision point: review the 9 missed near-zero anchors and the 12 borderline tracklets,
 then determine if gate threshold adjustments are warranted (requires four-question review gate).
 
+## Stage 2 repeated-static location audit
+
+**Status: STAGE 2 REPEATED-STATIC LOCATION AUDIT — AWAITING REVIEW**
+
+Implemented (no dispatch yet):
+- `ball_tracker/stage2_repeated_static_audit.py` — annotation-only; reads tracklets.json + optional audit report
+- `ball_tracker/tests/test_stage2_repeated_static_audit.py` — 14 fixture tests, all pass
+
+Eligibility: near-static tracklets (net_disp < 1.5°, obs ≥ 3, span ≥ 5 frames, not rejected_static).
+Major-motion hard exclusion at 42° net_disp (protects T0373 and similar).
+
+Clustering: single-linkage on great-circle distance, CLUSTER_RADIUS_DEG = 4.0°.
+Repeated-static flag requires: member count ≥ 3, temporal span ≥ 150 frames, ≥ 2 distinct windows (mid-point gap ≥ 50 frames).
+
+Outputs: stage2_repeated_static_report.json, stage2_repeated_static_report.txt, stage2_repeated_static_review/ (per-cluster text cards for top 5 repeated-static clusters).
+
+**No workflow dispatch yet. No tracklet status, Stage 2 thresholds, or frozen files changed.**
+Awaiting: run against smoke artifact tracklets.json → review discovered cluster locations.
+
 ## Next gate
 
 1. Obtain the quarantined Track B artifact.
@@ -270,6 +289,8 @@ Do not tune Stage 2, smoke render, or modify the renderer before this review.
 - Poll once shortly after dispatch for a quick failure, then wait for supplied result.
 
 ## Change log
+- **2026-06-24:** Stage 2 repeated-static location audit built and tested. `stage2_repeated_static_audit.py` + 14 fixture tests all pass. Annotation-only; no dispatch. Eligible tracklets clustered by angular proximity; repeated-static flag requires ≥3 members, ≥150-frame temporal span, ≥2 distinct windows. No thresholds, tracklet statuses, or frozen files changed.
+
 - **2026-06-24:** Stage 2 static-motion audit layer built and tested (commit `379738b`). 39 tests pass. Smoke results: 28 would-reject, 8/17 near-zero anchors caught, T0001/T0088/T0318/T0477 retained. T0499 confirmed near-zero passing, excluded from strong-motion refs. No classifications or thresholds changed.
 
 - **2026-06-23:** Added living project state and `CLAUDE.md` operating contract.
