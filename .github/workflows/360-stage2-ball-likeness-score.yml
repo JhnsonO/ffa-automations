@@ -2,7 +2,12 @@ name: 360 Stage 2 — Ball-Likeness Score Out-of-Sample Validation
 
 # DIAGNOSTIC ONLY — no verdicts assigned, no thresholds changed.
 # Scores every unclear Tier A anchor using a transparent four-feature weighted formula.
-# Produces: ranked CSV, visual review pack (top-8 + bottom-8 unclear), summary with FP check.
+# Produces: ranked CSV, visual review pack (top-8 + bottom-8 unclear + mandatory FP controls),
+#           summary with FP rank check.
+#
+# Training labels: likely_ball=T0001/T0025; likely_false_positive from filled adjudication CSV.
+# Out-of-sample: 11 unclear anchors scored.
+# Mandatory FP controls in review pack: T0093, T0080.
 #
 # No modifications to: run_tracker.py, renderer, Stage 1, Stage 1b, Stage 2,
 # Tier A behaviour, filtering, thresholds, or any production outputs.
@@ -85,58 +90,31 @@ jobs:
               print("FATAL: tracklets_tier_a_experimental.json not found in artifact"); sys.exit(1)
           PY
 
-      - name: Download adjudication CSV (latest tier-a-adjudication-*)
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
+      - name: Use committed adjudication CSV (ball_tracker/data/tier_a_anchor_adjudication_filled.csv)
         run: |
+          CSV_SRC="ball_tracker/data/tier_a_anchor_adjudication_filled.csv"
+          if [ ! -f "$CSV_SRC" ]; then
+            echo "FATAL: $CSV_SRC not found in checkout"; exit 1
+          fi
           mkdir -p /tmp/adjudication_input
+          cp "$CSV_SRC" /tmp/adjudication_input/tier_a_anchor_adjudication.csv
           python3 - << 'PY'
-          import os, urllib.request, urllib.error, zipfile, io, json, sys
-          token = os.environ["GH_PAT"]
-          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
-
-          req = urllib.request.Request(
-              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts?per_page=50",
-              headers=headers)
-          arts = json.loads(urllib.request.urlopen(req).read()).get("artifacts", [])
-          target = next(
-              (a for a in arts if a["name"].startswith("tier-a-adjudication-") and not a["expired"]),
-              None)
-          if not target:
-              print("FATAL: no non-expired tier-a-adjudication artifact found"); sys.exit(1)
-          print(f"Using artifact: id={target['id']}  name={target['name']}")
-
-          class NoRedirect(urllib.request.HTTPRedirectHandler):
-              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
-          opener = urllib.request.build_opener(NoRedirect())
-          req2 = urllib.request.Request(
-              f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{target['id']}/zip",
-              headers=headers)
-          try:
-              opener.open(req2)
-          except urllib.error.HTTPError as e:
-              blob_url = e.headers.get("Location")
-              if not blob_url:
-                  print(f"FATAL: no redirect Location. status={e.code}"); sys.exit(1)
-          else:
-              print("FATAL: expected redirect not received"); sys.exit(1)
-
-          with urllib.request.urlopen(blob_url) as r:
-              data = r.read()
-          with zipfile.ZipFile(io.BytesIO(data)) as z:
-              z.extractall("/tmp/adjudication_input")
-          files = os.listdir("/tmp/adjudication_input")
-          print(f"Extracted: {files}")
-          if "tier_a_anchor_adjudication.csv" not in files:
-              print("FATAL: tier_a_anchor_adjudication.csv not found in artifact"); sys.exit(1)
-          # Verify verdicts are present
-          import csv
+          import csv, sys
           with open("/tmp/adjudication_input/tier_a_anchor_adjudication.csv") as f:
               rows = list(csv.DictReader(f))
           filled = sum(1 for r in rows if r.get("verdict", "").strip())
-          print(f"CSV: {len(rows)} rows, {filled} with verdicts")
+          balls  = sum(1 for r in rows if "ball" in r.get("verdict","").lower() and "false" not in r.get("verdict","").lower())
+          fps    = sum(1 for r in rows if "false" in r.get("verdict","").lower())
+          unclear= sum(1 for r in rows if r.get("verdict","").strip().lower() in ("unclear","?","u","unsure"))
+          print(f"Committed CSV: {len(rows)} rows | filled={filled} | ball={balls} | FP={fps} | unclear={unclear}")
           if filled == 0:
-              print("FATAL: no verdicts filled in CSV"); sys.exit(1)
+              print("FATAL: no verdicts in committed CSV"); sys.exit(1)
+          for ctrl in ["T0093", "T0080"]:
+              match = [r for r in rows if r["tracklet_id"].strip() == ctrl]
+              if match:
+                  print(f"  {ctrl}: verdict={match[0].get('verdict','(empty)')}")
+              else:
+                  print(f"  WARN: {ctrl} not found in CSV")
           PY
 
       - name: Run ball-likeness scoring
@@ -166,7 +144,6 @@ jobs:
               else:
                   print(f"MISSING  {p}"); ok = False
 
-          # CSV must have unclear rows and a score column
           csv_path = "/tmp/score_output/ball_likeness_scores.csv"
           if os.path.exists(csv_path):
               with open(csv_path) as f:
@@ -176,6 +153,16 @@ jobs:
               else:
                   scores = [float(r["score"]) for r in rows if r.get("score")]
                   print(f"Scored CSV: {len(rows)} unclear anchors  score range [{min(scores):.4f}, {max(scores):.4f}]")
+
+          # Verify summary mentions mandatory controls
+          summary_path = "/tmp/score_output/ball_likeness_summary.txt"
+          if os.path.exists(summary_path):
+              txt = open(summary_path).read()
+              for ctrl in ["T0093", "T0080"]:
+                  if ctrl in txt:
+                      print(f"Summary contains mandatory control: {ctrl}")
+                  else:
+                      print(f"WARN: mandatory control {ctrl} missing from summary")
 
           if not ok:
               sys.exit(1)
