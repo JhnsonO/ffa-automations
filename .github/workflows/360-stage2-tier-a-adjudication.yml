@@ -1,0 +1,240 @@
+name: 360 Stage 2 — Tier A Anchor Human Adjudication Pack
+
+# EXPERIMENT ONLY.
+# Generates a high-resolution human adjudication pack for the 26 Tier A anchors.
+# Does NOT modify run_tracker.py, renderer, Stage 1/1b/2 linker, thresholds,
+# radii, filtering, or any live production behaviour.
+#
+# Outputs per anchor:
+#   - Full 110° FoV perspective context frame (960×540, downscaled from 1280×720)
+#   - High-zoom crop centred on the candidate point (600×600, 2× upscale)
+#   - Candidate crosshair + bbox overlay where detection_geometry.bbox_xyxy exists
+#   - Overlaid: tracklet ID, frame, yaw/pitch, conf, anchor strength
+# Pack outputs:
+#   - tier_a_anchor_adjudication.pdf  (paginated, one page per anchor)
+#   - tier_a_anchor_adjudication.png  (contact sheet)
+#   - tier_a_anchor_adjudication.csv  (one row per anchor; verdict column blank)
+#   - tier_a_anchor_adjudication_manifest.json (anchor → source frames)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  tier-a-adjudication:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet 'numpy<2' pillow opencv-python-headless
+          sudo apt-get install -y --no-install-recommends ffmpeg aria2
+
+      - name: Preflight — verify GH_PAT
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, json, sys
+          token = os.environ.get("GH_PAT", "")
+          if not token:
+              print("FATAL: GH_PAT secret is empty"); sys.exit(1)
+          req = urllib.request.Request(
+              "https://api.github.com/user",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          with urllib.request.urlopen(req) as r:
+              user = json.loads(r.read())
+          print(f"GH_PAT OK: login={user.get('login')}")
+          PY
+
+      - name: Download Tier A experimental artifact (latest tier-a-experimental-*)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/tier_a_input
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, json, sys
+          token = os.environ["GH_PAT"]
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+          req = urllib.request.Request(
+              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts?per_page=50",
+              headers=headers)
+          arts = json.loads(urllib.request.urlopen(req).read()).get("artifacts", [])
+          target = next(
+              (a for a in arts if a["name"].startswith("tier-a-experimental-") and not a["expired"]),
+              None)
+          if not target:
+              print("FATAL: no non-expired tier-a-experimental artifact found"); sys.exit(1)
+          print(f"Using artifact: id={target['id']}  name={target['name']}")
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+          opener = urllib.request.build_opener(NoRedirect())
+          req2 = urllib.request.Request(
+              f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{target['id']}/zip",
+              headers=headers)
+          try:
+              opener.open(req2); blob_url = None
+          except urllib.error.HTTPError as redir:
+              blob_url = redir.headers.get("Location")
+          if not blob_url:
+              print("FATAL: no redirect URL"); sys.exit(1)
+          with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+              data = r.read()
+          print(f"Downloaded {len(data)/1e6:.1f} MB")
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/tier_a_input")
+          print("Extracted:", os.listdir("/tmp/tier_a_input"))
+          PY
+          ls -lh /tmp/tier_a_input/
+
+      - name: Verify tracklets_tier_a_experimental.json — report anchor count
+        run: |
+          python3 - << 'PY'
+          import json, sys, os
+          p = "/tmp/tier_a_input/tracklets_tier_a_experimental.json"
+          if not os.path.exists(p):
+              print(f"FATAL: {p} not found"); sys.exit(1)
+          with open(p) as f:
+              d = json.load(f)
+          ts = d["tracklets"]
+          from collections import Counter
+          c = Counter(t["status"] for t in ts)
+          print(f"Tracklets: total={len(ts)}")
+          for k, v in sorted(c.items()):
+              print(f"  {k}: {v}")
+          anchors = [t for t in ts if t["status"] == "anchor"]
+          if not anchors:
+              print("FATAL: no anchor tracklets found"); sys.exit(1)
+          print(f"OK: {len(anchors)} anchors queued for adjudication")
+          # Report bbox coverage
+          has_bbox = sum(
+              1 for t in anchors
+              for o in t.get("frames", [])[:1]
+              if (o.get("detection_geometry") or {}).get("bbox_xyxy") is not None
+          )
+          print(f"Anchors with bbox on first obs: {has_bbox}/{len(anchors)}")
+          PY
+
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - << 'PY'
+          import json, urllib.request, os
+          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
+          creds_data = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
+          r = urllib.request.urlopen(urllib.request.Request(token_uri, data=payload,
+              headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
+          open("/tmp/drive_access_token.txt", "w").write(tok["access_token"])
+          print(f"Drive token OK (expires_in={tok.get('expires_in')}s)")
+          PY
+
+      - name: Download source video from Drive (GoPro MAX equirect)
+        run: |
+          mkdir -p /tmp/video
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          aria2c \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --out="equirect_trim.mp4" \
+            --dir="/tmp/video" \
+            --max-connection-per-server=4 \
+            --split=4 \
+            --min-split-size=64M \
+            --file-allocation=none \
+            --show-console-readout=true \
+            "https://www.googleapis.com/drive/v3/files/1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX?alt=media"
+          ls -lh /tmp/video/
+
+      - name: Verify video with ffprobe
+        run: |
+          python3 - << 'PY'
+          import subprocess, json, sys
+          probe = subprocess.run(
+              ["ffprobe", "-v", "error", "-select_streams", "v:0",
+               "-show_entries", "stream=width,height,r_frame_rate,nb_frames",
+               "-of", "json", "/tmp/video/equirect_trim.mp4"],
+              capture_output=True, text=True)
+          if probe.returncode != 0:
+              print(f"FATAL ffprobe: {probe.stderr}"); sys.exit(1)
+          s = json.loads(probe.stdout)["streams"][0]
+          w, h = s["width"], s["height"]
+          num, den = s["r_frame_rate"].split("/")
+          fps = float(num) / float(den)
+          if w == 0 or h == 0 or fps <= 0:
+              print("FATAL: bad video stream"); sys.exit(1)
+          print(f"Video OK: {w}×{h} @ {fps:.4f} fps  frames={s.get('nb_frames','?')}")
+          PY
+
+      - name: Generate high-resolution Tier A adjudication pack
+        run: |
+          mkdir -p /tmp/adjudication
+          python3 ball_tracker/stage2_tier_a_adjudication_pack.py \
+            --tracklets  /tmp/tier_a_input/tracklets_tier_a_experimental.json \
+            --video      /tmp/video/equirect_trim.mp4 \
+            --output-dir /tmp/adjudication
+
+      - name: Collect and validate outputs
+        run: |
+          python3 - << 'PY'
+          import os, sys
+          required = [
+              "/tmp/adjudication/tier_a_anchor_adjudication.png",
+              "/tmp/adjudication/tier_a_anchor_adjudication.csv",
+              "/tmp/adjudication/tier_a_anchor_adjudication_manifest.json",
+              "/tmp/adjudication/tier_a_anchor_adjudication_summary.txt",
+          ]
+          ok = True
+          for p in required:
+              if os.path.exists(p):
+                  sz = os.path.getsize(p)
+                  print(f"OK  {p}  ({sz/1e6:.2f} MB)" if sz > 100 else f"WARN empty  {p}")
+              else:
+                  print(f"MISSING  {p}"); ok = False
+          if not ok:
+              sys.exit(1)
+          # CSV row count
+          import csv
+          with open("/tmp/adjudication/tier_a_anchor_adjudication.csv") as f:
+              rows = list(csv.DictReader(f))
+          print(f"CSV rows: {len(rows)}")
+          blank_verdicts = sum(1 for r in rows if r.get("verdict", "").strip() == "")
+          print(f"Blank verdict fields: {blank_verdicts}/{len(rows)} (expected all blank)")
+          if blank_verdicts != len(rows):
+              print("FATAL: some verdict fields are not blank"); sys.exit(1)
+          PY
+
+      - name: Copy outputs to final_output/
+        run: |
+          mkdir -p final_output
+          for f in \
+            /tmp/adjudication/tier_a_anchor_adjudication.pdf \
+            /tmp/adjudication/tier_a_anchor_adjudication.png \
+            /tmp/adjudication/tier_a_anchor_adjudication.csv \
+            /tmp/adjudication/tier_a_anchor_adjudication_manifest.json \
+            /tmp/adjudication/tier_a_anchor_adjudication_summary.txt; do
+            [ -f "$f" ] && cp "$f" final_output/ && echo "copied $f"
+          done
+          echo "=== final_output ==="
+          ls -lh final_output/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-a-adjudication-${{ github.run_id }}
+          path: final_output/
+          retention-days: 30
