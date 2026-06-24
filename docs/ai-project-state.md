@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 24 June 2026 (ball-likeness score dispatched; out-of-sample validation awaiting review)
+**Last reconciled:** 24 June 2026 (label analysis complete with final labels; filled CSV committed; ball-likeness score validation ready)
 **Authority:** Living source of truth for AI work. Replace obsolete state rather than appending chat transcripts.
 
 ## Start here
@@ -269,7 +269,7 @@ Retain raw audit evidence only.
 
 ## Active gate and next action
 
-**TEMPORAL BALL-LIKENESS SCORE — OUT-OF-SAMPLE VALIDATION AWAITING REVIEW**
+**STAGE 2 TIER A — LABEL ANALYSIS COMPLETE — BALL-LIKENESS SCORE VALIDATION READY**
 
 ### Run 28087760893 — decision-gate outcome
 
@@ -450,6 +450,7 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 
 ## Compact change log
 
+- **2026-06-24:** Label analysis complete (final labels). Filled CSV committed (fd8adab7): 2 ball, 13 FP, 11 unclear. Analysis run locally: top features obs_count (2.78), span_frames (2.73), spatial_spread_deg (1.92), vel_consistency (1.69). FP T0093/T0080 highest-anchor-strength FPs — watch in validation. Ball-likeness score validation approved as next step.
 - **2026-06-24:** Ball-likeness score diagnostic built and dispatched: `stage2_ball_likeness_score.py` + `360-stage2-ball-likeness-score.yml`. Formula: 0.35*obs_count + 0.30*spatial_spread + 0.20*vel_consistency + 0.15*net_disp (min-max normalised). Outputs: ranked CSV, top-8/bottom-8 visual pack, FP rank check. Run 28104903880.
 - **2026-06-24:** High-res Tier A adjudication pack built and dispatched: stage2_tier_a_adjudication_pack.py + 360-stage2-tier-a-adjudication.yml. Context 960x540 + zoom 600x600 centred on candidate, bbox overlay, csv + manifest. Gate: AWAITING LABELS.
 - **2026-06-24:** Tier A anchor visual evidence pack built and dispatched: `stage2_tier_a_anchor_review.py` + `360-stage2-tier-a-anchor-review.yml`. One page per anchor (early/mid/late frames, overlays, verdict field). Gate: STAGE 2 TIER A EXPERIMENTAL ANCHOR VISUAL REVIEW — AWAITING TRACK-QUALITY DECISION.
