@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 24 June 2026 (Tier A anchor visual evidence pack dispatched)  
+**Last reconciled:** 24 June 2026 (label analysis tool added; awaiting adjudication CSV)  
 **Authority:** Living source of truth for AI work. Replace obsolete state rather than appending chat transcripts.
 
 ## Start here
@@ -269,7 +269,7 @@ Retain raw audit evidence only.
 
 ## Active gate and next action
 
-**STAGE 2 TIER A EXPERIMENTAL ANCHOR HUMAN ADJUDICATION — AWAITING LABELS**
+**BALL-LIKENESS LABEL ANALYSIS — AWAITING FEATURE-DESIGN DECISION**
 
 ### Run 28087760893 — decision-gate outcome
 
@@ -427,4 +427,4 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 - **2026-06-24:** Stage 1 Tier A static-location dry-run INVALIDATED (run 28084047416). Defects: cluster-ID instability + tracklet-ID motion comparison. Fixed: frozen location manifest (LOC_001…LOC_C005_SUB1), frame/spatial continuity check. Workflow updated; repeated-static audit step removed. AWAITING RE-DISPATCH.
 - **2026-06-24:** Track B Stage 1c quarantined audit COMPLETED — REVIEWED. Run 28079006609, artifact 7841528502. Residual precision dominated by scene false positives. Zero-candidate pack requires per-frame labelling. Gate: STAGE 1 RESIDUAL FALSE-POSITIVE MITIGATION — AWAITING TIER A DRY-RUN DECISION.
 - **2026-06-23:** Track B Stage 1c self-contained workflow failed before processing at artifact-download authentication; blocked.
-
+- **2026-06-24:** `stage2_label_analysis.py` added. Reads filled adjudication CSV + tracklets JSON; reports label summary, feature comparison table, ranked discriminating features, unclear anchor priority list. No filtering, thresholds, or frozen files changed. Gate: BALL-LIKENESS LABEL ANALYSIS — AWAITING FEATURE-DESIGN DECISION.
