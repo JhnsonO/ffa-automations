@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 25 June 2026 — Architecture redesigned; pragmatic hybrid AI model adopted; Phase A+B scope locked with VLM-as-targeted-detector and backtracking cost model.
+**Last reconciled:** 25 June 2026 — Phase A code pushed and verified; loss-window detector fixed for real Stage 1 dict-keyed input shape; two runs dispatched, unverified.
 
 ## Start here
 
@@ -152,21 +152,29 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 
 ## Active gate and next action
 
-### PHASE A — LOCAL WIDE FALLBACK + LOSS WINDOW DETECTOR
+### PHASE A — STATUS: AWAITING ARTIFACT REVIEW
 
-**ChatGPT produces:**
-1. Updated `ball_tracker/render_segment.py` — local wide fallback state machine
-2. `ball_tracker/loss_window_detector.py` — reads Stage 1 candidates, writes `loss_windows.json`
-3. `ball_tracker/tests/test_loss_window_detector.py`
-4. `loss_windows.json` schema (embedded in detector file as dataclass/TypedDict)
+**What has been pushed (verified):**
+- `ball_tracker/render_segment.py` — local wide fallback FSM patch (5 hunks, commit `053db06e`)
+  - `FALLBACK_FOV` raised to 130°
+  - `last_trusted_yaw/pitch` recorded on every FOLLOW confirm
+  - Zoom-out anchors to last trusted pose, not stale EMA
+  - HUD updated to show `wide_target_*` coordinates
+- `ball_tracker/loss_window_detector.py` — supports real Stage 1 dict-keyed frames shape + list-form unit tests (commit `8c3bd41f`)
+- `ball_tracker/tests/test_loss_window_detector.py` — 6/6 pass locally (commit `a0ba207e`)
+- `.github/workflows/360-loss-window-detector.yml` — dispatches detector on existing Stage 1 candidates (commit `2b0bd882`)
 
-**Claude verifies and pushes:**
-- Schema matches existing candidate data contract
-- No modification to frozen files
-- Unit tests pass
-- One workflow dispatch to produce `loss_windows.json` on existing candidates
+**Stage 1 real input shape confirmed:**
+`frames` is a string-keyed dict `{"0": [...], "1": [...]}`, not a list. Detector normalises both shapes.
 
-**Acceptance:** `loss_windows.json` produced, renderer holds+widens on loss rather than snapping to pitch-centre. Debug clip shows local hold behaviour.
+**Active dispatch:**
+- Loss window detector: run `28136111246` — DISPATCHED — UNVERIFIED
+- Render segment debug clip: run `28135812487` — DISPATCHED — UNVERIFIED (frames 800–1000, defaults)
+
+**Acceptance criteria remaining:**
+1. `loss_windows.json` artifact produced with plausible window counts
+2. Debug clip shows camera holding last trusted yaw/pitch and widening locally on ball loss (not snapping to pitch-centre)
+3. Visual approval from Johnson → Phase B unlocked
 
 ### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE (after Phase A accepted)
 
@@ -193,6 +201,7 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 
 ## Compact change log
 
+- **2026-06-25 (session 2):** Phase A code pushed: `render_segment.py` local wide fallback (5-hunk patch), `loss_window_detector.py` with dict-keyed Stage 1 shape support (6/6 tests), `360-loss-window-detector.yml` workflow. Two runs dispatched unverified: loss-window `28136111246`, render-segment `28135812487`.
 - **2026-06-25:** Architecture redesigned; pragmatic hybrid model adopted; Phase A+B scope locked; VLM-as-targeted-detector with backtracking cost model; CLAUDE.md updated.
 - **2026-06-24:** FootAndBall benchmark rejected; backward-anchor propagation and football-YOLO adapter built (experiments only).
 - **2026-06-24:** Candidate-fusion, pose selection, temporal ball-likeness score all rejected.
