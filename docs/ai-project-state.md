@@ -269,7 +269,7 @@ Retain raw audit evidence only.
 
 ## Active gate and next action
 
-**STAGE 2 TIER A EXPERIMENTAL ANCHOR HUMAN ADJUDICATION — AWAITING LABELS**
+**STAGE 2 TIER A — BALL-LIKENESS SCORE FEATURE DESIGN DECISION**
 
 ### Run 28087760893 — decision-gate outcome
 
@@ -366,7 +366,43 @@ Per-anchor page (3 rows: EARLY / MID / LATE):
 
 No automatic verdicts. No changes to filtering, radii, thresholds, linking, renderer, Stage 1, 1b, or 2.
 
-**Next action:** Complete the verdict column (`likely ball` / `likely false positive` / `unclear`) in `tier_a_anchor_adjudication.csv`. Paste the filled CSV to trigger `stage2_label_analysis.py` label analysis.
+**Next action:** Decide whether to implement a geometry-based ball-likeness score using the five candidate features identified by label analysis (obs_count, span_frames, spatial_spread_deg, net_disp_deg, anchor_strength).
+
+### Label analysis completed — 24 June 2026
+
+Adjudication CSV filled: 2 likely_ball (T0001, T0025), 10 likely_false_positive, 14 unclear.
+`stage2_label_analysis.py` run against artifact `7850454893` + `tracklets_tier_a_experimental.json` (artifact `7846400233`).
+
+**Top discriminating features (|Δ|/σ):**
+
+| Rank | Feature | Δ/σ | ball mean | FP mean |
+|------|---------|-----|-----------|---------|
+| 1 | obs_count | 2.54 | 120.0 | 24.4 |
+| 2 | span_frames | 2.52 | 125.0 | 27.8 |
+| 3 | spatial_spread_deg | 2.15 | 7.58 | 1.66 |
+| 4 | net_disp_deg | 1.69 | 22.97 | 5.49 |
+| 5 | anchor_strength | 1.55 | 0.961 | 0.767 |
+| 6 | vel_consistency | 1.53 | 0.841 | 0.365 |
+| 8 | mean_conf | 1.10 | 0.741 | 0.561 |
+
+**bbox geometry features (width, height, area, aspect ratio) returned all-null** — geo_coverage=0.0 for all tracklets in the Tier A experimental JSON. The observation-level bbox fields were not propagated into the tracklets output.
+
+**Finding:** The two real ball tracks are separated from false positives primarily by *quantity and spread of evidence* — more observations, longer span, wider spatial coverage. Confidence and anchor_strength are secondary. The separation is clean and consistent in direction. The bbox geometry route is currently blocked by missing propagation.
+
+**Answers to the three gate questions:**
+
+1. **Features that separate ball from FP:** obs_count, span_frames, spatial_spread_deg, and net_disp_deg all show Δ/σ ≥ 1.7 and are directionally consistent. vel_consistency (1.53) and anchor_strength (1.55) add further signal. Bbox shape is unavailable (null propagation issue).
+
+2. **Strong enough for a simple score?** Yes — the top features are already scalar fields on every tracklet. A weighted sum or simple threshold combination of obs_count + spatial_spread_deg + vel_consistency would separate the labelled anchors cleanly. Sample size (n=2 ball, n=10 FP) is small; the score should be treated as experimental and diagnostic only.
+
+3. **Best single next implementation:** **Geometry-based ball-likeness scoring.** The temporal/spatial evidence (obs_count, span, spread, velocity consistency) is the strongest signal and is already computed. A lightweight experimental score using these five features is the lowest-risk, highest-signal next step. Detector recall/recovery and temporal association improvements are downstream of knowing which tracklets are credible.
+
+**Unclear anchors needing review (top priority):**
+T0130, T0030, T0129 — clustered near FP on obs_count/span/spread; borderline.
+T0079, T0090 — large spatial_spread_deg (7.0°, 9.0°) but low obs_count; ambiguous.
+T0175, T0145, T0167 — high obs_count (93–158), ball-like on count/span but unclear on spread/conf.
+
+**Blocked path:** bbox geometry features cannot be evaluated until `detection_geometry` fields are propagated from Stage 1c candidates into the Tier A experimental tracklets observations. This is a separate scoped task if bbox shape is needed for scoring.
 
 Reviewed suppression candidates (Tier A evidence, no runtime suppression approved):
 - C001, C002, C003, C004, C008 — tight, previously identified
@@ -425,5 +461,6 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 - **2026-06-24:** Stage 1 Tier A static-location dry-run INVALIDATED (run 28084047416). Defects: cluster-ID instability + tracklet-ID motion comparison. Fixed: frozen location manifest (LOC_001…LOC_C005_SUB1), frame/spatial continuity check. Workflow updated; repeated-static audit step removed. AWAITING RE-DISPATCH.
 - **2026-06-24:** Track B Stage 1c quarantined audit COMPLETED — REVIEWED. Run 28079006609, artifact 7841528502. Residual precision dominated by scene false positives. Zero-candidate pack requires per-frame labelling. Gate: STAGE 1 RESIDUAL FALSE-POSITIVE MITIGATION — AWAITING TIER A DRY-RUN DECISION.
 - **2026-06-23:** Track B Stage 1c self-contained workflow failed before processing at artifact-download authentication; blocked.
+- **2026-06-24:** Label analysis completed. Filled adjudication CSV (2 ball, 10 FP, 14 unclear). Ran stage2_label_analysis.py. Top features: obs_count (Δ/σ=2.54), span_frames (2.52), spatial_spread_deg (2.15). Ball-likeness score feature design decision required. Bbox geometry null — propagation blocked.
 - **2026-06-24:** Active gate updated to STAGE 2 TIER A EXPERIMENTAL ANCHOR HUMAN ADJUDICATION — AWAITING LABELS. `stage2_label_analysis.py` standing by as next tool after CSV labels entered.
 - **2026-06-24:** `stage2_label_analysis.py` added. Reads filled adjudication CSV + tracklets JSON; reports label summary, feature comparison table, ranked discriminating features, unclear anchor priority list. No filtering, thresholds, or frozen files changed. Gate: BALL-LIKENESS LABEL ANALYSIS — AWAITING FEATURE-DESIGN DECISION.
