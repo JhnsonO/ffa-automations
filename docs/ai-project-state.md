@@ -201,6 +201,58 @@ Smoke test path (active):
 **Next action: review Track B quarantined artifact from run `28048960467`.**
 
 
+
+## Stage 2 static-motion audit
+
+**Status: COMPLETED — AWAITING REVIEW DECISION**
+
+Implemented (commit `379738b`):
+- `ball_tracker/stage2_static_motion_audit.py` — annotation-only audit layer
+- `ball_tracker/tests/test_stage2_static_motion_audit.py` — 39 fixture tests, all pass
+
+Per-tracklet metrics computed: obs_count, span_frames, net_disp_deg, spread_MAD_deg
+(robust spatial spread via MAD on great-circle distances to median position),
+path_length_deg, path_to_net_ratio (None when net ≤ 1e-9), median_step_deg,
+p90_step_deg, gap_count, gap_fraction, confirmed_static_hotspot_frac.
+
+Rejection gate (ALL five must hold — `would_reject_static_motion` label only):
+1. obs_count >= 12
+2. span_frames >= 20
+3. net_disp_deg < 1.5
+4. spread_MAD_deg < 0.6
+5. p90_step_deg < 0.25
+
+Path/path-to-net/median-step/gap metrics are **diagnostic only** — not gates.
+`would_reject_static_motion` does not replace or modify `status`.
+
+Smoke results (artifact 7835756306, run 28063029760, tracklets.json):
+- 531 tracklets: 35 anchor / 161 passing / 335 fragment
+- would-reject: 28 | borderline: 12 | retained: 503
+- Near-zero anchors caught: **8 of 17**
+  - 9 missed anchors and their failing condition(s):
+    - T0338 (p90=0.278), T0462 (p90=2.565), T0231 (p90=4.468): fail p90_step
+    - T0440, T0143: fail span_gte_20
+    - T0066, T0412: fail span + p90
+    - T0309, T0130: fail obs_count + span
+- Strong-motion refs: T0001/T0088/T0318/T0477 all retained ✓
+- T0499: **excluded from STRONG_MOTION_REFS** — in this run it is a near-zero
+  passing tracklet (obs=85, span=152, net=0.024°) correctly flagged would-reject.
+  This is a known finding, not a gate fault.
+
+Human-confirmed static mapping (video evidence 7836234562, run 28063913618):
+- All 17 human-confirmed IDs present in this run (0 unmapped).
+- T0066 (project state calibration example) + 16 near-zero anchors from video session.
+- 8 of the 17 human-confirmed IDs caught by the gate.
+
+Outputs written by `run()`:
+- `stage2_audit_report.json` — per-tracklet audit + summary + would-reject/borderline/retained lists
+- `stage2_audit_report.txt` — human-readable summary
+- `stage2_audit_review.txt` — structured review: A (would-reject) / B (retained anchor+passing) / C (borderline)
+
+**Do not modify Stage 2 classifications, link thresholds, or dispatch a rerun.**
+Next decision point: review the 9 missed near-zero anchors and the 12 borderline tracklets,
+then determine if gate threshold adjustments are warranted (requires four-question review gate).
+
 ## Next gate
 
 1. Obtain the quarantined Track B artifact.
@@ -218,6 +270,7 @@ Do not tune Stage 2, smoke render, or modify the renderer before this review.
 - Poll once shortly after dispatch for a quick failure, then wait for supplied result.
 
 ## Change log
+- **2026-06-24:** Stage 2 static-motion audit layer built and tested (commit `379738b`). 39 tests pass. Smoke results: 28 would-reject, 8/17 near-zero anchors caught, T0001/T0088/T0318/T0477 retained. T0499 confirmed near-zero passing, excluded from strong-motion refs. No classifications or thresholds changed.
 
 - **2026-06-23:** Added living project state and `CLAUDE.md` operating contract.
 - **2026-06-23:** Ruled out Stage 1 geometry/serialisation with micro re-detect; confirmed detector candidate-quality failure.
