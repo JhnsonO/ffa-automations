@@ -8,6 +8,11 @@ name: 360 Stage 2 — Outside-Tier-A Motion Review Pack
 #   T0334  passing  net_disp=42.102°  frames=2369-2378
 #   T0394  passing  net_disp=5.902°   frames=2650-2669
 #
+# Inputs:
+#   - Stage 1b-quarantined candidates: artifact 7841528502
+#   - Tier A dry-run artifact (candidates + Stage 2 tracklets): artifact 7844649525
+#     (run 28086879590 — corrected mechanical dry-run, both Stage 2 arms included)
+#
 # Does NOT change filter, radii, linker, thresholds, comparator, renderer,
 # or any frozen file. No suppression activation.
 
@@ -48,58 +53,63 @@ jobs:
           except urllib.error.HTTPError as redir:
               blob_url = redir.headers.get("Location")
           if not blob_url:
-              print("FATAL: no redirect location for artifact zip"); sys.exit(1)
+              print("FATAL: no redirect location for artifact 7841528502"); sys.exit(1)
           with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
               data = r.read()
-          print(f"Downloaded artifact: {len(data)} bytes")
+          print(f"Downloaded {len(data)} bytes")
           with zipfile.ZipFile(io.BytesIO(data)) as z:
               z.extractall("/tmp/input")
           print("Extracted:", os.listdir("/tmp/input"))
           PY
           ls -lh /tmp/input/
 
-      - name: Download Tier A dry-run artifact (run 28087760893)
+      - name: Download Tier A dry-run artifact 7844649525 (candidates + tracklets)
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           mkdir -p /tmp/dryrun_art
           python3 - << 'PY'
-          import os, urllib.request, urllib.error, zipfile, io, sys, json
+          import os, urllib.request, urllib.error, zipfile, io, sys
           token = os.environ["GH_PAT"]
-
-          # Find artifact for run 28087760893
-          req = urllib.request.Request(
-              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/runs/28087760893/artifacts",
-              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
-          with urllib.request.urlopen(req) as r:
-              arts = json.loads(r.read())["artifacts"]
-          if not arts:
-              print("FATAL: no artifacts for run 28087760893"); sys.exit(1)
-          art = arts[0]
-          art_id = art["id"]
-          print(f"Found artifact: id={art_id} name={art['name']}")
-
+          # Artifact 7844649525 = run 28086879590, corrected mechanical dry-run.
+          # Contains: stage1_candidates_tier_a_dry_run.json,
+          #           stage2_original_tracklets.json, stage2_dryrun_tracklets.json,
+          #           tier_a_locations.json, tier_a_removed_audit.json, etc.
+          art_id = "7844649525"
           class NoRedirect(urllib.request.HTTPRedirectHandler):
               def redirect_request(self, req, fp, code, msg, headers, newurl):
                   return None
           opener = urllib.request.build_opener(NoRedirect())
-          req2 = urllib.request.Request(
+          req = urllib.request.Request(
               f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{art_id}/zip",
               headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
           try:
-              opener.open(req2); blob_url = None
+              opener.open(req); blob_url = None
           except urllib.error.HTTPError as redir:
               blob_url = redir.headers.get("Location")
           if not blob_url:
-              print("FATAL: no redirect location"); sys.exit(1)
+              print(f"FATAL: no redirect location for artifact {art_id}"); sys.exit(1)
           with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
               data = r.read()
-          print(f"Downloaded: {len(data)} bytes")
+          print(f"Downloaded {len(data)} bytes")
           with zipfile.ZipFile(io.BytesIO(data)) as z:
               z.extractall("/tmp/dryrun_art")
           print("Extracted:", os.listdir("/tmp/dryrun_art"))
           PY
           ls -lh /tmp/dryrun_art/
+
+      - name: Verify required files
+        run: |
+          for f in \
+            /tmp/input/stage1_candidates_quarantined.json \
+            /tmp/dryrun_art/stage1_candidates_tier_a_dry_run.json \
+            /tmp/dryrun_art/stage2_original_tracklets.json \
+            /tmp/dryrun_art/stage2_dryrun_tracklets.json; do
+            if [ ! -f "$f" ]; then
+              echo "FATAL: missing $f"; exit 1
+            fi
+            echo "OK: $(basename $f)  $(du -sh $f | cut -f1)"
+          done
 
       - name: Get Drive access token
         env:
@@ -136,31 +146,13 @@ jobs:
             "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media"
           echo "clip.mp4: $(du -sh /tmp/clip.mp4 | cut -f1)"
 
-      - name: Stage 2 linker on ORIGINAL candidates (for original tracklets)
-        run: |
-          mkdir -p /tmp/s2_original
-          python3 ball_tracker/stage2_temporal_link.py \
-            --stage1-candidates /tmp/input/stage1_candidates_quarantined.json \
-            --hotspot-map       /tmp/input/hotspot_map.json \
-            --output-dir        /tmp/s2_original
-          echo "original tracklets: $(python3 -c \"import json; t=json.load(open('/tmp/s2_original/tracklets.json'))['tracklets']; print(len(t))\")"
-
-      - name: Stage 2 linker on DRY-RUN candidates (for dry-run tracklets)
-        run: |
-          mkdir -p /tmp/s2_dryrun
-          python3 ball_tracker/stage2_temporal_link.py \
-            --stage1-candidates /tmp/dryrun_art/stage1_candidates_tier_a_dry_run.json \
-            --hotspot-map       /tmp/input/hotspot_map.json \
-            --output-dir        /tmp/s2_dryrun
-          echo "dry-run tracklets: $(python3 -c \"import json; t=json.load(open('/tmp/s2_dryrun/tracklets.json'))['tracklets']; print(len(t))\")"
-
       - name: Generate outside-Tier-A motion review pack
         run: |
           mkdir -p /tmp/review_out
           python3 ball_tracker/stage2_outside_tier_a_motion_review.py \
             --video               /tmp/clip.mp4 \
-            --original-tracklets  /tmp/s2_original/tracklets.json \
-            --dryrun-tracklets    /tmp/s2_dryrun/tracklets.json \
+            --original-tracklets  /tmp/dryrun_art/stage2_original_tracklets.json \
+            --dryrun-tracklets    /tmp/dryrun_art/stage2_dryrun_tracklets.json \
             --original-candidates /tmp/input/stage1_candidates_quarantined.json \
             --dryrun-candidates   /tmp/dryrun_art/stage1_candidates_tier_a_dry_run.json \
             --output-dir          /tmp/review_out
