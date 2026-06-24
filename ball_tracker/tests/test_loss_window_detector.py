@@ -89,3 +89,22 @@ def test_consecutive_untrusted_frames_are_merged_into_one_window() -> None:
     assert window["end_frame"] == 3
     assert window["duration_frames"] == 3
     assert window["status"] == "bridgeable"
+
+def test_dict_keyed_frames_shape_matches_real_stage1_output() -> None:
+    """Shape 3: frames is a dict of string-key -> candidate list (real Stage 1 JSON)."""
+    from ball_tracker.loss_window_detector import detect_loss_windows_from_payload
+    payload = {
+        "fps": 30,
+        "frames": {
+            "5": [{"yaw": 10.0, "pitch": -2.0, "weighted_conf": 0.80}],
+            "6": [{"yaw": 11.0, "pitch": -2.1, "weighted_conf": 0.10}],
+            "7": [{"yaw": 12.0, "pitch": -2.2, "weighted_conf": 0.70}],
+        }
+    }
+    report = detect_loss_windows_from_payload(payload)
+    assert report["total_frames"] == 3
+    assert report["summary"]["total_windows"] == 1
+    assert report["loss_windows"][0]["start_frame"] == 6
+    assert report["loss_windows"][0]["status"] == "bridgeable"
+    assert report["loss_windows"][0]["last_trusted_frame"] == 5
+    assert report["loss_windows"][0]["first_reacquisition_frame"] == 7
