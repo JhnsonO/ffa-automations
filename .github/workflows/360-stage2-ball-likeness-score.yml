@@ -1,0 +1,198 @@
+name: 360 Stage 2 — Ball-Likeness Score Out-of-Sample Validation
+
+# DIAGNOSTIC ONLY — no verdicts assigned, no thresholds changed.
+# Scores every unclear Tier A anchor using a transparent four-feature weighted formula.
+# Produces: ranked CSV, visual review pack (top-8 + bottom-8 unclear), summary with FP check.
+#
+# No modifications to: run_tracker.py, renderer, Stage 1, Stage 1b, Stage 2,
+# Tier A behaviour, filtering, thresholds, or any production outputs.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ball-likeness-score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install --quiet 'numpy<2' pillow
+
+      - name: Preflight — verify GH_PAT
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, json, sys
+          token = os.environ.get("GH_PAT", "")
+          if not token:
+              print("FATAL: GH_PAT secret is empty"); sys.exit(1)
+          req = urllib.request.Request(
+              "https://api.github.com/user",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          with urllib.request.urlopen(req) as r:
+              user = json.loads(r.read())
+          print(f"GH_PAT OK: login={user.get('login')}")
+          PY
+
+      - name: Download Tier A experimental artifact (latest tier-a-experimental-*)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/tier_a_input
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, json, sys
+          token = os.environ["GH_PAT"]
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+          req = urllib.request.Request(
+              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts?per_page=50",
+              headers=headers)
+          arts = json.loads(urllib.request.urlopen(req).read()).get("artifacts", [])
+          target = next(
+              (a for a in arts if a["name"].startswith("tier-a-experimental-") and not a["expired"]),
+              None)
+          if not target:
+              print("FATAL: no non-expired tier-a-experimental artifact found"); sys.exit(1)
+          print(f"Using artifact: id={target['id']}  name={target['name']}")
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+          opener = urllib.request.build_opener(NoRedirect())
+          req2 = urllib.request.Request(
+              f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{target['id']}/zip",
+              headers=headers)
+          try:
+              opener.open(req2)
+          except urllib.error.HTTPError as e:
+              blob_url = e.headers.get("Location")
+              if not blob_url:
+                  print(f"FATAL: no redirect Location. status={e.code}"); sys.exit(1)
+          else:
+              print("FATAL: expected redirect not received"); sys.exit(1)
+
+          with urllib.request.urlopen(blob_url) as r:
+              data = r.read()
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/tier_a_input")
+          files = os.listdir("/tmp/tier_a_input")
+          print(f"Extracted: {files}")
+          if "tracklets_tier_a_experimental.json" not in files:
+              print("FATAL: tracklets_tier_a_experimental.json not found in artifact"); sys.exit(1)
+          PY
+
+      - name: Download adjudication CSV (latest tier-a-adjudication-*)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/adjudication_input
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, json, sys
+          token = os.environ["GH_PAT"]
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+          req = urllib.request.Request(
+              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts?per_page=50",
+              headers=headers)
+          arts = json.loads(urllib.request.urlopen(req).read()).get("artifacts", [])
+          target = next(
+              (a for a in arts if a["name"].startswith("tier-a-adjudication-") and not a["expired"]),
+              None)
+          if not target:
+              print("FATAL: no non-expired tier-a-adjudication artifact found"); sys.exit(1)
+          print(f"Using artifact: id={target['id']}  name={target['name']}")
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+          opener = urllib.request.build_opener(NoRedirect())
+          req2 = urllib.request.Request(
+              f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{target['id']}/zip",
+              headers=headers)
+          try:
+              opener.open(req2)
+          except urllib.error.HTTPError as e:
+              blob_url = e.headers.get("Location")
+              if not blob_url:
+                  print(f"FATAL: no redirect Location. status={e.code}"); sys.exit(1)
+          else:
+              print("FATAL: expected redirect not received"); sys.exit(1)
+
+          with urllib.request.urlopen(blob_url) as r:
+              data = r.read()
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/adjudication_input")
+          files = os.listdir("/tmp/adjudication_input")
+          print(f"Extracted: {files}")
+          if "tier_a_anchor_adjudication.csv" not in files:
+              print("FATAL: tier_a_anchor_adjudication.csv not found in artifact"); sys.exit(1)
+          # Verify verdicts are present
+          import csv
+          with open("/tmp/adjudication_input/tier_a_anchor_adjudication.csv") as f:
+              rows = list(csv.DictReader(f))
+          filled = sum(1 for r in rows if r.get("verdict", "").strip())
+          print(f"CSV: {len(rows)} rows, {filled} with verdicts")
+          if filled == 0:
+              print("FATAL: no verdicts filled in CSV"); sys.exit(1)
+          PY
+
+      - name: Run ball-likeness scoring
+        run: |
+          mkdir -p /tmp/score_output
+          python3 ball_tracker/stage2_ball_likeness_score.py \
+            --csv       /tmp/adjudication_input/tier_a_anchor_adjudication.csv \
+            --tracklets /tmp/tier_a_input/tracklets_tier_a_experimental.json \
+            --output-dir /tmp/score_output
+
+      - name: Validate outputs
+        run: |
+          python3 - << 'PY'
+          import os, sys, csv
+          required = [
+              "/tmp/score_output/ball_likeness_scores.csv",
+              "/tmp/score_output/ball_likeness_summary.txt",
+              "/tmp/score_output/ball_likeness_review_pack.png",
+          ]
+          ok = True
+          for p in required:
+              if os.path.exists(p):
+                  sz = os.path.getsize(p)
+                  print(f"OK   {p}  ({sz/1e3:.1f} KB)")
+                  if sz < 100:
+                      print(f"WARN: suspiciously small: {p}")
+              else:
+                  print(f"MISSING  {p}"); ok = False
+
+          # CSV must have unclear rows and a score column
+          csv_path = "/tmp/score_output/ball_likeness_scores.csv"
+          if os.path.exists(csv_path):
+              with open(csv_path) as f:
+                  rows = list(csv.DictReader(f))
+              if not rows:
+                  print("FATAL: scored CSV is empty"); ok = False
+              else:
+                  scores = [float(r["score"]) for r in rows if r.get("score")]
+                  print(f"Scored CSV: {len(rows)} unclear anchors  score range [{min(scores):.4f}, {max(scores):.4f}]")
+
+          if not ok:
+              sys.exit(1)
+          PY
+
+      - name: Copy outputs
+        run: |
+          mkdir -p final_output
+          cp /tmp/score_output/ball_likeness_scores.csv      final_output/
+          cp /tmp/score_output/ball_likeness_summary.txt     final_output/
+          cp /tmp/score_output/ball_likeness_review_pack.png final_output/
+          echo "=== final_output ==="
+          ls -lh final_output/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ball-likeness-score-${{ github.run_id }}
+          path: final_output/
+          retention-days: 30
