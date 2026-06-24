@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 24 June 2026 (updated)  
+**Last reconciled:** 24 June 2026 (Tier A experimental output dispatched)  
 **Authority:** Living source of truth for AI work. Replace obsolete state rather than appending chat transcripts.
 
 ## Start here
@@ -269,7 +269,7 @@ Retain raw audit evidence only.
 
 ## Active gate and next action
 
-**STAGE 1 TIER A STATIC-LOCATION DRY-RUN — OUTSIDE-TIER-A MOTION REVIEW REQUIRED**
+**STAGE 2 TIER A EXPERIMENTAL OUTPUT REVIEW — AWAITING TRACK-QUALITY DECISION**
 
 ### Run 28087760893 — decision-gate outcome
 
@@ -299,17 +299,33 @@ These are outside all Tier A suppression radii. Frame continuity present but spa
 - Genuine-motion denominator excludes Tier-A-origin windows
 - Acceptance FAIL gated on genuine (non-Tier-A-origin) unsafe windows only
 
-### Visual review dispatched
+### T0275, T0334, T0394 safety review — CLEARED
 
-- `ball_tracker/stage2_outside_tier_a_motion_review.py` (commit `260fd54`)
-- `.github/workflows/360-outside-tier-a-motion-review.yml` (commit `fb14bf8`)
-- Workflow: `360-outside-tier-a-motion-review` — DISPATCHED — UNVERIFIED (run TBD)
+Visual review completed. T0275, T0334, T0394 are false associations, not credible ball tracks.
+Tier A dry-run safety gate cleared for this smoke clip.
 
-Outputs per window (T0275/T0334/T0394): early/mid/late perspective crops; original + dry-run candidates overlaid; original + dry-run linked track overlaid; equirect thumb; blank verdict table.
+### Stage 2 Tier A experimental output path — DISPATCHED — UNVERIFIED
 
-**Next action:** Paste artifact from `360-outside-tier-a-motion-review` run. Review `outside_tier_a_motion_review.png` and annotate verdict table (likely real ball / likely clutter / unclear) for T0275, T0334, T0394.
+- `ball_tracker/stage2_tier_a_experimental_output.py` (commit pending dispatch)
+- `.github/workflows/360-stage2-tier-a-experimental.yml`
+- Workflow: `360-stage2-tier-a-experimental` — DISPATCHED — UNVERIFIED (run TBD)
 
-No suppression activation. No comparator rule changes. No filter, radii, linker, thresholds, renderer, or frozen file changes.
+Inputs: Stage 1b-quarantined candidates (artifact 7841528502), hotspot_map.json, frozen Tier A manifest.
+Outputs (all labelled experimental):
+- `stage1_candidates_tier_a_experimental.json`
+- `tracklets_tier_a_experimental.json`
+- `gaps_tier_a_experimental.json`
+- `tier_a_experimental_review_pack.png` (all anchors; top passing; representative fragments)
+- `tier_a_experimental_summary.txt` (side-by-side original vs Tier A counts)
+- `tier_a_experimental_counts.json`
+
+Stage 2 linker (`stage2_temporal_link.py`) is called unchanged. No modifications to run_tracker.py,
+renderer, YOLO thresholds, Stage 1b, or live production behaviour.
+
+**Next action:** Dispatch `360-stage2-tier-a-experimental` and paste artifact.
+Review `tier_a_experimental_summary.txt` and `tier_a_experimental_review_pack.png`.
+Answer acceptance question: Does Tier A filtering leave a smaller, more plausible set of
+ball-track candidates worth connecting to the follow-cam stage?
 
 Reviewed suppression candidates (Tier A evidence, no runtime suppression approved):
 - C001, C002, C003, C004, C008 — tight, previously identified
@@ -349,7 +365,8 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 
 ## Compact change log
 
-- **2026-06-24:** Outside-Tier-A motion review dispatched for T0275/T0334/T0394. Comparator updated with TIER_A_ORIGIN_IDS reclassification and genuine-motion denominator (commit `2de4097`). Review script + workflow added (commits `260fd54`, `fb14bf8`). Gate: OUTSIDE-TIER-A MOTION REVIEW REQUIRED.
+- **2026-06-24:** T0275/T0334/T0394 reviewed as false associations (not credible ball tracks). Tier A safety review cleared. Stage 2 Tier A experimental output path built and dispatched: `stage2_tier_a_experimental_output.py` + `360-stage2-tier-a-experimental.yml`. Outputs: stage1_candidates_tier_a_experimental.json, tracklets_tier_a_experimental.json, gaps_tier_a_experimental.json, review pack + counts. Gate: STAGE 2 TIER A EXPERIMENTAL OUTPUT REVIEW — AWAITING TRACK-QUALITY DECISION.
+- **2026-06-24:** Outside-Tier-A motion review dispatched for T0275/T0334/T0394. Comparator updated with TIER_A_ORIGIN_IDS reclassification and genuine-motion denominator (commit `2de4097`). Review script + workflow added (commits `260fd54`, `fb14bf8`). Safety review cleared (see above).
 - **2026-06-24:** Comparator safety fix: `is_continuous` corrected to `spatial OR linked` only; frame-only is diagnostic; outcome categories added; FAIL verdict on unsafe windows. 5 fixture tests added and PASS. Commits `bfb0d07` (comparator) + `2b80e6c` (tests). Run 28087760893: 43 windows checked, 33 continuous, 7 Tier-A-origin expected, 3 outside-Tier-A unresolved.
 - **2026-06-24:** Wide-cluster diagnosis reviewed. C005 split into Sub1 (suppression candidate), Sub2 (annotation-only), Sub3 (removed). C006 confirmed suppression candidate. C007 removed. C009/T0143 annotation-only standalone; T0379/T0279 removed. Gate: AWAITING ACTION-LAYER DESIGN DECISION.
 - **2026-06-24:** Wide cluster diagnosis dispatched for C005, C006, C007, C009 (`stage2_wide_cluster_diagnosis.py` + `360-stage2-wide-cluster-diagnosis.yml`).
