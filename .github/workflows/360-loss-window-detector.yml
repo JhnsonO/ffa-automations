@@ -33,7 +33,7 @@ jobs:
         run: |
           echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
           echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
-          python3 -c "
+          python3 << 'PY'
           import json, urllib.request as _req
           token_data = json.loads(open('/tmp/youtube_token.json').read())
           creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
@@ -47,10 +47,10 @@ jobs:
                            headers={'Content-Type': 'application/json'}, method='POST'))
           tok = json.loads(r.read())
           if 'access_token' not in tok:
-              raise RuntimeError(f'Token refresh failed: {tok}')
+              raise RuntimeError('Token refresh failed: ' + str(tok))
           open('/tmp/drive_token.txt', 'w').write(tok['access_token'])
-          print(f'Token OK (expires_in={tok.get("expires_in")}s)')
-          "
+          print('Token OK')
+          PY
 
       - name: Download stage1_candidates.json
         env:
@@ -72,13 +72,13 @@ jobs:
             --input  work/stage1_candidates.json \
             --output work/loss_windows.json \
             --min-confidence "$MIN_CONFIDENCE"
-          python3 -c "
+          python3 << 'PY'
           import json
           r = json.load(open('work/loss_windows.json'))
           s = r['summary']
-          print(f\"Frames: {r['total_frames']}  Candidates: {r['total_candidates']}\")
-          print(f\"Windows: {s['total_windows']}  bridgeable={s['bridgeable']}  open={s['open']}  isolated={s['isolated']}\")
-          "
+          print(f"Frames: {r['total_frames']}  Candidates: {r['total_candidates']}")
+          print(f"Windows: {s['total_windows']}  bridgeable={s['bridgeable']}  open={s['open']}  isolated={s['isolated']}")
+          PY
 
       - name: Upload loss_windows.json as artifact
         uses: actions/upload-artifact@v4
