@@ -1,0 +1,89 @@
+name: 360 Pose-Guided Candidate Selection Diagnostic
+
+# EXPERIMENT ONLY. No Stage 1/1b/2, filtering, threshold, renderer, or production changes.
+on:
+  workflow_dispatch:
+
+jobs:
+  pose-candidate-selection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg aria2
+          python3 -m pip install --quiet --upgrade pip
+          python3 -m pip install --quiet 'numpy<2' pillow opencv-python-headless ultralytics
+
+      - name: Download Tier A experimental artifact
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/tier_a_input
+          python3 - <<'PY'
+          import io, os, sys, urllib.error, urllib.request, zipfile
+          token=os.environ.get('GH_PAT','')
+          if not token: raise SystemExit('FATAL: GH_PAT secret is empty')
+          aid=7846400233
+          h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json'}
+          class NR(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+          try:
+              urllib.request.build_opener(NR()).open(urllib.request.Request(f'https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{aid}/zip',headers=h))
+              loc=None
+          except urllib.error.HTTPError as e:
+              loc=e.headers.get('Location')
+          if not loc: raise SystemExit('FATAL: no artifact redirect')
+          with urllib.request.urlopen(urllib.request.Request(loc)) as r: blob=r.read()
+          with zipfile.ZipFile(io.BytesIO(blob)) as z: z.extractall('/tmp/tier_a_input')
+          print(os.listdir('/tmp/tier_a_input'))
+          PY
+          test -f /tmp/tier_a_input/stage1_candidates_tier_a_experimental.json
+          test -f /tmp/tier_a_input/tracklets_tier_a_experimental.json
+
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          t=json.loads(os.environ['YOUTUBE_TOKEN']); c=json.loads(os.environ['YOUTUBE_CREDENTIALS'])
+          payload=json.dumps({'client_id':t.get('client_id') or c['installed']['client_id'],'client_secret':t.get('client_secret') or c['installed']['client_secret'],'refresh_token':t['refresh_token'],'grant_type':'refresh_token'}).encode()
+          req=urllib.request.Request(t.get('token_uri','https://oauth2.googleapis.com/token'),data=payload,headers={'Content-Type':'application/json'},method='POST')
+          result=json.loads(urllib.request.urlopen(req).read())
+          if 'access_token' not in result: raise RuntimeError(result)
+          open('/tmp/drive_access_token.txt','w').write(result['access_token'])
+          print('Drive access OK')
+          PY
+
+      - name: Download source equirect video
+        run: |
+          mkdir -p /tmp/video
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          aria2c -q -x 4 -s 4 --file-allocation=none --header="Authorization: Bearer $ACCESS_TOKEN" --dir=/tmp/video --out=equirect_trim.mp4 "https://www.googleapis.com/drive/v3/files/1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX?alt=media"
+          ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of default=noprint_wrappers=1 /tmp/video/equirect_trim.mp4
+
+      - name: Preflight pose model
+        run: python3 ball_tracker/experiments/pose_guided_candidate_selection.py --preflight
+
+      - name: Build pose-guided candidate selection review
+        run: |
+          mkdir -p /tmp/pose_selection
+          python3 ball_tracker/experiments/pose_guided_candidate_selection.py \
+            --stage1-candidates /tmp/tier_a_input/stage1_candidates_tier_a_experimental.json \
+            --tracklets /tmp/tier_a_input/tracklets_tier_a_experimental.json \
+            --video /tmp/video/equirect_trim.mp4 \
+            --output-dir /tmp/pose_selection \
+            --pose-model yolov8n-pose.pt --pose-conf 0.25 --pose-imgsz 960
+          ls -lh /tmp/pose_selection
+
+      - name: Upload diagnostic artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pose-candidate-selection-diagnostic-${{ github.run_id }}
+          path: /tmp/pose_selection/
+          retention-days: 30
