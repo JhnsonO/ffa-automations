@@ -269,7 +269,9 @@ Retain raw audit evidence only.
 
 ## Active gate and next action
 
-**STAGE 1 RESIDUAL FALSE-POSITIVE MITIGATION — AWAITING TIER A DRY-RUN DECISION**
+**STAGE 1 TIER A STATIC-LOCATION DRY-RUN — DISPATCHED — UNVERIFIED**
+
+Run ID: 28084047416. Dry-run experiment only; no active suppression approved. Tier A locations: C001, C002, C003, C004, C006, C008, C005 Sub1 (members T0348/T0343/T0307). Conservative radii: max member-to-centre dist + 0.5° guard, capped 0.75°. New files: ball_tracker/stage1_tier_a_dry_run_filter.py, ball_tracker/stage2_tier_a_dry_run_compare.py, .github/workflows/360-tier-a-dry-run.yml. run_tracker, Stage 1b, Stage 2 linking, renderer, YOLO/Stage 2 thresholds untouched.
 
 Reviewed suppression candidates (Tier A evidence, no runtime suppression approved):
 - C001, C002, C003, C004, C008 — tight, previously identified
@@ -320,5 +322,6 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 - **2026-06-24:** Stage 2 static-motion audit built and reviewed; annotation-only.
 - **2026-06-23:** Stage 1c geometry preservation verified on full RTX 4090 run `28046275937` / artifact `7830052466`.
 - **2026-06-23:** Stage 1b confirmed-static quarantine verified on run `28035387017` / artifact `7824742847`.
+- **2026-06-24:** Stage 1 Tier A static-location dry-run built and dispatched. Run 28084047416. Filter + comparison scripts + dedicated workflow added; no live behaviour changed. DISPATCHED — UNVERIFIED.
 - **2026-06-24:** Track B Stage 1c quarantined audit COMPLETED — REVIEWED. Run 28079006609, artifact 7841528502. Residual precision dominated by scene false positives. Zero-candidate pack requires per-frame labelling. Gate: STAGE 1 RESIDUAL FALSE-POSITIVE MITIGATION — AWAITING TIER A DRY-RUN DECISION.
 - **2026-06-23:** Track B Stage 1c self-contained workflow failed before processing at artifact-download authentication; blocked.
