@@ -14,8 +14,12 @@ Purpose
 1. Starts from Stage 1b-quarantined candidates.
 2. Applies the frozen Tier A location manifest (via stage1_tier_a_dry_run_filter.py).
 3. Runs Stage 2 temporal linker unchanged on the filtered candidates.
-4. Writes clearly labelled experimental output files.
-5. Generates a focused review pack with:
+4. Propagates detection_geometry from Stage 1c candidates into tracklet observations.
+   stage2_temporal_link.py is frozen and does not carry geometry; this step
+   stitches it back using a (frame, yaw, pitch) lookup without altering any
+   tracking logic or thresholds.
+5. Writes clearly labelled experimental output files.
+6. Generates a focused review pack with:
    - all experimental anchors
    - highest-confidence passing tracklets
    - representative fragments
@@ -67,6 +71,70 @@ def _great_circle(y1, p1, y2, p2):
     a, b = uv(y1, p1), uv(y2, p2)
     dot = max(-1.0, min(1.0, a[0]*b[0] + a[1]*b[1] + a[2]*b[2]))
     return math.degrees(math.acos(dot))
+
+
+# ── Geometry propagation ───────────────────────────────────────────────────────
+
+def _build_geometry_index(filtered_candidates: dict) -> dict:
+    """
+    Build a lookup from (frame_int, yaw_4dp, pitch_4dp) -> detection_geometry.
+    Candidates with no detection_geometry key map to None.
+    Stage 0 reuse candidates carry explicit null values inside detection_geometry;
+    those are preserved as-is so downstream consumers can distinguish
+    'geometry absent' (key missing) from 'Stage-0-reuse null'.
+    """
+    index = {}
+    frames_raw = filtered_candidates.get("frames", {})
+    for frame_key, cands in frames_raw.items():
+        fidx = int(frame_key)
+        for c in (cands if isinstance(cands, list) else []):
+            yaw = c.get("yaw")
+            pitch = c.get("pitch")
+            if yaw is None or pitch is None:
+                continue
+            key = (fidx, round(yaw, 4), round(pitch, 4))
+            # detection_geometry may be absent (old candidate), present with values,
+            # or present with all-null values (Stage 0 reuse). Preserve whatever is there.
+            index[key] = c.get("detection_geometry")
+    return index
+
+
+def _propagate_geometry(tracklets_data: dict, geometry_index: dict) -> tuple[dict, dict]:
+    """
+    Inject detection_geometry into each tracklet observation in-place.
+    Returns (updated_tracklets_data, coverage_stats).
+    Observations with no matching candidate get detection_geometry=None.
+    Source values are never modified.
+    """
+    total_obs = 0
+    matched_obs = 0
+    populated_obs = 0  # matched AND has at least one non-null geometry field
+
+    for t in tracklets_data.get("tracklets", []):
+        for obs in t.get("frames", []):
+            total_obs += 1
+            frame = obs.get("frame")
+            yaw = obs.get("yaw")
+            pitch = obs.get("pitch")
+            if frame is None or yaw is None or pitch is None:
+                obs["detection_geometry"] = None
+                continue
+            key = (int(frame), round(yaw, 4), round(pitch, 4))
+            geo = geometry_index.get(key)
+            obs["detection_geometry"] = geo
+            if geo is not None:
+                matched_obs += 1
+                # Check if any field is non-null (Stage 1c fresh detection vs Stage 0 reuse)
+                if isinstance(geo, dict) and any(v is not None for v in geo.values()):
+                    populated_obs += 1
+
+    coverage_stats = {
+        "total_observations": total_obs,
+        "geometry_matched": matched_obs,
+        "geometry_populated": populated_obs,
+        "geo_coverage_fraction": round(populated_obs / total_obs, 4) if total_obs else 0.0,
+    }
+    return tracklets_data, coverage_stats
 
 
 # ── Review pack ────────────────────────────────────────────────────────────────
@@ -326,6 +394,29 @@ def run(args):
 
     linker_mod.run(LinkerArgs())
 
+    # ── Step 3: Propagate detection_geometry from Stage 1c candidates ────────
+    print("\n=== STEP 3: Geometry propagation (Stage 1c → tracklet observations) ===")
+    print("  stage2_temporal_link.py is frozen; geometry stitched here without")
+    print("  altering tracking logic, thresholds, or source values.")
+
+    geometry_index = _build_geometry_index(filtered_data)
+    print(f"  Geometry index built: {len(geometry_index)} candidate keys")
+
+    with open(os.path.join(linker_tmp, "tracklets.json")) as f:
+        tracklets_data = json.load(f)
+
+    tracklets_data, coverage_stats = _propagate_geometry(tracklets_data, geometry_index)
+
+    print(f"  total_observations   : {coverage_stats['total_observations']}")
+    print(f"  geometry_matched     : {coverage_stats['geometry_matched']}")
+    print(f"  geometry_populated   : {coverage_stats['geometry_populated']}  "
+          f"(non-null fields; Stage 1c fresh detections)")
+    print(f"  geo_coverage_fraction: {coverage_stats['geo_coverage_fraction']:.4f}")
+
+    if coverage_stats["total_observations"] > 0 and coverage_stats["geometry_populated"] == 0:
+        print("  WARN: geo_coverage_fraction=0.0 — geometry propagation produced no populated fields.")
+        print("        Check that filtered_data uses the Stage 1c schema with detection_geometry.")
+
     # Rename to experimental labels
     experimental_tracklets_path = os.path.join(
         args.output_dir, "tracklets_tier_a_experimental.json"
@@ -334,13 +425,12 @@ def run(args):
         args.output_dir, "gaps_tier_a_experimental.json"
     )
 
-    with open(os.path.join(linker_tmp, "tracklets.json")) as f:
-        tracklets_data = json.load(f)
     tracklets_data["_experimental_meta"] = {
         "label": "tracklets_tier_a_experimental",
         "input": "stage1_candidates_tier_a_experimental.json",
         "linker": "stage2_temporal_link.py (unchanged)",
         "approved_active_suppression": False,
+        "geometry_propagation": coverage_stats,
     }
     with open(experimental_tracklets_path, "w") as f:
         json.dump(tracklets_data, f, indent=2)
@@ -357,8 +447,8 @@ def run(args):
     print(f"  → {experimental_tracklets_path}")
     print(f"  → {experimental_gaps_path}")
 
-    # ── Step 3: Load original tracklets for comparison ───────────────────────
-    print("\n=== STEP 3: Side-by-side counts ===")
+    # ── Step 4: Load original tracklets for comparison ───────────────────────
+    print("\n=== STEP 4: Side-by-side counts ===")
     all_t = tracklets_data["tracklets"]
 
     from collections import defaultdict
@@ -386,6 +476,7 @@ def run(args):
         "approved_active_suppression": False,
         "original": {"total": orig_total, "by_status": orig_counts} if orig_total else None,
         "experimental": {"total": exp_total, "by_status": dict(exp_counts)},
+        "geometry_coverage": coverage_stats,
     }
     counts_path = os.path.join(args.output_dir, "tier_a_experimental_counts.json")
     with open(counts_path, "w") as f:
@@ -403,8 +494,8 @@ def run(args):
         print(f"  {s:<25} {o:>10} {e:>12}  {delta_s:>8}")
     print(f"  {'TOTAL':<25} {orig_total or '—':>10} {exp_total:>12}")
 
-    # ── Step 4: Review pack ──────────────────────────────────────────────────
-    print("\n=== STEP 4: Review pack ===")
+    # ── Step 5: Review pack ──────────────────────────────────────────────────
+    print("\n=== STEP 5: Review pack ===")
     anchors, passing, fragments = _build_review_pack(all_t, args.output_dir)
 
     # Text summary
@@ -412,6 +503,12 @@ def run(args):
         "=== Tier A Experimental Stage 2 Output — Review Summary ===",
         "EXPERIMENT ONLY — No active suppression approved.",
         "T0275/T0334/T0394 reviewed as false associations. Safety review cleared 24 June 2026.",
+        "",
+        "--- Geometry Propagation ---",
+        f"  total_observations   : {coverage_stats['total_observations']}",
+        f"  geometry_matched     : {coverage_stats['geometry_matched']}",
+        f"  geometry_populated   : {coverage_stats['geometry_populated']}",
+        f"  geo_coverage_fraction: {coverage_stats['geo_coverage_fraction']:.4f}",
         "",
         "--- Side-by-Side Counts ---",
     ]
