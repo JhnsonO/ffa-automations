@@ -201,15 +201,35 @@ No thresholds, tracklet statuses, or frozen files changed.
 
 ## Active gate and next action
 
-**Primary next action:** review discovered cluster locations against footage.
+**STAGE 2 DISCOVERED-STATIC LOCATION VISUAL REVIEW — AWAITING DECISION**
 
-Required checks:
+Visual verification pack dispatched for C003–C009 (clusters outside known Stage 0 hotspot regions).
 
-1. C001 (yaw≈24.5°, pitch≈13.2°) confirmed — verify in footage as fixed scene feature; ✓
-2. T0373 confirmed excluded (net_disp=42.64°); ✓
-3. Review C002–C009 location cards to identify fixed scene features before any filtering decision.
+- workflow: `.github/workflows/360-stage2-cluster-visual-pack.yml`
+- script: `ball_tracker/stage2_cluster_visual_pack.py`
+- status: DISPATCHED — UNVERIFIED
+
+Pack contents:
+- Perspective crop (FoV=80°) centred on cluster yaw/pitch for early/middle/late frames
+- Equirect thumbnail with location marker for context
+- Centre reticle (red) + observation offset dot (yellow) per tile
+- Verdict table (`verdict_table.md`) for human annotation
+
+C001 and C002 are reference-only (inside Stage 0 hotspot — confirmed false-positive sources).
+
+Required decisions before any suppression rule is created:
+1. Review `cluster_visual_pack.png` for each of C003–C009
+2. Complete `verdict_table.md` with one of: `confirmed fixed scene` | `uncertain` | `credible ball — do not suppress`
+3. Return verdict table; suppression design follows from confirmed clusters only
+
+Completed pre-conditions:
+- C001 (yaw≈24.5°, pitch≈13.2°): confirmed fixed scene (inside Stage 0 hotspot) ✓
+- C002 (yaw≈−22.7°, pitch≈−18.8°): inside Stage 0 hotspot ✓
+- T0373 confirmed excluded (net_disp=42.64°) ✓
 
 **Parallel blocked workstream:** repair and re-dispatch the Stage 1c → Stage 1b → Track B self-contained workflow. Do not treat it as complete until its artifact is inspected.
+
+No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 2 linking, renderer, or hotspot-map behaviour.
 
 ## Efficient AI work protocol
 
@@ -220,6 +240,7 @@ Required checks:
 
 ## Compact change log
 
+- **2026-06-24:** Visual verification pack dispatched for C003–C009 (`stage2_cluster_visual_pack.py` + `360-stage2-cluster-visual-pack.yml`). Equirect crops + verdict table. Gate updated to AWAITING DECISION.
 - **2026-06-24:** Reconciled state file and working contract. Fresh chats should bootstrap from `CLAUDE.md` + this file without a large handover.
 - **2026-06-24:** Stage 2 repeated-static location audit run against smoke data (artifact 7835756306). 9 repeated-static clusters confirmed; C001 (yaw≈24.5°,pitch≈13.2°) has 57 members across 33 windows, inside Stage 0 hotspot. C002 (-22.7°,-18.8°) has 47 members, also inside hotspot. C003–C009 newly identified outside hotspot. T0373 excluded (net_disp=42.64°). No thresholds or frozen files changed.
 - **2026-06-24:** Stage 2 repeated-static location audit built and tested; annotation-only, no dispatch yet.

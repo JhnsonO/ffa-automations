@@ -1,0 +1,164 @@
+name: Stage 2 — Cluster Visual Verification Pack (C003–C009)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cluster-visual-pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install --quiet numpy pillow opencv-python-headless
+
+      - name: Install ffmpeg
+        run: sudo apt-get install -y --quiet ffmpeg
+
+      - name: Download smoke artifact 7835756306 (tracklets + audit report)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/smoke_art
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, sys
+
+          token  = os.environ["GH_PAT"]
+          art_id = "7835756306"  # stage2-smoke-validation-28063029760
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+
+          opener = urllib.request.build_opener(NoRedirect())
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{art_id}/zip",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          try:
+              opener.open(req)
+              blob_url = None
+          except urllib.error.HTTPError as redir:
+              blob_url = redir.headers.get("Location")
+          if not blob_url:
+              print("FATAL: no redirect URL from GH artifact endpoint"); sys.exit(1)
+
+          print(f"Downloading artifact {art_id}...", flush=True)
+          with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+              data = r.read()
+          print(f"  Downloaded {len(data)/1e6:.1f} MB", flush=True)
+
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/smoke_art")
+          print("  Extracted:", os.listdir("/tmp/smoke_art"), flush=True)
+          PY
+
+      - name: Verify required files from artifact
+        run: |
+          ls -lh /tmp/smoke_art/
+          for f in tracklets.json; do
+            if [ ! -f "/tmp/smoke_art/$f" ]; then
+              echo "FATAL: $f not found in artifact"; exit 1
+            fi
+            echo "$f: $(wc -c < /tmp/smoke_art/$f) bytes OK"
+          done
+
+      - name: Run static-motion audit inline (annotation only)
+        run: |
+          mkdir -p /tmp/audit_out
+          python3 ball_tracker/stage2_static_motion_audit.py \
+            --tracklets /tmp/smoke_art/tracklets.json \
+            --output-dir /tmp/audit_out
+          echo "audit outputs:"
+          ls -lh /tmp/audit_out/
+
+      - name: Run repeated-static location audit inline (annotation only)
+        run: |
+          mkdir -p /tmp/repeated_static_out
+          python3 ball_tracker/stage2_repeated_static_audit.py \
+            --tracklets /tmp/smoke_art/tracklets.json \
+            --audit     /tmp/audit_out/stage2_audit_report.json \
+            --output-dir /tmp/repeated_static_out
+          echo "=== repeated static report ==="
+          cat /tmp/repeated_static_out/stage2_repeated_static_report.txt
+
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - << 'PY'
+          import json, urllib.request, os
+          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
+          creds_data = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+          payload = json.dumps({
+              "client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token"
+          }).encode()
+          r = urllib.request.urlopen(urllib.request.Request(
+              token_uri, data=payload, headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
+          open("/tmp/drive_access_token.txt", "w").write(tok["access_token"])
+          print(f"Drive token OK (expires_in={tok.get('expires_in')}s)", flush=True)
+          PY
+
+      - name: Download equirectangular clip from Drive
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          FILE_ID="1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX"
+          echo "Downloading clip (2.07 GB)..." && \
+          curl -fL \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media" \
+            -o /tmp/clip.mp4
+          echo "clip.mp4: $(du -sh /tmp/clip.mp4 | cut -f1)"
+
+      - name: Probe clip
+        run: |
+          ffprobe -v quiet -show_streams /tmp/clip.mp4 2>/dev/null \
+            | grep -E "width|height|r_frame_rate|nb_frames" | head -8
+
+      - name: Generate cluster visual verification pack
+        run: |
+          mkdir -p /tmp/pack_out
+          python3 ball_tracker/stage2_cluster_visual_pack.py \
+            --video           /tmp/clip.mp4 \
+            --report          /tmp/repeated_static_out/stage2_repeated_static_report.json \
+            --tracklets       /tmp/smoke_art/tracklets.json \
+            --output-dir      /tmp/pack_out \
+            --target-clusters C003,C004,C005,C006,C007,C008,C009 \
+            --fps             29.97
+          echo "=== pack outputs ==="
+          ls -lh /tmp/pack_out/
+          echo "=== verdict table ==="
+          cat /tmp/pack_out/verdict_table.md
+
+      - name: Collect final outputs
+        run: |
+          mkdir -p final_output
+          cp /tmp/pack_out/cluster_visual_pack.png        final_output/
+          cp /tmp/pack_out/verdict_table.md               final_output/
+          cp /tmp/pack_out/verdict_table.tsv              final_output/
+          cp /tmp/repeated_static_out/stage2_repeated_static_report.json  final_output/
+          cp /tmp/repeated_static_out/stage2_repeated_static_report.txt   final_output/
+          echo "=== final_output ==="
+          ls -lh final_output/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage2-cluster-visual-pack-${{ github.run_id }}
+          path: final_output/
+          retention-days: 30
