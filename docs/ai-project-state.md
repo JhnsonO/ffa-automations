@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 24 June 2026 — geometry propagation smoke reviewed; multi-cue diagnostic ready for one manual dispatch.
+**Last reconciled:** 24 June 2026 — multi-cue pose review completed; pose-guided candidate-selection diagnostic ready for manual dispatch.
 
 ## Start here
 
@@ -13,152 +13,121 @@
 
 Offline 360° football post-production. The camera follows only a credible **fused ball path**.
 
-- Ball evidence comes first; temporal evidence can support it but never proves it alone.
+- Ball evidence comes first; temporal evidence can support it but never prove it alone.
 - Player/pose activity is a search and recovery prior only; it must never directly set camera yaw or pitch.
 - Wide fallback is allowed only after fused ball evidence fails.
-- Experiments and diagnostics stay separate from the renderer and production pipeline.
+- Experiments stay separate from the renderer and production pipeline.
 
 ## Frozen / do-not-break
 
 - `ball_tracker/run_tracker.py` v11 remains the honest baseline.
-- Stage 1b quarantine, Stage 2 temporal linker, Tier A experimental filter, and renderer are not to be changed by the active task.
+- Stage 1b quarantine, Stage 2 temporal linker, Tier A filter, and renderer are frozen for the active task.
 - Stage 2 remains separate from the renderer and is not called v12.
-- No active score, suppression, threshold, or model change is approved from this state.
+- No threshold, suppression, score, model, or follow-cam activation is approved.
 
 ## Current data contracts
 
 ### Stage 1 candidates
 
-Frame-indexed `stage1_candidates.json` candidates include:
+Frame-indexed candidates include `yaw`, `pitch`, `raw_conf`, `penalty`, `weighted_conf`, `source`, `crop_yaw`, `region`, and `detection_geometry`.
 
-- `yaw`, `pitch`, `raw_conf`, `penalty`, `weighted_conf`
-- `source`, `crop_yaw`, `region`
-- `detection_geometry`
-
-`detection_geometry` is populated for fresh Stage 1c detections and explicit-null for Stage 0 reuse. Stage 1 uses four yaw-only 110° perspective crops at 1280×720.
+Fresh Stage 1c detections carry bbox geometry; Stage 0 reuse carries explicit nulls. Stage 1 uses four yaw-only 110° crops at 1280×720.
 
 ### Stage 2 tracklets
 
-Observations contain associated Stage 1 candidates: `frame`, `yaw`, `pitch`, `weighted_conf`, `score`, `alternates`.
-
-For the **Tier A experimental output path only**, `detection_geometry` is now post-link propagated onto each observation without changing the frozen linker.
+Observations contain raw associated candidates. For Tier A experimental output only, `detection_geometry` is post-link propagated without changing the frozen linker.
 
 ## Verified evidence
 
 ### Candidate-quality diagnosis
 
-The generic detector is the present bottleneck, not projection or JSON mapping. Micro re-detection matched stored/fresh positions within 0.00–0.58° but repeatedly found wrong scene targets: fence, mount, net, turf texture, nearby player/body regions and other static clutter.
+Generic detector candidate quality is the main limit, not projection or serialisation. Stored/fresh re-detections agree within 0.00–0.58°, but generic detections repeatedly attach to fence, mount, net, turf texture and player/body clutter.
 
 ### Stage 1b static quarantine — VERIFIED
 
-Run `28035387017`, artifact `7824742847`:
-
-- 6,897 candidates before
-- 3,470 quarantined
-- 3,427 active candidates remain
-- 1,344 frames become genuinely zero-candidate
-
-This is evidence-preserving quarantine only. It did not rerun the detector or tune thresholds.
+Run `28035387017`, artifact `7824742847`: 6,897 candidates before; 3,470 quarantined; 3,427 remain; 1,344 genuinely zero-candidate frames. No detector rerun or threshold tuning.
 
 ### Tier A experimental output — REVIEWED, NOT PRODUCTION
 
-Tier A reduced the known static clutter but did not establish trusted ball tracking.
+Tier A reduces known static clutter but does not establish trusted ball tracking: 520 → 182 total tracklets; anchors 41 → 26; passing 153 → 35; fragments 326 → 121.
 
-- Original → Tier A: 520 → 182 total tracklets
-- Anchors: 41 → 26
-- Passing: 153 → 35
-- Fragments: 326 → 121
-
-Human anchor triage in `ball_tracker/data/tier_a_anchor_adjudication_filled.csv`:
-
+Human anchor triage:
 - likely ball: `T0001`, `T0025`
 - likely false positive: 13
 - unclear: 11
 
-The only confirmed likely-ball examples are too few to approve a follow-cam bridge.
+This is insufficient to approve a follow-cam bridge.
 
 ### Temporal ball-likeness score — FAILED OUT-OF-SAMPLE VALIDATION
 
-The diagnostic score used observation count, spatial spread, velocity consistency and net displacement. It is parked.
+Known false positives `T0079`, `T0093`, and `T0080` ranked too highly. Do not tune or activate that score further.
 
-Known false positives `T0079`, `T0093`, and `T0080` ranked too highly. Therefore sustained or smooth motion is not ball-specific enough to activate a filter or tune weights.
+### Geometry propagation — VERIFIED
 
-**Do not tune that score further.**
+Run `28107675223`, artifact `7853375656`:
+- 158/158 observations carry a `detection_geometry` key
+- 145 populated geometry observations
+- 13 source-null geometry observations preserved
+- geometry coverage 91.77%
 
-### Geometry metadata propagation — VERIFIED
+Frozen linker remains untouched.
 
-Root cause: frozen `stage2_temporal_link.py` did not carry Stage 1c geometry into tracklet observations.
+### Multi-cue visual review — COMPLETED
 
-Scoped fix: `ball_tracker/stage2_tier_a_experimental_output.py` adds a post-link `(frame, yaw, pitch)` geometry stitch. The linker remains untouched.
+Run `28109857417`, artifact `7854364494` completed after PNG-only packaging.
 
-Verified smoke:
+Finding: pose/person detection and lower-body keypoints work on the selected crop samples. They are useful as **frame-level context**. The existing vertical playable-view band is not useful as a discriminator because Stage 1 already applies equivalent pitch bounds. Bbox shape alone is also insufficient.
 
-- workflow run `28107675223`
-- artifact `7853375656`
-- 158/158 observations have a `detection_geometry` key
-- 145 observations contain populated geometry
-- 13 preserve source-null geometry
-- usable geometry coverage: 91.77%
-
-Supporting tests: `ball_tracker/tests/test_geometry_propagation.py` (7 fixtures).
+Decision: do not add another global tracklet score or another model. Test pose at **candidate-selection level** inside a frame, with a raw-confidence fallback for aerial/occluded play.
 
 ## Active gate and next action
 
-# MULTI-CUE BALL CANDIDATE DIAGNOSTIC — READY FOR MANUAL DISPATCH
-
-The aim is one bounded visual experiment: test whether independent context cues demote obvious false detections while preserving the two likely-ball examples.
+# POSE-GUIDED CANDIDATE SELECTION DIAGNOSTIC — READY FOR MANUAL DISPATCH
 
 ### Active files
 
-- `ball_tracker/experiments/multi_cue_diagnostic.py`
-- `ball_tracker/tests/test_multi_cue_diagnostic.py`
-- `.github/workflows/360-multi-cue-diagnostic.yml`
+- `ball_tracker/experiments/pose_guided_candidate_selection.py`
+- `.github/workflows/360-pose-candidate-selection-diagnostic.yml`
 
-### Fixed sample (10 tracklets / 30 frames maximum)
+### Fixed sample
 
+10 tracklets / early-mid-late observations only:
 - likely ball: `T0001`, `T0025`
 - known false positives: `T0093`, `T0080`, `T0079`, `T0036`
 - unclear: `T0130`, `T0030`, `T0090`, `T0175`
 
-### What the diagnostic does
+### What it tests
 
-For early/mid/late evidence on each selected tracklet, it renders:
+For every selected observation, compare:
 
-- all same-crop Stage 1 candidates and the selected tracklet candidate;
-- source detector confidence;
-- vertical playable-view band status — explicitly not a calibrated pitch polygon;
-- YOLO pose/person boxes plus nearest person, lower-body and ankle distances;
-- Stage 1c bbox width, height, area and aspect ratio;
-- existing temporal context;
-- a transparent, diagnostic-only fused score.
+- **blue:** highest raw detector-confidence candidate in the same Stage 1 crop;
+- **green:** pose-guided choice when a candidate has nearby detected lower-body keypoints;
+- **magenta:** existing Stage 2-associated candidate.
 
-Missing pose or geometry is neutral/unknown, not a penalty. The fused score must never auto-accept or auto-reject anything.
+Pose is never a hard rejection. When no candidate has usable lower-body support, green deliberately equals blue (`RAW_FALLBACK_NO_LOWER_BODY_SUPPORT`) so aerial/occluded play is not penalised.
 
-### Dispatch and acceptance
+Outputs:
+- one PNG review page per tracklet;
+- CSV showing raw vs pose-guided choice, whether either matches the existing associated candidate, lower-body distance and selection mode;
+- readme explaining that the result is diagnostic only.
 
-The workflow downloads Tier A experimental artifact `7846400233` and the fixed equirect source video, then runs `yolov8n-pose.pt` on the 30 selected perspective crops only.
+### Acceptance question
 
-Expected artifact: `multi-cue-ball-diagnostic-<run_id>` with:
-
-- `multi_cue_diagnostic_pack.pdf`
-- `multi_cue_diagnostic.csv`
-- `multi_cue_diagnostic_summary.txt`
-
-**Acceptance question:** Do the likely-ball examples retain sensible multi-cue support while the known false positives visibly lack player/lower-body/pitch/geometry support? This is a visual review decision only.
+Across the known examples, does green visibly demote static/fence/tree-style candidates **without** repeatedly overriding plausible likely-ball selections? Review visually; no automatic verdict or pipeline modification follows from this run.
 
 ### Explicitly out of scope
 
-- no full-video pose pass;
-- no pose model fine-tuning or training;
-- no football detector swap or threshold change;
-- no filter/suppression activation;
-- no Stage 1/1b/2 or renderer modifications;
-- no follow-cam integration.
+- full-video pose inference;
+- model training or fine-tuning;
+- detector swap/threshold change;
+- production candidate filtering or suppression;
+- Stage 1/1b/2 or renderer changes;
+- follow-cam integration.
 
 ## Compact change log
 
-- **2026-06-24:** Multi-cue diagnostic added as a bounded manual-dispatch experiment. Script, six helper tests and workflow are isolated from frozen pipeline files.
-- **2026-06-24:** Geometry metadata propagation smoke verified (run `28107675223`, artifact `7853375656`): 145/158 populated geometry observations; frozen linker untouched.
-- **2026-06-24:** Temporal ball-likeness score validation rejected. Known false positives ranked too highly; score parked and not to be tuned.
-- **2026-06-24:** Tier A experimental human review completed: only T0001/T0025 remain likely-ball; output not approved for follow-cam use.
-- **2026-06-24:** Stage 1b static quarantine and Stage 1c geometry preservation remain verified baseline evidence.
+- **2026-06-24:** Added pose-guided candidate-selection diagnostic and manual workflow. It compares raw vs pose-supported candidate selection with an explicit raw fallback.
+- **2026-06-24:** Multi-cue visual review completed (run `28109857417`, artifact `7854364494`); pose useful, vertical band/bbox shape not discriminative enough alone.
+- **2026-06-24:** Geometry propagation smoke verified (run `28107675223`, artifact `7853375656`).
+- **2026-06-24:** Temporal ball-likeness score rejected; do not tune further.
+- **2026-06-24:** Tier A human review: only T0001/T0025 remain likely-ball; no follow-cam approval.
