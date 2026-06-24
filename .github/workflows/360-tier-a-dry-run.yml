@@ -5,6 +5,14 @@ name: 360 Stage 1 Tier A Static-Location DRY-RUN
 # locations materially improves Stage 2 input quality.
 # Does NOT modify run_tracker, Stage 1b, Stage 2 linking logic, renderer,
 # YOLO thresholds, or any live workflow behaviour. Approves NO active suppression.
+#
+# LOCATION IDENTITY: Tier A locations are matched by frozen physical coordinates
+# (frozen manifest inside stage1_tier_a_dry_run_filter.py), NOT by cluster IDs
+# regenerated from a fresh repeated-static audit. This eliminates the cluster-ID
+# renumbering defect from the prior invalidated run.
+#
+# MOTION CONTINUITY: the comparison uses frame/spatial continuity checks, NOT
+# tracklet ID matching. Tracklet IDs are not stable across runs.
 
 on:
   push:
@@ -35,7 +43,6 @@ jobs:
           token = os.environ.get("GH_PAT", "")
           if not token:
               print("FATAL: GH_PAT secret is empty or not set")
-              print("FIX: add a classic PAT with repo scope (or fine-grained PAT with Actions read) as GH_PAT in repo secrets")
               sys.exit(1)
           try:
               req = urllib.request.Request(
@@ -123,7 +130,7 @@ jobs:
             "https://www.googleapis.com/drive/v3/files/1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M?alt=media"
           ls -lh /tmp/input/hotspot_map.json
 
-      # ── Stage 2 ORIGINAL arm — also produces tracklets for the report ──────────
+      # ── Stage 2 ORIGINAL arm ─────────────────────────────────────────────────
       - name: Stage 2 linker on ORIGINAL quarantined candidates
         run: |
           mkdir -p /tmp/s2_original
@@ -133,22 +140,13 @@ jobs:
             --output-dir        /tmp/s2_original
           ls -lh /tmp/s2_original/
 
-      - name: Build repeated-static report (cluster centres + members)
-        run: |
-          mkdir -p /tmp/report
-          python3 ball_tracker/stage2_repeated_static_audit.py \
-            --tracklets  /tmp/s2_original/tracklets.json \
-            --output-dir /tmp/report
-          ls -lh /tmp/report/
-
-      # ── Tier A dry-run filter ─────────────────────────────────────────────────
+      # ── Tier A dry-run filter (frozen manifest — no repeated-static report) ──
       - name: Apply Tier A discovered-static DRY-RUN filter
         run: |
           mkdir -p /tmp/dryrun
           python3 ball_tracker/stage1_tier_a_dry_run_filter.py \
-            --stage1-candidates       /tmp/input/stage1_candidates_quarantined.json \
-            --repeated-static-report  /tmp/report/stage2_repeated_static_report.json \
-            --output-dir              /tmp/dryrun
+            --stage1-candidates /tmp/input/stage1_candidates_quarantined.json \
+            --output-dir        /tmp/dryrun
           ls -lh /tmp/dryrun/
 
       # ── Stage 2 DRY-RUN arm ───────────────────────────────────────────────────
@@ -161,13 +159,14 @@ jobs:
             --output-dir        /tmp/s2_dryrun
           ls -lh /tmp/s2_dryrun/
 
-      # ── Comparison ────────────────────────────────────────────────────────────
+      # ── Comparison (frame/spatial continuity, not tracklet ID) ───────────────
       - name: Compare original vs dry-run Stage 2 outputs
         run: |
           mkdir -p /tmp/compare
           python3 ball_tracker/stage2_tier_a_dry_run_compare.py \
             --original-tracklets /tmp/s2_original/tracklets.json \
             --dryrun-tracklets   /tmp/s2_dryrun/tracklets.json \
+            --dryrun-candidates  /tmp/dryrun/stage1_candidates_tier_a_dry_run.json \
             --tier-a-locations   /tmp/dryrun/tier_a_locations.json \
             --output-dir         /tmp/compare
           cat /tmp/compare/tier_a_dry_run_stage2_comparison.txt
@@ -181,7 +180,6 @@ jobs:
           cp /tmp/dryrun/tier_a_locations.json                 final_output/ || echo "WARN: locations missing"
           cp /tmp/s2_original/tracklets.json                   final_output/stage2_original_tracklets.json || echo "WARN: original tracklets missing"
           cp /tmp/s2_dryrun/tracklets.json                     final_output/stage2_dryrun_tracklets.json   || echo "WARN: dry-run tracklets missing"
-          cp /tmp/report/stage2_repeated_static_report.json    final_output/ || echo "WARN: repeated-static report missing"
           cp /tmp/compare/tier_a_dry_run_stage2_comparison.json final_output/ || echo "WARN: comparison json missing"
           cp /tmp/compare/tier_a_dry_run_stage2_comparison.txt  final_output/ || echo "WARN: comparison txt missing"
           echo "=== final_output ==="
