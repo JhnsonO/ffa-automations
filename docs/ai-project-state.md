@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 24 June 2026 (Tier A experimental output dispatched)  
+**Last reconciled:** 24 June 2026 (Tier A anchor visual evidence pack dispatched)  
 **Authority:** Living source of truth for AI work. Replace obsolete state rather than appending chat transcripts.
 
 ## Start here
@@ -269,7 +269,7 @@ Retain raw audit evidence only.
 
 ## Active gate and next action
 
-**STAGE 2 TIER A EXPERIMENTAL OUTPUT REVIEW — AWAITING TRACK-QUALITY DECISION**
+**STAGE 2 TIER A EXPERIMENTAL ANCHOR VISUAL REVIEW — AWAITING TRACK-QUALITY DECISION**
 
 ### Run 28087760893 — decision-gate outcome
 
@@ -322,10 +322,30 @@ Outputs (all labelled experimental):
 Stage 2 linker (`stage2_temporal_link.py`) is called unchanged. No modifications to run_tracker.py,
 renderer, YOLO thresholds, Stage 1b, or live production behaviour.
 
-**Next action:** Dispatch `360-stage2-tier-a-experimental` and paste artifact.
-Review `tier_a_experimental_summary.txt` and `tier_a_experimental_review_pack.png`.
-Answer acceptance question: Does Tier A filtering leave a smaller, more plausible set of
-ball-track candidates worth connecting to the follow-cam stage?
+**Previous action completed:** `360-stage2-tier-a-experimental` dispatched and reviewed.
+Tier A counts: 520 → 182 total, 41 → 26 anchors, 153 → 35 passing, 326 → 121 fragments.
+Metric/table review insufficient for track-quality decision.
+
+**Anchor visual evidence pack — DISPATCHED — UNVERIFIED**
+
+- `ball_tracker/stage2_tier_a_anchor_review.py`
+- `.github/workflows/360-stage2-tier-a-anchor-review.yml`
+- Workflow: `360-stage2-tier-a-anchor-review` — DISPATCHED — UNVERIFIED
+
+Inputs: `tracklets_tier_a_experimental.json` (latest tier-a-experimental-* artifact), source equirectangular video (Drive `1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX`).
+Outputs:
+- `tier_a_anchor_review.png` — one page per anchor (early/mid/late frames, overlays, verdict field)
+- `tier_a_anchor_review_summary.txt`
+
+Per-anchor page contains: 3 perspective crops (early/mid/late), candidate marker + crosshair,
+overlays (tracklet ID, frame, yaw/pitch, conf, anchor_strength), metrics strip, human verdict field
+(likely ball / likely false positive / unclear). Passing section is compact table only.
+
+No changes to: filtering, radii, linking, thresholds, renderer, or runtime behaviour.
+
+**Next action:** Dispatch `360-stage2-tier-a-anchor-review` and paste artifact.
+Review `tier_a_anchor_review.png`. Complete verdict field for each anchor.
+Decision: track-quality gate — accept, reject, or revise Tier A set.
 
 Reviewed suppression candidates (Tier A evidence, no runtime suppression approved):
 - C001, C002, C003, C004, C008 — tight, previously identified
@@ -365,6 +385,7 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 
 ## Compact change log
 
+- **2026-06-24:** Tier A anchor visual evidence pack built and dispatched: `stage2_tier_a_anchor_review.py` + `360-stage2-tier-a-anchor-review.yml`. One page per anchor (early/mid/late frames, overlays, verdict field). Gate: STAGE 2 TIER A EXPERIMENTAL ANCHOR VISUAL REVIEW — AWAITING TRACK-QUALITY DECISION.
 - **2026-06-24:** T0275/T0334/T0394 reviewed as false associations (not credible ball tracks). Tier A safety review cleared. Stage 2 Tier A experimental output path built and dispatched: `stage2_tier_a_experimental_output.py` + `360-stage2-tier-a-experimental.yml`. Outputs: stage1_candidates_tier_a_experimental.json, tracklets_tier_a_experimental.json, gaps_tier_a_experimental.json, review pack + counts. Gate: STAGE 2 TIER A EXPERIMENTAL OUTPUT REVIEW — AWAITING TRACK-QUALITY DECISION.
 - **2026-06-24:** Outside-Tier-A motion review dispatched for T0275/T0334/T0394. Comparator updated with TIER_A_ORIGIN_IDS reclassification and genuine-motion denominator (commit `2de4097`). Review script + workflow added (commits `260fd54`, `fb14bf8`). Safety review cleared (see above).
 - **2026-06-24:** Comparator safety fix: `is_continuous` corrected to `spatial OR linked` only; frame-only is diagnostic; outcome categories added; FAIL verdict on unsafe windows. 5 fixture tests added and PASS. Commits `bfb0d07` (comparator) + `2b80e6c` (tests). Run 28087760893: 43 windows checked, 33 continuous, 7 Tier-A-origin expected, 3 outside-Tier-A unresolved.
