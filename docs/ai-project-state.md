@@ -269,17 +269,30 @@ Retain raw audit evidence only.
 
 ## Active gate and next action
 
-**STAGE 1 TIER A STATIC-LOCATION DRY-RUN — INVALIDATED: STABLE-LOCATION + MOTION-CONTINUITY FIX REQUIRED**
+**STAGE 1 TIER A STATIC-LOCATION DRY-RUN — SAFETY CHECK FIX REQUIRED**
 
-Prior run 28084047416 is INVALIDATED. Two defects were found and fixed:
+Comparator safety defect identified from artifact `7844649525`:
 
-1. **Cluster-ID instability:** The filter previously looked up Tier A locations by runtime-regenerated cluster IDs (C001, C002 …). Re-running the repeated-static audit can renumber clusters. Fixed: `stage1_tier_a_dry_run_filter.py` now uses a FROZEN LOCATION MANIFEST with stable physical IDs (LOC_001 … LOC_C005_SUB1), hardcoded centre yaw/pitch, action radii, and reviewed member evidence. The `--repeated-static-report` argument and the repeated-static audit workflow step have been removed entirely.
+- Prior comparator used `is_continuous = has_frame_support OR has_spatial_support OR has_linked_support`.
+- Several credible-motion windows were marked `is_continuous=true` with `has_frame_support=true` but `has_spatial_support=false` and `has_linked_support=false`.
+- Frame-only support does not confirm spatial/linked continuity and must not count.
 
-2. **Tracklet-ID motion comparison:** The compare script previously checked whether credible-motion tracklets (by original ID) were absent in the dry-run. Tracklet IDs are not stable across runs; linking can split, merge, or renumber after candidate removal. Fixed: `stage2_tier_a_dry_run_compare.py` now performs a **frame/spatial continuity check** for each credible-motion window: (a) frame support — ≥1 dry-run candidate exists in the window's frame range; (b) spatial support — ≥1 such candidate within 2° of the original median; (c) linked support — any dry-run tracklet overlaps the window and is within 2° spatially. A window is flagged as disrupted only if all three are absent.
+**Fix applied (commit `bfb0d07`):**
 
-Prior outputs from run 28084047416 are retained as invalidated diagnostic evidence. Do not interpret them as acceptance results.
+- `ball_tracker/stage2_tier_a_dry_run_compare.py` — corrected comparator:
+  - `is_continuous = has_spatial_support OR has_linked_support` (frame support is diagnostic only)
+  - Explicit outcome categories: `spatial_or_linked_continuous`, `frame_only_unsupported`, `no_support`
+  - Acceptance verdict: FAIL if any window is `frame_only_unsupported` or `no_support`; exits with code 1
+- `ball_tracker/tests/test_tier_a_continuity.py` — 5 fixture tests (commit `2b80e6c`):
+  - frame-only support fails continuity ✓
+  - spatial support passes ✓
+  - linked support passes ✓
+  - no support fails ✓
+  - linked-far + frame-only still frame_only_unsupported ✓
+- All 5 fixture tests PASS locally.
 
-Next action: dispatch the corrected dry-run workflow and inspect the new artifact.
+**Next action:** Dispatch `360-tier-a-dry-run` workflow (workflow_dispatch on main) and paste artifact.
+No other files changed. Filter, manifest, action radii, Stage 1, Stage 1b, Stage 2 linker, renderer, thresholds, workflow inputs all untouched.
 
 Reviewed suppression candidates (Tier A evidence, no runtime suppression approved):
 - C001, C002, C003, C004, C008 — tight, previously identified
@@ -319,6 +332,7 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 
 ## Compact change log
 
+- **2026-06-24:** Comparator safety fix: `is_continuous` corrected to `spatial OR linked` only; frame-only is diagnostic; outcome categories added; FAIL verdict on unsafe windows. 5 fixture tests added and PASS. Commits `bfb0d07` (comparator) + `2b80e6c` (tests). Gate: SAFETY CHECK FIX REQUIRED — AWAITING RE-DISPATCH.
 - **2026-06-24:** Wide-cluster diagnosis reviewed. C005 split into Sub1 (suppression candidate), Sub2 (annotation-only), Sub3 (removed). C006 confirmed suppression candidate. C007 removed. C009/T0143 annotation-only standalone; T0379/T0279 removed. Gate: AWAITING ACTION-LAYER DESIGN DECISION.
 - **2026-06-24:** Wide cluster diagnosis dispatched for C005, C006, C007, C009 (`stage2_wide_cluster_diagnosis.py` + `360-stage2-wide-cluster-diagnosis.yml`).
 - **2026-06-24:** Annotation layer verified (run `28078249103`, artifact `7841215970`). eligible=152, matched=139, T0373 unmatched. Tight clusters C001–C004, C008 flagged as future suppression candidates. C005/C007/C009 wide; C006 mid-range; all require diagnosis.
