@@ -11,40 +11,40 @@ This is a DRY-RUN EXPERIMENT. It produces a derived candidate file and an audit
 of everything removed. It does NOT modify the original Stage 1 candidates, does
 NOT tune any threshold, and approves NO active suppression.
 
-WHAT IT REMOVES
----------------
-Only candidates that fall inside an approved Tier A per-location action radius.
+LOCATION IDENTITY — FROZEN MANIFEST
+------------------------------------
+All Tier A locations are identified by stable physical coordinates, NOT by
+cluster IDs assigned by the repeated-static audit. Cluster IDs (C001, C002 …)
+are regenerated on each Stage 2 run and may renumber. The TIER_A_MANIFEST below
+is the sole source of truth for this dry-run. It was derived from the reviewed
+repeated-static audit (artifact 7841215970, run 28078249103) and the wide-cluster
+diagnosis review session.
 
-Approved Tier A locations (from reviewed state):
-  C001, C002, C003, C004, C006, C008   — whole-cluster centres from the
-                                          repeated-static report
-  C005 Sub1                            — defined by member tracklets
-                                          T0348, T0343, T0307 only; centre
-                                          computed from those three members
+Each entry is immutable for this experiment:
+  location_id      — stable physical label, not a cluster label
+  centre_yaw_deg   — reviewed
+  centre_pitch_deg — reviewed
+  action_radius_deg — max(member→centre dist) + 0.5° guard, capped 0.75°
+  member_ids       — tracklet IDs in the reviewed audit (informational only;
+                     not looked up at runtime because re-linking may renumber them)
+  review_tier      — "tier_a_suppression_candidate"
+  review_status    — "reviewed_approved_for_dry_run"
 
-Explicitly NOT included: C005 Sub2/Sub3, C007, C009/T0143, and any wide,
-singleton, or annotation-only location.
+This script does NOT load, reference, or depend on any repeated-static report at
+runtime. The --repeated-static-report argument has been removed.
 
 RADIUS DERIVATION (conservative; never the 4° discovery radius)
 ---------------------------------------------------------------
-Per approved decision for this dry-run:
-
   radius = (max angular distance from the location centre to any of its
             verified members) + GUARD_MARGIN_DEG
   radius = min(radius, RADIUS_CAP_DEG)
 
   GUARD_MARGIN_DEG = 0.5
-  RADIUS_CAP_DEG   = 0.75   (caps C005 Sub1 and C006 for this first practical test)
-
-For whole-cluster Tier A locations the "members" are the cluster members in the
-repeated-static report. For C005 Sub1 the members are exactly the three named
-tracklets.
+  RADIUS_CAP_DEG   = 0.75
 
 INPUTS
 ------
   --stage1-candidates : ORIGINAL Stage 1b-quarantined candidates (frame-indexed)
-  --repeated-static-report : stage2_repeated_static_report.json (cluster centres
-                             + members), regenerated in-workflow from tracklets
   --output-dir
 
 OUTPUTS
@@ -68,15 +68,124 @@ RADIUS_CAP_DEG   = 0.75
 # Sentinel: the discovery/linkage radius must never be used as an action radius.
 _FORBIDDEN_DISCOVERY_RADIUS_DEG = 4.0
 
-# Approved whole-cluster Tier A location IDs (centre taken from report cluster).
-TIER_A_WHOLE_CLUSTERS = ["C001", "C002", "C003", "C004", "C006", "C008"]
+# ── FROZEN TIER A LOCATION MANIFEST ──────────────────────────────────────────
+# Source: reviewed repeated-static audit, artifact 7841215970, run 28078249103.
+# Wide-cluster diagnosis reviewed session (C005 Sub1, C006).
+# DO NOT modify without explicit review decision.
+#
+# action_radius_deg derivation:
+#   max(member→centre angular dist) + 0.5° guard, capped at 0.75°
+#   (verified below in _validate_manifest at import time)
+#
+# member_ids are informational only. They are not resolved at runtime.
+TIER_A_MANIFEST = [
+    {
+        "location_id":       "LOC_001",
+        "physical_label":    "Stage0-hotspot-near-yaw24",
+        "centre_yaw_deg":    24.492,
+        "centre_pitch_deg":  13.191,
+        "action_radius_deg": 0.643,
+        "max_member_dist_deg": 0.143,
+        "review_tier":       "tier_a_suppression_candidate",
+        "review_status":     "reviewed_approved_for_dry_run",
+        "evidence_artifact": "7841215970",
+        "member_ids": [
+            "T0035","T0050","T0056","T0057","T0062","T0067","T0074","T0077",
+            "T0095","T0099","T0103","T0107","T0110","T0114","T0117","T0122",
+            "T0129","T0130","T0134","T0140","T0150","T0156","T0159","T0169",
+            "T0174","T0185","T0188","T0196","T0213","T0226","T0228","T0235",
+            "T0247","T0251","T0257","T0270","T0272","T0275","T0300","T0330",
+            "T0338","T0356","T0368","T0370","T0380","T0385","T0395","T0400",
+            "T0406","T0415","T0434","T0448","T0451","T0462","T0499","T0525","T0530",
+        ],
+    },
+    {
+        "location_id":       "LOC_002",
+        "physical_label":    "Stage0-hotspot-near-yaw-23",
+        "centre_yaw_deg":    -22.716,
+        "centre_pitch_deg":  -18.746,
+        "action_radius_deg": 0.624,
+        "max_member_dist_deg": 0.124,
+        "review_tier":       "tier_a_suppression_candidate",
+        "review_status":     "reviewed_approved_for_dry_run",
+        "evidence_artifact": "7841215970",
+        "member_ids": [
+            "T0002","T0022","T0025","T0027","T0030","T0083","T0131","T0137",
+            "T0141","T0144","T0176","T0183","T0186","T0199","T0203","T0208",
+            "T0227","T0234","T0237","T0239","T0240","T0248","T0255","T0346",
+            "T0382","T0390","T0396","T0414","T0418","T0428","T0430","T0436",
+            "T0438","T0443","T0464","T0472","T0475","T0477","T0479","T0483",
+            "T0484","T0491","T0495","T0501","T0502","T0507","T0527",
+        ],
+    },
+    {
+        "location_id":       "LOC_003",
+        "physical_label":    "discovered-static-yaw134",
+        "centre_yaw_deg":    133.538,
+        "centre_pitch_deg":  -18.472,
+        "action_radius_deg": 0.677,
+        "max_member_dist_deg": 0.177,
+        "review_tier":       "tier_a_suppression_candidate",
+        "review_status":     "reviewed_approved_for_dry_run",
+        "evidence_artifact": "7841215970",
+        "member_ids": ["T0309","T0339","T0374","T0429","T0431","T0440","T0468","T0480"],
+    },
+    {
+        "location_id":       "LOC_004",
+        "physical_label":    "discovered-static-yaw-137",
+        "centre_yaw_deg":    -137.353,
+        "centre_pitch_deg":  -17.320,
+        "action_radius_deg": 0.737,
+        "max_member_dist_deg": 0.237,
+        "review_tier":       "tier_a_suppression_candidate",
+        "review_status":     "reviewed_approved_for_dry_run",
+        "evidence_artifact": "7841215970",
+        "member_ids": ["T0039","T0084","T0206","T0381","T0408","T0423"],
+    },
+    {
+        "location_id":       "LOC_006",
+        "physical_label":    "discovered-static-yaw-56",
+        "centre_yaw_deg":    -55.542,
+        "centre_pitch_deg":  15.806,
+        "action_radius_deg": 0.750,
+        "max_member_dist_deg": 0.714,
+        "review_tier":       "tier_a_suppression_candidate",
+        "review_status":     "reviewed_approved_for_dry_run",
+        "evidence_artifact": "7841215970",
+        "member_ids": ["T0191","T0350","T0442","T0457","T0460","T0503"],
+    },
+    {
+        "location_id":       "LOC_008",
+        "physical_label":    "discovered-static-yaw-139",
+        "centre_yaw_deg":    -139.183,
+        "centre_pitch_deg":  -21.666,
+        "action_radius_deg": 0.597,
+        "max_member_dist_deg": 0.097,
+        "review_tier":       "tier_a_suppression_candidate",
+        "review_status":     "reviewed_approved_for_dry_run",
+        "evidence_artifact": "7841215970",
+        "member_ids": ["T0231","T0260","T0518"],
+    },
+    {
+        "location_id":       "LOC_C005_SUB1",
+        "physical_label":    "discovered-static-C005-subcluster1",
+        "centre_yaw_deg":    -134.702,
+        "centre_pitch_deg":  -22.707,
+        "action_radius_deg": 0.664,
+        "max_member_dist_deg": 0.164,
+        "review_tier":       "tier_a_suppression_candidate",
+        "review_status":     "reviewed_approved_for_dry_run",
+        "evidence_artifact": "7841215970",
+        "member_ids": ["T0307","T0343","T0348"],
+        "notes": (
+            "C005 Sub1. Centre computed from 3 approved member coordinates: "
+            "T0307=(-134.725,-22.623) T0343=(-134.672,-22.627) T0348=(-134.709,-22.870). "
+            "Member IDs are from the reviewed audit run; not resolved at runtime."
+        ),
+    },
+]
 
-# C005 Sub1 is defined ONLY by these member tracklet IDs.
-C005_SUB1_MEMBER_IDS = ["T0348", "T0343", "T0307"]
-C005_SUB1_ID         = "C005_SUB1"
 
-
-# ── Geometry ─────────────────────────────────────────────────────────────────
 def _to_unit(yaw_deg, pitch_deg):
     y = math.radians(yaw_deg)
     p = math.radians(pitch_deg)
@@ -88,120 +197,38 @@ def _to_unit(yaw_deg, pitch_deg):
 
 
 def _gc_deg(u, v):
-    dot = u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
-    dot = max(-1.0, min(1.0, dot))
+    dot = max(-1.0, min(1.0, u[0]*v[0] + u[1]*v[1] + u[2]*v[2]))
     return math.degrees(math.acos(dot))
 
 
-def _centre_from_points(points):
-    """Mean unit vector of (yaw, pitch) points, renormalised; back to yaw/pitch."""
-    sx = sy = sz = 0.0
-    for (yaw, pitch) in points:
-        x, y, z = _to_unit(yaw, pitch)
-        sx += x; sy += y; sz += z
-    n = len(points)
-    sx /= n; sy /= n; sz /= n
-    mag = math.sqrt(sx * sx + sy * sy + sz * sz)
-    if mag == 0:
-        raise ValueError("degenerate centre")
-    sx /= mag; sy /= mag; sz /= mag
-    centre_yaw = math.degrees(math.atan2(sx, sz))
-    centre_pitch = math.degrees(math.asin(max(-1.0, min(1.0, sy))))
-    return centre_yaw, centre_pitch, (sx, sy, sz)
-
-
-def _derive_radius(centre_unit, member_points):
-    """max(member->centre dist) + guard, capped. Returns (radius, raw, max_dist)."""
-    max_dist = 0.0
-    for (yaw, pitch) in member_points:
-        d = _gc_deg(centre_unit, _to_unit(yaw, pitch))
-        if d > max_dist:
-            max_dist = d
-    raw = max_dist + GUARD_MARGIN_DEG
-    radius = min(raw, RADIUS_CAP_DEG)
-    return radius, raw, max_dist
-
-
-# ── Build Tier A location index from the repeated-static report ──────────────
-def build_tier_a_locations(report):
-    clusters = {c["cluster_id"]: c for c in report["clusters"]}
-    locations = []
-
-    # Whole-cluster Tier A locations
-    for cid in TIER_A_WHOLE_CLUSTERS:
-        if cid not in clusters:
-            raise KeyError(f"Tier A cluster {cid} not found in repeated-static report")
-        c = clusters[cid]
-        members = c.get("members", [])
-        if not members:
-            raise ValueError(f"cluster {cid} has no members in report")
-        member_points = [(m["median_yaw_deg"], m["median_pitch_deg"]) for m in members]
-        centre_yaw = c["centre_yaw_deg"]
-        centre_pitch = c["centre_pitch_deg"]
-        centre_unit = _to_unit(centre_yaw, centre_pitch)
-        radius, raw, max_dist = _derive_radius(centre_unit, member_points)
-        locations.append(OrderedDict([
-            ("location_id", cid),
-            ("kind", "whole_cluster"),
-            ("centre_yaw_deg", round(centre_yaw, 4)),
-            ("centre_pitch_deg", round(centre_pitch, 4)),
-            ("member_ids", [m["id"] for m in members]),
-            ("member_count", len(members)),
-            ("max_member_dist_deg", round(max_dist, 4)),
-            ("guard_margin_deg", GUARD_MARGIN_DEG),
-            ("raw_radius_deg", round(raw, 4)),
-            ("radius_cap_deg", RADIUS_CAP_DEG),
-            ("action_radius_deg", round(radius, 4)),
-            ("centre_unit", centre_unit),
-        ]))
-
-    # C005 Sub1 — centre computed from hardcoded approved coordinates.
-    # These are the reviewed median_yaw/median_pitch values from the approved
-    # discovered-static audit (artifact 7841215970, run 28078249103).
-    # Runtime lookup is intentionally avoided: the fresh Stage 2 run inside this
-    # workflow may assign different tracklet IDs, so the member IDs cannot be
-    # resolved against the live report.
-    C005_SUB1_APPROVED_COORDS = {
-        "T0307": (-134.725, -22.623),
-        "T0343": (-134.672, -22.627),
-        "T0348": (-134.709, -22.870),
-    }
-    sub1_points = list(C005_SUB1_APPROVED_COORDS.values())
-    sub1_found  = list(C005_SUB1_APPROVED_COORDS.keys())
-    c_yaw, c_pitch, c_unit = _centre_from_points(sub1_points)
-    radius, raw, max_dist = _derive_radius(c_unit, sub1_points)
-    locations.append(OrderedDict([
-        ("location_id", C005_SUB1_ID),
-        ("kind", "subcluster"),
-        ("centre_yaw_deg", round(c_yaw, 4)),
-        ("centre_pitch_deg", round(c_pitch, 4)),
-        ("member_ids", sub1_found),
-        ("member_count", len(sub1_found)),
-        ("max_member_dist_deg", round(max_dist, 4)),
-        ("guard_margin_deg", GUARD_MARGIN_DEG),
-        ("raw_radius_deg", round(raw, 4)),
-        ("radius_cap_deg", RADIUS_CAP_DEG),
-        ("action_radius_deg", round(radius, 4)),
-        ("centre_unit", c_unit),
-    ]))
-
-    # Safety: no action radius may equal/exceed the discovery radius.
-    for loc in locations:
-        if loc["action_radius_deg"] >= _FORBIDDEN_DISCOVERY_RADIUS_DEG:
+def _validate_manifest():
+    """Sanity-check manifest at startup: radii within bounds, no discovery-radius leak."""
+    for loc in TIER_A_MANIFEST:
+        r = loc["action_radius_deg"]
+        if r > RADIUS_CAP_DEG + 1e-6:
             raise AssertionError(
-                f"{loc['location_id']} action radius {loc['action_radius_deg']} "
-                f">= forbidden discovery radius {_FORBIDDEN_DISCOVERY_RADIUS_DEG}"
+                f"{loc['location_id']} action_radius {r} > cap {RADIUS_CAP_DEG}"
             )
-    return locations
+        if r >= _FORBIDDEN_DISCOVERY_RADIUS_DEG:
+            raise AssertionError(
+                f"{loc['location_id']} action_radius {r} >= discovery radius "
+                f"{_FORBIDDEN_DISCOVERY_RADIUS_DEG}"
+            )
+    print(f"Manifest validation OK: {len(TIER_A_MANIFEST)} locations, "
+          f"max radius {max(l['action_radius_deg'] for l in TIER_A_MANIFEST):.4f}°")
 
 
-def _match_location(yaw, pitch, locations):
-    """Closest Tier A location whose action radius contains the point, else None."""
+_validate_manifest()
+
+
+def _match_location(yaw, pitch):
+    """Closest manifest location whose action radius contains the point, else None."""
     uv = _to_unit(yaw, pitch)
     best = None
     best_dist = None
-    for loc in locations:
-        d = _gc_deg(uv, loc["centre_unit"])
+    for loc in TIER_A_MANIFEST:
+        cu = _to_unit(loc["centre_yaw_deg"], loc["centre_pitch_deg"])
+        d = _gc_deg(uv, cu)
         if d <= loc["action_radius_deg"] and (best_dist is None or d < best_dist):
             best = loc
             best_dist = d
@@ -210,21 +237,10 @@ def _match_location(yaw, pitch, locations):
     return best["location_id"], best_dist, best["action_radius_deg"]
 
 
-# ── Main filtering ───────────────────────────────────────────────────────────
 def run(args):
     with open(args.stage1_candidates) as f:
         stage1 = json.load(f)
-    with open(args.repeated_static_report) as f:
-        report = json.load(f)
 
-    locations = build_tier_a_locations(report)
-
-    # Real Stage 1 schema (verified):
-    #   stage1["frames"] = { "<frame_int>": [candidate, ...], ... }
-    #   each frame value is a list of candidate dicts directly.
-    #   stage1["quarantined_candidates"] and all other top-level metadata
-    #   (fps, total_frames, pitch bounds, hotspot_map, stage0_detections,
-    #   stage1b, ...) are preserved untouched.
     frames_raw = stage1.get("frames")
     if not isinstance(frames_raw, dict):
         raise ValueError(
@@ -234,7 +250,7 @@ def run(args):
 
     total_before = 0
     total_removed = 0
-    removed_by_cluster = defaultdict(int)
+    removed_by_location = defaultdict(int)
     removed_audit = []
 
     out_frames = {}
@@ -255,12 +271,12 @@ def run(args):
             if yaw is None or pitch is None:
                 kept.append(cand)
                 continue
-            loc_id, dist, radius = _match_location(yaw, pitch, locations)
+            loc_id, dist, radius = _match_location(yaw, pitch)
             if loc_id is None:
                 kept.append(cand)
             else:
                 total_removed += 1
-                removed_by_cluster[loc_id] += 1
+                removed_by_location[loc_id] += 1
                 removed_audit.append(OrderedDict([
                     ("frame", frame_key),
                     ("candidate_index", idx),
@@ -279,16 +295,16 @@ def run(args):
     total_after = total_before - total_removed
     frames_newly_zero = frames_zero_after - frames_zero_before
 
-    # Reassemble: copy ALL original top-level keys, swap only the filtered frames.
     out_stage1 = dict(stage1)
     out_stage1["frames"] = out_frames
     out_stage1["_dry_run_meta"] = {
         "experiment": "stage1_tier_a_discovered_static_dry_run",
         "approved_active_suppression": False,
+        "location_source": "frozen_manifest_not_runtime_cluster_ids",
         "source_candidates": os.path.basename(args.stage1_candidates),
         "guard_margin_deg": GUARD_MARGIN_DEG,
         "radius_cap_deg": RADIUS_CAP_DEG,
-        "tier_a_location_ids": [l["location_id"] for l in locations],
+        "tier_a_location_ids": [l["location_id"] for l in TIER_A_MANIFEST],
     }
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -301,12 +317,10 @@ def run(args):
     with open(audit_path, "w") as f:
         json.dump({"removed": removed_audit}, f, indent=2)
 
-    # locations.json without the raw unit tuple noise duplicated
-    loc_out = []
-    for l in locations:
-        d = dict(l)
-        d.pop("centre_unit", None)
-        loc_out.append(d)
+    loc_out = [
+        {k: v for k, v in loc.items() if k != "notes"}
+        for loc in TIER_A_MANIFEST
+    ]
     loc_path = os.path.join(args.output_dir, "tier_a_locations.json")
     with open(loc_path, "w") as f:
         json.dump({"locations": loc_out}, f, indent=2)
@@ -314,12 +328,13 @@ def run(args):
     summary = OrderedDict([
         ("experiment", "stage1_tier_a_discovered_static_dry_run"),
         ("approved_active_suppression", False),
+        ("location_source", "frozen_manifest_not_runtime_cluster_ids"),
         ("guard_margin_deg", GUARD_MARGIN_DEG),
         ("radius_cap_deg", RADIUS_CAP_DEG),
         ("total_candidates_before", total_before),
         ("total_candidates_removed", total_removed),
         ("total_candidates_after", total_after),
-        ("removed_by_location", dict(removed_by_cluster)),
+        ("removed_by_location", dict(removed_by_location)),
         ("frames_zero_candidate_before", frames_zero_before),
         ("frames_zero_candidate_after", frames_zero_after),
         ("frames_newly_zero_candidate", frames_newly_zero),
@@ -330,23 +345,22 @@ def run(args):
         json.dump(summary, f, indent=2)
 
     print("Tier A dry-run filter complete.")
-    print(f"  Locations: {[l['location_id'] for l in locations]}")
+    print(f"  Location source: frozen manifest ({len(TIER_A_MANIFEST)} locations)")
     print(f"  Before: {total_before}  Removed: {total_removed}  After: {total_after}")
-    print(f"  Removed by location: {dict(removed_by_cluster)}")
+    print(f"  Removed by location: {dict(removed_by_location)}")
     print(f"  Frames newly zero-candidate: {frames_newly_zero}")
     print(f"  Outputs: {dry_path}, {audit_path}, {summary_path}, {loc_path}")
 
 
 def main():
-    p = argparse.ArgumentParser(description="FFA Stage 1 Tier A discovered-static DRY-RUN filter")
+    p = argparse.ArgumentParser(
+        description="FFA Stage 1 Tier A discovered-static DRY-RUN filter"
+    )
     p.add_argument("--stage1-candidates", required=True,
                    help="ORIGINAL Stage 1b-quarantined candidates (frame-indexed)")
-    p.add_argument("--repeated-static-report", required=True,
-                   help="stage2_repeated_static_report.json with cluster centres + members")
     p.add_argument("--output-dir", default="tier_a_dry_run_output")
     run(p.parse_args())
 
 
 if __name__ == "__main__":
     main()
-
