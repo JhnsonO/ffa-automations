@@ -255,22 +255,53 @@ then determine if gate threshold adjustments are warranted (requires four-questi
 
 ## Stage 2 repeated-static location audit
 
-**Status: STAGE 2 REPEATED-STATIC LOCATION AUDIT — AWAITING REVIEW**
+**Status: COMPLETED — AWAITING REVIEW**
 
-Implemented (no dispatch yet):
+Implemented:
 - `ball_tracker/stage2_repeated_static_audit.py` — annotation-only; reads tracklets.json + optional audit report
 - `ball_tracker/tests/test_stage2_repeated_static_audit.py` — 14 fixture tests, all pass
 
-Eligibility: near-static tracklets (net_disp < 1.5°, obs ≥ 3, span ≥ 5 frames, not rejected_static).
-Major-motion hard exclusion at 42° net_disp (protects T0373 and similar).
+Real-data run against smoke artifact `7835756306` (531 tracklets). Static-motion audit run inline.
 
-Clustering: single-linkage on great-circle distance, CLUSTER_RADIUS_DEG = 4.0°.
-Repeated-static flag requires: member count ≥ 3, temporal span ≥ 150 frames, ≥ 2 distinct windows (mid-point gap ≥ 50 frames).
+Summary: eligible=152/531 | clusters=18 | repeated-static=9
+T0373 confirmed excluded (net_disp=42.64° ≥ 42.0° major-motion exclusion).
 
-Outputs: stage2_repeated_static_report.json, stage2_repeated_static_report.txt, stage2_repeated_static_review/ (per-cluster text cards for top 5 repeated-static clusters).
+Repeated-static clusters:
 
-**No workflow dispatch yet. No tracklet status, Stage 2 thresholds, or frozen files changed.**
-Awaiting: run against smoke artifact tracklets.json → review discovered cluster locations.
+  C001  yaw=24.49°, pitch=13.19°  members=57  windows=33  frames 277–3596  obs=780
+        INSIDE Stage 0 hotspot (25°,13°) duty=0.250
+        Contains all 7 handover borderlines: T0338, T0462, T0400, T0103, T0235, T0525, T0395
+        Dominant false-positive location; persists virtually entire clip.
+
+  C002  yaw=-22.72°, pitch=-18.75°  members=47  windows=27  frames 4–3579  obs=364
+        INSIDE Stage 0 hotspot (-23°,-19°) duty=0.158
+        Also persists entire clip. Contains T0472.
+
+  C003  yaw=133.54°, pitch=-18.47°  members=8  windows=8  frames 2249–3231  obs=146
+        No hotspot overlap. Contains T0440.
+
+  C004  yaw=-137.35°, pitch=-17.32°  members=6  windows=6  frames 351–2775  obs=46
+        No hotspot overlap. Contains T0206.
+
+  C005  yaw=-133.64°, pitch=-23.00°  members=6  windows=4  frames 213–2441  obs=34
+        No hotspot overlap. radius=2.37° (loosest cluster).
+
+  C006  yaw=-55.54°, pitch=15.81°  members=6  windows=5  frames 1559–3450  obs=31
+        No hotspot overlap.
+
+  C007  yaw=136.16°, pitch=-12.91°  members=3  windows=3  frames 75–3028  obs=16
+        No hotspot overlap. radius=2.48°.
+
+  C008  yaw=-139.18°, pitch=-21.67°  members=3  windows=3  frames 1839–3547  obs=41
+        No hotspot overlap. Contains T0231.
+
+  C009  yaw=-173.78°, pitch=-21.55°  members=3  windows=3  frames 1251–2534  obs=21
+        No hotspot overlap. Contains T0143.
+
+C003–C009 are additional systematic false-positive locations not previously identified.
+All require visual verification to confirm fixed scene features.
+
+No thresholds, tracklet statuses, or frozen files changed.
 
 ## Next gate
 
@@ -289,6 +320,7 @@ Do not tune Stage 2, smoke render, or modify the renderer before this review.
 - Poll once shortly after dispatch for a quick failure, then wait for supplied result.
 
 ## Change log
+- **2026-06-24:** Stage 2 repeated-static location audit run against smoke data. 9 repeated-static clusters found from 531 tracklets (152 eligible). C001 (yaw≈24.5°,pitch≈13.2°) confirmed: 57 members, 33 windows, inside Stage 0 hotspot. C002 (yaw≈-22.7°,pitch≈-18.8°): 47 members, 27 windows, inside Stage 0 hotspot. C003–C009 are newly discovered false-positive locations outside known hotspots. T0373 correctly excluded (net_disp=42.64°). No thresholds or frozen files changed.
 - **2026-06-24:** Stage 2 repeated-static location audit built and tested. `stage2_repeated_static_audit.py` + 14 fixture tests all pass. Annotation-only; no dispatch. Eligible tracklets clustered by angular proximity; repeated-static flag requires ≥3 members, ≥150-frame temporal span, ≥2 distinct windows. No thresholds, tracklet statuses, or frozen files changed.
 
 - **2026-06-24:** Stage 2 static-motion audit layer built and tested (commit `379738b`). 39 tests pass. Smoke results: 28 would-reject, 8/17 near-zero anchors caught, T0001/T0088/T0318/T0477 retained. T0499 confirmed near-zero passing, excluded from strong-motion refs. No classifications or thresholds changed.
