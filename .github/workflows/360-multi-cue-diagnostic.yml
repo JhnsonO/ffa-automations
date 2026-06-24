@@ -1,10 +1,6 @@
 name: 360 Multi-Cue Ball Candidate Diagnostic
 
-# EXPERIMENT ONLY.
-# Runs a fixed 10-tracklet visual review using independent evidence cues.
-# It does not alter Stage 1/1b/2, Tier A filtering, thresholds, the renderer,
-# or any production output.
-
+# EXPERIMENT ONLY. Fixed 10-tracklet visual review; no production changes.
 on:
   workflow_dispatch:
 
@@ -12,7 +8,6 @@ jobs:
   multi-cue-diagnostic:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,8 +20,7 @@ jobs:
           python3 -m pip install --quiet 'numpy<2' pillow opencv-python-headless ultralytics
 
       - name: Run diagnostic helper tests
-        run: |
-          python3 -m unittest discover -s ball_tracker/tests -p 'test_multi_cue_diagnostic.py' -v
+        run: python3 -m unittest discover -s ball_tracker/tests -p 'test_multi_cue_diagnostic.py' -v
 
       - name: Preflight — verify source artifact access
         env:
@@ -34,22 +28,19 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os, sys, urllib.request
-          token = os.environ.get("GH_PAT", "")
+          token = os.environ.get('GH_PAT', '')
           if not token:
-              print("FATAL: GH_PAT secret is empty")
-              sys.exit(1)
-          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+              print('FATAL: GH_PAT secret is empty'); sys.exit(1)
+          headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json'}
           for url, label in [
-              ("https://api.github.com/user", "GH_PAT"),
-              ("https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7846400233", "Tier A artifact"),
+              ('https://api.github.com/user', 'GH_PAT'),
+              ('https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7846400233', 'Tier A artifact'),
           ]:
-              req = urllib.request.Request(url, headers=headers)
-              with urllib.request.urlopen(req) as response:
-                  data = json.loads(response.read())
+              with urllib.request.urlopen(urllib.request.Request(url, headers=headers)) as r:
+                  data = json.loads(r.read())
               print(f"{label} OK: {data.get('name') or data.get('login')} expired={data.get('expired', False)}")
-              if label == "Tier A artifact" and data.get("expired"):
-                  print("FATAL: Tier A experimental source artifact is expired")
-                  sys.exit(1)
+              if label == 'Tier A artifact' and data.get('expired'):
+                  print('FATAL: Tier A experimental source artifact is expired'); sys.exit(1)
           PY
 
       - name: Download Tier A experimental source artifact
@@ -58,32 +49,22 @@ jobs:
         run: |
           mkdir -p /tmp/tier_a_input
           python3 - <<'PY'
-          import io, os, sys, urllib.error, urllib.request, zipfile
-          token = os.environ["GH_PAT"]
-          artifact_id = 7846400233
-          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+          import io, json, os, sys, urllib.error, urllib.request, zipfile
+          token = os.environ['GH_PAT']; artifact_id = 7846400233
+          headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json'}
           class NoRedirect(urllib.request.HTTPRedirectHandler):
-              def redirect_request(self, req, fp, code, msg, headers, newurl):
-                  return None
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
           opener = urllib.request.build_opener(NoRedirect())
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{artifact_id}/zip",
-              headers=headers,
-          )
           try:
-              opener.open(req)
+              opener.open(urllib.request.Request(f'https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{artifact_id}/zip', headers=headers))
               blob_url = None
           except urllib.error.HTTPError as redirect:
-              blob_url = redirect.headers.get("Location")
+              blob_url = redirect.headers.get('Location')
           if not blob_url:
-              print("FATAL: artifact endpoint did not return a download redirect")
-              sys.exit(1)
-          with urllib.request.urlopen(urllib.request.Request(blob_url)) as response:
-              blob = response.read()
-          print(f"Downloaded artifact bytes={len(blob)}")
-          with zipfile.ZipFile(io.BytesIO(blob)) as archive:
-              archive.extractall("/tmp/tier_a_input")
-          print("Extracted:", sorted(os.listdir("/tmp/tier_a_input")))
+              print('FATAL: artifact endpoint did not return a download redirect'); sys.exit(1)
+          with urllib.request.urlopen(urllib.request.Request(blob_url)) as response: blob = response.read()
+          with zipfile.ZipFile(io.BytesIO(blob)) as archive: archive.extractall('/tmp/tier_a_input')
+          print('Extracted:', sorted(os.listdir('/tmp/tier_a_input')))
           PY
           test -f /tmp/tier_a_input/stage1_candidates_tier_a_experimental.json
           test -f /tmp/tier_a_input/tracklets_tier_a_experimental.json
@@ -95,22 +76,12 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os, urllib.request
-          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
-          creds_data = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
-          client_id = token_data.get("client_id") or creds_data["installed"]["client_id"]
-          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
-          payload = json.dumps({
-              "client_id": client_id,
-              "client_secret": client_secret,
-              "refresh_token": token_data["refresh_token"],
-              "grant_type": "refresh_token",
-          }).encode()
-          token_uri = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
-          request = urllib.request.Request(token_uri, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+          token_data = json.loads(os.environ['YOUTUBE_TOKEN']); creds_data = json.loads(os.environ['YOUTUBE_CREDENTIALS'])
+          payload = json.dumps({'client_id': token_data.get('client_id') or creds_data['installed']['client_id'], 'client_secret': token_data.get('client_secret') or creds_data['installed']['client_secret'], 'refresh_token': token_data['refresh_token'], 'grant_type': 'refresh_token'}).encode()
+          request = urllib.request.Request(token_data.get('token_uri', 'https://oauth2.googleapis.com/token'), data=payload, headers={'Content-Type': 'application/json'}, method='POST')
           result = json.loads(urllib.request.urlopen(request).read())
-          if "access_token" not in result:
-              raise RuntimeError(f"Drive token refresh failed: {result}")
-          open("/tmp/drive_access_token.txt", "w").write(result["access_token"])
+          if 'access_token' not in result: raise RuntimeError(f'Drive token refresh failed: {result}')
+          open('/tmp/drive_access_token.txt', 'w').write(result['access_token'])
           print(f"Drive token OK (expires_in={result.get('expires_in')}s)")
           PY
 
@@ -118,30 +89,35 @@ jobs:
         run: |
           mkdir -p /tmp/video
           ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
-          aria2c -q -x 4 -s 4 --file-allocation=none \
-            --header="Authorization: Bearer $ACCESS_TOKEN" \
-            --dir=/tmp/video --out=equirect_trim.mp4 \
-            "https://www.googleapis.com/drive/v3/files/1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX?alt=media"
-          ffprobe -v error -select_streams v:0 \
-            -show_entries stream=width,height,r_frame_rate \
-            -of default=noprint_wrappers=1 /tmp/video/equirect_trim.mp4
+          aria2c -q -x 4 -s 4 --file-allocation=none --header="Authorization: Bearer $ACCESS_TOKEN" --dir=/tmp/video --out=equirect_trim.mp4 "https://www.googleapis.com/drive/v3/files/1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX?alt=media"
+          ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of default=noprint_wrappers=1 /tmp/video/equirect_trim.mp4
 
       - name: Preflight pose model
+        run: python3 ball_tracker/experiments/multi_cue_diagnostic.py --preflight --pose-model yolov8n-pose.pt --device cpu
+
+      - name: Disable PDF-only packaging for this diagnostic run
         run: |
-          python3 ball_tracker/experiments/multi_cue_diagnostic_runner.py \
-            --preflight --pose-model yolov8n-pose.pt --device cpu
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('ball_tracker/experiments/multi_cue_diagnostic.py')
+          s = p.read_text()
+          old = '    pdf_path = out_dir / "multi_cue_diagnostic_pack.pdf"\n    pages[0].save(pdf_path, save_all=True, append_images=pages[1:], resolution=150.0)\n    pages[0].save(out_dir / "multi_cue_diagnostic_page_1.png")\n'
+          new = '''    # PNG pages avoid the runner PDF/JPEG encoder failure.\n    pdf_path = out_dir / "multi_cue_diagnostic_pages_png_only"\n    for page_index, page in enumerate(pages, start=1):\n        page.save(out_dir / f"multi_cue_diagnostic_page_{page_index:02d}.png", format="PNG")\n'''
+          if old not in s:
+              raise SystemExit('FATAL: expected PDF packaging block not found')
+          p.write_text(s.replace(old, new, 1))
+          print('PNG-only packaging patch applied for this run')
+          PY
 
       - name: Build multi-cue visual diagnostic
         run: |
           mkdir -p /tmp/multi_cue_output
-          python3 ball_tracker/experiments/multi_cue_diagnostic_runner.py \
+          python3 ball_tracker/experiments/multi_cue_diagnostic.py \
             --stage1-candidates /tmp/tier_a_input/stage1_candidates_tier_a_experimental.json \
             --tracklets /tmp/tier_a_input/tracklets_tier_a_experimental.json \
             --video /tmp/video/equirect_trim.mp4 \
             --output-dir /tmp/multi_cue_output \
-            --pose-model yolov8n-pose.pt \
-            --pose-conf 0.25 --pose-imgsz 960 --device cpu
-          echo "=== outputs ==="
+            --pose-model yolov8n-pose.pt --pose-conf 0.25 --pose-imgsz 960 --device cpu
           ls -lh /tmp/multi_cue_output
 
       - name: Upload diagnostic artifact
