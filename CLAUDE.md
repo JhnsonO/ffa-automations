@@ -6,17 +6,17 @@ Read `docs/ai-project-state.md`. It is the source of truth for the current stage
 
 ## Operating model
 
-Unless the user explicitly overrides this arrangement:
+**Pragmatic hybrid — effective 25 June 2026:**
 
-- **ChatGPT is the technical lead and reviewer.** ChatGPT owns architecture, sequencing, acceptance gates, diagnosis of outputs, and decision-level project state.
-- **Claude is the scoped implementation worker.** Claude implements only the active bounded task from the user and/or `docs/ai-project-state.md`.
+- **ChatGPT is the generative engine.** ChatGPT writes code files, schemas, architecture documents, and bulk output. It has no usage limits and is fast at sustained generation.
+- **Claude is the grounded executor and verifier.** Claude reads the live repo, runs tests, pushes commits, dispatches workflows, reviews artifacts against real files, and catches drift against frozen boundaries. Claude cannot be replaced by ChatGPT for anything requiring repo access or execution.
 - **The user owns product trade-offs and final approval.** A successful workflow is not product acceptance.
 
-Claude must not independently redesign architecture, start adjacent work, tune thresholds, change frozen modules, or choose the next roadmap item. If implementation produces a decision rather than a direct coding action, stop and report it for review.
+Claude must not independently redesign architecture or choose the next roadmap item without a decision-changing reason. If implementation produces a decision rather than a direct coding action, stop and report it.
+
+ChatGPT output must be verified by Claude against the live repo and frozen boundaries before any commit. Claude is the skeptic, not a relay.
 
 ## New-chat bootstrap
-
-A fresh Claude chat does not require a large handover. The user normally provides only a short task prompt.
 
 Before acting:
 
@@ -25,16 +25,15 @@ Before acting:
 3. Read only files explicitly needed for the active task.
 4. State the current gate and exact files to change in no more than three lines, then proceed.
 
-Do not request previous chat history, create a long handover, or inspect broad logs unless the active task cannot be completed without them.
+Do not request previous chat history or inspect broad logs unless the active task cannot be completed without them.
 
 ## Bound the work
 
-- Read only files needed for the requested task; use targeted search and line ranges.
+- Read only files needed for the requested task.
 - Reuse established geometry, schemas, constants, and workflow patterns.
 - Do not redesign adjacent systems, refactor frozen production code, or add optional work without a decision-changing reason.
 - Keep diagnostics, experiments, and rendering isolated.
 - Do not add credentials, API keys, or private tokens to repository files, artifacts, or logs.
-- Use the existing authenticated project credential setup when GitHub access is required. Do not ask Johnson to run commands locally unless he explicitly asks for that route.
 - One Claude chat should normally complete one bounded build ticket. Stop after the requested artifact, failed run, or decision-changing result.
 
 ## Communication
@@ -62,12 +61,10 @@ A dispatch is `DISPATCHED — UNVERIFIED` until its artifact or outcome is inspe
 
 ### Reconciliation rule
 
-`docs/ai-project-state.md` is the living source of truth. It is not a chat diary.
-
-After every completed task, failed run, workflow dispatch, material finding, or decision:
+`docs/ai-project-state.md` is the living source of truth. After every completed task, failed run, dispatch, material finding, or decision:
 
 1. Update the active status and next action in place.
-2. Replace or remove any section that now contradicts the new reality. Do not leave stale active instructions alongside new ones.
+2. Replace or remove any section that now contradicts the new reality.
 3. Do not merely append a changelog entry when an earlier section is wrong — fix the earlier section first.
 4. Update `CLAUDE.md` only when the operating protocol itself changes.
 
@@ -75,9 +72,6 @@ Before ending any task, verify the state document contains no contradictions inv
 
 - current active task and gate;
 - run IDs and artifact IDs;
-- workflow dispatch status (`DISPATCHED — UNVERIFIED` until artifact inspected);
+- workflow dispatch status;
 - GPU or runtime assumptions used by active workflows;
-- Stage 1 geometry data contract;
-- next action.
-
-A fresh chat should need only `CLAUDE.md` + `docs/ai-project-state.md`, then targeted active-task files — nothing else.
+- Stage 1 geometry data contract.
