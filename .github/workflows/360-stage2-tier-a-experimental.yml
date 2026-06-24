@@ -1,0 +1,187 @@
+name: 360 Stage 2 — Tier A Experimental Output
+
+# EXPERIMENT ONLY.
+# T0275, T0334, T0394 reviewed as false associations (not credible ball tracks).
+# Safety review cleared 24 June 2026.
+# Does NOT modify run_tracker.py, renderer, YOLO thresholds, Stage 1b,
+# or any live production behaviour.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  tier-a-experimental:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends aria2
+          pip install --quiet 'numpy<2' pillow
+
+      - name: Preflight — verify GH_PAT
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, sys, json
+          token = os.environ.get("GH_PAT", "")
+          if not token:
+              print("FATAL: GH_PAT secret is empty"); sys.exit(1)
+          req = urllib.request.Request(
+              "https://api.github.com/user",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          with urllib.request.urlopen(req) as r:
+              user = json.loads(r.read())
+          print(f"GH_PAT OK: login={user.get('login')}")
+          # Verify source artifact 7841528502 is readable
+          req2 = urllib.request.Request(
+              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7841528502",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          with urllib.request.urlopen(req2) as r2:
+              art = json.loads(r2.read())
+          print(f"Source artifact OK: name={art.get('name')}, expired={art.get('expired')}")
+          PY
+
+      - name: Download Stage 1b-quarantined candidates (artifact 7841528502)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/input
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, sys
+          token = os.environ["GH_PAT"]
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          opener = urllib.request.build_opener(NoRedirect())
+          req = urllib.request.Request(
+              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7841528502/zip",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          try:
+              opener.open(req); blob_url = None
+          except urllib.error.HTTPError as redir:
+              blob_url = redir.headers.get("Location")
+          if not blob_url:
+              print("FATAL: no redirect location"); sys.exit(1)
+          with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+              data = r.read()
+          print(f"Downloaded: {len(data)} bytes")
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/input")
+          print("Extracted:", os.listdir("/tmp/input"))
+          PY
+          ls -lh /tmp/input/
+
+      - name: Download original tracklets.json from Tier A dry-run (artifact 7841528502 or fallback)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          # The original tracklets.json is the Stage 2 production output.
+          # We fetch from the most recent 360-stage2-link run artifact, or use
+          # the existing Drive copy. For now we attempt the last known
+          # stage2-output artifact via GH API.
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, json, sys
+          token = os.environ["GH_PAT"]
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+          # List artifacts, find most recent stage2-output
+          req = urllib.request.Request(
+              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts?per_page=50",
+              headers=headers)
+          with urllib.request.urlopen(req) as r:
+              arts = json.loads(r.read()).get("artifacts", [])
+          target = next((a for a in arts if a["name"] == "stage2-output" and not a["expired"]), None)
+          if not target:
+              print("WARN: no non-expired stage2-output artifact found; comparison will be skipped.")
+              sys.exit(0)
+          print(f"Found stage2-output artifact: id={target['id']}")
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          opener = urllib.request.build_opener(NoRedirect())
+          req2 = urllib.request.Request(
+              f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{target['id']}/zip",
+              headers=headers)
+          try:
+              opener.open(req2); blob_url = None
+          except urllib.error.HTTPError as redir:
+              blob_url = redir.headers.get("Location")
+          if not blob_url:
+              print("WARN: no redirect for stage2-output; comparison skipped."); sys.exit(0)
+          with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+              data = r.read()
+          import tempfile, pathlib
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              names = z.namelist()
+              print("stage2-output artifact contents:", names)
+              # look for tracklets.json at root or in subdir
+              for name in names:
+                  if name.endswith("tracklets.json"):
+                      z.extract(name, "/tmp")
+                      src = f"/tmp/{name}"
+                      import shutil
+                      shutil.copy(src, "/tmp/input/original_tracklets.json")
+                      print(f"Extracted original tracklets.json from {name}")
+                      break
+              else:
+                  print("WARN: tracklets.json not found in stage2-output artifact.")
+          PY
+          ls -lh /tmp/input/ || true
+
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - << 'PY'
+          import json, urllib.request, os
+          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
+          creds_data = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
+          r = urllib.request.urlopen(urllib.request.Request(token_uri, data=payload,
+              headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
+          open("/tmp/drive_access_token.txt", "w").write(tok["access_token"])
+          print(f"Drive token OK (expires_in={tok.get('expires_in')}s)")
+          PY
+
+      - name: Download hotspot_map.json from Drive
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          aria2c -q -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/input --out=hotspot_map.json \
+            "https://www.googleapis.com/drive/v3/files/1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M?alt=media"
+          ls -lh /tmp/input/hotspot_map.json
+
+      - name: Run Tier A experimental Stage 2 output path
+        run: |
+          mkdir -p /tmp/tier_a_experimental
+          ORIG_FLAG=""
+          if [ -f "/tmp/input/original_tracklets.json" ]; then
+            ORIG_FLAG="--original-tracklets /tmp/input/original_tracklets.json"
+          fi
+          python3 ball_tracker/stage2_tier_a_experimental_output.py \
+            --stage1-candidates /tmp/input/stage1_candidates_quarantined.json \
+            --hotspot-map       /tmp/input/hotspot_map.json \
+            --output-dir        /tmp/tier_a_experimental \
+            $ORIG_FLAG
+
+      - name: Upload experimental outputs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-a-experimental-${{ github.run_id }}
+          path: /tmp/tier_a_experimental/
+          retention-days: 30
