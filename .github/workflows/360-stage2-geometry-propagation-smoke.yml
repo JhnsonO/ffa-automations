@@ -30,7 +30,7 @@ jobs:
 
       - name: Run geometry propagation tests
         run: |
-          python3 -m pytest ball_tracker/tests/test_geometry_propagation.py -v
+          python3 -m unittest discover -s ball_tracker/tests -p test_geometry_propagation.py -v
           echo "TESTS_PASSED=true" >> $GITHUB_ENV
 
       - name: Preflight — verify GH_PAT
