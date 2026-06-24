@@ -51,32 +51,67 @@ jobs:
           aria2c -q -x 4 -s 4 --file-allocation=none --header="Authorization: Bearer $(cat /tmp/drive_access_token.txt)" --dir=source_video --out=gopro_max_equirect.mp4 "https://www.googleapis.com/drive/v3/files/1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX?alt=media"
           ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of default=noprint_wrappers=1 source_video/gopro_max_equirect.mp4
 
-      - name: Download Stage 1d and Tier A tracklets artifacts
+      - name: Resolve and download current Stage 1d artifact
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          mkdir -p artifacts/stage1d artifacts/stage2
+          mkdir -p artifacts/stage1d
           python - <<'PY'
-          import io, os, sys, urllib.request, urllib.error, zipfile
+          import io, json, os, sys, urllib.error, urllib.request, zipfile
           token=os.environ['GH_PAT']
-          def download(artifact_id, dest):
-              class NoRedirect(urllib.request.HTTPRedirectHandler):
-                  def redirect_request(self, req, fp, code, msg, headers, newurl): return None
-              req=urllib.request.Request(f'https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{artifact_id}/zip',headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json'})
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json'}
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+          def artifact_zip(artifact_id):
+              req=urllib.request.Request(f'https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{artifact_id}/zip',headers=headers)
               try:
                   urllib.request.build_opener(NoRedirect()).open(req)
-                  raise RuntimeError('No redirect returned')
               except urllib.error.HTTPError as exc:
-                  url=exc.headers.get('Location')
-              if not url: raise RuntimeError(f'No redirect for {artifact_id}')
-              with urllib.request.urlopen(urllib.request.Request(url)) as response: raw=response.read()
-              zipfile.ZipFile(io.BytesIO(raw)).extractall(dest)
-              print(artifact_id, os.listdir(dest))
-          download('7834602065','artifacts/stage1d')
-          download('7846400233','artifacts/stage2')
-          required=['artifacts/stage1d/stage1_candidates_geo_filtered.json','artifacts/stage2/tracklets_tier_a_experimental.json']
-          missing=[x for x in required if not os.path.exists(x)]
-          if missing: raise RuntimeError(f'Missing extracted inputs: {missing}')
+                  location=exc.headers.get('Location')
+                  if location:
+                      with urllib.request.urlopen(urllib.request.Request(location)) as r: return r.read()
+              raise RuntimeError(f'No redirect for artifact {artifact_id}')
+          # Search newest non-expired artifacts by name, then validate the actual JSON filename.
+          with urllib.request.urlopen(urllib.request.Request('https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts?per_page=100',headers=headers)) as r:
+              artifacts=json.loads(r.read()).get('artifacts',[])
+          candidates=[a for a in artifacts if not a.get('expired') and 'stage1d' in a.get('name','').lower()]
+          for artifact in candidates:
+              try:
+                  raw=artifact_zip(artifact['id'])
+                  with zipfile.ZipFile(io.BytesIO(raw)) as z:
+                      names=z.namelist()
+                      match=next((n for n in names if n.endswith('stage1_candidates_geo_filtered.json')),None)
+                      if not match: continue
+                      z.extract(match,'artifacts/stage1d')
+                      src=os.path.join('artifacts/stage1d',match)
+                      dst='artifacts/stage1d/stage1_candidates_geo_filtered.json'
+                      os.makedirs(os.path.dirname(dst),exist_ok=True)
+                      if src!=dst: os.replace(src,dst)
+                      print(f"Resolved Stage 1d artifact {artifact['id']}: {artifact['name']}")
+                      break
+              except Exception as exc:
+                  print(f"Skipping artifact {artifact['id']}: {exc}")
+          else:
+              raise RuntimeError('No live Stage 1d artifact containing stage1_candidates_geo_filtered.json was found')
+          PY
+
+      - name: Download Tier A tracklets artifact
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p artifacts/stage2
+          python - <<'PY'
+          import io, os, urllib.error, urllib.request, zipfile
+          token=os.environ['GH_PAT']; headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json'}
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+          req=urllib.request.Request('https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7846400233/zip',headers=headers)
+          try: urllib.request.build_opener(NoRedirect()).open(req)
+          except urllib.error.HTTPError as exc: url=exc.headers.get('Location')
+          if not url: raise RuntimeError('No redirect for Tier A artifact')
+          with urllib.request.urlopen(urllib.request.Request(url)) as r: raw=r.read()
+          zipfile.ZipFile(io.BytesIO(raw)).extractall('artifacts/stage2')
+          assert os.path.exists('artifacts/stage2/tracklets_tier_a_experimental.json')
           PY
 
       - name: Run benchmark
