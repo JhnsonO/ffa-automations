@@ -230,26 +230,62 @@ Per-cluster match radii and decision tier:
 
 No active suppression. Tight clusters (C001–C004, C008) are potential future candidates only.
 
+### Stage 2 wide-cluster diagnosis — REVIEWED
+
+**COMPLETED — REVIEWED**
+
+Wide clusters C005, C006, C007, C009 have been diagnosed via subcluster analysis.
+
+Terminology note: "Future suppression candidate" means reviewed Tier A evidence only. No runtime suppression is approved. Any eventual action layer requires a separate approval and must use conservative action radii, never discovery radius.
+
+#### C005 — yaw=-133.64°, pitch=-23.00°
+
+Sub1 — T0348, T0343, T0307: **REVIEWED FUTURE SUPPRESSION CANDIDATE**
+Tight 3-member location; max spread 0.16°.
+
+Sub2 — T0147, T0354: **ANNOTATION-ONLY**
+Tight but only 2 members; insufficient recurrence evidence.
+
+Sub3 — T0028: **REMOVED from reviewed discovered-location list.**
+Retain raw audit evidence only. Not a suppression candidate.
+
+#### C006 — yaw=-55.54°, pitch=15.81°
+
+**REVIEWED FUTURE SUPPRESSION CANDIDATE**
+One coherent 6-member location; max pairwise 1.007°.
+
+#### C007 — yaw=136.16°, pitch=-12.91°
+
+**REMOVED from reviewed discovered-location list.**
+Single-linkage chain of unrelated detections. Not a suppression candidate. Retain raw audit evidence only.
+
+#### C009 — yaw=-173.78°, pitch=-21.55°
+
+T0143 (standalone): **STANDALONE STATIC CANDIDATE — ANNOTATION-ONLY**
+Do not treat as a repeated-static location or suppression candidate.
+
+T0379, T0279: **REMOVED from reviewed discovered-location list.**
+Retain raw audit evidence only.
+
 ## Active gate and next action
 
-**STAGE 2 WIDE DISCOVERED-STATIC CLUSTER DIAGNOSIS — AWAITING REVIEW**
+**STAGE 2 REVIEWED TIGHT STATIC-LOCATION CANDIDATES — AWAITING ACTION-LAYER DESIGN DECISION**
 
-Wide clusters C005, C006, C007, C009 require subcluster analysis before any future action decision.
+Reviewed suppression candidates (Tier A evidence, no runtime suppression approved):
+- C001, C002, C003, C004, C008 — tight, previously identified
+- C005 Sub1 (T0348, T0343, T0307) — tight 3-member, max spread 0.16°
+- C006 — coherent 6-member, max pairwise 1.007°
 
-- script: `ball_tracker/stage2_wide_cluster_diagnosis.py`
-- workflow: `.github/workflows/360-stage2-wide-cluster-diagnosis.yml`
-- status: DISPATCHED — UNVERIFIED
+Annotation-only (not suppression candidates):
+- C005 Sub2 (T0147, T0354) — insufficient recurrence evidence
+- C009 / T0143 — standalone static, annotation-only
 
-Outputs: `wide_cluster_diagnosis.json`, `wide_cluster_diagnosis.txt`, `wide_cluster_subpack.png`.
+Removed from reviewed discovered-location list (raw audit evidence retained):
+- C005 Sub3 (T0028)
+- C007 — single-linkage chain
+- C009 / T0379, T0279
 
-Each cluster diagnosed with:
-- member-level distance distribution from cluster centre
-- natural subcluster detection at split_radius=1.2°
-- pairwise separation matrix
-- gap analysis in sorted distance sequence
-- recommendation: KEEP AS ONE | SPLIT | ANNOTATION-ONLY
-
-Decision after review: confirmed tight subclusters may become future suppression candidates; chained/spread clusters remain annotation-only.
+Any action layer requires a separate approval. Action radii must be conservative and must never use discovery radius.
 
 **Parallel blocked workstream:** repair and re-dispatch the Stage 1c → Stage 1b → Track B self-contained workflow. Do not treat it as complete until its artifact is inspected.
 
@@ -264,7 +300,8 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 
 ## Compact change log
 
-- **2026-06-24:** Wide cluster diagnosis dispatched for C005, C006, C007, C009 (`stage2_wide_cluster_diagnosis.py` + `360-stage2-wide-cluster-diagnosis.yml`). Gate: WIDE CLUSTER DIAGNOSIS AWAITING REVIEW.
+- **2026-06-24:** Wide-cluster diagnosis reviewed. C005 split into Sub1 (suppression candidate), Sub2 (annotation-only), Sub3 (removed). C006 confirmed suppression candidate. C007 removed. C009/T0143 annotation-only standalone; T0379/T0279 removed. Gate: AWAITING ACTION-LAYER DESIGN DECISION.
+- **2026-06-24:** Wide cluster diagnosis dispatched for C005, C006, C007, C009 (`stage2_wide_cluster_diagnosis.py` + `360-stage2-wide-cluster-diagnosis.yml`).
 - **2026-06-24:** Annotation layer verified (run `28078249103`, artifact `7841215970`). eligible=152, matched=139, T0373 unmatched. Tight clusters C001–C004, C008 flagged as future suppression candidates. C005/C007/C009 wide; C006 mid-range; all require diagnosis.
 - **2026-06-24:** C003–C009 visually confirmed fixed-scene/camera-mount. Discovered-static match annotation layer built and dispatched.
 - **2026-06-24:** Visual verification pack dispatched for C003–C009. Artifact `7841063584`, run `28077774459`. All clusters confirmed fixed scene.
