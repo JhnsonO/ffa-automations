@@ -68,7 +68,7 @@ HUD_SHADOW   = (0, 0, 0)
 # ---------------------------------------------------------------------------
 FALLBACK_YAW          = 0.0    # pitch-centre yaw
 FALLBACK_PITCH        = 5.0    # lift target — test +5 and +8
-FALLBACK_FOV          = 120.0  # wide view FOV (120° is acceptable from calibration)
+FALLBACK_FOV          = 130.0  # local wide fallback FOV
 FALLBACK_ROLL         = 4.0    # horizon-levelling roll offset for this venue (degrees)
 HOLD_BEFORE_ZOOM      = 15     # frames hold at last follow pose before zoom begins
 FALLBACK_ZOOM_FRAMES  = 45     # frames for zoom-out animation (~1.5s @ 30fps)
@@ -272,12 +272,17 @@ class SmoothZoomFallbackFSM:
         self.fallback_pitch    = fallback_pitch
         self.fallback_fov      = fallback_fov
         self.fallback_roll     = fallback_roll
+        # Last confirmed FOLLOW pose. This becomes the local wide anchor.
+        self.last_trusted_yaw   = None
+        self.last_trusted_pitch = None
+        self.wide_target_yaw    = fallback_yaw
+        self.wide_target_pitch  = fallback_pitch
 
     def _interp_pose(self, t):
         """Interpolate from zoom-start pose to wide pose using eased t."""
         et = ease_inout(t)
-        yaw   = lerp_yaw(self.zoom_start_yaw,   self.fallback_yaw,   et)
-        pitch = lerp_val(self.zoom_start_pitch,  self.fallback_pitch, et)
+        yaw   = lerp_yaw(self.zoom_start_yaw,   self.wide_target_yaw,   et)
+        pitch = lerp_val(self.zoom_start_pitch, self.wide_target_pitch, et)
         fov   = lerp_val(self.zoom_start_fov,    self.fallback_fov,   et)
         roll  = lerp_val(self.zoom_start_roll,   self.fallback_roll,  et)
         return yaw, pitch, fov, roll
@@ -292,19 +297,48 @@ class SmoothZoomFallbackFSM:
                 self.hold_counter     = 0
                 self.reacquire_streak = 0
                 self.zoom_t           = 0.0
+                self.last_trusted_yaw   = ema_yaw
+                self.last_trusted_pitch = ema_pitch
                 return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, RENDER_FOLLOW, 0.0, 0, 0
             else:
+                has_trusted_pose = (
+                    self.last_trusted_yaw is not None
+                    and self.last_trusted_pitch is not None
+                )
+                hold_yaw = (
+                    self.last_trusted_yaw
+                    if has_trusted_pose
+                    else self.fallback_yaw
+                )
+                hold_pitch = (
+                    self.last_trusted_pitch
+                    if has_trusted_pose
+                    else self.fallback_pitch
+                )
                 self.hold_counter += 1
                 if self.hold_counter >= HOLD_BEFORE_ZOOM:
-                    # Begin zoom-out from current EMA position
+                    # Keep the last trusted FOLLOW pose and widen around it.
+                    # Only use the generic pitch-centre fallback before any
+                    # trusted pose has ever been recorded.
                     self.mode             = RENDER_ZOOMING_OUT
                     self.zoom_t           = 0.0
-                    self.zoom_start_yaw   = ema_yaw
-                    self.zoom_start_pitch = ema_pitch
+                    self.zoom_start_yaw   = hold_yaw
+                    self.zoom_start_pitch = hold_pitch
                     self.zoom_start_fov   = OUTPUT_FOV
                     self.zoom_start_roll  = 0.0
+                    self.wide_target_yaw   = hold_yaw
+                    self.wide_target_pitch = hold_pitch
                     self.reacquire_streak = 0
-                return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, RENDER_FOLLOW, 0.0, self.hold_counter, 0
+                return (
+                    hold_yaw,
+                    hold_pitch,
+                    OUTPUT_FOV,
+                    0.0,
+                    RENDER_FOLLOW,
+                    0.0,
+                    self.hold_counter,
+                    0,
+                )
 
         elif self.mode == RENDER_ZOOMING_OUT:
             self.zoom_t = min(1.0, self.zoom_t + dt_out)
@@ -465,7 +499,9 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
         debug = draw_hud(clean, frame_data, frame_idx, fps,
                          final_cam_yaw, cam_pitch, cam_fov,
                          render_mode, zoom_t, hold_ctr, reacq_streak,
-                         fallback_yaw, fallback_pitch, fallback_fov)
+                         fsm.wide_target_yaw,
+                         fsm.wide_target_pitch,
+                         fsm.fallback_fov)
 
         inset = draw_equirect_inset(equirect, frame_data, INSET_W, INSET_H)
         iy = OUTPUT_H - INSET_H - INSET_Y_OFF
