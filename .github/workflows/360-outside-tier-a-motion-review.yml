@@ -1,0 +1,186 @@
+name: 360 Stage 2 — Outside-Tier-A Motion Review Pack
+
+# EVIDENCE COLLECTION ONLY.
+# Produces a visual review pack for the 3 credible-motion windows that are
+# outside Tier A suppression radii but flagged as frame_only_unsupported in
+# the Tier A dry-run comparison (run 28087760893):
+#   T0275  passing  net_disp=17.145°  frames=2175-2190
+#   T0334  passing  net_disp=42.102°  frames=2369-2378
+#   T0394  passing  net_disp=5.902°   frames=2650-2669
+#
+# Does NOT change filter, radii, linker, thresholds, comparator, renderer,
+# or any frozen file. No suppression activation.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  outside-tier-a-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0 aria2 ffmpeg
+          pip install --quiet 'numpy<2' pillow opencv-python-headless
+
+      - name: Download Stage 1b-quarantined candidates (artifact 7841528502)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/input
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, sys
+          token = os.environ["GH_PAT"]
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          opener = urllib.request.build_opener(NoRedirect())
+          req = urllib.request.Request(
+              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7841528502/zip",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          try:
+              opener.open(req); blob_url = None
+          except urllib.error.HTTPError as redir:
+              blob_url = redir.headers.get("Location")
+          if not blob_url:
+              print("FATAL: no redirect location for artifact zip"); sys.exit(1)
+          with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+              data = r.read()
+          print(f"Downloaded artifact: {len(data)} bytes")
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/input")
+          print("Extracted:", os.listdir("/tmp/input"))
+          PY
+          ls -lh /tmp/input/
+
+      - name: Download Tier A dry-run artifact (run 28087760893)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/dryrun_art
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, sys, json
+          token = os.environ["GH_PAT"]
+
+          # Find artifact for run 28087760893
+          req = urllib.request.Request(
+              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/runs/28087760893/artifacts",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          with urllib.request.urlopen(req) as r:
+              arts = json.loads(r.read())["artifacts"]
+          if not arts:
+              print("FATAL: no artifacts for run 28087760893"); sys.exit(1)
+          art = arts[0]
+          art_id = art["id"]
+          print(f"Found artifact: id={art_id} name={art['name']}")
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          opener = urllib.request.build_opener(NoRedirect())
+          req2 = urllib.request.Request(
+              f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{art_id}/zip",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          try:
+              opener.open(req2); blob_url = None
+          except urllib.error.HTTPError as redir:
+              blob_url = redir.headers.get("Location")
+          if not blob_url:
+              print("FATAL: no redirect location"); sys.exit(1)
+          with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+              data = r.read()
+          print(f"Downloaded: {len(data)} bytes")
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/dryrun_art")
+          print("Extracted:", os.listdir("/tmp/dryrun_art"))
+          PY
+          ls -lh /tmp/dryrun_art/
+
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - << 'PY'
+          import json, urllib.request, os
+          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
+          creds_data = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
+          r = urllib.request.urlopen(urllib.request.Request(token_uri, data=payload,
+              headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
+          open("/tmp/drive_access_token.txt", "w").write(tok["access_token"])
+          print(f"Drive token OK (expires_in={tok.get('expires_in')}s)")
+          PY
+
+      - name: Download equirectangular clip from Drive
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          FILE_ID="1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX"
+          echo "Downloading clip (~2.07 GB)..."
+          aria2c -q -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp --out=clip.mp4 \
+            "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media"
+          echo "clip.mp4: $(du -sh /tmp/clip.mp4 | cut -f1)"
+
+      - name: Stage 2 linker on ORIGINAL candidates (for original tracklets)
+        run: |
+          mkdir -p /tmp/s2_original
+          python3 ball_tracker/stage2_temporal_link.py \
+            --stage1-candidates /tmp/input/stage1_candidates_quarantined.json \
+            --hotspot-map       /tmp/input/hotspot_map.json \
+            --output-dir        /tmp/s2_original
+          echo "original tracklets: $(python3 -c \"import json; t=json.load(open('/tmp/s2_original/tracklets.json'))['tracklets']; print(len(t))\")"
+
+      - name: Stage 2 linker on DRY-RUN candidates (for dry-run tracklets)
+        run: |
+          mkdir -p /tmp/s2_dryrun
+          python3 ball_tracker/stage2_temporal_link.py \
+            --stage1-candidates /tmp/dryrun_art/stage1_candidates_tier_a_dry_run.json \
+            --hotspot-map       /tmp/input/hotspot_map.json \
+            --output-dir        /tmp/s2_dryrun
+          echo "dry-run tracklets: $(python3 -c \"import json; t=json.load(open('/tmp/s2_dryrun/tracklets.json'))['tracklets']; print(len(t))\")"
+
+      - name: Generate outside-Tier-A motion review pack
+        run: |
+          mkdir -p /tmp/review_out
+          python3 ball_tracker/stage2_outside_tier_a_motion_review.py \
+            --video               /tmp/clip.mp4 \
+            --original-tracklets  /tmp/s2_original/tracklets.json \
+            --dryrun-tracklets    /tmp/s2_dryrun/tracklets.json \
+            --original-candidates /tmp/input/stage1_candidates_quarantined.json \
+            --dryrun-candidates   /tmp/dryrun_art/stage1_candidates_tier_a_dry_run.json \
+            --output-dir          /tmp/review_out
+          echo "=== review outputs ==="
+          ls -lh /tmp/review_out/
+          echo "=== verdict table ==="
+          cat /tmp/review_out/outside_tier_a_verdict_table.md
+
+      - name: Collect outputs
+        run: |
+          mkdir -p final_output
+          cp /tmp/review_out/outside_tier_a_motion_review.png    final_output/ || echo "WARN: png missing"
+          cp /tmp/review_out/outside_tier_a_verdict_table.md     final_output/ || echo "WARN: md missing"
+          cp /tmp/review_out/outside_tier_a_verdict_table.tsv    final_output/ || echo "WARN: tsv missing"
+          echo "=== final_output ==="
+          ls -lh final_output/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: outside-tier-a-motion-review-${{ github.run_id }}
+          path: final_output/
+          retention-days: 30
