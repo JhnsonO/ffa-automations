@@ -269,7 +269,7 @@ Retain raw audit evidence only.
 
 ## Active gate and next action
 
-**BALL-LIKENESS LABEL ANALYSIS — AWAITING FEATURE-DESIGN DECISION**
+**STAGE 2 TIER A EXPERIMENTAL ANCHOR HUMAN ADJUDICATION — AWAITING LABELS**
 
 ### Run 28087760893 — decision-gate outcome
 
@@ -366,9 +366,7 @@ Per-anchor page (3 rows: EARLY / MID / LATE):
 
 No automatic verdicts. No changes to filtering, radii, thresholds, linking, renderer, Stage 1, 1b, or 2.
 
-**Next action:** Paste artifact tier-a-adjudication-*.
-Review each anchor page. Complete verdict column in tier_a_anchor_adjudication.csv.
-Decision: track-quality gate — accept, reject, or revise Tier A set.
+**Next action:** Complete the verdict column (`likely ball` / `likely false positive` / `unclear`) in `tier_a_anchor_adjudication.csv`. Paste the filled CSV to trigger `stage2_label_analysis.py` label analysis.
 
 Reviewed suppression candidates (Tier A evidence, no runtime suppression approved):
 - C001, C002, C003, C004, C008 — tight, previously identified
@@ -427,4 +425,5 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 - **2026-06-24:** Stage 1 Tier A static-location dry-run INVALIDATED (run 28084047416). Defects: cluster-ID instability + tracklet-ID motion comparison. Fixed: frozen location manifest (LOC_001…LOC_C005_SUB1), frame/spatial continuity check. Workflow updated; repeated-static audit step removed. AWAITING RE-DISPATCH.
 - **2026-06-24:** Track B Stage 1c quarantined audit COMPLETED — REVIEWED. Run 28079006609, artifact 7841528502. Residual precision dominated by scene false positives. Zero-candidate pack requires per-frame labelling. Gate: STAGE 1 RESIDUAL FALSE-POSITIVE MITIGATION — AWAITING TIER A DRY-RUN DECISION.
 - **2026-06-23:** Track B Stage 1c self-contained workflow failed before processing at artifact-download authentication; blocked.
+- **2026-06-24:** Active gate updated to STAGE 2 TIER A EXPERIMENTAL ANCHOR HUMAN ADJUDICATION — AWAITING LABELS. `stage2_label_analysis.py` standing by as next tool after CSV labels entered.
 - **2026-06-24:** `stage2_label_analysis.py` added. Reads filled adjudication CSV + tracklets JSON; reports label summary, feature comparison table, ranked discriminating features, unclear anchor priority list. No filtering, thresholds, or frozen files changed. Gate: BALL-LIKENESS LABEL ANALYSIS — AWAITING FEATURE-DESIGN DECISION.
