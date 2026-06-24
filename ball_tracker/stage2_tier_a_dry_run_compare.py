@@ -16,16 +16,24 @@ Instead, for every credible-motion window found in the ORIGINAL tracklets
 
   1. Frame support: does the dry-run candidate file have >= 1 candidate in the
      frame range [start_frame, end_frame]?
+     DIAGNOSTIC ONLY — does not count as continuity.
   2. Spatial support: is any of those candidates within SPATIAL_TOL_DEG of the
      original tracklet's median position?
   3. Linked support: does the dry-run tracklet set contain any tracklet that
      overlaps the frame window and has a median position within SPATIAL_TOL_DEG?
 
-A window that loses frame, spatial, AND linked support is flagged as a potential
-credible-motion disruption. A window that retains any of the three is considered
-continuous.
+CONTINUITY DEFINITION (corrected):
+  is_continuous = has_spatial_support OR has_linked_support
+  Frame-only support does NOT constitute continuity.
 
-This check is diagnostic only. It does not approve or block suppression.
+OUTCOME CATEGORIES per motion window:
+  spatial_or_linked_continuous  — spatial or linked support present (safe)
+  frame_only_unsupported        — frame support only; no spatial or linked (unsafe)
+  no_support                    — no frame, spatial, or linked support (unsafe)
+
+ACCEPTANCE VERDICT:
+  The dry-run FAILS safety acceptance if any credible-motion window is classified
+  as frame_only_unsupported or no_support.
 
 Inputs:
   --original-tracklets    tracklets.json from Stage 2 on original candidates
@@ -39,6 +47,7 @@ import argparse
 import json
 import math
 import os
+import sys
 from collections import defaultdict, OrderedDict
 
 # A tracklet is "credible motion" if it is anchor/passing and moves at least this far.
@@ -47,6 +56,11 @@ MOTION_FLOOR_DEG = 3.0
 # Spatial tolerance for continuity check: a dry-run candidate or tracklet is
 # considered spatially consistent if it falls within this of the original median.
 SPATIAL_TOL_DEG = 2.0
+
+# Outcome category labels
+OUTCOME_SPATIAL_OR_LINKED = "spatial_or_linked_continuous"
+OUTCOME_FRAME_ONLY        = "frame_only_unsupported"
+OUTCOME_NO_SUPPORT        = "no_support"
 
 
 def _to_unit(yaw_deg, pitch_deg):
@@ -109,16 +123,27 @@ def _build_dry_candidate_index(dry_cands_data):
 
 def _check_continuity(orig_t, dry_cand_index, dry_tracklets, spatial_tol):
     """
-    For a credible-motion original tracklet, check three continuity conditions
+    For a credible-motion original tracklet, check three support conditions
     against the dry-run.
+
+    Continuity definition (corrected):
+      is_continuous = has_spatial_support OR has_linked_support
+      Frame-only support is diagnostic only and does NOT constitute continuity.
+
+    Outcome category:
+      spatial_or_linked_continuous  — is_continuous is True
+      frame_only_unsupported        — frame support only, no spatial/linked
+      no_support                    — no support of any kind
 
     Returns dict with keys:
       frame_range           (start, end)
       median_pos            (yaw, pitch) or None
       has_frame_support     bool  — dry-run has >=1 candidate in frame range
+                                    (DIAGNOSTIC ONLY)
       has_spatial_support   bool  — >=1 of those within spatial_tol of median
       has_linked_support    bool  — dry-run tracklet overlaps window + within spatial_tol
-      is_continuous         bool  — any of the three is True
+      is_continuous         bool  — has_spatial_support OR has_linked_support
+      outcome               str   — one of the three outcome category labels
       nearest_frame_dist    float or None  — closest spatial dist in frame range
       nearest_linked_dist   float or None
     """
@@ -126,7 +151,7 @@ def _check_continuity(orig_t, dry_cand_index, dry_tracklets, spatial_tol):
     end   = orig_t.get("end_frame",   0)
     mpos  = _median_pos(orig_t)
 
-    # Frame support
+    # Frame support (diagnostic only)
     frame_cands = []
     for f in range(start, end + 1):
         frame_cands.extend(dry_cand_index.get(f, []))
@@ -167,7 +192,16 @@ def _check_continuity(orig_t, dry_cand_index, dry_tracklets, spatial_tol):
             has_linked_support = True
             break
 
-    is_continuous = has_frame_support or has_spatial_support or has_linked_support
+    # Continuity: spatial OR linked only; frame-only does not count
+    is_continuous = has_spatial_support or has_linked_support
+
+    # Outcome category
+    if is_continuous:
+        outcome = OUTCOME_SPATIAL_OR_LINKED
+    elif has_frame_support:
+        outcome = OUTCOME_FRAME_ONLY
+    else:
+        outcome = OUTCOME_NO_SUPPORT
 
     return OrderedDict([
         ("frame_range",          [start, end]),
@@ -176,6 +210,7 @@ def _check_continuity(orig_t, dry_cand_index, dry_tracklets, spatial_tol):
         ("has_spatial_support",  has_spatial_support),
         ("has_linked_support",   has_linked_support),
         ("is_continuous",        is_continuous),
+        ("outcome",              outcome),
         ("nearest_frame_dist_deg",  round(nearest_frame_dist, 3) if nearest_frame_dist is not None else None),
         ("nearest_linked_dist_deg", round(nearest_linked_dist, 3) if nearest_linked_dist is not None else None),
     ])
@@ -228,7 +263,8 @@ def run(args):
         and t.get("status") in ("anchor", "passing")
     ]
     continuity_results = []
-    disrupted = []
+    frame_only_unsupported = []
+    no_support_windows = []
     for t in credible_windows:
         cont = _check_continuity(t, dry_cand_index, dry, SPATIAL_TOL_DEG)
         entry = OrderedDict([
@@ -239,14 +275,33 @@ def run(args):
         ])
         entry.update(cont)
         continuity_results.append(entry)
-        if not cont["is_continuous"]:
-            disrupted.append(entry)
+        if cont["outcome"] == OUTCOME_FRAME_ONLY:
+            frame_only_unsupported.append(entry)
+        elif cont["outcome"] == OUTCOME_NO_SUPPORT:
+            no_support_windows.append(entry)
+
+    # All unsafe windows (frame-only or no-support)
+    unsafe_windows = frame_only_unsupported + no_support_windows
+    continuous_count = len(credible_windows) - len(unsafe_windows)
+
+    # Acceptance verdict: FAIL if any window is frame-only or no-support
+    acceptance_verdict = "PASS" if len(unsafe_windows) == 0 else "FAIL"
+
+    # Outcome category counts
+    outcome_counts = OrderedDict([
+        (OUTCOME_SPATIAL_OR_LINKED, continuous_count),
+        (OUTCOME_FRAME_ONLY,        len(frame_only_unsupported)),
+        (OUTCOME_NO_SUPPORT,        len(no_support_windows)),
+    ])
 
     summary = OrderedDict([
         ("experiment",       "stage1_tier_a_dry_run_stage2_comparison"),
         ("motion_floor_deg", MOTION_FLOOR_DEG),
         ("spatial_tol_deg",  SPATIAL_TOL_DEG),
-        ("continuity_check_method", "frame_and_spatial_not_tracklet_id"),
+        ("continuity_check_method", "spatial_or_linked_only_not_frame_only"),
+        ("continuity_definition",   "is_continuous = has_spatial_support OR has_linked_support"),
+        ("frame_support_role",      "diagnostic only — does not constitute continuity"),
+        ("acceptance_verdict",      acceptance_verdict),
         ("tracklet_count", {
             "original": len(orig),
             "dry_run":  len(dry),
@@ -254,11 +309,14 @@ def run(args):
         }),
         ("status_counts", status_delta),
         ("tier_a_in_radius_tracklets", tier_a_in_radius),
-        ("credible_motion_windows_checked",   len(credible_windows)),
-        ("credible_motion_windows_continuous", len(credible_windows) - len(disrupted)),
-        ("credible_motion_windows_disrupted",  len(disrupted)),
-        ("disrupted_windows",                  disrupted),
-        ("all_continuity_results",             continuity_results),
+        ("credible_motion_windows_checked",          len(credible_windows)),
+        ("credible_motion_windows_continuous",        continuous_count),
+        ("credible_motion_windows_frame_only_unsafe", len(frame_only_unsupported)),
+        ("credible_motion_windows_no_support",        len(no_support_windows)),
+        ("outcome_counts",           outcome_counts),
+        ("frame_only_unsupported_windows", frame_only_unsupported),
+        ("no_support_windows",             no_support_windows),
+        ("all_continuity_results",         continuity_results),
     ])
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -284,21 +342,38 @@ def run(args):
     lines.append("")
     lines.append(f"CREDIBLE-MOTION CONTINUITY CHECK  "
                  f"(motion_floor={MOTION_FLOOR_DEG}°, spatial_tol={SPATIAL_TOL_DEG}°)")
-    lines.append(f"  Windows checked   : {len(credible_windows)}")
-    lines.append(f"  Continuous        : {len(credible_windows) - len(disrupted)}")
-    lines.append(f"  Disrupted         : {len(disrupted)}")
-    lines.append("  Method: frame/spatial continuity, NOT tracklet ID matching")
-    if disrupted:
-        lines.append("  DISRUPTED WINDOWS (no frame, spatial, or linked support retained):")
-        for d in disrupted:
-            lines.append(
-                f"    {d['original_id']} status={d['status']} "
-                f"net_disp={d['net_displacement_deg']}° "
-                f"frames={d['frame_range'][0]}-{d['frame_range'][1]} "
-                f"in_tier_a={d['falls_in_tier_a']}"
-            )
+    lines.append(f"  Continuity definition : spatial OR linked support only")
+    lines.append(f"  Frame-only support    : diagnostic only (does NOT count as continuity)")
+    lines.append(f"  Windows checked       : {len(credible_windows)}")
+    lines.append(f"  {OUTCOME_SPATIAL_OR_LINKED:40}: {continuous_count}")
+    lines.append(f"  {OUTCOME_FRAME_ONLY:40}: {len(frame_only_unsupported)}")
+    lines.append(f"  {OUTCOME_NO_SUPPORT:40}: {len(no_support_windows)}")
+    lines.append("")
+    lines.append(f"ACCEPTANCE VERDICT: {acceptance_verdict}")
+    if acceptance_verdict == "FAIL":
+        lines.append(f"  REASON: {len(unsafe_windows)} credible-motion window(s) have "
+                     f"frame-only or no support — spatial/linked continuity not confirmed.")
+        if frame_only_unsupported:
+            lines.append(f"  FRAME-ONLY UNSUPPORTED windows ({len(frame_only_unsupported)}):")
+            for d in frame_only_unsupported:
+                lines.append(
+                    f"    {d['original_id']} status={d['status']} "
+                    f"net_disp={d['net_displacement_deg']}° "
+                    f"frames={d['frame_range'][0]}-{d['frame_range'][1]} "
+                    f"in_tier_a={d['falls_in_tier_a']} "
+                    f"nearest_frame_dist={d['nearest_frame_dist_deg']}°"
+                )
+        if no_support_windows:
+            lines.append(f"  NO-SUPPORT windows ({len(no_support_windows)}):")
+            for d in no_support_windows:
+                lines.append(
+                    f"    {d['original_id']} status={d['status']} "
+                    f"net_disp={d['net_displacement_deg']}° "
+                    f"frames={d['frame_range'][0]}-{d['frame_range'][1]} "
+                    f"in_tier_a={d['falls_in_tier_a']}"
+                )
     else:
-        lines.append("  All credible-motion windows retain continuity in the dry-run.")
+        lines.append("  All credible-motion windows retain spatial or linked continuity.")
 
     report_txt = "\n".join(lines) + "\n"
     out_txt = os.path.join(args.output_dir, "tier_a_dry_run_stage2_comparison.txt")
@@ -307,6 +382,9 @@ def run(args):
 
     print(report_txt)
     print(f"Outputs: {out_json}, {out_txt}")
+
+    if acceptance_verdict == "FAIL":
+        sys.exit(1)
 
 
 def main():
