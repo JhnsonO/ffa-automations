@@ -1,0 +1,97 @@
+name: Stage 2 — Wide Cluster Diagnosis (C005, C006, C007, C009)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  wide-cluster-diagnosis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --quiet numpy pillow
+
+      - name: Download smoke artifact 7835756306
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/smoke_art
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, sys
+
+          token  = os.environ["GH_PAT"]
+          art_id = "7835756306"
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+
+          opener = urllib.request.build_opener(NoRedirect())
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{art_id}/zip",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          try:
+              opener.open(req)
+              blob_url = None
+          except urllib.error.HTTPError as redir:
+              blob_url = redir.headers.get("Location")
+          if not blob_url:
+              print("FATAL: no redirect URL"); sys.exit(1)
+
+          with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+              data = r.read()
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/smoke_art")
+          print("Extracted:", os.listdir("/tmp/smoke_art"), flush=True)
+          PY
+
+      - name: Run static-motion audit inline
+        run: |
+          mkdir -p /tmp/audit_out
+          python3 ball_tracker/stage2_static_motion_audit.py \
+            --tracklets /tmp/smoke_art/tracklets.json \
+            --output-dir /tmp/audit_out
+
+      - name: Run repeated-static location audit inline
+        run: |
+          mkdir -p /tmp/repeated_out
+          python3 ball_tracker/stage2_repeated_static_audit.py \
+            --tracklets /tmp/smoke_art/tracklets.json \
+            --audit     /tmp/audit_out/stage2_audit_report.json \
+            --output-dir /tmp/repeated_out
+
+      - name: Run wide cluster diagnosis
+        run: |
+          mkdir -p /tmp/diag_out
+          python3 ball_tracker/stage2_wide_cluster_diagnosis.py \
+            --report      /tmp/repeated_out/stage2_repeated_static_report.json \
+            --target      C005,C006,C007,C009 \
+            --split-radius 1.2 \
+            --output-dir  /tmp/diag_out
+
+      - name: Print diagnosis report
+        run: cat /tmp/diag_out/wide_cluster_diagnosis.txt
+
+      - name: Collect outputs
+        run: |
+          mkdir -p final_output
+          cp /tmp/diag_out/wide_cluster_diagnosis.json  final_output/
+          cp /tmp/diag_out/wide_cluster_diagnosis.txt   final_output/
+          cp /tmp/diag_out/wide_cluster_subpack.png     final_output/
+          echo "=== final_output ==="
+          ls -lh final_output/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage2-wide-cluster-diagnosis-${{ github.run_id }}
+          path: final_output/
+          retention-days: 30

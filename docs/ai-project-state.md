@@ -199,37 +199,57 @@ false-positive locations outside the hotspot map — require visual verification
 
 No thresholds, tracklet statuses, or frozen files changed.
 
-## Active gate and next action
+### Stage 2 discovered-static location match annotation
 
-**STAGE 2 DISCOVERED-STATIC LOCATION ANNOTATION — AWAITING REVIEW**
+**COMPLETED — VERIFIED**
 
-Visual review completed. All C001–C009 confirmed fixed-scene / camera-mount false-positive locations:
-- C001 (yaw≈24.5°, pitch≈13.2°): inside Stage 0 hotspot ✓
-- C002 (yaw≈−22.7°, pitch≈−18.8°): inside Stage 0 hotspot ✓
-- C003 fence/mount area ✓ | C004 mount/fence junction ✓ | C005 mount/fence region ✓
-- C006 fixed pitch/side patch ✓ | C007–C009 fixed fence/side-scene locations ✓
-
-Annotation layer dispatched:
 - script: `ball_tracker/stage2_discovered_static_match.py`
 - tests: `ball_tracker/tests/test_stage2_discovered_static_match.py` (13 fixtures)
 - workflow: `.github/workflows/360-stage2-discovered-static-match.yml`
+- verified artifact: `7841215970`, run `28078249103`
+
+Output: `tracklets_repeated_static_audit.json` (immutable derived copy; original `tracklets.json` confirmed untouched).
+
+Verified counts: total=531 | eligible=152 | matched (would_suppress)=139 | unmatched=13.
+
+Match radius derivation: p95 member dist + 0.5° guard, capped 6.0°. Discovery radius 4.0° never used as action radius. T0373 confirmed unmatched (major-motion exclusion). ✓
+
+Per-cluster match radii and decision tier:
+
+| Cluster | Radius | Matched | Tier |
+|---------|--------|---------|------|
+| C001 | 0.602° | 57 | tight — future suppression candidate |
+| C002 | 0.596° | 47 | tight — future suppression candidate |
+| C003 | 0.667° | 8  | tight — future suppression candidate |
+| C004 | 0.733° | 6  | tight — future suppression candidate |
+| C005 | 2.566° | 6  | wide — diagnosis pending |
+| C006 | 1.109° | 6  | mid-range — diagnosis pending |
+| C007 | 2.925° | 3  | wide — diagnosis pending |
+| C008 | 0.595° | 3  | tight — future suppression candidate |
+| C009 | 3.025° | 3  | wide — diagnosis pending |
+
+No active suppression. Tight clusters (C001–C004, C008) are potential future candidates only.
+
+## Active gate and next action
+
+**STAGE 2 WIDE DISCOVERED-STATIC CLUSTER DIAGNOSIS — AWAITING REVIEW**
+
+Wide clusters C005, C006, C007, C009 require subcluster analysis before any future action decision.
+
+- script: `ball_tracker/stage2_wide_cluster_diagnosis.py`
+- workflow: `.github/workflows/360-stage2-wide-cluster-diagnosis.yml`
 - status: DISPATCHED — UNVERIFIED
 
-Output file: `tracklets_repeated_static_audit.json` (immutable derived copy; original `tracklets.json` untouched).
+Outputs: `wide_cluster_diagnosis.json`, `wide_cluster_diagnosis.txt`, `wide_cluster_subpack.png`.
 
-Annotation fields added to near-static eligible tracklets only:
-- `repeated_static_location_match`: bool
-- `repeated_static_cluster_id`: str | null
-- `repeated_static_match_distance_deg`: float | null
-- `repeated_static_match_radius_deg`: float | null
-- `would_suppress_repeated_static`: bool
+Each cluster diagnosed with:
+- member-level distance distribution from cluster centre
+- natural subcluster detection at split_radius=1.2°
+- pairwise separation matrix
+- gap analysis in sorted distance sequence
+- recommendation: KEEP AS ONE | SPLIT | ANNOTATION-ONLY
 
-Match radius derivation per cluster: p95 member dist + 0.5° guard, capped at 6.0°.
-Global discovery radius (4.0°) is never used as action radius (enforced in tests).
-
-Eligibility gate for matching: non-rejected_static, net_disp < 1.5°, obs ≥ 3, span ≥ 5, net_disp < 42°.
-
-Do not mark this workstream complete until artifact is inspected and counts reviewed.
+Decision after review: confirmed tight subclusters may become future suppression candidates; chained/spread clusters remain annotation-only.
 
 **Parallel blocked workstream:** repair and re-dispatch the Stage 1c → Stage 1b → Track B self-contained workflow. Do not treat it as complete until its artifact is inspected.
 
@@ -244,12 +264,14 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 
 ## Compact change log
 
-- **2026-06-24:** C003–C009 visually confirmed fixed-scene/camera-mount. Discovered-static match annotation layer built and dispatched (`stage2_discovered_static_match.py` + 13 fixture tests + `360-stage2-discovered-static-match.yml`). Gate: ANNOTATION AWAITING REVIEW.
-- **2026-06-24:** Visual verification pack dispatched for C003–C009 (`stage2_cluster_visual_pack.py`). Artifact `7841063584`, run `28077774459`. All clusters confirmed fixed scene.
-- **2026-06-24:** Reconciled state file and working contract. Fresh chats should bootstrap from `CLAUDE.md` + this file without a large handover.
-- **2026-06-24:** Stage 2 repeated-static location audit run against smoke data (artifact 7835756306). 9 repeated-static clusters confirmed; C001 (yaw≈24.5°,pitch≈13.2°) has 57 members across 33 windows, inside Stage 0 hotspot. C002 (-22.7°,-18.8°) has 47 members, also inside hotspot. C003–C009 newly identified outside hotspot. T0373 excluded (net_disp=42.64°). No thresholds or frozen files changed.
-- **2026-06-24:** Stage 2 repeated-static location audit built and tested; annotation-only, no dispatch yet.
-- **2026-06-24:** Stage 2 static-motion audit built and reviewed; annotation-only, no threshold changes.
+- **2026-06-24:** Wide cluster diagnosis dispatched for C005, C006, C007, C009 (`stage2_wide_cluster_diagnosis.py` + `360-stage2-wide-cluster-diagnosis.yml`). Gate: WIDE CLUSTER DIAGNOSIS AWAITING REVIEW.
+- **2026-06-24:** Annotation layer verified (run `28078249103`, artifact `7841215970`). eligible=152, matched=139, T0373 unmatched. Tight clusters C001–C004, C008 flagged as future suppression candidates. C005/C007/C009 wide; C006 mid-range; all require diagnosis.
+- **2026-06-24:** C003–C009 visually confirmed fixed-scene/camera-mount. Discovered-static match annotation layer built and dispatched.
+- **2026-06-24:** Visual verification pack dispatched for C003–C009. Artifact `7841063584`, run `28077774459`. All clusters confirmed fixed scene.
+- **2026-06-24:** Reconciled state file and working contract.
+- **2026-06-24:** Stage 2 repeated-static location audit run against smoke data (artifact 7835756306). 9 repeated-static clusters confirmed.
+- **2026-06-24:** Stage 2 repeated-static location audit built and tested; annotation-only.
+- **2026-06-24:** Stage 2 static-motion audit built and reviewed; annotation-only.
 - **2026-06-23:** Stage 1c geometry preservation verified on full RTX 4090 run `28046275937` / artifact `7830052466`.
 - **2026-06-23:** Stage 1b confirmed-static quarantine verified on run `28035387017` / artifact `7824742847`.
 - **2026-06-23:** Track B Stage 1c self-contained workflow failed before processing at artifact-download authentication; remains blocked pending a successful re-dispatch.
