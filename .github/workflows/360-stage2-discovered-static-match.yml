@@ -1,0 +1,148 @@
+name: Stage 2 — Discovered-Static Location Match (C001–C009)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  discovered-static-match:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --quiet numpy pytest
+
+      - name: Download smoke artifact 7835756306 (tracklets + audit report)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/smoke_art
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, sys
+
+          token  = os.environ["GH_PAT"]
+          art_id = "7835756306"  # stage2-smoke-validation-28063029760
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+
+          opener = urllib.request.build_opener(NoRedirect())
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{art_id}/zip",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          try:
+              opener.open(req)
+              blob_url = None
+          except urllib.error.HTTPError as redir:
+              blob_url = redir.headers.get("Location")
+          if not blob_url:
+              print("FATAL: no redirect URL from GH artifact endpoint"); sys.exit(1)
+
+          print(f"Downloading artifact {art_id}...", flush=True)
+          with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+              data = r.read()
+          print(f"  Downloaded {len(data)/1e6:.1f} MB", flush=True)
+
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/smoke_art")
+          print("  Extracted:", os.listdir("/tmp/smoke_art"), flush=True)
+          PY
+
+      - name: Verify tracklets.json present
+        run: |
+          ls -lh /tmp/smoke_art/
+          [ -f /tmp/smoke_art/tracklets.json ] || { echo "FATAL: tracklets.json missing"; exit 1; }
+          echo "tracklets.json: $(wc -c < /tmp/smoke_art/tracklets.json) bytes"
+
+      - name: Run static-motion audit inline
+        run: |
+          mkdir -p /tmp/audit_out
+          python3 ball_tracker/stage2_static_motion_audit.py \
+            --tracklets /tmp/smoke_art/tracklets.json \
+            --output-dir /tmp/audit_out
+
+      - name: Run repeated-static location audit inline
+        run: |
+          mkdir -p /tmp/repeated_out
+          python3 ball_tracker/stage2_repeated_static_audit.py \
+            --tracklets /tmp/smoke_art/tracklets.json \
+            --audit     /tmp/audit_out/stage2_audit_report.json \
+            --output-dir /tmp/repeated_out
+          echo "=== cluster report ==="
+          cat /tmp/repeated_out/stage2_repeated_static_report.txt
+
+      - name: Run fixture tests
+        run: |
+          python3 -m pytest ball_tracker/tests/test_stage2_discovered_static_match.py -v
+
+      - name: Run discovered-static location match annotation
+        run: |
+          mkdir -p /tmp/match_out
+          python3 ball_tracker/stage2_discovered_static_match.py \
+            --tracklets    /tmp/smoke_art/tracklets.json \
+            --report       /tmp/repeated_out/stage2_repeated_static_report.json \
+            --reviewed-ids C001,C002,C003,C004,C005,C006,C007,C008,C009 \
+            --guard-margin 0.5 \
+            --radius-cap   6.0 \
+            --output-dir   /tmp/match_out
+
+      - name: Print report and before/after summary
+        run: |
+          echo "=== stage2_discovered_static_report.txt ==="
+          cat /tmp/match_out/stage2_discovered_static_report.txt
+          echo ""
+          echo "=== Quick counts from audit JSON ==="
+          python3 - << 'PY'
+          import json
+          from collections import Counter
+
+          with open("/tmp/match_out/tracklets_repeated_static_audit.json") as f:
+              data = json.load(f)
+          tracklets = data["tracklets"] if isinstance(data, dict) else data
+
+          eligible = [t for t in tracklets if "repeated_static_location_match" in t]
+          matched  = [t for t in eligible  if t["repeated_static_location_match"]]
+          by_cluster = Counter(t["repeated_static_cluster_id"] for t in matched if t["repeated_static_cluster_id"])
+
+          print(f"Total tracklets in audit output : {len(tracklets)}")
+          print(f"Eligible (annotated)            : {len(eligible)}")
+          print(f"would_suppress_repeated_static  : {len(matched)}")
+          print(f"Unmatched eligible              : {len(eligible) - len(matched)}")
+          print(f"\nMatches per cluster:")
+          for cid, n in sorted(by_cluster.items()):
+              print(f"  {cid}: {n}")
+
+          # Verify original tracklets.json is not referenced in output (paranoia check)
+          with open("/tmp/smoke_art/tracklets.json") as f:
+              orig = json.load(f)
+          orig_tracklets = orig["tracklets"] if isinstance(orig, dict) else orig
+          orig_keys = set(orig_tracklets[0].keys()) if orig_tracklets else set()
+          audit_keys = set(tracklets[0].keys()) if tracklets else set()
+          new_keys = audit_keys - orig_keys
+          print(f"\nNew annotation keys added: {sorted(new_keys)}")
+          PY
+
+      - name: Collect outputs
+        run: |
+          mkdir -p final_output
+          cp /tmp/match_out/tracklets_repeated_static_audit.json  final_output/
+          cp /tmp/match_out/stage2_discovered_static_report.json  final_output/
+          cp /tmp/match_out/stage2_discovered_static_report.txt   final_output/
+          cp /tmp/repeated_out/stage2_repeated_static_report.json final_output/
+          echo "=== final_output ==="
+          ls -lh final_output/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage2-discovered-static-match-${{ github.run_id }}
+          path: final_output/
+          retention-days: 30

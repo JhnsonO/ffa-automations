@@ -201,31 +201,35 @@ No thresholds, tracklet statuses, or frozen files changed.
 
 ## Active gate and next action
 
-**STAGE 2 DISCOVERED-STATIC LOCATION VISUAL REVIEW — AWAITING DECISION**
+**STAGE 2 DISCOVERED-STATIC LOCATION ANNOTATION — AWAITING REVIEW**
 
-Visual verification pack dispatched for C003–C009 (clusters outside known Stage 0 hotspot regions).
+Visual review completed. All C001–C009 confirmed fixed-scene / camera-mount false-positive locations:
+- C001 (yaw≈24.5°, pitch≈13.2°): inside Stage 0 hotspot ✓
+- C002 (yaw≈−22.7°, pitch≈−18.8°): inside Stage 0 hotspot ✓
+- C003 fence/mount area ✓ | C004 mount/fence junction ✓ | C005 mount/fence region ✓
+- C006 fixed pitch/side patch ✓ | C007–C009 fixed fence/side-scene locations ✓
 
-- workflow: `.github/workflows/360-stage2-cluster-visual-pack.yml`
-- script: `ball_tracker/stage2_cluster_visual_pack.py`
+Annotation layer dispatched:
+- script: `ball_tracker/stage2_discovered_static_match.py`
+- tests: `ball_tracker/tests/test_stage2_discovered_static_match.py` (13 fixtures)
+- workflow: `.github/workflows/360-stage2-discovered-static-match.yml`
 - status: DISPATCHED — UNVERIFIED
 
-Pack contents:
-- Perspective crop (FoV=80°) centred on cluster yaw/pitch for early/middle/late frames
-- Equirect thumbnail with location marker for context
-- Centre reticle (red) + observation offset dot (yellow) per tile
-- Verdict table (`verdict_table.md`) for human annotation
+Output file: `tracklets_repeated_static_audit.json` (immutable derived copy; original `tracklets.json` untouched).
 
-C001 and C002 are reference-only (inside Stage 0 hotspot — confirmed false-positive sources).
+Annotation fields added to near-static eligible tracklets only:
+- `repeated_static_location_match`: bool
+- `repeated_static_cluster_id`: str | null
+- `repeated_static_match_distance_deg`: float | null
+- `repeated_static_match_radius_deg`: float | null
+- `would_suppress_repeated_static`: bool
 
-Required decisions before any suppression rule is created:
-1. Review `cluster_visual_pack.png` for each of C003–C009
-2. Complete `verdict_table.md` with one of: `confirmed fixed scene` | `uncertain` | `credible ball — do not suppress`
-3. Return verdict table; suppression design follows from confirmed clusters only
+Match radius derivation per cluster: p95 member dist + 0.5° guard, capped at 6.0°.
+Global discovery radius (4.0°) is never used as action radius (enforced in tests).
 
-Completed pre-conditions:
-- C001 (yaw≈24.5°, pitch≈13.2°): confirmed fixed scene (inside Stage 0 hotspot) ✓
-- C002 (yaw≈−22.7°, pitch≈−18.8°): inside Stage 0 hotspot ✓
-- T0373 confirmed excluded (net_disp=42.64°) ✓
+Eligibility gate for matching: non-rejected_static, net_disp < 1.5°, obs ≥ 3, span ≥ 5, net_disp < 42°.
+
+Do not mark this workstream complete until artifact is inspected and counts reviewed.
 
 **Parallel blocked workstream:** repair and re-dispatch the Stage 1c → Stage 1b → Track B self-contained workflow. Do not treat it as complete until its artifact is inspected.
 
@@ -240,7 +244,8 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 
 ## Compact change log
 
-- **2026-06-24:** Visual verification pack dispatched for C003–C009 (`stage2_cluster_visual_pack.py` + `360-stage2-cluster-visual-pack.yml`). Equirect crops + verdict table. Gate updated to AWAITING DECISION.
+- **2026-06-24:** C003–C009 visually confirmed fixed-scene/camera-mount. Discovered-static match annotation layer built and dispatched (`stage2_discovered_static_match.py` + 13 fixture tests + `360-stage2-discovered-static-match.yml`). Gate: ANNOTATION AWAITING REVIEW.
+- **2026-06-24:** Visual verification pack dispatched for C003–C009 (`stage2_cluster_visual_pack.py`). Artifact `7841063584`, run `28077774459`. All clusters confirmed fixed scene.
 - **2026-06-24:** Reconciled state file and working contract. Fresh chats should bootstrap from `CLAUDE.md` + this file without a large handover.
 - **2026-06-24:** Stage 2 repeated-static location audit run against smoke data (artifact 7835756306). 9 repeated-static clusters confirmed; C001 (yaw≈24.5°,pitch≈13.2°) has 57 members across 33 windows, inside Stage 0 hotspot. C002 (-22.7°,-18.8°) has 47 members, also inside hotspot. C003–C009 newly identified outside hotspot. T0373 excluded (net_disp=42.64°). No thresholds or frozen files changed.
 - **2026-06-24:** Stage 2 repeated-static location audit built and tested; annotation-only, no dispatch yet.
