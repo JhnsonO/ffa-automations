@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 24 June 2026 (label analysis complete with final labels; filled CSV committed; ball-likeness score validation ready)
+**Last reconciled:** 24 June 2026 (ball-likeness score re-built with mandatory FP controls; dispatched run 28106409106)
 **Authority:** Living source of truth for AI work. Replace obsolete state rather than appending chat transcripts.
 
 ## Start here
@@ -269,7 +269,7 @@ Retain raw audit evidence only.
 
 ## Active gate and next action
 
-**STAGE 2 TIER A — LABEL ANALYSIS COMPLETE — BALL-LIKENESS SCORE VALIDATION READY**
+**TEMPORAL BALL-LIKENESS SCORE — OUT-OF-SAMPLE VALIDATION AWAITING REVIEW**
 
 ### Run 28087760893 — decision-gate outcome
 
@@ -366,15 +366,15 @@ Per-anchor page (3 rows: EARLY / MID / LATE):
 
 No automatic verdicts. No changes to filtering, radii, thresholds, linking, renderer, Stage 1, 1b, or 2.
 
-**Next action:** Review `ball-likeness-score-28104903880` artifact: `ball_likeness_scores.csv` (ranked unclear anchors), `ball_likeness_review_pack.png` (top-8 + bottom-8 unclear), `ball_likeness_summary.txt` (FP rank check). Decision: does the score cleanly separate unclear anchors and rank confirmed FPs low?
+**Next action:** Review `ball-likeness-score-28106409106` artifact: `ball_likeness_scores.csv` (ranked unclear anchors), `ball_likeness_review_pack.png` (top-8 + bottom-8 unclear + T0093/T0080 mandatory FP controls), `ball_likeness_summary.txt` (formula, feature values, FP rank check). Decision: does the score cleanly separate unclear anchors and rank confirmed FPs low?
 
 ### Ball-likeness score diagnostic — DISPATCHED — UNVERIFIED
 
-- `ball_tracker/stage2_ball_likeness_score.py` (commit 8058b56d)
-- `.github/workflows/360-stage2-ball-likeness-score.yml` (commit 3ccbe8ad)
-- Workflow: `360-stage2-ball-likeness-score` run `28104903880` — DISPATCHED — UNVERIFIED
+- `ball_tracker/stage2_ball_likeness_score.py` (commit c0d6d004)
+- `.github/workflows/360-stage2-ball-likeness-score.yml` (commit afec0433)
+- Workflow: `360-stage2-ball-likeness-score` run `28106409106` — DISPATCHED — UNVERIFIED
 
-Formula: score = 0.35*norm(obs_count) + 0.30*norm(spatial_spread_deg) + 0.20*norm(vel_consistency) + 0.15*norm(net_disp_deg). Normalisation: min-max over full anchor population; missing -> 0.0. Labels: likely_ball=T0001/T0025; confirmed FPs scored for rank-check; unclear anchors scored out-of-sample. No automatic verdicts. No changes to filtering, radii, thresholds, linking, renderer, Stage 1, 1b, 2, or production outputs.
+Formula: score = 0.35*norm(obs_count) + 0.30*norm(spatial_spread_deg) + 0.20*norm(vel_consistency) + 0.15*norm(net_disp_deg). Normalisation: min-max over full anchor population (ball+FP+unclear); missing → 0.0. Training labels: likely_ball=T0001/T0025; confirmed FPs from committed CSV. Out-of-sample: 11 unclear anchors. Mandatory FP controls in review pack: T0093, T0080. Source: committed `ball_tracker/data/tier_a_anchor_adjudication_filled.csv`. No automatic verdicts. No changes to filtering, radii, thresholds, linking, renderer, Stage 1, 1b, 2, or production outputs.
 
 ### Label analysis completed — 24 June 2026
 
@@ -451,6 +451,7 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 ## Compact change log
 
 - **2026-06-24:** Label analysis complete (final labels). Filled CSV committed (fd8adab7): 2 ball, 13 FP, 11 unclear. Analysis run locally: top features obs_count (2.78), span_frames (2.73), spatial_spread_deg (1.92), vel_consistency (1.69). FP T0093/T0080 highest-anchor-strength FPs — watch in validation. Ball-likeness score validation approved as next step.
+- **2026-06-24:** Ball-likeness score re-built: mandatory FP controls (T0093, T0080) added to review pack; switched to committed CSV source. Run 28106409106 — DISPATCHED — UNVERIFIED.
 - **2026-06-24:** Ball-likeness score diagnostic built and dispatched: `stage2_ball_likeness_score.py` + `360-stage2-ball-likeness-score.yml`. Formula: 0.35*obs_count + 0.30*spatial_spread + 0.20*vel_consistency + 0.15*net_disp (min-max normalised). Outputs: ranked CSV, top-8/bottom-8 visual pack, FP rank check. Run 28104903880.
 - **2026-06-24:** High-res Tier A adjudication pack built and dispatched: stage2_tier_a_adjudication_pack.py + 360-stage2-tier-a-adjudication.yml. Context 960x540 + zoom 600x600 centred on candidate, bbox overlay, csv + manifest. Gate: AWAITING LABELS.
 - **2026-06-24:** Tier A anchor visual evidence pack built and dispatched: `stage2_tier_a_anchor_review.py` + `360-stage2-tier-a-anchor-review.yml`. One page per anchor (early/mid/late frames, overlays, verdict field). Gate: STAGE 2 TIER A EXPERIMENTAL ANCHOR VISUAL REVIEW — AWAITING TRACK-QUALITY DECISION.
