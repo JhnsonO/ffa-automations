@@ -1,0 +1,188 @@
+name: 360 Stage 2 — Tier A Anchor Visual Evidence Pack
+
+# EXPERIMENT ONLY.
+# Generates a visual evidence pack for human anchor review.
+# Does NOT modify run_tracker.py, renderer, Stage 1b, Stage 2 linker,
+# thresholds, or any live production behaviour.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  tier-a-anchor-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet 'numpy<2' pillow opencv-python-headless
+          sudo apt-get install -y --no-install-recommends ffmpeg aria2
+
+      - name: Preflight — verify GH_PAT
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, json, sys
+          token = os.environ.get("GH_PAT", "")
+          if not token:
+              print("FATAL: GH_PAT secret is empty"); sys.exit(1)
+          req = urllib.request.Request(
+              "https://api.github.com/user",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          with urllib.request.urlopen(req) as r:
+              user = json.loads(r.read())
+          print(f"GH_PAT OK: login={user.get('login')}")
+          PY
+
+      - name: Download Tier A experimental artifact (latest tier-a-experimental-*)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/tier_a_input
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, json, sys
+          token = os.environ["GH_PAT"]
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+          # Find most recent non-expired tier-a-experimental artifact
+          req = urllib.request.Request(
+              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts?per_page=50",
+              headers=headers)
+          arts = json.loads(urllib.request.urlopen(req).read()).get("artifacts", [])
+          target = next(
+              (a for a in arts if a["name"].startswith("tier-a-experimental-") and not a["expired"]),
+              None)
+          if not target:
+              print("FATAL: no non-expired tier-a-experimental artifact found"); sys.exit(1)
+          print(f"Using artifact: id={target['id']}  name={target['name']}")
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+          opener = urllib.request.build_opener(NoRedirect())
+          req2 = urllib.request.Request(
+              f"https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/{target['id']}/zip",
+              headers=headers)
+          try:
+              opener.open(req2); blob_url = None
+          except urllib.error.HTTPError as redir:
+              blob_url = redir.headers.get("Location")
+          if not blob_url:
+              print("FATAL: no redirect URL"); sys.exit(1)
+          with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+              data = r.read()
+          print(f"Downloaded {len(data)/1e6:.1f} MB")
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/tier_a_input")
+          print("Extracted:", os.listdir("/tmp/tier_a_input"))
+          PY
+          ls -lh /tmp/tier_a_input/
+
+      - name: Verify tracklets_tier_a_experimental.json exists
+        run: |
+          python3 - << 'PY'
+          import json, sys
+          p = "/tmp/tier_a_input/tracklets_tier_a_experimental.json"
+          import os
+          if not os.path.exists(p):
+              print(f"FATAL: {p} not found"); sys.exit(1)
+          with open(p) as f:
+              d = json.load(f)
+          ts = d["tracklets"]
+          from collections import Counter
+          c = Counter(t["status"] for t in ts)
+          print(f"Tracklets: total={len(ts)}")
+          for k,v in sorted(c.items()):
+              print(f"  {k}: {v}")
+          anchors = [t for t in ts if t["status"] == "anchor"]
+          if not anchors:
+              print("FATAL: no anchor tracklets found"); sys.exit(1)
+          print(f"OK: {len(anchors)} anchors ready for visual review")
+          PY
+
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - << 'PY'
+          import json, urllib.request, os
+          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
+          creds_data = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
+          r = urllib.request.urlopen(urllib.request.Request(token_uri, data=payload,
+              headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
+          open("/tmp/drive_access_token.txt", "w").write(tok["access_token"])
+          print(f"Drive token OK (expires_in={tok.get('expires_in')}s)")
+          PY
+
+      - name: Download source video from Drive (GoPro MAX equirect)
+        run: |
+          mkdir -p /tmp/video
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          aria2c \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --out="equirect_trim.mp4" \
+            --dir="/tmp/video" \
+            --max-connection-per-server=4 \
+            --split=4 \
+            --min-split-size=64M \
+            --file-allocation=none \
+            --show-console-readout=true \
+            "https://www.googleapis.com/drive/v3/files/1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX?alt=media"
+          ls -lh /tmp/video/
+
+      - name: Verify video with ffprobe
+        run: |
+          python3 - << 'PY'
+          import subprocess, json, sys
+          probe = subprocess.run(
+              ["ffprobe", "-v", "error", "-select_streams", "v:0",
+               "-show_entries", "stream=width,height,r_frame_rate,nb_frames",
+               "-of", "json", "/tmp/video/equirect_trim.mp4"],
+              capture_output=True, text=True)
+          if probe.returncode != 0:
+              print(f"FATAL ffprobe: {probe.stderr}"); sys.exit(1)
+          s = json.loads(probe.stdout)["streams"][0]
+          w, h = s["width"], s["height"]
+          num, den = s["r_frame_rate"].split("/")
+          fps = float(num) / float(den)
+          if w == 0 or h == 0 or fps <= 0:
+              print("FATAL: bad video stream"); sys.exit(1)
+          print(f"Video OK: {w}×{h} @ {fps:.4f} fps  frames={s.get('nb_frames','?')}")
+          PY
+
+      - name: Generate Tier A anchor visual evidence pack
+        run: |
+          mkdir -p /tmp/anchor_review
+          python3 ball_tracker/stage2_tier_a_anchor_review.py \
+            --tracklets  /tmp/tier_a_input/tracklets_tier_a_experimental.json \
+            --video      /tmp/video/equirect_trim.mp4 \
+            --output-dir /tmp/anchor_review
+
+      - name: Collect outputs
+        run: |
+          mkdir -p final_output
+          cp /tmp/anchor_review/tier_a_anchor_review.png            final_output/ 2>/dev/null || true
+          cp /tmp/anchor_review/tier_a_anchor_review_summary.txt    final_output/ 2>/dev/null || true
+          echo "=== final_output ==="
+          ls -lh final_output/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-a-anchor-review-${{ github.run_id }}
+          path: final_output/
+          retention-days: 30
