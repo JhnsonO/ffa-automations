@@ -1,0 +1,205 @@
+name: 360 Stage 2 — Geometry Propagation Smoke
+
+# Verifies that detection_geometry from Stage 1c candidates is propagated
+# into Tier A experimental tracklet observations.
+#
+# Inputs: Stage 1b-quarantined candidates (artifact 7841528502),
+#         hotspot_map.json from Drive.
+# Smoke: uses first 200 frames of the quarantined candidates only.
+# Acceptance: geo_coverage_fraction > 0.0 for fresh Stage 1c observations;
+#             geometry_matched > 0; exit 1 on failure.
+#
+# No tracking logic, thresholds, linker, renderer, or frozen files are changed.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  geometry-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends aria2
+          pip install --quiet 'numpy<2' pillow
+
+      - name: Run geometry propagation tests
+        run: |
+          python3 -m pytest ball_tracker/tests/test_geometry_propagation.py -v
+          echo "TESTS_PASSED=true" >> $GITHUB_ENV
+
+      - name: Preflight — verify GH_PAT
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, json, sys
+          token = os.environ.get("GH_PAT", "")
+          if not token:
+              print("FATAL: GH_PAT secret is empty"); sys.exit(1)
+          req = urllib.request.Request(
+              "https://api.github.com/user",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          with urllib.request.urlopen(req) as r:
+              user = json.loads(r.read())
+          print(f"GH_PAT OK: login={user.get('login')}")
+          req2 = urllib.request.Request(
+              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7841528502",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          with urllib.request.urlopen(req2) as r2:
+              art = json.loads(r2.read())
+          print(f"Source artifact OK: name={art.get('name')}, expired={art.get('expired')}")
+          PY
+
+      - name: Download Stage 1b-quarantined candidates (artifact 7841528502)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/input
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, sys
+          token = os.environ["GH_PAT"]
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          opener = urllib.request.build_opener(NoRedirect())
+          req = urllib.request.Request(
+              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7841528502/zip",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          try:
+              opener.open(req); blob_url = None
+          except urllib.error.HTTPError as redir:
+              blob_url = redir.headers.get("Location")
+          if not blob_url:
+              print("FATAL: no redirect location"); sys.exit(1)
+          with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+              data = r.read()
+          print(f"Downloaded: {len(data)} bytes")
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/input")
+          print("Extracted:", os.listdir("/tmp/input"))
+          PY
+          ls -lh /tmp/input/
+
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - << 'PY'
+          import json, urllib.request, os
+          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
+          creds_data = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
+          r = urllib.request.urlopen(urllib.request.Request(token_uri, data=payload,
+              headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
+          open("/tmp/drive_access_token.txt", "w").write(tok["access_token"])
+          print(f"Drive token OK (expires_in={tok.get('expires_in')}s)")
+          PY
+
+      - name: Download hotspot_map.json from Drive
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          aria2c -q -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/input --out=hotspot_map.json \
+            "https://www.googleapis.com/drive/v3/files/1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M?alt=media"
+          ls -lh /tmp/input/hotspot_map.json
+
+      - name: Slice smoke subset (first 200 frames)
+        run: |
+          python3 - << 'PY'
+          import json, os
+          src = "/tmp/input/stage1_candidates_quarantined.json"
+          with open(src) as f:
+              data = json.load(f)
+          frames = data.get("frames", {})
+          frame_keys = sorted(frames.keys(), key=lambda k: int(k))[:200]
+          smoke = {k: frames[k] for k in frame_keys}
+          out = dict(data)
+          out["frames"] = smoke
+          out["_smoke_meta"] = {"smoke_frames": len(smoke), "source": src}
+          with open("/tmp/input/stage1_candidates_smoke.json", "w") as f:
+              json.dump(out, f)
+          print(f"Smoke subset: {len(smoke)} frames from {len(frames)} total")
+          PY
+
+      - name: Run Tier A experimental output (smoke subset)
+        run: |
+          mkdir -p /tmp/smoke_out
+          python3 ball_tracker/stage2_tier_a_experimental_output.py \
+            --stage1-candidates /tmp/input/stage1_candidates_smoke.json \
+            --hotspot-map       /tmp/input/hotspot_map.json \
+            --output-dir        /tmp/smoke_out
+
+      - name: Verify geometry coverage
+        run: |
+          python3 - << 'PY'
+          import json, sys
+
+          with open("/tmp/smoke_out/tracklets_tier_a_experimental.json") as f:
+              data = json.load(f)
+
+          meta = data.get("_experimental_meta", {})
+          cov = meta.get("geometry_propagation", {})
+          print("=== Geometry coverage ===")
+          for k, v in cov.items():
+              print(f"  {k}: {v}")
+
+          total = cov.get("total_observations", 0)
+          populated = cov.get("geometry_populated", 0)
+          matched = cov.get("geometry_matched", 0)
+          fraction = cov.get("geo_coverage_fraction", 0.0)
+
+          # Validate observation-level geometry key is present
+          missing_key = []
+          null_geo_count = 0
+          for t in data.get("tracklets", []):
+              for obs in t.get("frames", []):
+                  if "detection_geometry" not in obs:
+                      missing_key.append((t["id"], obs["frame"]))
+                  elif obs["detection_geometry"] is None:
+                      null_geo_count += 1
+
+          print(f"\n  Observations missing detection_geometry key: {len(missing_key)}")
+          print(f"  Observations with detection_geometry=None (no match): {null_geo_count}")
+
+          errors = []
+          if missing_key:
+              errors.append(f"FAIL: {len(missing_key)} observations missing detection_geometry key")
+          if total > 0 and matched == 0:
+              errors.append(f"FAIL: geometry_matched=0 despite {total} observations")
+          if total > 0 and fraction == 0.0:
+              errors.append(
+                  "FAIL: geo_coverage_fraction=0.0 — Stage 1c geometry was not propagated. "
+                  "Check that filtered candidates carry detection_geometry with non-null values."
+              )
+
+          if errors:
+              for e in errors:
+                  print(e)
+              sys.exit(1)
+
+          print(f"\nPASS: geo_coverage_fraction={fraction:.4f}  "
+                f"populated={populated}/{total}  matched={matched}")
+          PY
+
+      - name: Upload smoke artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: geometry-propagation-smoke-${{ github.run_id }}
+          path: /tmp/smoke_out/
+          retention-days: 14
