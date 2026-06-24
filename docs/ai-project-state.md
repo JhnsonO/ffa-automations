@@ -269,7 +269,7 @@ Retain raw audit evidence only.
 
 ## Active gate and next action
 
-**STAGE 2 TIER A EXPERIMENTAL ANCHOR VISUAL REVIEW — AWAITING TRACK-QUALITY DECISION**
+**STAGE 2 TIER A EXPERIMENTAL ANCHOR HUMAN ADJUDICATION — AWAITING LABELS**
 
 ### Run 28087760893 — decision-gate outcome
 
@@ -343,8 +343,31 @@ overlays (tracklet ID, frame, yaw/pitch, conf, anchor_strength), metrics strip, 
 
 No changes to: filtering, radii, linking, thresholds, renderer, or runtime behaviour.
 
-**Next action:** Dispatch `360-stage2-tier-a-anchor-review` and paste artifact.
-Review `tier_a_anchor_review.png`. Complete verdict field for each anchor.
+**High-resolution adjudication pack — DISPATCHED — UNVERIFIED**
+
+- `ball_tracker/stage2_tier_a_adjudication_pack.py` (commit 0717e58)
+- `.github/workflows/360-stage2-tier-a-adjudication.yml` (commit 30107a3)
+- Workflow: `360-stage2-tier-a-adjudication` — DISPATCHED — UNVERIFIED
+
+Inputs: `tracklets_tier_a_experimental.json` (latest tier-a-experimental-* artifact), source equirect video.
+Outputs:
+- `tier_a_anchor_adjudication.pdf` — paginated review pack, one page per anchor
+- `tier_a_anchor_adjudication.png` — PNG contact sheet
+- `tier_a_anchor_adjudication.csv` — one row per anchor; verdict column blank
+- `tier_a_anchor_adjudication_manifest.json` — anchor to source frames mapping
+
+Per-anchor page (3 rows: EARLY / MID / LATE):
+  Context panel: full 110 FoV perspective crop at 960x540 (native 1280x720 downscaled).
+  Zoom panel: 300px-radius window centred on candidate pixel, upscaled 2x to 600x600 (nearest-neighbour).
+  Crosshair at candidate; orange bbox where detection_geometry.bbox_xyxy present.
+  Overlaid: tracklet ID, frame, yaw/pitch, conf, anchor strength, bbox dimensions.
+  Verdict field: [ ] likely ball  [ ] likely false positive  [ ] unclear
+  Metrics: frame span, first/last frame, anchor_strength, sh, net_disp, mean_conf.
+
+No automatic verdicts. No changes to filtering, radii, thresholds, linking, renderer, Stage 1, 1b, or 2.
+
+**Next action:** Paste artifact tier-a-adjudication-*.
+Review each anchor page. Complete verdict column in tier_a_anchor_adjudication.csv.
 Decision: track-quality gate — accept, reject, or revise Tier A set.
 
 Reviewed suppression candidates (Tier A evidence, no runtime suppression approved):
@@ -385,6 +408,7 @@ No changes to: filtering, thresholds, tracklet status, Stage 1, Stage 1b, Stage 
 
 ## Compact change log
 
+- **2026-06-24:** High-res Tier A adjudication pack built and dispatched: stage2_tier_a_adjudication_pack.py + 360-stage2-tier-a-adjudication.yml. Context 960x540 + zoom 600x600 centred on candidate, bbox overlay, csv + manifest. Gate: AWAITING LABELS.
 - **2026-06-24:** Tier A anchor visual evidence pack built and dispatched: `stage2_tier_a_anchor_review.py` + `360-stage2-tier-a-anchor-review.yml`. One page per anchor (early/mid/late frames, overlays, verdict field). Gate: STAGE 2 TIER A EXPERIMENTAL ANCHOR VISUAL REVIEW — AWAITING TRACK-QUALITY DECISION.
 - **2026-06-24:** T0275/T0334/T0394 reviewed as false associations (not credible ball tracks). Tier A safety review cleared. Stage 2 Tier A experimental output path built and dispatched: `stage2_tier_a_experimental_output.py` + `360-stage2-tier-a-experimental.yml`. Outputs: stage1_candidates_tier_a_experimental.json, tracklets_tier_a_experimental.json, gaps_tier_a_experimental.json, review pack + counts. Gate: STAGE 2 TIER A EXPERIMENTAL OUTPUT REVIEW — AWAITING TRACK-QUALITY DECISION.
 - **2026-06-24:** Outside-Tier-A motion review dispatched for T0275/T0334/T0394. Comparator updated with TIER_A_ORIGIN_IDS reclassification and genuine-motion denominator (commit `2de4097`). Review script + workflow added (commits `260fd54`, `fb14bf8`). Safety review cleared (see above).
