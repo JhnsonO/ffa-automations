@@ -1,0 +1,195 @@
+name: 360 Stage 1 Tier A Static-Location DRY-RUN
+
+# DRY-RUN EXPERIMENT ONLY.
+# Measures whether removing reviewed Tier A fixed-scene false-positive
+# locations materially improves Stage 2 input quality.
+# Does NOT modify run_tracker, Stage 1b, Stage 2 linking logic, renderer,
+# YOLO thresholds, or any live workflow behaviour. Approves NO active suppression.
+
+on:
+  push:
+    branches:
+      - 'run/tier-a-dry-run-*'
+  workflow_dispatch:
+
+jobs:
+  tier-a-dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0 aria2
+          pip install --quiet 'numpy<2' pillow opencv-python-headless requests
+
+      - name: Preflight - verify GH_PAT can read Actions artifacts
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, sys, json
+          token = os.environ.get("GH_PAT", "")
+          if not token:
+              print("FATAL: GH_PAT secret is empty or not set")
+              print("FIX: add a classic PAT with repo scope (or fine-grained PAT with Actions read) as GH_PAT in repo secrets")
+              sys.exit(1)
+          try:
+              req = urllib.request.Request(
+                  "https://api.github.com/user",
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+              with urllib.request.urlopen(req) as r:
+                  user_data = json.loads(r.read())
+              print(f"Token auth OK: login={user_data.get('login','unknown')}")
+          except urllib.error.HTTPError as e:
+              print(f"FATAL: GH_PAT failed /user check: HTTP {e.code}")
+              sys.exit(1)
+          try:
+              req2 = urllib.request.Request(
+                  "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7841528502",
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+              with urllib.request.urlopen(req2) as r2:
+                  art = json.loads(r2.read())
+              print(f"Artifact metadata OK: name={art.get('name')}, expired={art.get('expired')}")
+          except urllib.error.HTTPError as e:
+              print(f"FATAL: GH_PAT cannot read artifact 7841528502: HTTP {e.code}")
+              sys.exit(1)
+          print("Preflight PASSED")
+          PY
+
+      - name: Download Stage 1b-quarantined candidates (artifact 7841528502)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p /tmp/input
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error, zipfile, io, sys
+          token = os.environ["GH_PAT"]
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          opener = urllib.request.build_opener(NoRedirect())
+          req = urllib.request.Request(
+              "https://api.github.com/repos/JhnsonO/ffa-automations/actions/artifacts/7841528502/zip",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          try:
+              opener.open(req); blob_url = None
+          except urllib.error.HTTPError as redir:
+              blob_url = redir.headers.get("Location")
+          if not blob_url:
+              print("FATAL: no redirect location for artifact zip"); sys.exit(1)
+          with urllib.request.urlopen(urllib.request.Request(blob_url)) as r:
+              data = r.read()
+          print(f"Downloaded artifact: {len(data)} bytes")
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              z.extractall("/tmp/input")
+          print("Extracted:", os.listdir("/tmp/input"))
+          PY
+          ls -lh /tmp/input/
+
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - << 'PY'
+          import json, urllib.request, os
+          token_data = json.loads(os.environ["YOUTUBE_TOKEN"])
+          creds_data = json.loads(os.environ["YOUTUBE_CREDENTIALS"])
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
+          r = urllib.request.urlopen(urllib.request.Request(token_uri, data=payload,
+              headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
+          open("/tmp/drive_access_token.txt", "w").write(tok["access_token"])
+          print(f"Drive token OK (expires_in={tok.get('expires_in')}s)")
+          PY
+
+      - name: Download hotspot map from Drive
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token.txt)
+          aria2c -q -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/input --out=hotspot_map.json \
+            "https://www.googleapis.com/drive/v3/files/1TNZvN7OLrMurAjACTQY9ytEzZWwIeF0M?alt=media"
+          ls -lh /tmp/input/hotspot_map.json
+
+      # ── Stage 2 ORIGINAL arm — also produces tracklets for the report ──────────
+      - name: Stage 2 linker on ORIGINAL quarantined candidates
+        run: |
+          mkdir -p /tmp/s2_original
+          python3 ball_tracker/stage2_temporal_link.py \
+            --stage1-candidates /tmp/input/stage1_candidates_quarantined.json \
+            --hotspot-map       /tmp/input/hotspot_map.json \
+            --output-dir        /tmp/s2_original
+          ls -lh /tmp/s2_original/
+
+      - name: Build repeated-static report (cluster centres + members)
+        run: |
+          mkdir -p /tmp/report
+          python3 ball_tracker/stage2_repeated_static_audit.py \
+            --tracklets  /tmp/s2_original/tracklets.json \
+            --output-dir /tmp/report
+          ls -lh /tmp/report/
+
+      # ── Tier A dry-run filter ─────────────────────────────────────────────────
+      - name: Apply Tier A discovered-static DRY-RUN filter
+        run: |
+          mkdir -p /tmp/dryrun
+          python3 ball_tracker/stage1_tier_a_dry_run_filter.py \
+            --stage1-candidates       /tmp/input/stage1_candidates_quarantined.json \
+            --repeated-static-report  /tmp/report/stage2_repeated_static_report.json \
+            --output-dir              /tmp/dryrun
+          ls -lh /tmp/dryrun/
+
+      # ── Stage 2 DRY-RUN arm ───────────────────────────────────────────────────
+      - name: Stage 2 linker on Tier A DRY-RUN candidates
+        run: |
+          mkdir -p /tmp/s2_dryrun
+          python3 ball_tracker/stage2_temporal_link.py \
+            --stage1-candidates /tmp/dryrun/stage1_candidates_tier_a_dry_run.json \
+            --hotspot-map       /tmp/input/hotspot_map.json \
+            --output-dir        /tmp/s2_dryrun
+          ls -lh /tmp/s2_dryrun/
+
+      # ── Comparison ────────────────────────────────────────────────────────────
+      - name: Compare original vs dry-run Stage 2 outputs
+        run: |
+          mkdir -p /tmp/compare
+          python3 ball_tracker/stage2_tier_a_dry_run_compare.py \
+            --original-tracklets /tmp/s2_original/tracklets.json \
+            --dryrun-tracklets   /tmp/s2_dryrun/tracklets.json \
+            --tier-a-locations   /tmp/dryrun/tier_a_locations.json \
+            --output-dir         /tmp/compare
+          cat /tmp/compare/tier_a_dry_run_stage2_comparison.txt
+
+      - name: Collect all outputs
+        run: |
+          mkdir -p final_output
+          cp /tmp/dryrun/stage1_candidates_tier_a_dry_run.json final_output/ || echo "WARN: dry-run candidates missing"
+          cp /tmp/dryrun/tier_a_removed_audit.json             final_output/ || echo "WARN: removed audit missing"
+          cp /tmp/dryrun/tier_a_dry_run_summary.json           final_output/ || echo "WARN: dry-run summary missing"
+          cp /tmp/dryrun/tier_a_locations.json                 final_output/ || echo "WARN: locations missing"
+          cp /tmp/s2_original/tracklets.json                   final_output/stage2_original_tracklets.json || echo "WARN: original tracklets missing"
+          cp /tmp/s2_dryrun/tracklets.json                     final_output/stage2_dryrun_tracklets.json   || echo "WARN: dry-run tracklets missing"
+          cp /tmp/report/stage2_repeated_static_report.json    final_output/ || echo "WARN: repeated-static report missing"
+          cp /tmp/compare/tier_a_dry_run_stage2_comparison.json final_output/ || echo "WARN: comparison json missing"
+          cp /tmp/compare/tier_a_dry_run_stage2_comparison.txt  final_output/ || echo "WARN: comparison txt missing"
+          echo "=== final_output ==="
+          ls -lh final_output/
+
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-a-dry-run-${{ github.run_id }}
+          path: final_output/
+          retention-days: 30
