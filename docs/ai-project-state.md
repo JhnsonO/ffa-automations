@@ -152,7 +152,7 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 
 ## Active gate and next action
 
-### PHASE A — STATUS: FOV FIX VERIFICATION IN PROGRESS
+### PHASE A — STATUS: COMPLETE ✓
 
 **What has been pushed (verified):**
 - `ball_tracker/render_segment.py` — local wide fallback FSM patch (5 hunks, commit `053db06e`)
@@ -167,14 +167,19 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
   - Local hold: PASS. Zoom smooth: PASS. No pitch-centre snap: PASS.
   - Defect: HUD FOV=120.0 (workflow default `'120'` overrode code constant). Fixed commit `51d2741`.
 
-**Active dispatch:**
-- Render FOV verification: run `28152280742` — DISPATCHED — UNVERIFIED (frames 800–1000, fallback_fov=130)
+**Renderer — VISUALLY ACCEPTED (25 June 2026):**
+- Render FOV verification: run `28152280742`, artifact `7870796514` — REVIEWED (ChatGPT, 200 frames).
+  - FOV reaches 130.0°: PASS
+  - Local hold on loss: PASS
+  - No pitch-centre snap: PASS
+  - Zoom-out, wide hold, reacquisition, FOLLOW handoff: PASS
+  - Do not modify `render_segment.py` unless a regression is found.
 
-**Acceptance criteria remaining:**
-1. HUD confirms FOV reaches 130.0°
-2. Local hold behaviour unchanged
-3. No snap on loss or reacquisition
-4. On pass → Phase A COMPLETE → Phase B unlocked
+**Loss window detector — VERIFIED locally (25 June 2026):**
+- 6/6 unit tests pass (all shapes: bare list, list-under-frames, dict-under-frames).
+- Detector run on Stage 1b quarantined candidates: 434 windows across 3,597 frames, all `bridgeable` (430 short, 4 long ≥30f: W0019 56f, W0023 32f, W0055 74f, W0057 32f).
+
+**Phase A is COMPLETE. Phase B is unlocked.**
 
 ### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE (after Phase A accepted)
 
@@ -201,6 +206,7 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 
 ## Compact change log
 
+- **2026-06-25 (session 4):** Phase A COMPLETE — renderer FOV=130 accepted, loss-window detector 6/6 tests + Stage 1b run verified locally. Phase B unlocked.
 - **2026-06-25 (session 3):** Phase A visual review complete; fallback_fov workflow default fixed 120→130 (commit `51d2741`); FOV verification run `28152280742` dispatched.
 - **2026-06-25 (session 2):** Phase A code pushed: `render_segment.py` local wide fallback (5-hunk patch), `loss_window_detector.py` with dict-keyed Stage 1 shape support (6/6 tests), `360-loss-window-detector.yml` workflow. Two runs dispatched unverified: loss-window `28136111246`, render-segment `28135812487`.
 - **2026-06-25:** Architecture redesigned; pragmatic hybrid model adopted; Phase A+B scope locked; VLM-as-targeted-detector with backtracking cost model; CLAUDE.md updated.
