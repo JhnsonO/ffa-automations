@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 25 June 2026 — Phase A visual review complete (PASS with one fix); fallback_fov workflow default raised 120→130; verification render dispatched.
+**Last reconciled:** 25 June 2026 — Phase B merged to main; resolver workflow dispatched (UNVERIFIED).
 
 ## Start here
 
