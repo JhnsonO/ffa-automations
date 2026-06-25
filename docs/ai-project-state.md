@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 25 June 2026 — Phase B merged to main; resolver workflow dispatched (UNVERIFIED).
+**Last reconciled:** 25 June 2026 — stable_frames patched 2→1 (commit 7db131e); resolver run 28162176817 DISPATCHED — UNVERIFIED.
 
 ## Start here
 
@@ -223,6 +223,7 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 
 ## Compact change log
 
+- **2026-06-25 (session 5):** stable_frames patched 2→1 in ResolverConfig (commit 7db131e); resolver dispatched run 28162176817 DISPATCHED — UNVERIFIED.
 - **2026-06-25 (session 4):** Phase A COMPLETE — renderer FOV=130 accepted, loss-window detector 6/6 tests + Stage 1b run verified locally. Phase B unlocked.
 - **2026-06-25 (session 3):** Phase A visual review complete; fallback_fov workflow default fixed 120→130 (commit `51d2741`); FOV verification run `28152280742` dispatched.
 - **2026-06-25 (session 2):** Phase A code pushed: `render_segment.py` local wide fallback (5-hunk patch), `loss_window_detector.py` with dict-keyed Stage 1 shape support (6/6 tests), `360-loss-window-detector.yml` workflow. Two runs dispatched unverified: loss-window `28136111246`, render-segment `28135812487`.
