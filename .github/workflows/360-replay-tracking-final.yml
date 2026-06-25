@@ -1,0 +1,97 @@
+name: 360 Replay Tracking Final
+
+on:
+  workflow_dispatch:
+    inputs:
+      tracking_file_id:
+        description: 'Google Drive file ID for tracking.json'
+        required: true
+      repairs_file_id:
+        description: 'Google Drive file ID for bidirectional_repairs.json'
+        required: true
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Install dependencies
+        run: pip install --break-system-packages google-auth google-auth-oauthlib google-api-python-client
+
+      - name: Refresh Drive token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 << 'PY'
+          import json, urllib.request as _req
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          client_id     = token_data.get('client_id') or creds_data['installed']['client_id']
+          client_secret = token_data.get('client_secret') or creds_data['installed']['client_secret']
+          refresh_token = token_data['refresh_token']
+          token_uri     = token_data.get('token_uri', 'https://oauth2.googleapis.com/token')
+          payload = json.dumps({'client_id': client_id, 'client_secret': client_secret,
+                                'refresh_token': refresh_token, 'grant_type': 'refresh_token'}).encode()
+          r = _req.urlopen(_req.Request(token_uri, data=payload,
+                           headers={'Content-Type': 'application/json'}, method='POST'))
+          tok = json.loads(r.read())
+          if 'access_token' not in tok:
+              raise RuntimeError('Token refresh failed: ' + str(tok))
+          open('/tmp/drive_token.txt', 'w').write(tok['access_token'])
+          print('Token OK')
+          PY
+
+      - name: Download tracking.json
+        env:
+          TRACKING_FILE_ID: ${{ github.event.inputs.tracking_file_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          mkdir -p work
+          aria2c -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=work --out=tracking.json \
+            "https://www.googleapis.com/drive/v3/files/$TRACKING_FILE_ID?alt=media"
+          du -sh work/tracking.json
+
+      - name: Download bidirectional_repairs.json
+        env:
+          REPAIRS_FILE_ID: ${{ github.event.inputs.repairs_file_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          aria2c -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=work --out=bidirectional_repairs.json \
+            "https://www.googleapis.com/drive/v3/files/$REPAIRS_FILE_ID?alt=media"
+          du -sh work/bidirectional_repairs.json
+
+      - name: Run replay_tracking_final
+        run: |
+          python3 ball_tracker/replay_tracking_final.py \
+            --tracking work/tracking.json \
+            --repairs work/bidirectional_repairs.json \
+            --output work/tracking_repaired.json
+          python3 << 'PY'
+          import json
+          data = json.load(open('work/tracking_repaired.json'))
+          frames = data.get('frames', {})
+          overridden = sum(1 for f in frames.values() if f.get('phase_b_override') is True)
+          total = len(frames)
+          print(f"Total frames: {total}")
+          print(f"Phase B overrides applied: {overridden}")
+          PY
+
+      - name: Upload tracking_repaired.json artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracking-repaired-${{ github.run_id }}
+          path: work/tracking_repaired.json
+          retention-days: 14
