@@ -27,7 +27,7 @@ class ResolverConfig:
     fence_yaw: float = -77.4
     fence_pitch: float = -3.9
     fence_radius_deg: float = 5.0
-    stable_frames: int = 2
+    stable_frames: int = 1
     anchor_match_deg: float = 6.0
     max_yaw_step_deg: float = 3.0
     max_pitch_step_deg: float = 1.5
