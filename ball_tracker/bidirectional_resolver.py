@@ -143,6 +143,20 @@ def is_quality_candidate(candidate: Mapping[str, Any], config: ResolverConfig) -
     )
 
 
+def is_anchor_quality_candidate(candidate: Mapping[str, Any], config: ResolverConfig) -> bool:
+    """Anchor quality gate for selection. Geometry is non-blocking when null (no data).
+    Stage 1b carries ~8% null-geometry rows from Stage 0 reuse; these are acceptable
+    anchors when confidence and fence-zone checks pass."""
+    geometry = _candidate_geometry(candidate)
+    geometry_ok = geometry is None or geometry_is_plausible(candidate, config)
+    return (
+        _candidate_point(candidate) is not None
+        and _candidate_confidence(candidate) >= config.anchor_confidence
+        and geometry_ok
+        and not is_in_fence_zone(candidate, config)
+    )
+
+
 def _is_trace_candidate(candidate: Mapping[str, Any], config: ResolverConfig) -> bool:
     return (
         _candidate_point(candidate) is not None
@@ -220,7 +234,7 @@ def _select_anchor_candidate(
     ranked: list[tuple[float, dict[str, Any]]] = []
 
     for candidate in candidates:
-        if not is_quality_candidate(candidate, config):
+        if not is_anchor_quality_candidate(candidate, config):
             continue
         point = _candidate_point(candidate)
         assert point is not None
@@ -254,7 +268,7 @@ def _stable_anchor(
         options = [
             candidate
             for candidate in frame_candidates.get(frame, [])
-            if is_quality_candidate(candidate, config)
+            if is_anchor_quality_candidate(candidate, config)
             and _within_corridor(candidate, previous, abs(frame - previous_frame), config)
         ]
         if not options:
