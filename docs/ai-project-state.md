@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 25 June 2026 — stable_frames patched 2→1 (commit 7db131e); resolver run 28162176817 DISPATCHED — UNVERIFIED.
+**Last reconciled:** 25 June 2026 — anchor interpolation added (commit a4046c1); resolver run 28167012616 VERIFIED: 572 repair_frames, 193 fully resolved windows, 241 queued (237 anchor-disagreement, 4 long).
 
 ## Start here
 
@@ -223,7 +223,8 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 
 ## Compact change log
 
-- **2026-06-25 (session 5):** stable_frames patched 2→1 in ResolverConfig (commit 7db131e); resolver dispatched run 28162176817 DISPATCHED — UNVERIFIED.
+- **2026-06-25 (session 6):** anchor-to-anchor linear interpolation added to resolve_window (commit a4046c1); resolver run 28167012616 VERIFIED: 572 repair_frames across 193 windows (source=anchor_interpolation). 237 windows still no_corridor (anchors disagree >1.25°), 4 long_window. Next: inspect sample repairs, then decide on VLM pass for queue.
+- **2026-06-25 (session 5):** stable_frames patched 2→1 in ResolverConfig (commit 7db131e); run 28162176817: 0 repairs — root cause was no gap-frame candidates (all 434 = no_corridor_supported_candidates).
 - **2026-06-25 (session 4):** Phase A COMPLETE — renderer FOV=130 accepted, loss-window detector 6/6 tests + Stage 1b run verified locally. Phase B unlocked.
 - **2026-06-25 (session 3):** Phase A visual review complete; fallback_fov workflow default fixed 120→130 (commit `51d2741`); FOV verification run `28152280742` dispatched.
 - **2026-06-25 (session 2):** Phase A code pushed: `render_segment.py` local wide fallback (5-hunk patch), `loss_window_detector.py` with dict-keyed Stage 1 shape support (6/6 tests), `360-loss-window-detector.yml` workflow. Two runs dispatched unverified: loss-window `28136111246`, render-segment `28135812487`.
