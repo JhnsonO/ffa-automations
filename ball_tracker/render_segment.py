@@ -257,7 +257,9 @@ class SmoothZoomFallbackFSM:
     ZOOMING_IN  : ball reacquired → t reverses 1→0, camera returns to follow pose
     """
 
-    def __init__(self, fallback_yaw, fallback_pitch, fallback_fov, fallback_roll):
+    def __init__(self, fallback_yaw, fallback_pitch, fallback_fov, fallback_roll,
+                 reacquire_blend_frames=20):
+        self.reacquire_blend_frames = max(1, reacquire_blend_frames)
         self.mode              = RENDER_FOLLOW
         self.hold_counter      = 0
         self.reacquire_streak  = 0
@@ -290,7 +292,7 @@ class SmoothZoomFallbackFSM:
     def update(self, ema_yaw, ema_pitch, tracker_state, best_score):
         confirmed = (best_score is not None)
         dt_out = 1.0 / FALLBACK_ZOOM_FRAMES
-        dt_in  = 1.0 / FALLBACK_ZOOM_FRAMES  # same speed back
+        dt_in  = 1.0 / self.reacquire_blend_frames
 
         if self.mode == RENDER_FOLLOW:
             if confirmed:
@@ -402,7 +404,8 @@ class SmoothZoomFallbackFSM:
 # ---------------------------------------------------------------------------
 def render_segment(equirect_path, tracking_path, start_frame, end_frame,
                    output_clean, output_debug,
-                   fallback_yaw, fallback_pitch, fallback_fov, fallback_roll):
+                   fallback_yaw, fallback_pitch, fallback_fov, fallback_roll,
+                   reacquire_blend_frames=20):
 
     print("[render v6] Loading tracking.json...")
     with open(tracking_path) as f:
@@ -446,7 +449,8 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
     ema_yaw_ref = 0.0
     prev_best_score = None
 
-    fsm = SmoothZoomFallbackFSM(fallback_yaw, fallback_pitch, fallback_fov, fallback_roll)
+    fsm = SmoothZoomFallbackFSM(fallback_yaw, fallback_pitch, fallback_fov, fallback_roll,
+                                reacquire_blend_frames=reacquire_blend_frames)
     rendered = 0
 
     for frame_idx in range(start_frame, end_frame):
@@ -539,6 +543,11 @@ if __name__ == "__main__":
     parser.add_argument("--fallback-pitch",  type=float, default=FALLBACK_PITCH)
     parser.add_argument("--fallback-fov",    type=float, default=FALLBACK_FOV)
     parser.add_argument("--fallback-roll",   type=float, default=FALLBACK_ROLL)
+    parser.add_argument(
+        "--reacquire-blend-frames",
+        type=int,
+        default=20,
+    )
     args = parser.parse_args()
 
     render_segment(
@@ -552,5 +561,7 @@ if __name__ == "__main__":
         fallback_pitch=args.fallback_pitch,
         fallback_fov=args.fallback_fov,
         fallback_roll=args.fallback_roll,
+        reacquire_blend_frames=args.reacquire_blend_frames,
     )
+
 
