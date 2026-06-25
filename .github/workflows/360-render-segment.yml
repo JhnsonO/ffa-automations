@@ -28,9 +28,9 @@ on:
         required: false
         default: '5'
       fallback_fov:
-        description: 'Wide view target FOV (degrees, 120 recommended)'
+        description: 'Wide view target FOV (degrees, 130 recommended)'
         required: false
-        default: '120'
+        default: '130'
 
 jobs:
   render:
