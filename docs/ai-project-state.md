@@ -193,10 +193,12 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 - Resolver live run against Stage 1b candidates: **BLOCKED** — candidates and loss_windows.json are Drive/artifact only, not in repo. Must dispatch workflow on branch or provide Drive file IDs.
 
 **Next actions (in order):**
-1. Merge `phase-b-recovery` → `main` (or dispatch resolver workflow on branch with existing Drive file ID `19feQa2zx3YcqU4LIP6MNOG_q8vyi8TmJ`).
-2. Inspect `bidirectional_repairs.json` + `ai_review_queue.json` summary counts.
-3. Visual/count approval → proceed to pack generation and VLM dry-run.
-4. Camera path wiring only after Johnson visual approval of `tracking_final.json` output.
+1. Dispatch `360-replay-tracking-final.yml` with tracking.json Drive ID + `bidirectional_repairs.json` Drive ID (`1cWfx2lQx8GtvCobrlW-4X0bPXHUadvJ4`).
+   - **tracking.json Drive ID:** Johnson to confirm (source: GitHub artifact run 27937033177 / artifact 7786231067).
+2. Inspect `tracking_repaired.json` artifact — verify `phase_b_override` count matches 572 repair frames.
+3. Run `360-render-segment.yml` twice — original `tracking.json` and `tracking_repaired.json` — to produce A/B debug clips.
+4. Visual gate: Johnson inspects A/B clips around W0001 f125–126, unresolved windows, and repaired→unresolved transition boundaries.
+5. Camera path wiring only after visual approval.
 
 ### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE (original scope)
 
@@ -223,6 +225,7 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 
 ## Compact change log
 
+- **2026-06-25 (session 8):** `360-replay-tracking-final.yml` pushed (commit 83bcc38). Inputs: tracking.json Drive ID + bidirectional_repairs.json Drive ID → outputs tracking_repaired.json artifact. DISPATCHED — UNVERIFIED (awaiting tracking.json Drive ID from Johnson).
 - **2026-06-25 (session 7):** replay_tracking_final.py pushed by ChatGPT (commit ced93d1), verified by Claude — syntax OK, tracker_state never mutated, best_score only overridden when null, detection appended not replaced, provenance preserved. No workflow yet. Next: build 360-replay-tracking-final.yml + A/B render (original vs repaired) for visual approval of repaired windows, unresolved windows, and transition boundaries.
 - **2026-06-25 (session 6):** anchor-to-anchor linear interpolation added to resolve_window (commit a4046c1); resolver run 28167012616 VERIFIED: 572 repair_frames across 193 windows (source=anchor_interpolation). 237 windows still no_corridor (anchors disagree >1.25°), 4 long_window.
 - **2026-06-25 (session 5):** stable_frames patched 2→1 in ResolverConfig (commit 7db131e); run 28162176817: 0 repairs — root cause was no gap-frame candidates (all 434 = no_corridor_supported_candidates).
@@ -233,3 +236,4 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 - **2026-06-24:** FootAndBall benchmark rejected; backward-anchor propagation and football-YOLO adapter built (experiments only).
 - **2026-06-24:** Candidate-fusion, pose selection, temporal ball-likeness score all rejected.
 - **2026-06-24:** Geometry propagation verified (run `28107675223`).
+
