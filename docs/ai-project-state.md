@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 25 June 2026 (session 10, close) — Phase 2 VISUALLY APPROVED. 20-frame reacquisition blend accepted. Frame-label offset noted (visual transition ~f892–917 vs stated f867–887 — render-window offset, not a blend failure). Next: Phase 4 (pitch polygon / fence suppression).
+**Last reconciled:** 25 June 2026 (session 11) — Phase 4 fence suppression module built and verified. 5/5 tests pass. No production wiring yet.
 
 ## Start here
 
@@ -238,6 +238,24 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 **Do not touch:** `run_tracker.py`, `render_segment.py`, Stage 1/1b, `bidirectional_resolver.py`, `replay_tracking_final.py`
 
 
+### PHASE 4 — STATUS: MODULE BUILT, TESTS PASSING ✓
+
+**Scope this sprint:** suppression-only module, no production wiring.
+
+**Files pushed (commit `deb3a12`):**
+- `ball_tracker/pitch_geometry.py` — `PitchGeometry(config_path).is_suppressed(yaw, pitch) → bool`
+- `ball_tracker/configs/geometry_aylestone.json` — fence zone: yaw −77.4° ±6°, pitch −3.9° ±5°
+- `ball_tracker/tests/test_pitch_geometry.py` — 5/5 tests pass (verified locally)
+
+**Test results (local):** 5/5 PASS — centre, outside, yaw edges, pitch edges, second zone.
+
+**Not yet done:**
+- Playable polygon scoring (`in_play` / `aerial`) — deferred until geometry calibration data available
+- Wiring into `run_tracker.py` Stage 1b candidate scoring — next sprint
+- Additional suppression zones (tree, mount) — add when identified
+
+**Next:** wire `pitch_geometry.py` into Stage 1b candidate filter — candidates inside a suppression zone get `weighted_conf` zeroed or flagged `suppressed` before tracker sees them. Requires explicit approval before wiring.
+
 ### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE (original scope)
 
 **ChatGPT produces:**
@@ -263,6 +281,7 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 ## Compact change log
 
+- **2026-06-25 (session 11):** Phase 4 fence suppression module built. pitch_geometry.py + geometry_aylestone.json + tests pushed (commit deb3a12). 5/5 tests pass locally. No production wiring.
 - **2026-06-25 (session 10):** Phase 2 COMPLETE. Corrected render run 28201650371 (f837–927) reviewed by ChatGPT — APPROVED. 20-frame blend smooth, no snap. Frame-label offset noted (~f892–917 visible vs stated f867–887) — render-window artefact, not failure. Phase 4 (pitch polygon / fence suppression) is next sprint, ahead of Phase 3.
 - **2026-06-25 (session 9):** ChatGPT reviewed Render A f200–700 — Phase B rejected (replay wrote confirming detections, caused oscillation). Phase B paused. Phase 2 opened: --reacquire-blend-frames 20 added to render_segment.py (commit c1599f58) + workflow (commit f5546057). Validation render f600–750 dispatched — run 28187153168, artifact 7885371513 — superseded (wrong range).
 - **2026-06-25 (session 8):** Replay run 28170181136 VERIFIED (567 overrides). A/B renders: Clip 1 f100–250 APPROVED (W0001 repairs smooth). Clip 2 f220–380 dispatched — superseded by Phase B rejection.
@@ -276,5 +295,6 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 - **2026-06-24:** FootAndBall benchmark rejected; backward-anchor propagation and football-YOLO adapter built (experiments only).
 - **2026-06-24:** Candidate-fusion, pose selection, temporal ball-likeness score all rejected.
 - **2026-06-24:** Geometry propagation verified (run `28107675223`).
+
 
 
