@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 25 June 2026 (session 9) — Clip 1 A/B approved. Clip 2 A/B (f220–380) dispatched, awaiting Johnson visual review. Phase B visual gate ~50% complete.
+**Last reconciled:** 25 June 2026 (session 9) — Phase 2 renderer change complete. Validation render f600–750 dispatched and VERIFIED (run 28187153168, artifact 7885371513). Awaiting ChatGPT visual review of f688 reacquisition snap.
 
 ## Start here
 
@@ -215,8 +215,20 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 - W0055: f635–708 (74f) — long_window
 - W0057: f717–748 (32f) — long_window
 
+**Phase B — STATUS: PAUSED**
+ChatGPT review found Phase B replay wrote repair frames as accepted detections/confirmations, causing renderer oscillation. Phase B must not modify best_score, tracker confirmation semantics, or FSM state through replay. Revisit later as non-confirming camera-target overlay only.
+
+**Phase 2 — STATUS: DISPATCHED — UNVERIFIED (visual)**
+- `--reacquire-blend-frames 20` added to `render_segment.py` (commit `c1599f58`) and workflow (commit `f5546057`).
+- Validation render: run `28187153168`, artifact `7885371513`, frames 600–750, original `tracking.json`.
+- **Next: ChatGPT visual review of artifact `7885371513`.**
+  - Accept: f688 reacquisition is a deliberate camera move, not a snap.
+  - Accept: FOLLOW→FOLLOW frames unchanged.
+  - Accept: wide fallback unchanged from Phase A baseline.
+- If approved → Phase 2 COMPLETE. Decide next: tune blend frames, or open Phase 3 (backward repair).
+
 **Next actions (in order):**
-1. Johnson reviews Clip 2 (f220–380) — wide fallback on W0019, repair→unresolved boundaries.
+1. Johnson downloads artifact `7885371513` and passes to ChatGPT for visual review. — wide fallback on W0019, repair→unresolved boundaries.
 2. If approved: Phase B visual gate COMPLETE.
 3. Decide: wire `tracking_repaired.json` into full session render, OR proceed to VLM pack generation for unresolved windows.
 4. Camera path wiring only after visual approval of full session render.
@@ -249,7 +261,8 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 
 ## Compact change log
 
-- **2026-06-25 (session 8):** Replay run 28170181136 VERIFIED (567 overrides). A/B renders: Clip 1 f100–250 APPROVED (W0001 repairs smooth). Clip 2 f220–380 dispatched (runs 28171828476/28171849205) — AWAITING Johnson visual review.
+- **2026-06-25 (session 9):** ChatGPT reviewed Render A f200–700 — Phase B rejected (replay wrote confirming detections, caused oscillation). Phase B paused. Phase 2 opened: --reacquire-blend-frames 20 added to render_segment.py (commit c1599f58) + workflow (commit f5546057). Validation render f600–750 dispatched — run 28187153168, artifact 7885371513 — VERIFIED success. Awaiting ChatGPT visual review.
+- **2026-06-25 (session 8):** Replay run 28170181136 VERIFIED (567 overrides). A/B renders: Clip 1 f100–250 APPROVED (W0001 repairs smooth). Clip 2 f220–380 dispatched — superseded by Phase B rejection.
 - **2026-06-25 (session 7):** replay_tracking_final.py pushed by ChatGPT (commit ced93d1), verified by Claude — syntax OK, tracker_state never mutated, best_score only overridden when null, detection appended not replaced, provenance preserved. No workflow yet. Next: build 360-replay-tracking-final.yml + A/B render (original vs repaired) for visual approval of repaired windows, unresolved windows, and transition boundaries.
 - **2026-06-25 (session 6):** anchor-to-anchor linear interpolation added to resolve_window (commit a4046c1); resolver run 28167012616 VERIFIED: 572 repair_frames across 193 windows (source=anchor_interpolation). 237 windows still no_corridor (anchors disagree >1.25°), 4 long_window.
 - **2026-06-25 (session 5):** stable_frames patched 2→1 in ResolverConfig (commit 7db131e); run 28162176817: 0 repairs — root cause was no gap-frame candidates (all 434 = no_corridor_supported_candidates).
