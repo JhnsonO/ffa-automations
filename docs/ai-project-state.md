@@ -181,7 +181,24 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 
 **Phase A is COMPLETE. Phase B is unlocked.**
 
-### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE (after Phase A accepted)
+### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE — STATUS: VERIFIED ON BRANCH ✓
+
+**Verified on `phase-b-recovery` branch — 25 June 2026:**
+- 7 Phase B files pushed by ChatGPT; verified by Claude against live repo and frozen boundaries.
+- Frozen files (run_tracker.py, render_segment.py, loss_window_detector.py, stage1_candidate_gen.py, stage1b_static_quarantine.py): SHA identical on branch vs main — NOT MODIFIED.
+- Unit tests: 8/8 pass (`pytest -q test_bidirectional_resolver.py test_detector_interface.py`).
+- `frame_candidates_from_payload`: accepts dict-keyed `frames` shape (Stage 1b contract) — PASS.
+- `tracking_merger.camera_wiring = "disabled"` — renderer NOT wired — PASS.
+- `vlm_backend` dry-run without `ANTHROPIC_API_KEY`: returns `uncertain`, no import error, no API call — PASS.
+- Resolver live run against Stage 1b candidates: **BLOCKED** — candidates and loss_windows.json are Drive/artifact only, not in repo. Must dispatch workflow on branch or provide Drive file IDs.
+
+**Next actions (in order):**
+1. Merge `phase-b-recovery` → `main` (or dispatch resolver workflow on branch with existing Drive file ID `19feQa2zx3YcqU4LIP6MNOG_q8vyi8TmJ`).
+2. Inspect `bidirectional_repairs.json` + `ai_review_queue.json` summary counts.
+3. Visual/count approval → proceed to pack generation and VLM dry-run.
+4. Camera path wiring only after Johnson visual approval of `tracking_final.json` output.
+
+### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE (original scope)
 
 **ChatGPT produces:**
 1. `ball_tracker/bidirectional_resolver.py` — forward + backward corridor traces, writes `bidirectional_repairs.json`
