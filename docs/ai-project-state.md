@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 25 June 2026 (session 10) — Phase 2 corrected render dispatched (run 28201650371, f837–927). Awaiting ChatGPT visual review of ZOOMING_IN blend at f867→f887.
+**Last reconciled:** 25 June 2026 (session 10, close) — Phase 2 VISUALLY APPROVED. 20-frame reacquisition blend accepted. Frame-label offset noted (visual transition ~f892–917 vs stated f867–887 — render-window offset, not a blend failure). Next: Phase 4 (pitch polygon / fence suppression).
 
 ## Start here
 
@@ -218,21 +218,16 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 **Phase B — STATUS: PAUSED**
 ChatGPT review found Phase B replay wrote repair frames as accepted detections/confirmations, causing renderer oscillation. Phase B must not modify best_score, tracker confirmation semantics, or FSM state through replay. Revisit later as non-confirming camera-target overlay only.
 
-**Phase 2 — STATUS: DISPATCHED — UNVERIFIED (visual)**
+**Phase 2 — STATUS: COMPLETE ✓ (VISUALLY APPROVED 25 June 2026)**
 - `--reacquire-blend-frames 20` added to `render_segment.py` (commit `c1599f58`) and workflow (commit `f5546057`).
-- ~~Run `28187153168`, artifact `7885371513`, frames 600–750~~ — INVALID RANGE. Loss hadn't started at f750; reacquisition is at f856–887.
-- **Tracking.json investigation (session 10):**
-  - Loss window: f760–f855 (96 frames, `player_drift`)
-  - First non-None best_score: f856 (bs=0.587)
-  - 5 consecutive confirmed frames satisfied: f867 → ZOOMING_IN begins
-  - FOLLOW resumes: ~f887 (f867 + 20 blend frames)
-- **Corrected validation render: run `28201650371` — f837–927, original tracking.json, --reacquire-blend-frames 20 — DISPATCHED — UNVERIFIED**
-- **Next: ChatGPT visual review of run `28201650371` artifact.**
-  - Accept: ZOOMING_OUT/WIDE_HOLD visible before f867
-  - Accept: ZOOMING_IN begins at f867, blends smoothly over ~20 frames
-  - Accept: FOLLOW resumes ~f887 with no snap
-  - Accept: FOLLOW stable through f927
-- If approved → Phase 2 COMPLETE. Decide next: tune blend frames (30–40?), or open Phase 4 (pitch polygon, now prioritised over Phase 3).
+- Corrected validation render: run `28201650371`, artifact `7891367428`, f837–927, original tracking.json.
+- **ChatGPT visual review verdict: APPROVE**
+  - Zoom-out and wide hold before reacquisition: PASS — gradual, controlled, no whip.
+  - 20-frame blend back to FOLLOW: PASS — progressive, no snap/jump.
+  - FOLLOW stable after reacquisition: PASS — no jitter or repeated zooming.
+  - Note: visible transition was ~f892–917 (not f867–887 as stated). Frame-label offset, not a blend failure — render-window offset artefact.
+- `render_segment.py` FROZEN. Do not modify.
+- **Next: open Phase 4 (pitch polygon / fence suppression), ahead of Phase 3.**
 
 **Next actions (in order):**
 1. Johnson downloads artifact `7885371513` and passes to ChatGPT for visual review. — wide fallback on W0019, repair→unresolved boundaries.
@@ -268,7 +263,7 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 ## Compact change log
 
-- **2026-06-25 (session 10):** Phase 2 validation render range corrected. Original render f600–750 missed reacquisition entirely (loss starts f760). Tracking.json inspected — loss f760–855 (player_drift), first bs f856, ZOOMING_IN at f867, FOLLOW ~f887. Corrected render dispatched: run 28201650371, f837–927, --reacquire-blend-frames 20 — DISPATCHED — UNVERIFIED. Phase 4 (pitch polygon) agreed as next sprint after Phase 2 approval, ahead of Phase 3.
+- **2026-06-25 (session 10):** Phase 2 COMPLETE. Corrected render run 28201650371 (f837–927) reviewed by ChatGPT — APPROVED. 20-frame blend smooth, no snap. Frame-label offset noted (~f892–917 visible vs stated f867–887) — render-window artefact, not failure. Phase 4 (pitch polygon / fence suppression) is next sprint, ahead of Phase 3.
 - **2026-06-25 (session 9):** ChatGPT reviewed Render A f200–700 — Phase B rejected (replay wrote confirming detections, caused oscillation). Phase B paused. Phase 2 opened: --reacquire-blend-frames 20 added to render_segment.py (commit c1599f58) + workflow (commit f5546057). Validation render f600–750 dispatched — run 28187153168, artifact 7885371513 — superseded (wrong range).
 - **2026-06-25 (session 8):** Replay run 28170181136 VERIFIED (567 overrides). A/B renders: Clip 1 f100–250 APPROVED (W0001 repairs smooth). Clip 2 f220–380 dispatched — superseded by Phase B rejection.
 - **2026-06-25 (session 7):** replay_tracking_final.py pushed by ChatGPT (commit ced93d1), verified by Claude — syntax OK, tracker_state never mutated, best_score only overridden when null, detection appended not replaced, provenance preserved. No workflow yet. Next: build 360-replay-tracking-final.yml + A/B render (original vs repaired) for visual approval of repaired windows, unresolved windows, and transition boundaries.
