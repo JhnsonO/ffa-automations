@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 25 June 2026 (session 11) — Phase 4 fence suppression module built and verified. 5/5 tests pass. No production wiring yet.
+**Last reconciled:** 25 June 2026 (session 11) — Phase 4 wired into run_tracker.py filter_candidates (commit c18ff51). Awaiting tracker run to verify fence suppression.
 
 ## Start here
 
@@ -254,7 +254,10 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 - Wiring into `run_tracker.py` Stage 1b candidate scoring — next sprint
 - Additional suppression zones (tree, mount) — add when identified
 
-**Next:** wire `pitch_geometry.py` into Stage 1b candidate filter — candidates inside a suppression zone get `weighted_conf` zeroed or flagged `suppressed` before tracker sees them. Requires explicit approval before wiring.
+**Also done:**
+- Wired into `run_tracker.py` `filter_candidates()` (commit `c18ff51`): `pitch_geo.is_suppressed()` check added after hotspot suppression block. Config loaded once after hotspot map build. Graceful no-op if config file absent.
+
+**Next:** dispatch a tracker run against the known fence-lock clip and verify `hotspot_suppression_count` increases and fence lock at yaw≈−77.4° no longer appears in tracking output.
 
 ### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE (original scope)
 
@@ -281,7 +284,7 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 ## Compact change log
 
-- **2026-06-25 (session 11):** Phase 4 fence suppression module built. pitch_geometry.py + geometry_aylestone.json + tests pushed (commit deb3a12). 5/5 tests pass locally. No production wiring.
+- **2026-06-25 (session 11):** Phase 4 WIRED. pitch_geometry.py + geometry_aylestone.json + tests (commit deb3a12, 5/5 pass). Wired into run_tracker.py filter_candidates (commit c18ff51). Awaiting tracker run to verify fence suppression at yaw≈−77.4°.
 - **2026-06-25 (session 10):** Phase 2 COMPLETE. Corrected render run 28201650371 (f837–927) reviewed by ChatGPT — APPROVED. 20-frame blend smooth, no snap. Frame-label offset noted (~f892–917 visible vs stated f867–887) — render-window artefact, not failure. Phase 4 (pitch polygon / fence suppression) is next sprint, ahead of Phase 3.
 - **2026-06-25 (session 9):** ChatGPT reviewed Render A f200–700 — Phase B rejected (replay wrote confirming detections, caused oscillation). Phase B paused. Phase 2 opened: --reacquire-blend-frames 20 added to render_segment.py (commit c1599f58) + workflow (commit f5546057). Validation render f600–750 dispatched — run 28187153168, artifact 7885371513 — superseded (wrong range).
 - **2026-06-25 (session 8):** Replay run 28170181136 VERIFIED (567 overrides). A/B renders: Clip 1 f100–250 APPROVED (W0001 repairs smooth). Clip 2 f220–380 dispatched — superseded by Phase B rejection.
