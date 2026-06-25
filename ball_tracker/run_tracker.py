@@ -49,6 +49,7 @@ import subprocess
 import cv2
 import numpy as np
 from filterpy.kalman import KalmanFilter
+from ball_tracker.pitch_geometry import PitchGeometry
 from ultralytics import YOLO
 
 # ---------------------------------------------------------------------------
@@ -555,6 +556,8 @@ def run_tracker(equirect_path, output_path, json_path,
 
     # Build hotspot map from sampled timestamps
     hotspots = build_static_hotspot_map(sampled_candidates)
+        _geo_config = os.path.join(os.path.dirname(__file__), "configs", "geometry_aylestone.json")
+        pitch_geo = PitchGeometry(_geo_config) if os.path.exists(_geo_config) else None
 
     print(f"\n[v12] Hotspot discovery complete. Found {len(hotspots)} hotspot(s):")
     confirmed_fence_hotspot = False
@@ -723,6 +726,10 @@ def run_tracker(equirect_path, output_path, json_path,
                     instr["rejection_reasons"]["pitch_hard_max"] += 1
                     continue
                 if is_hotspot_suppressed(yaw_d, pitch_d, hotspots):
+                    instr["hotspot_suppression_count"] += 1
+                    instr["rejection_reasons"]["hotspot"] += 1
+                    continue
+                if pitch_geo and pitch_geo.is_suppressed(yaw_d, pitch_d):
                     instr["hotspot_suppression_count"] += 1
                     instr["rejection_reasons"]["hotspot"] += 1
                     continue
