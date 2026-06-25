@@ -31,6 +31,10 @@ on:
         description: 'Wide view target FOV (degrees, 130 recommended)'
         required: false
         default: '130'
+      reacquire_blend_frames:
+        description: 'Frames for WIDE_FALLBACK→FOLLOW reacquisition blend'
+        required: false
+        default: '20'
 
 jobs:
   render:
@@ -127,6 +131,7 @@ jobs:
           FALLBACK_YAW: ${{ github.event.inputs.fallback_yaw }}
           FALLBACK_PITCH: ${{ github.event.inputs.fallback_pitch }}
           FALLBACK_FOV: ${{ github.event.inputs.fallback_fov }}
+          REACQUIRE_BLEND_FRAMES: ${{ github.event.inputs.reacquire_blend_frames }}
         run: |
           echo "--- Rendering frames $START_FRAME to $END_FRAME ---"
           mkdir -p render_output
@@ -139,7 +144,8 @@ jobs:
             --output-debug   render_output/render_debug.mp4 \
             --fallback-yaw   $FALLBACK_YAW \
             --fallback-pitch $FALLBACK_PITCH \
-            --fallback-fov   $FALLBACK_FOV
+            --fallback-fov   $FALLBACK_FOV \
+            --reacquire-blend-frames $REACQUIRE_BLEND_FRAMES
           ls -lh render_output/
 
       - name: Upload render outputs as artifact
@@ -212,5 +218,6 @@ jobs:
 
           print(f"\nAll outputs at: https://drive.google.com/drive/folders/{subfolder_id}")
           PY
+
 
 
