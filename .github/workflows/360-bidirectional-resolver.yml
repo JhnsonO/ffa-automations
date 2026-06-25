@@ -1,0 +1,102 @@
+name: 360 Bidirectional Resolver
+
+on:
+  workflow_dispatch:
+    inputs:
+      loss_windows_file_id:
+        description: 'Google Drive file ID for loss_windows.json'
+        required: true
+      stage1_candidates_file_id:
+        description: 'Google Drive file ID for stage1_candidates.json'
+        required: true
+        default: '19feQa2zx3YcqU4LIP6MNOG_q8vyi8TmJ'
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Install dependencies
+        run: pip install --break-system-packages google-auth google-auth-oauthlib google-api-python-client
+
+      - name: Refresh Drive token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 << 'PY'
+          import json, urllib.request as _req
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          client_id     = token_data.get('client_id') or creds_data['installed']['client_id']
+          client_secret = token_data.get('client_secret') or creds_data['installed']['client_secret']
+          refresh_token = token_data['refresh_token']
+          token_uri     = token_data.get('token_uri', 'https://oauth2.googleapis.com/token')
+          payload = json.dumps({'client_id': client_id, 'client_secret': client_secret,
+                                'refresh_token': refresh_token, 'grant_type': 'refresh_token'}).encode()
+          r = _req.urlopen(_req.Request(token_uri, data=payload,
+                           headers={'Content-Type': 'application/json'}, method='POST'))
+          tok = json.loads(r.read())
+          if 'access_token' not in tok:
+              raise RuntimeError('Token refresh failed: ' + str(tok))
+          open('/tmp/drive_token.txt', 'w').write(tok['access_token'])
+          print('Token OK')
+          PY
+
+      - name: Download loss_windows.json
+        env:
+          LOSS_WINDOWS_FILE_ID: ${{ github.event.inputs.loss_windows_file_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          mkdir -p work
+          aria2c -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=work --out=loss_windows.json \
+            "https://www.googleapis.com/drive/v3/files/$LOSS_WINDOWS_FILE_ID?alt=media"
+          du -sh work/loss_windows.json
+
+      - name: Download stage1_candidates.json
+        env:
+          CANDIDATES_FILE_ID: ${{ github.event.inputs.stage1_candidates_file_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          mkdir -p work
+          aria2c -x 4 -s 4 --file-allocation=none \
+            --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=work --out=stage1_candidates.json \
+            "https://www.googleapis.com/drive/v3/files/$CANDIDATES_FILE_ID?alt=media"
+          du -sh work/stage1_candidates.json
+
+      - name: Run bidirectional resolver
+        run: |
+          python3 ball_tracker/bidirectional_resolver.py \
+            --loss-windows work/loss_windows.json \
+            --candidates work/stage1_candidates.json \
+            --repairs-output work/bidirectional_repairs.json \
+            --queue-output work/ai_review_queue.json
+          python3 << 'PY'
+          import json
+          repairs = json.load(open('work/bidirectional_repairs.json'))
+          queue = json.load(open('work/ai_review_queue.json'))
+          repair_summary = repairs['summary']
+          queue_summary = queue['summary']
+          print(f"Repairs: frames={repair_summary['repair_frames']} fully_resolved={repair_summary['fully_resolved_windows']} partially_resolved={repair_summary['partially_resolved_windows']}")
+          print(f"Queue: windows={queue_summary['windows_queued']} review_frames={queue_summary['review_frames']} eligible_review_frames={queue_summary['eligible_review_frames']}")
+          PY
+
+      - name: Upload resolver outputs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolver-outputs-${{ github.run_id }}
+          path: |
+            work/bidirectional_repairs.json
+            work/ai_review_queue.json
+          retention-days: 14
