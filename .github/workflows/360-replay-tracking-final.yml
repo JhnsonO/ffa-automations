@@ -82,8 +82,8 @@ jobs:
           python3 << 'PY'
           import json
           data = json.load(open('work/tracking_repaired.json'))
-          frames = data.get('frames', {})
-          overridden = sum(1 for f in frames.values() if f.get('phase_b_override') is True)
+          frames = data.get('frames', [])
+          overridden = sum(1 for f in frames if isinstance(f, dict) and f.get('phase_b_override') is True)
           total = len(frames)
           print(f"Total frames: {total}")
           print(f"Phase B overrides applied: {overridden}")
@@ -95,3 +95,4 @@ jobs:
           name: tracking-repaired-${{ github.run_id }}
           path: work/tracking_repaired.json
           retention-days: 14
+
