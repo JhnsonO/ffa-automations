@@ -669,6 +669,54 @@ def resolve_window(
         )
     if len(repairs) == duration:
         return repairs, None
+
+    # No corridor candidates found — attempt anchor-to-anchor linear interpolation.
+    # If both anchors agree within agreement_deg, interpolate yaw/pitch linearly
+    # across gap frames and emit as repairs (source="anchor_interpolation").
+    left_point = _candidate_point(left_anchor)
+    right_point = _candidate_point(right_anchor)
+    if left_point is not None and right_point is not None:
+        anchor_agreement = angular_distance_deg(
+            left_point[0], left_point[1], right_point[0], right_point[1]
+        )
+        if anchor_agreement <= config.agreement_deg:
+            total_steps = duration + 1  # left_anchor frame -> right_anchor frame
+            for i, frame in enumerate(range(start_frame, end_frame + 1), start=1):
+                t = i / total_steps
+                interp_yaw = left_point[0] + t * (right_point[0] - left_point[0])
+                interp_pitch = left_point[1] + t * (right_point[1] - left_point[1])
+                anchor_conf = min(
+                    _candidate_confidence(left_anchor),
+                    _candidate_confidence(right_anchor),
+                )
+                repaired = copy.deepcopy(dict(left_anchor))
+                for key in ("trace_direction", "trace_score", "predicted_yaw",
+                            "predicted_pitch", "anchor_side"):
+                    repaired.pop(key, None)
+                repaired["frame"] = frame
+                repaired["yaw"] = round(interp_yaw, 6)
+                repaired["pitch"] = round(interp_pitch, 6)
+                repaired["source"] = "anchor_interpolation"
+                repaired["raw_conf"] = round(anchor_conf, 6)
+                repaired["weighted_conf"] = round(anchor_conf, 6)
+                repaired["bidirectional"] = {
+                    "forward_conf": round(_candidate_confidence(left_anchor), 6),
+                    "backward_conf": round(_candidate_confidence(right_anchor), 6),
+                    "agreement_deg": round(anchor_agreement, 6),
+                    "interpolation_t": round(t, 6),
+                }
+                repairs.append(
+                    {
+                        "window_id": str(window.get("window_id", "")),
+                        "frame": frame,
+                        "reason": "anchor_interpolation",
+                        "agreement_deg": round(anchor_agreement, 6),
+                        "candidate": repaired,
+                    }
+                )
+            if len(repairs) == duration:
+                return repairs, None
+
     return repairs, _queue_window(
         window,
         "no_corridor_supported_candidates",
