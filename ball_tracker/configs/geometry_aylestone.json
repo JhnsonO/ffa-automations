@@ -1,0 +1,13 @@
+{
+  "setup": "aylestone",
+  "suppression_zones": [
+    {
+      "id": "fence_static_lock",
+      "description": "Known static fence lock — yaw\u2248-77.4, pitch\u2248-3.9",
+      "yaw_centre": -77.4,
+      "yaw_radius": 6.0,
+      "pitch_centre": -3.9,
+      "pitch_radius": 5.0
+    }
+  ]
+}
