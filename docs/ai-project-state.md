@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 25 June 2026 — Phase B complete. replay_tracking_final.py pushed (commit ced93d1, verified). Next: workflow + A/B render for visual approval.
+**Last reconciled:** 25 June 2026 (session 9) — Clip 1 A/B approved. Clip 2 A/B (f220–380) dispatched, awaiting Johnson visual review. Phase B visual gate ~50% complete.
 
 ## Start here
 
@@ -181,24 +181,48 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 
 **Phase A is COMPLETE. Phase B is unlocked.**
 
-### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE — STATUS: VERIFIED ON BRANCH ✓
+### PHASE B — STATUS: COMPLETE — VISUAL GATE IN PROGRESS
 
-**Verified on `phase-b-recovery` branch — 25 June 2026:**
-- 7 Phase B files pushed by ChatGPT; verified by Claude against live repo and frozen boundaries.
-- Frozen files (run_tracker.py, render_segment.py, loss_window_detector.py, stage1_candidate_gen.py, stage1b_static_quarantine.py): SHA identical on branch vs main — NOT MODIFIED.
-- Unit tests: 8/8 pass (`pytest -q test_bidirectional_resolver.py test_detector_interface.py`).
-- `frame_candidates_from_payload`: accepts dict-keyed `frames` shape (Stage 1b contract) — PASS.
-- `tracking_merger.camera_wiring = "disabled"` — renderer NOT wired — PASS.
-- `vlm_backend` dry-run without `ANTHROPIC_API_KEY`: returns `uncertain`, no import error, no API call — PASS.
-- Resolver live run against Stage 1b candidates: **BLOCKED** — candidates and loss_windows.json are Drive/artifact only, not in repo. Must dispatch workflow on branch or provide Drive file IDs.
+**All Phase B code verified and merged to main.**
+
+**Drive file IDs (active):**
+- Equirect video: `1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX`
+- Stage 1b candidates: `19feQa2zx3YcqU4LIP6MNOG_q8vyi8TmJ`
+- loss_windows.json: `1cWfx2lQx8GtvCobrlW-4X0bPXHUadvJ4`
+- tracking.json (original): `1hpb0rUVnjebNwgJGACcHypqXtTGv5PUF`
+- bidirectional_repairs.json: `1IEAR0GZ4d619BsANyoTmjcjeEhN8F0FK`
+- tracking_repaired.json: `1xp5MSahcMyq7e-pGBxNqgYYhZ-8jWQaG`
+
+**Resolver run 28167012616 — VERIFIED:** 572 repair_frames, 193 windows (anchor_interpolation). 237 no_corridor, 4 long_window.
+
+**Replay run 28170181136 — VERIFIED:** 567 overrides applied, 5 skipped, 0 not found. `tracking_repaired.json` artifact `7878088056`.
+
+**A/B render — Clip 1 (f100–250) — VISUALLY APPROVED (25 June 2026):**
+- Phase B repairs at W0001 (f125–126) and f146–153: smooth follow, no jump, continuous reacquisition.
+- Render B visually better than Render A. ✓
+
+**A/B render — Clip 2 (f220–380) — PENDING JOHNSON REVIEW:**
+- Covers W0015 (24f unresolved), W0016 (4f), W0019 (56f long fallback).
+- Render A artifact: `7878810404` (run `28171828476`)
+- Render B artifact: `7878830384` (run `28171849205`)
+
+**Unresolved windows map:**
+- W0002: f128–132 (5f) — no_corridor
+- W0007: f162–175 (14f) — no_corridor
+- W0015: f246–269 (24f) — no_corridor
+- W0019: f288–343 (56f) — long_window, primary wide fallback test
+- W0023: f359–390 (32f) — long_window
+- W0055: f635–708 (74f) — long_window
+- W0057: f717–748 (32f) — long_window
 
 **Next actions (in order):**
-1. Dispatch `360-replay-tracking-final.yml` with tracking.json Drive ID + `bidirectional_repairs.json` Drive ID (`1cWfx2lQx8GtvCobrlW-4X0bPXHUadvJ4`).
-   - **tracking.json Drive ID:** Johnson to confirm (source: GitHub artifact run 27937033177 / artifact 7786231067).
-2. Inspect `tracking_repaired.json` artifact — verify `phase_b_override` count matches 572 repair frames.
-3. Run `360-render-segment.yml` twice — original `tracking.json` and `tracking_repaired.json` — to produce A/B debug clips.
-4. Visual gate: Johnson inspects A/B clips around W0001 f125–126, unresolved windows, and repaired→unresolved transition boundaries.
-5. Camera path wiring only after visual approval.
+1. Johnson reviews Clip 2 (f220–380) — wide fallback on W0019, repair→unresolved boundaries.
+2. If approved: Phase B visual gate COMPLETE.
+3. Decide: wire `tracking_repaired.json` into full session render, OR proceed to VLM pack generation for unresolved windows.
+4. Camera path wiring only after visual approval of full session render.
+
+**Do not touch:** `run_tracker.py`, `render_segment.py`, Stage 1/1b, `bidirectional_resolver.py`, `replay_tracking_final.py`
+
 
 ### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE (original scope)
 
@@ -225,7 +249,7 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 
 ## Compact change log
 
-- **2026-06-25 (session 8):** `360-replay-tracking-final.yml` pushed (commit 83bcc38). Inputs: tracking.json Drive ID + bidirectional_repairs.json Drive ID → outputs tracking_repaired.json artifact. DISPATCHED — UNVERIFIED (awaiting tracking.json Drive ID from Johnson).
+- **2026-06-25 (session 8):** Replay run 28170181136 VERIFIED (567 overrides). A/B renders: Clip 1 f100–250 APPROVED (W0001 repairs smooth). Clip 2 f220–380 dispatched (runs 28171828476/28171849205) — AWAITING Johnson visual review.
 - **2026-06-25 (session 7):** replay_tracking_final.py pushed by ChatGPT (commit ced93d1), verified by Claude — syntax OK, tracker_state never mutated, best_score only overridden when null, detection appended not replaced, provenance preserved. No workflow yet. Next: build 360-replay-tracking-final.yml + A/B render (original vs repaired) for visual approval of repaired windows, unresolved windows, and transition boundaries.
 - **2026-06-25 (session 6):** anchor-to-anchor linear interpolation added to resolve_window (commit a4046c1); resolver run 28167012616 VERIFIED: 572 repair_frames across 193 windows (source=anchor_interpolation). 237 windows still no_corridor (anchors disagree >1.25°), 4 long_window.
 - **2026-06-25 (session 5):** stable_frames patched 2→1 in ResolverConfig (commit 7db131e); run 28162176817: 0 repairs — root cause was no gap-frame candidates (all 434 = no_corridor_supported_candidates).
