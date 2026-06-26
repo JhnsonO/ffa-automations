@@ -288,6 +288,7 @@ jobs:
           echo "--- Installing Python packages ---"
           $SSH "pip install -q --break-system-packages 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless google-auth google-auth-oauthlib google-api-python-client filterpy 2>/dev/null || pip install -q 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless google-auth google-auth-oauthlib google-api-python-client filterpy"
           echo "--- Verifying installs ---"
+          $SSH "python3 -c \"import cv2; print('cv2 path:', cv2.__file__)\""
           $SSH "python3 -c \"import cv2, supervision, ultralytics, pandas; print('All imports OK')\""
 
       - name: Download .360 from Google Drive
