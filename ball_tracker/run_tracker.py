@@ -1034,6 +1034,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "accepted_pitch_above_30":          sum(1 for p in instr["accepted_pitches"] if p > 30.0),
         "pitch_hard_rejection_count":       instr["pitch_hard_rejections"],
         "hotspot_suppression_count":        instr["hotspot_suppression_count"],
+        "pitch_geometry_suppression_count": instr["pitch_geometry_suppression_count"],
         "hotspot_suppression_by_zone": [
             {"yaw": hs["yaw"], "pitch": hs["pitch"],
              "coverage_pct": hs["coverage_pct"], "hit_count": hs["hit_count"]}
