@@ -398,6 +398,15 @@ jobs:
           B64=$(cat /tmp/run_tracker_b64.txt)
           echo "--- Uploading run_tracker.py to instance ---"
           $SSH "echo '$B64' | base64 -d > /tmp/ffa_track/run_tracker.py && echo 'run_tracker.py uploaded OK'"
+          echo "--- Encoding pitch_geometry.py as base64 ---"
+          python3 -c "import base64; open('/tmp/pitch_geo_b64.txt','w').write(base64.b64encode(open('ball_tracker/pitch_geometry.py','rb').read()).decode())"
+          B64GEO=$(cat /tmp/pitch_geo_b64.txt)
+          echo "--- Uploading pitch_geometry.py to instance ---"
+          $SSH "echo '$B64GEO' | base64 -d > /tmp/ffa_track/pitch_geometry.py && echo 'pitch_geometry.py uploaded OK'"
+          echo "--- Uploading geometry_aylestone.json to instance ---"
+          python3 -c "import base64; open('/tmp/geo_json_b64.txt','w').write(base64.b64encode(open('ball_tracker/configs/geometry_aylestone.json','rb').read()).decode())"
+          B64JSON=$(cat /tmp/geo_json_b64.txt)
+          $SSH "mkdir -p /tmp/ffa_track/configs && echo '$B64JSON' | base64 -d > /tmp/ffa_track/configs/geometry_aylestone.json && echo 'geometry_aylestone.json uploaded OK'"
           echo "--- Downloading football ball model (if missing) ---"
           $SSH "mkdir -p /tmp/ffa_track/models && \
             if [ ! -f /tmp/ffa_track/models/football-ball-detection.pt ]; then \
