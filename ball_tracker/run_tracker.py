@@ -652,6 +652,7 @@ def run_tracker(equirect_path, output_path, json_path,
         "accepted_pitches":            [],
         "pitch_hard_rejections":       0,
         "hotspot_suppression_count":   0,
+        "pitch_geometry_suppression_count": 0,
     }
 
     frame_idx = 0
@@ -730,6 +731,7 @@ def run_tracker(equirect_path, output_path, json_path,
                     instr["rejection_reasons"]["hotspot"] += 1
                     continue
                 if pitch_geo and pitch_geo.is_suppressed(yaw_d, pitch_d):
+                    instr["pitch_geometry_suppression_count"] += 1
                     instr["hotspot_suppression_count"] += 1
                     instr["rejection_reasons"]["hotspot"] += 1
                     continue
