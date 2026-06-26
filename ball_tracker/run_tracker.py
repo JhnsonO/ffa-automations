@@ -556,8 +556,8 @@ def run_tracker(equirect_path, output_path, json_path,
 
     # Build hotspot map from sampled timestamps
     hotspots = build_static_hotspot_map(sampled_candidates)
-        _geo_config = os.path.join(os.path.dirname(__file__), "configs", "geometry_aylestone.json")
-        pitch_geo = PitchGeometry(_geo_config) if os.path.exists(_geo_config) else None
+    _geo_config = os.path.join(os.path.dirname(__file__), "configs", "geometry_aylestone.json")
+    pitch_geo = PitchGeometry(_geo_config) if os.path.exists(_geo_config) else None
 
     print(f"\n[v12] Hotspot discovery complete. Found {len(hotspots)} hotspot(s):")
     confirmed_fence_hotspot = False
