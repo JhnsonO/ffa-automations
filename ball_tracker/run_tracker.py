@@ -49,7 +49,7 @@ import subprocess
 import cv2
 import numpy as np
 from filterpy.kalman import KalmanFilter
-from ball_tracker.pitch_geometry import PitchGeometry
+from pitch_geometry import PitchGeometry
 from ultralytics import YOLO
 
 # ---------------------------------------------------------------------------
