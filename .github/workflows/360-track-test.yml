@@ -186,8 +186,7 @@ jobs:
           offer_id = os.environ["OFFER_ID"]
           pub_key  = open("/tmp/vastai_key.pub").read().strip()
 
-          print(f"Creating instance on offer {offer_id} ({os.environ['OFFER_CPU']})...")
-          result = vast_put(f"/asks/{offer_id}/", {
+          LAUNCH_PAYLOAD = {
               "client_id": "me",
               "image": "pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime",
               "disk": 60,
@@ -195,11 +194,31 @@ jobs:
               "runtype": "ssh",
               "ssh_key": pub_key,
               "env": {},
-          })
+          }
 
-          instance_id = result.get("new_contract")
+          instance_id = None
+          for launch_attempt in range(3):
+              print(f"Creating instance on offer {offer_id} (attempt {launch_attempt+1}/3)...")
+              try:
+                  result = vast_put(f"/asks/{offer_id}/", LAUNCH_PAYLOAD)
+                  instance_id = result.get("new_contract")
+                  if instance_id:
+                      break
+                  print(f"WARNING: no instance ID returned: {result}", file=sys.stderr)
+              except Exception as e:
+                  print(f"WARNING: launch failed ({e}), re-searching for offer...", file=sys.stderr)
+                  time.sleep(5)
+                  # Re-search for a fresh offer
+                  fresh = vast_get("/bundles/", params={"q": json.dumps({"rentable": {"eq": True}, "num_gpus": {"eq": 0}, "cpu_ram": {"gte": 32}, "inet_up": {"gte": 300}})})
+                  offers = fresh.get("offers", [])
+                  if offers:
+                      offers.sort(key=lambda o: o.get("dph_total", 99))
+                      offer_id = str(offers[0]["id"])
+                      print(f"  New offer: {offer_id}")
+                  continue
+
           if not instance_id:
-              print(f"ERROR: no instance ID returned: {result}", file=sys.stderr)
+              print(f"ERROR: no instance ID returned after 3 attempts", file=sys.stderr)
               sys.exit(1)
           print(f"Instance ID: {instance_id}")
           print(f"Polling for running state (checking every 10s, max 4 min)...")
