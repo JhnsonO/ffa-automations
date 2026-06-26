@@ -284,7 +284,7 @@ jobs:
           fi
           echo "  Core count OK ($NPROC cores)"
           echo "--- Installing apt packages (ffmpeg via savoury1 PPA, aria2, exiftool) ---"
-          $SSH "apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends software-properties-common aria2 libimage-exiftool-perl python3-pil > /dev/null && add-apt-repository -y ppa:savoury1/ffmpeg4 2>/dev/null && apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends ffmpeg libgl1 libglib2.0-0 && /usr/bin/ffmpeg -filters 2>/dev/null | grep -q v360 && echo 'v360 OK' || echo 'WARNING: v360 missing'"
+          $SSH "apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends software-properties-common aria2 libimage-exiftool-perl python3-pil > /dev/null && add-apt-repository -y ppa:savoury1/ffmpeg4 2>/dev/null && apt-get update -qq 2>/dev/null && apt-get install -y --no-install-recommends ffmpeg libgl1 libgl1-mesa-glx libglib2.0-0 && /usr/bin/ffmpeg -filters 2>/dev/null | grep -q v360 && echo 'v360 OK' || echo 'WARNING: v360 missing'"
           echo "--- Installing Python packages ---"
           $SSH "pip install -q --break-system-packages 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless google-auth google-auth-oauthlib google-api-python-client filterpy 2>/dev/null || pip install -q 'numpy<2' gdown ultralytics supervision pandas opencv-python-headless google-auth google-auth-oauthlib google-api-python-client filterpy"
           echo "--- Verifying installs ---"
@@ -530,6 +530,7 @@ jobs:
           except Exception as e:
               print(f"Terminate call failed (may already be gone): {e}")
           PY
+
 
 
 
