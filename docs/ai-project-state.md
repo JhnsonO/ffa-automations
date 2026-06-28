@@ -54,7 +54,7 @@ equirectangular video
 - Long-term: SAM (Segment Anything Model) for one-click auto-calibration per venue
 
 **GoPro MAX 2:**
-- Purchased. Geometry recalibration required: new equirect resolution, hotspot zones will shift, `geometry_aylestone.json` needs updating for new FOV.
+- Purchased. Geometry recalibration required: new equirect resolution, hotspot zones will shift, `geometry_st_margarets.json` needs updating for new FOV.
 - All tracker logic, renderer, workflow pipeline transferable unchanged.
 
 ### Target pipeline
@@ -287,7 +287,7 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 **Files pushed (commit `deb3a12`):**
 - `ball_tracker/pitch_geometry.py` — `PitchGeometry(config_path).is_suppressed(yaw, pitch) → bool`
-- `ball_tracker/configs/geometry_aylestone.json` — fence zone: yaw −77.4° ±6°, pitch −3.9° ±5°
+- `ball_tracker/configs/geometry_st_margarets.json` — fence zone: yaw −77.4° ±6°, pitch −3.9° ±5°
 - `ball_tracker/tests/test_pitch_geometry.py` — 5/5 tests pass (verified locally)
 
 **Test results (local):** 5/5 PASS — centre, outside, yaw edges, pitch edges, second zone.
@@ -317,7 +317,7 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 - Test run on existing equirect clip — measure blob quality on ground-level play and aerial loss behaviour
 - Define zoom-out trigger thresholds (blob count, confidence gap, gap frame length)
 - Wire into Stage 1 candidate generation (MOG2 primary, YOLO fallback)
-- Create `venue_mask.json` — run `venue_calibration.py` on Aylestone clip first
+- Create `venue_mask.json` — run `venue_calibration.py` on St. Margarets clip first
 
 ### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE (original scope)
 
@@ -338,7 +338,7 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 1. Run `mog2_detector.py` on an existing equirect clip — review blob quality, measure aerial loss.
 2. Define zoom-out trigger thresholds based on MOG2 output.
 3. Wire MOG2 into Stage 1 candidate generation (primary source, YOLO fallback).
-4. Create `venue_mask.json` — run `venue_calibration.py` on Aylestone clip.
+4. Create `venue_mask.json` — run `venue_calibration.py` on St. Margarets clip.
 5. Phase 4 tracker run — verify `pitch_geometry_suppression_count > 0` after fence-zone fix.
 6. GoPro MAX 2 geometry recalibration — on first recorded clip.
 
@@ -346,7 +346,7 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 - **2026-06-28 (session 12b):** MOG2 blob detection prototype built — `ball_tracker/mog2_detector.py` (commit `1f57b2b`). Standalone, CLI-tunable MOG2/blob thresholds, venue mask support, output JSON matches Stage 1 candidate schema (`source: "mog2"`). Not yet tested on real clip or wired into pipeline.
 - **2026-06-28 (session 12):** Architecture pivot — MOG2 + venue polygon as primary detector, YOLO as fallback. Coloured ball ruled out (product dependency risk). Background suppression selected for fixed-camera false positive elimination. Venue calibration tool built: `ball_tracker/venue_calibration.py` (commit `d8bf670`, 142 lines, functions-only). Stage 1 venue mask integration: `ball_tracker/stage1_candidate_gen.py` patched with `_load_venue_mask()`, `_venue_contains()`, `--venue-mask` arg, `n_venue_rejected` counter in report + run_summary (commit `4670a37`, py_compile clean). GoPro MAX 2 purchased — geometry recalibration needed when in use. Phase B and Phase 4 tracker-run verification deferred pending new architecture validation.
-- **2026-06-25 (session 11):** Phase 4 WIRED. pitch_geometry.py + geometry_aylestone.json + tests (commit deb3a12, 5/5 pass). Wired into run_tracker.py filter_candidates (commit c18ff51). Awaiting tracker run to verify fence suppression at yaw≈−77.4°.
+- **2026-06-25 (session 11):** Phase 4 WIRED. pitch_geometry.py + geometry_st_margarets.json + tests (commit deb3a12, 5/5 pass). Wired into run_tracker.py filter_candidates (commit c18ff51). Awaiting tracker run to verify fence suppression at yaw≈−77.4°.
 - **2026-06-25 (session 10):** Phase 2 COMPLETE. Corrected render run 28201650371 (f837–927) reviewed by ChatGPT — APPROVED. 20-frame blend smooth, no snap. Frame-label offset noted (~f892–917 visible vs stated f867–887) — render-window artefact, not failure. Phase 4 (pitch polygon / fence suppression) is next sprint, ahead of Phase 3.
 - **2026-06-25 (session 9):** ChatGPT reviewed Render A f200–700 — Phase B rejected (replay wrote confirming detections, caused oscillation). Phase B paused. Phase 2 opened: --reacquire-blend-frames 20 added to render_segment.py (commit c1599f58) + workflow (commit f5546057). Validation render f600–750 dispatched — run 28187153168, artifact 7885371513 — superseded (wrong range).
 - **2026-06-25 (session 8):** Replay run 28170181136 VERIFIED (567 overrides). A/B renders: Clip 1 f100–250 APPROVED (W0001 repairs smooth). Clip 2 f220–380 dispatched — superseded by Phase B rejection.
