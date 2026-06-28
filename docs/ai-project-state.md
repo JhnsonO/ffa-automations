@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 25 June 2026 (session 11) — Phase 4 wired into run_tracker.py filter_candidates (commit c18ff51). Awaiting tracker run to verify fence suppression.
+**Last reconciled:** 28 June 2026 (session 12) — Architecture pivot: MOG2 + venue mask as primary detector. venue_calibration.py added (commit d8bf670). Stage 1 venue mask filtering integrated (commit 4670a37). State doc updated with new architecture direction.
 
 ## Start here
 
@@ -25,6 +25,37 @@ Offline 360° football post-production. The camera follows only a credible **fus
 - ChatGPT output is verified by Claude before any commit. Claude is the skeptic, not a relay.
 
 ## Architecture — locked 25 June 2026
+
+### PRIMARY DETECTOR PIVOT — 28 June 2026
+
+Architecture updated to MOG2 + venue polygon as primary detection strategy. YOLO demoted to fallback/secondary.
+
+**Rationale:**
+- Fixed camera → MOG2 structurally eliminates static background (fence, grass, lines) without per-frame YOLO cost
+- Venue polygon mask eliminates rear lens, other pitches, sky, car park before any detection runs
+- Ball in air → MOG2 loses it → Kalman bridges → zoom out to panoramic (acceptable product behaviour)
+- Coloured ball rejected: proprietary hardware dependency incompatible with product strategy
+
+**New pipeline (target):**
+```
+equirectangular video
+→ venue polygon mask (ball_tracker/venue_mask.json — one calibration per venue)
+→ MOG2 foreground mask (moving blobs only within polygon)
+→ single confident blob → follow-cam
+→ ambiguous/no blob → Kalman bridge → zoom out to panoramic
+→ YOLO fallback for multi-blob disambiguation
+→ renderer (unchanged)
+```
+
+**Venue calibration:**
+- `ball_tracker/venue_calibration.py` — interactive click-to-define polygon tool
+- `ball_tracker/venue_mask.json` — saved polygon in equirectangular pixel coordinates
+- Stage 1 now loads mask via `--venue-mask`, filters candidates outside polygon before pitch/hotspot processing
+- Long-term: SAM (Segment Anything Model) for one-click auto-calibration per venue
+
+**GoPro MAX 2:**
+- Purchased. Geometry recalibration required: new equirect resolution, hotspot zones will shift, `geometry_aylestone.json` needs updating for new FOV.
+- All tracker logic, renderer, workflow pipeline transferable unchanged.
 
 ### Target pipeline
 
@@ -284,6 +315,7 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 ## Compact change log
 
+- **2026-06-28 (session 12):** Architecture pivot — MOG2 + venue polygon as primary detector, YOLO as fallback. Coloured ball ruled out (product dependency risk). Background suppression selected for fixed-camera false positive elimination. Venue calibration tool built: `ball_tracker/venue_calibration.py` (commit `d8bf670`, 142 lines, functions-only). Stage 1 venue mask integration: `ball_tracker/stage1_candidate_gen.py` patched with `_load_venue_mask()`, `_venue_contains()`, `--venue-mask` arg, `n_venue_rejected` counter in report + run_summary (commit `4670a37`, py_compile clean). GoPro MAX 2 purchased — geometry recalibration needed when in use. Phase B and Phase 4 tracker-run verification deferred pending new architecture validation.
 - **2026-06-25 (session 11):** Phase 4 WIRED. pitch_geometry.py + geometry_aylestone.json + tests (commit deb3a12, 5/5 pass). Wired into run_tracker.py filter_candidates (commit c18ff51). Awaiting tracker run to verify fence suppression at yaw≈−77.4°.
 - **2026-06-25 (session 10):** Phase 2 COMPLETE. Corrected render run 28201650371 (f837–927) reviewed by ChatGPT — APPROVED. 20-frame blend smooth, no snap. Frame-label offset noted (~f892–917 visible vs stated f867–887) — render-window artefact, not failure. Phase 4 (pitch polygon / fence suppression) is next sprint, ahead of Phase 3.
 - **2026-06-25 (session 9):** ChatGPT reviewed Render A f200–700 — Phase B rejected (replay wrote confirming detections, caused oscillation). Phase B paused. Phase 2 opened: --reacquire-blend-frames 20 added to render_segment.py (commit c1599f58) + workflow (commit f5546057). Validation render f600–750 dispatched — run 28187153168, artifact 7885371513 — superseded (wrong range).
