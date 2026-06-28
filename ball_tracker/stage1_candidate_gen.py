@@ -120,6 +120,34 @@ DEF_PITCH_MAX_DEG =  18.0
 # ── Known venue reference (for report) ───────────────────────────────────────
 KNOWN_FENCE_YAW   = -77.4
 KNOWN_FENCE_PITCH = -3.9
+DEFAULT_VENUE_MASK = os.path.join(os.path.dirname(__file__), "venue_mask.json")
+
+
+def _load_venue_mask(mask_path, frame_width, frame_height):
+    """Load an optional calibration polygon; missing file means full-frame mode."""
+    if not mask_path or not os.path.isfile(mask_path):
+        return None
+    with open(mask_path) as f:
+        data = json.load(f)
+    if data.get("frame_width") != frame_width or data.get("frame_height") != frame_height:
+        raise ValueError(
+            "Venue mask dimension mismatch: "
+            f"mask={data.get('frame_width')}x{data.get('frame_height')}, "
+            f"frame={frame_width}x{frame_height}"
+        )
+    polygon = data.get("polygon")
+    if not isinstance(polygon, list) or len(polygon) < 4:
+        raise ValueError("Venue mask polygon must contain at least 4 points")
+    return np.asarray(polygon, dtype=np.int32).reshape((-1, 1, 2))
+
+
+def _venue_contains(yaw, pitch, polygon, frame_width, frame_height):
+    """Test spherical candidate coordinates against the equirectangular mask."""
+    if polygon is None:
+        return True
+    x = ((yaw / 360.0) + 0.5) * frame_width
+    y = (0.5 - pitch / 180.0) * frame_height
+    return cv2.pointPolygonTest(polygon, (float(x), float(y)), False) >= 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -419,6 +447,14 @@ def run_stage1(args):
         raise RuntimeError(f"Cannot open {args.input}")
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps          = cap.get(cv2.CAP_PROP_FPS) or s0_fps
+    frame_width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    venue_polygon = _load_venue_mask(args.venue_mask, frame_width, frame_height)
+    venue_mask_enabled = venue_polygon is not None
+    if venue_mask_enabled:
+        print(f"[stage1] Venue mask enabled: {args.venue_mask}")
+    else:
+        print("[stage1] Venue mask not found; using full frame")
     print(f"[stage1] Clip: {total_frames} frames @ {fps:.2f} fps")
 
     model = None
@@ -441,7 +477,8 @@ def run_stage1(args):
     n_s0_reuse           = 0   # detections taken from stage0_detections.json
     n_new_detected       = 0   # detections from re-running the detector
     n_pitch_rejected     = 0   # dropped by hard pitch filter
-    n_kept               = 0   # after pitch filter, penalty applied
+    n_venue_rejected     = 0   # dropped outside optional venue polygon
+    n_kept               = 0   # after venue/pitch filters, penalty applied
     n_nms_warnings       = 0   # NMS log lines captured from Ultralytics logger
 
     # Intercept Ultralytics logger for NMS warning lines
@@ -501,9 +538,12 @@ def run_stage1(args):
                 candidates_raw.append((yaw, pitch, conf, crop_yaw, "new_detection", geom))
             n_new_detected += len(dets)
 
-        # ── Apply pitch filter + penalty ──────────────────────────────────────
+        # ── Apply venue mask, pitch filter + penalty ──────────────────────────
         frame_cands = []
         for (yaw, pitch, raw_conf, crop_yaw, source, geom) in candidates_raw:
+            if not _venue_contains(yaw, pitch, venue_polygon, frame_width, frame_height):
+                n_venue_rejected += 1
+                continue
             cand = process_candidate(
                 yaw, pitch, raw_conf, source, crop_yaw,
                 hm, bin_lookup,
@@ -536,8 +576,8 @@ def run_stage1(args):
             print(
                 f"[stage1] {n_frames_processed}/{total_frames} ({pct:.1f}%)  "
                 f"elapsed={el:.1f}s  spf={spf:.3f}s  ETA={remaining:.0f}s  "
-                f"raw={n_raw_so_far}  kept={n_kept}  pitch_rej={n_pitch_rejected}  "
-                f"nms_warn={n_nms_warnings}",
+                f"raw={n_raw_so_far}  kept={n_kept}  venue_rej={n_venue_rejected}  "
+                f"pitch_rej={n_pitch_rejected}  nms_warn={n_nms_warnings}",
                 flush=True,
             )
 
@@ -580,6 +620,8 @@ def run_stage1(args):
             "total_frames":     total_frames,
             "pitch_min_deg":    args.pitch_min_deg,
             "pitch_max_deg":    args.pitch_max_deg,
+            "venue_mask_enabled": venue_mask_enabled,
+            "venue_mask":       args.venue_mask if venue_mask_enabled else None,
             "hotspot_map":      os.path.basename(args.hotspot_map),
             "stage0_detections": os.path.basename(args.stage0_detections),
             "frames":           all_candidates,
@@ -588,7 +630,7 @@ def run_stage1(args):
 
     report = build_report(
         n_frames_processed, n_raw_total, n_s0_reuse, n_new_detected,
-        n_pitch_rejected, pitch_rej_pct,
+        n_pitch_rejected, pitch_rej_pct, n_venue_rejected, venue_mask_enabled,
         candidates_after, weight_reduction,
         fence_count, fence_suppression,
         region_counts, args,
@@ -613,6 +655,8 @@ def run_stage1(args):
         "n_s0_reuse":      n_s0_reuse,
         "n_new_detected":  n_new_detected,
         "n_pitch_rejected": n_pitch_rejected,
+        "n_venue_rejected": n_venue_rejected,
+        "venue_mask_enabled": venue_mask_enabled,
         "n_kept":          n_kept,
         "n_nms_warnings":  n_nms_warnings,
     }
@@ -623,7 +667,7 @@ def run_stage1(args):
 
 
 def build_report(n_frames, n_raw, n_s0_reuse, n_new, n_pitch_rej, pitch_rej_pct,
-                 n_kept, weight_reduction,
+                 n_venue_rej, venue_mask_enabled, n_kept, weight_reduction,
                  fence_count, fence_suppression,
                  region_counts, args):
     lines = []
@@ -633,6 +677,7 @@ def build_report(n_frames, n_raw, n_s0_reuse, n_new, n_pitch_rej, pitch_rej_pct,
     lines.append(f"Input clip            : {os.path.basename(args.input)}")
     lines.append(f"Pitch bounds          : [{args.pitch_min_deg}°, {args.pitch_max_deg}°]  (hard filter)")
     lines.append(f"Hotspot map           : {os.path.basename(args.hotspot_map)}")
+    lines.append(f"Venue mask            : {args.venue_mask if venue_mask_enabled else 'disabled (full frame)'}")
     lines.append("")
     lines.append("-" * 70)
     lines.append("CANDIDATE COUNTS")
@@ -641,8 +686,9 @@ def build_report(n_frames, n_raw, n_s0_reuse, n_new, n_pitch_rej, pitch_rej_pct,
     lines.append(f"Raw candidates        : {n_raw}")
     lines.append(f"  from Stage 0 reuse  : {n_s0_reuse}")
     lines.append(f"  from new detection  : {n_new}")
+    lines.append(f"Venue-rejected        : {n_venue_rej}")
     lines.append(f"Pitch-rejected        : {n_pitch_rej}  ({pitch_rej_pct:.1f}% of raw)")
-    lines.append(f"After pitch filter    : {n_kept}")
+    lines.append(f"After venue/pitch     : {n_kept}")
     lines.append("")
     lines.append("-" * 70)
     lines.append("PENALTY EFFECT (weighted confidence reduction)")
@@ -682,6 +728,8 @@ def main():
     ap.add_argument("--output-dir",         default="stage1_output")
     ap.add_argument("--weights",            default=os.environ.get("BALL_WEIGHTS", ""),
                     help="YOLO ball detector weights (.pt)")
+    ap.add_argument("--venue-mask",         default=DEFAULT_VENUE_MASK,
+                    help="Optional venue_mask.json; missing file uses full frame")
     ap.add_argument("--pitch-min-deg",      type=float, default=DEF_PITCH_MIN_DEG,
                     help="Hard pitch lower bound (default: -30)")
     ap.add_argument("--pitch-max-deg",      type=float, default=DEF_PITCH_MAX_DEG,
