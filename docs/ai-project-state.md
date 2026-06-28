@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 28 June 2026 (session 12) — Architecture pivot: MOG2 + venue mask as primary detector. venue_calibration.py added (commit d8bf670). Stage 1 venue mask filtering integrated (commit 4670a37). State doc updated with new architecture direction.
+**Last reconciled:** 28 June 2026 (session 12) — MOG2 blob detection prototype built (`mog2_detector.py`, commit `1f57b2b`). Architecture pivot complete: MOG2 + venue polygon primary detector, YOLO fallback.
 
 ## Start here
 
@@ -136,6 +136,18 @@ Resolver and VLM outputs write JSON only. Camera path reads `tracking_final.json
 Frame-indexed candidates include `yaw`, `pitch`, `raw_conf`, `penalty`, `weighted_conf`, `source`, `crop_yaw`, `region`, and `detection_geometry`.
 
 Fresh Stage 1c detections carry bbox geometry; Stage 0 reuse carries explicit nulls. Stage 1 uses four yaw-only 110° crops at 1280×720.
+
+### MOG2 candidate schema (mog2_detector.py output)
+
+```json
+{
+  "frame_candidates": {
+    "0": [{"x": 120, "y": 340, "w": 18, "h": 18, "conf": 0.85, "source": "mog2"}],
+    "1": []
+  }
+}
+```
+`conf` = normalised blob compactness (4π·area/perimeter², clamped 0–1). `source` always `"mog2"`.
 
 ### New artifacts (Phase A+B)
 
@@ -290,6 +302,23 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 **Next:** dispatch a tracker run against the known fence-lock clip and verify `hotspot_suppression_count` increases and fence lock at yaw≈−77.4° no longer appears in tracking output.
 
+### MOG2 PROTOTYPE — STATUS: BUILT ✓ (28 June 2026)
+
+**File:** `ball_tracker/mog2_detector.py` (commit `1f57b2b`)
+
+**Capabilities:**
+- Standalone — no imports from tracker files or YOLO
+- Inputs: equirect video path, `--venue-mask` (optional), `--output`, `--display`, `--start-frame`, `--end-frame`
+- MOG2 config CLI-tunable: `--history`, `--var-threshold`, `--detect-shadows`, `--min-blob-area`, `--max-blob-area`, `--min-circularity`
+- Output JSON: `frame_candidates` schema with `x`, `y`, `w`, `h`, `conf` (compactness), `source: "mog2"`
+- Venue mask applied via `cv2.fillPoly` + `cv2.bitwise_and` before contour detection
+
+**Not yet done:**
+- Test run on existing equirect clip — measure blob quality on ground-level play and aerial loss behaviour
+- Define zoom-out trigger thresholds (blob count, confidence gap, gap frame length)
+- Wire into Stage 1 candidate generation (MOG2 primary, YOLO fallback)
+- Create `venue_mask.json` — run `venue_calibration.py` on Aylestone clip first
+
 ### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE (original scope)
 
 **ChatGPT produces:**
@@ -306,15 +335,16 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 ## Immediate plan for Johnson
 
-1. Receive Phase A ChatGPT output → paste files to Claude for verification and push.
-2. Eyeball Phase A debug clip → approve local wide fallback.
-3. Receive Phase B ChatGPT output → paste to Claude for verification and push.
-4. Run VLM reviewer on one short test window (pennies) → inspect `ai_decisions.json`.
-5. When satisfied → approve merge gate → wire `tracking_final.json` to renderer.
-6. GoPro MAX2 when committed → record benchmark clip → fine-tune YOLO → add `yolo_finetuned_backend`.
+1. Run `mog2_detector.py` on an existing equirect clip — review blob quality, measure aerial loss.
+2. Define zoom-out trigger thresholds based on MOG2 output.
+3. Wire MOG2 into Stage 1 candidate generation (primary source, YOLO fallback).
+4. Create `venue_mask.json` — run `venue_calibration.py` on Aylestone clip.
+5. Phase 4 tracker run — verify `pitch_geometry_suppression_count > 0` after fence-zone fix.
+6. GoPro MAX 2 geometry recalibration — on first recorded clip.
 
 ## Compact change log
 
+- **2026-06-28 (session 12b):** MOG2 blob detection prototype built — `ball_tracker/mog2_detector.py` (commit `1f57b2b`). Standalone, CLI-tunable MOG2/blob thresholds, venue mask support, output JSON matches Stage 1 candidate schema (`source: "mog2"`). Not yet tested on real clip or wired into pipeline.
 - **2026-06-28 (session 12):** Architecture pivot — MOG2 + venue polygon as primary detector, YOLO as fallback. Coloured ball ruled out (product dependency risk). Background suppression selected for fixed-camera false positive elimination. Venue calibration tool built: `ball_tracker/venue_calibration.py` (commit `d8bf670`, 142 lines, functions-only). Stage 1 venue mask integration: `ball_tracker/stage1_candidate_gen.py` patched with `_load_venue_mask()`, `_venue_contains()`, `--venue-mask` arg, `n_venue_rejected` counter in report + run_summary (commit `4670a37`, py_compile clean). GoPro MAX 2 purchased — geometry recalibration needed when in use. Phase B and Phase 4 tracker-run verification deferred pending new architecture validation.
 - **2026-06-25 (session 11):** Phase 4 WIRED. pitch_geometry.py + geometry_aylestone.json + tests (commit deb3a12, 5/5 pass). Wired into run_tracker.py filter_candidates (commit c18ff51). Awaiting tracker run to verify fence suppression at yaw≈−77.4°.
 - **2026-06-25 (session 10):** Phase 2 COMPLETE. Corrected render run 28201650371 (f837–927) reviewed by ChatGPT — APPROVED. 20-frame blend smooth, no snap. Frame-label offset noted (~f892–917 visible vs stated f867–887) — render-window artefact, not failure. Phase 4 (pitch polygon / fence suppression) is next sprint, ahead of Phase 3.
@@ -330,6 +360,3 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 - **2026-06-24:** FootAndBall benchmark rejected; backward-anchor propagation and football-YOLO adapter built (experiments only).
 - **2026-06-24:** Candidate-fusion, pose selection, temporal ball-likeness score all rejected.
 - **2026-06-24:** Geometry propagation verified (run `28107675223`).
-
-
-
