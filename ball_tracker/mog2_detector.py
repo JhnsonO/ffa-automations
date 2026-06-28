@@ -44,7 +44,7 @@ def circularity_score(area, perimeter):
     return float(max(0.0, min(1.0, score)))
 
 
-def contour_candidate(contour, min_area, max_area, min_circularity):
+def contour_candidate(contour, min_area, max_area, min_circularity, max_aspect_ratio):
     area = cv2.contourArea(contour)
     if area < min_area or area > max_area:
         return None
@@ -55,6 +55,8 @@ def contour_candidate(contour, min_area, max_area, min_circularity):
         return None
 
     x, y, w, h = cv2.boundingRect(contour)
+    if w > 0 and h / w > max_aspect_ratio:
+        return None
     return {
         "x": int(x),
         "y": int(y),
@@ -143,10 +145,12 @@ def detect_video(args):
                 args.min_blob_area,
                 args.max_blob_area,
                 args.min_circularity,
+                args.max_aspect_ratio,
             )
             if cand is not None:
                 candidates.append(cand)
         candidates.sort(key=lambda c: c["conf"], reverse=True)
+        candidates = candidates[:5]
         frame_candidates[str(frame_idx)] = candidates
 
         if args.display:
@@ -182,9 +186,10 @@ def parse_args():
     parser.add_argument("--history", type=int, default=500)
     parser.add_argument("--var-threshold", type=float, default=50)
     parser.add_argument("--detect-shadows", action="store_true", default=False)
-    parser.add_argument("--min-blob-area", type=float, default=80)
-    parser.add_argument("--max-blob-area", type=float, default=2000)
-    parser.add_argument("--min-circularity", type=float, default=0.3)
+    parser.add_argument("--min-blob-area", type=float, default=100)
+    parser.add_argument("--max-blob-area", type=float, default=800)
+    parser.add_argument("--min-circularity", type=float, default=0.55)
+    parser.add_argument("--max-aspect-ratio", type=float, default=2.5)
     return parser.parse_args()
 
 
@@ -194,3 +199,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
