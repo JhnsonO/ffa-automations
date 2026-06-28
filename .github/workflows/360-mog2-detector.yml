@@ -1,0 +1,261 @@
+name: 360 MOG2 Detector - Test Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      equirect_file_id:
+        description: 'Drive file ID of equirect_trim.mp4'
+        required: false
+        default: '1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX'
+        type: string
+      start_frame:
+        description: 'Start frame'
+        required: false
+        default: '0'
+        type: string
+      end_frame:
+        description: 'End frame (blank = full clip)'
+        required: false
+        default: '500'
+        type: string
+
+jobs:
+  mog2-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Generate SSH key pair
+        id: keygen
+        run: |
+          pip install -q cryptography
+          python3 - << 'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+          key  = Ed25519PrivateKey.generate()
+          priv = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
+          pub  = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+          os.makedirs("/tmp", exist_ok=True)
+          with open("/tmp/vastai_key",     "wb") as f: f.write(priv)
+          with open("/tmp/vastai_key.pub", "wb") as f: f.write(pub + b" ffa-track\n")
+          os.chmod("/tmp/vastai_key", 0o600)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("pub_key=" + pub.decode() + " ffa-track\n")
+          print("SSH keypair generated")
+          PY
+
+      - name: Search for Vast.ai offer
+        id: offer
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 - << 'PY'
+          import os, json, urllib.request, urllib.parse, sys
+          API_KEY = os.environ["VAST_API_KEY"]
+          BASE    = "https://console.vast.ai/api/v0"
+          headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
+          def vast_get(path, params=None):
+              url = f"{BASE}{path}"
+              if params: url += "?" + urllib.parse.urlencode(params)
+              with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as r:
+                  return json.loads(r.read())
+          def vast_post(path, data):
+              req = urllib.request.Request(f"{BASE}{path}", data=json.dumps(data).encode(), method="POST", headers=headers)
+              with urllib.request.urlopen(req) as r: return json.loads(r.read())
+          pub_key = open("/tmp/vastai_key.pub").read().strip()
+          vast_post("/ssh/", {"ssh_key": pub_key})
+          query = {"verified": {"eq": True}, "rentable": {"eq": True}, "cpu_cores": {"gte": 8},
+                   "cpu_ram": {"gte": 16384}, "disk_space": {"gte": 30}, "inet_down": {"gte": 400}}
+          resp   = vast_get("/bundles/", {"q": json.dumps(query)})
+          offers = resp.get("offers", [])
+          BAD_CPU = ["E5-", "E3-", "Opteron", "Xeon W3", "Xeon X5"]
+          offers = [o for o in offers if not any(s in (o.get("cpu_name") or "") for s in BAD_CPU)]
+          offers.sort(key=lambda o: float(o.get("dph_total", 999)))
+          if not offers: print("ERROR: No offers", file=sys.stderr); sys.exit(1)
+          best = offers[0]
+          print(f"Selected: id={best['id']} cpu={best.get('cpu_name')} dph=${best.get('dph_total')}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"offer_id={best['id']}\noffer_cpu={best.get('cpu_name','unknown')}\n")
+          PY
+
+      - name: Launch Vast.ai instance
+        id: launch
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+          OFFER_ID:     ${{ steps.offer.outputs.offer_id }}
+          OFFER_CPU:    ${{ steps.offer.outputs.offer_cpu }}
+        run: |
+          python3 - << 'PY'
+          import os, json, urllib.request, urllib.parse, time, sys
+          API_KEY = os.environ["VAST_API_KEY"]
+          BASE    = "https://console.vast.ai/api/v0"
+          BASE_V1 = "https://cloud.vast.ai/api/v1"
+          headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
+          def vast_get(path, params=None, base=None):
+              url = f"{(base or BASE)}{path}"
+              if params: url += "?" + urllib.parse.urlencode(params)
+              with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as r:
+                  return json.loads(r.read())
+          def vast_put(path, data):
+              req = urllib.request.Request(f"{BASE}{path}", data=json.dumps(data).encode(), method="PUT", headers=headers)
+              with urllib.request.urlopen(req) as r: return json.loads(r.read())
+          def vast_delete(path, base=None):
+              req = urllib.request.Request(f"{(base or BASE)}{path}", method="DELETE", headers=headers)
+              with urllib.request.urlopen(req, timeout=10) as r: return json.loads(r.read())
+          offer_id = os.environ["OFFER_ID"]
+          pub_key  = open("/tmp/vastai_key.pub").read().strip()
+          result = vast_put(f"/asks/{offer_id}/", {
+              "client_id": "me", "image": "pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime",
+              "disk": 20, "onstart": "", "runtype": "ssh", "ssh_key": pub_key, "env": {},
+          })
+          instance_id = result.get("new_contract")
+          if not instance_id: print(f"ERROR: {result}", file=sys.stderr); sys.exit(1)
+          print(f"Instance ID: {instance_id}")
+          ip = port = None
+          for attempt in range(24):
+              time.sleep(10)
+              resp = vast_get("/instances/", base=BASE_V1)
+              inst = next((x for x in resp.get("instances", []) if x["id"] == instance_id), None)
+              if not inst: continue
+              status    = inst.get("actual_status", "?")
+              this_ip   = inst.get("ssh_host") or inst.get("public_ipaddr")
+              this_port = inst.get("ssh_port", 22)
+              print(f"  [{attempt+1}/24] status={status} ip={this_ip} port={this_port}")
+              if status == "running" and this_ip: ip, port = this_ip, this_port; break
+              if status in ("error", "failed", "stopped"):
+                  try: vast_delete(f"/instances/{instance_id}/", base=BASE_V1)
+                  except: pass
+                  sys.exit(1)
+          if not ip:
+              try: vast_delete(f"/instances/{instance_id}/", base=BASE_V1)
+              except: pass
+              print("ERROR: never reached running", file=sys.stderr); sys.exit(1)
+          print(f"Ready: {ip}:{port}  id={instance_id}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"ip={ip}\nport={port}\ninstance_id={instance_id}\n")
+          PY
+
+      - name: Wait for SSH
+        env:
+          IP:   ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          python3 - << 'PY'
+          import os, socket, time, sys
+          ip, port = os.environ["IP"], int(os.environ["PORT"])
+          for i in range(30):
+              try: s = socket.create_connection((ip, port), timeout=5); s.close(); print(f"SSH open after {(i+1)*5}s"); break
+              except: print(f"  [{i+1}/30] not ready"); time.sleep(5)
+          else: print("ERROR: SSH never came up", file=sys.stderr); sys.exit(1)
+          PY
+          sleep 20
+
+      - name: Install dependencies
+        env:
+          IP:   ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+          for i in $(seq 1 24); do $SSH "nproc" 2>/dev/null && break; echo "SSH not ready ($i/24)"; sleep 5; done
+          $SSH "apt-get update -qq && apt-get install -y --no-install-recommends aria2 libgl1 libglib2.0-0 > /dev/null"
+          $SSH "pip install -q opencv-python-headless numpy"
+          $SSH "python3 -c \"import cv2, numpy; print('deps OK')\""
+
+      - name: Download equirect_trim.mp4 from Drive
+        env:
+          IP:                  ${{ steps.launch.outputs.ip }}
+          PORT:                ${{ steps.launch.outputs.port }}
+          EQUIRECT_FILE_ID:    ${{ github.event.inputs.equirect_file_id }}
+          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          pip install -q google-auth google-auth-oauthlib google-api-python-client
+          echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+          python3 - << 'PY'
+          import os, json, urllib.request as _req
+          token_data = json.loads(open("/tmp/youtube_token.json").read())
+          creds_data = json.loads(open("/tmp/youtube_credentials.json").read())
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
+                                "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
+          r = _req.urlopen(_req.Request(token_uri, data=payload, headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok: raise RuntimeError(f"Token refresh failed: {tok}")
+          open("/tmp/drive_token.txt", "w").write(tok["access_token"])
+          print(f"Token OK (expires_in={tok.get('expires_in')}s)")
+          PY
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          $SSH "mkdir -p /tmp/ffa_track && aria2c -x 8 -s 8 --file-allocation=none \
+            --header='Authorization: Bearer $ACCESS_TOKEN' \
+            --dir=/tmp/ffa_track --out=equirect_trim.mp4 \
+            'https://www.googleapis.com/drive/v3/files/$EQUIRECT_FILE_ID?alt=media' 2>&1 | tail -5"
+          $SSH "du -sh /tmp/ffa_track/equirect_trim.mp4"
+
+      - name: Upload scripts and run MOG2 detector
+        env:
+          IP:           ${{ steps.launch.outputs.ip }}
+          PORT:         ${{ steps.launch.outputs.port }}
+          START_FRAME:  ${{ github.event.inputs.start_frame }}
+          END_FRAME:    ${{ github.event.inputs.end_frame }}
+        run: |
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 root@$IP"
+          # Upload mog2_detector.py
+          B64=$(python3 -c "import base64; print(base64.b64encode(open('ball_tracker/mog2_detector.py','rb').read()).decode())")
+          $SSH "echo '$B64' | base64 -d > /tmp/ffa_track/mog2_detector.py && echo 'mog2_detector.py uploaded'"
+          # Upload venue_mask.json
+          B64M=$(python3 -c "import base64; print(base64.b64encode(open('ball_tracker/venue_mask.json','rb').read()).decode())")
+          $SSH "echo '$B64M' | base64 -d > /tmp/ffa_track/venue_mask.json && echo 'venue_mask.json uploaded'"
+          # Run detector
+          $SSH "cd /tmp/ffa_track && python3 mog2_detector.py equirect_trim.mp4 \
+            --venue-mask venue_mask.json \
+            --output mog2_candidates.json \
+            --start-frame $START_FRAME \
+            --end-frame $END_FRAME"
+          $SSH "wc -c /tmp/ffa_track/mog2_candidates.json && echo 'Output OK'"
+
+      - name: Pull results
+        env:
+          IP:   ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          mkdir -p mog2_output
+          scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no \
+            root@$IP:/tmp/ffa_track/mog2_candidates.json mog2_output/
+          ls -lh mog2_output/
+
+      - name: Upload results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mog2-candidates-${{ github.run_id }}
+          path: mog2_output/mog2_candidates.json
+          retention-days: 7
+
+      - name: Terminate Vast.ai instance
+        if: always()
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+          INSTANCE_ID:  ${{ steps.launch.outputs.instance_id }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, json
+          API_KEY     = os.environ["VAST_API_KEY"]
+          instance_id = os.environ.get("INSTANCE_ID", "")
+          if not instance_id: print("No instance ID"); exit(0)
+          headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+          req = urllib.request.Request(f"https://console.vast.ai/api/v0/instances/{instance_id}/",
+                                       method="DELETE", headers=headers)
+          try:
+              urllib.request.urlopen(req, timeout=15)
+              print(f"Instance {instance_id} terminated OK")
+          except Exception as e:
+              print(f"Terminate failed: {e}")
+          PY
