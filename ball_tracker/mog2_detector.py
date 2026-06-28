@@ -188,7 +188,7 @@ def parse_args():
     parser.add_argument("--detect-shadows", action="store_true", default=False)
     parser.add_argument("--min-blob-area", type=float, default=100)
     parser.add_argument("--max-blob-area", type=float, default=800)
-    parser.add_argument("--min-circularity", type=float, default=0.55)
+    parser.add_argument("--min-circularity", type=float, default=0.50)
     parser.add_argument("--max-aspect-ratio", type=float, default=2.5)
     return parser.parse_args()
 
