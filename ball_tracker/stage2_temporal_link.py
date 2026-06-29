@@ -351,9 +351,23 @@ class Tracklet:
               + 0.20 * vel_consistency
             )
 
+        # flight detection — ball in air: sparse, fast, large displacement
+        # These never accumulate enough observations to pass MIN_OBS_FOR_ANCHOR
+        # but their kinematic signature is distinct from noise.
+        is_flight = (
+            not rejected_static
+            and obs_count >= 2
+            and mean_vel >= 1.5        # deg/frame — fast moving
+            and net_disp >= 5.0        # crossed meaningful distance
+            and spatial_spread >= 2.0  # not static
+            and mean_conf >= MIN_MEAN_CONF_FOR_ANCHOR
+        )
+
         # status
         if rejected_static:
             status = "rejected_static"
+        elif is_flight:
+            status = "flight_anchor"
         elif obs_count < MIN_OBS_FOR_SCORE:
             status = "fragment"
         else:
@@ -597,7 +611,7 @@ def run(args):
     all_tracklets = [t.finalise(static_regions) for t in closed]
 
     # ── Gap detection ─────────────────────────────────────────────────────────
-    anchor_tracklets = [t for t in all_tracklets if t["status"] == "anchor"]
+    anchor_tracklets = [t for t in all_tracklets if t["status"] in ("anchor", "flight_anchor")]
     anchor_tracklets.sort(key=lambda t: t["start_frame"])
 
     gaps = []
