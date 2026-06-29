@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 29 June 2026 (session 14) — MOG2 run 3 reviewed (ChatGPT). Run 4 dispatched with varThreshold=10, history=200. 360-mog2-detector.yml updated to expose mog2_var_threshold and mog2_history inputs. YOLO crop reprojection (gnomonic) scoped as Phase 5 — deferred until MOG2 wired as primary. Frame 472 still not recovered — stationary ball absorbed into MOG2 background, not a shape filter problem.
+**Last reconciled:** 29 June 2026 (session 15) — MOG2 tuning COMPLETE. Run 4 (varThreshold=10, history=200) confirmed frame 472 still empty — stationary ball is structural MOG2 limitation, not tunable. Run 3 params locked as defaults (min-circ=0.50, varThreshold=16, history=500, 65.8% coverage, 558 blobs). Next: wire MOG2 into Stage 1 as primary detector, define zoom-out trigger thresholds.
 
 ## Start here
 
@@ -329,13 +329,18 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 - Frame 472: still [] — stationary ball absorbed into MOG2 background (not a shape problem)
 - Run 3 accepted as working baseline
 
-**Run 4 — DISPATCHED UNVERIFIED:**
-- `varThreshold=10`, `history=200`, all other params held at run 3 values
-- Workflow updated: `360-mog2-detector.yml` now exposes `--mog2-var-threshold` and `--mog2-history` as dispatch inputs (commit `3eea6b5`)
-- Key acceptance check: does frame 472 have a candidate?
+**Run 4 — VERIFIED, REJECTED (29 June 2026):**
+- `varThreshold=10`, `history=200` — Active frames 52.0% (260/500), 360 blobs, median 1/frame
+- Frame 472: still [] — confirms stationary ball is structural MOG2 limitation (background absorption), not threshold-tunable
+- Run 4 params rejected. Run 3 locked as defaults.
+
+**MOG2 TUNING COMPLETE — Run 3 is the wiring target:**
+- `min-circularity=0.50`, `varThreshold=16`, `history=500`
+- 65.8% coverage, 558 blobs, median 1/frame, clean blob sizes
+- Stationary ball loss handled by Kalman bridge + zoom-out (correct layer)
+- Future option: YOLO check on held region during MOG2 gap (park, don't build now)
 
 **Not yet done:**
-- Review run 4 artifact — frame 472 recovery?
 - Define zoom-out trigger thresholds (blob count, confidence gap, gap frame length)
 - Wire into Stage 1 candidate generation (MOG2 primary, YOLO fallback)
 
@@ -360,15 +365,14 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 ## Immediate plan for Johnson
 
-1. **Review run 4 MOG2 results** — paste artifact to ChatGPT. Key question: does frame 472 now have a candidate?
-2. If frame 472 recovered: run 4 params become new defaults. Define zoom-out trigger thresholds and wire MOG2 into Stage 1.
-3. If frame 472 still missed: MOG2 cannot recover stationary balls without fundamentally different approach. Accept limitation, wire run 3 params, rely on Kalman bridge + zoom-out for stationary ball loss.
-4. Phase 4 tracker run — verify `pitch_geometry_suppression_count > 0` — still pending.
-5. GoPro MAX 2 geometry recalibration — on first recorded clip.
-6. Phase 5 (deferred): gnomonic reprojection for YOLO crops.
+1. **Wire MOG2 into Stage 1** — MOG2 primary, YOLO fallback. Define zoom-out trigger thresholds (blob count, confidence gap, gap frame length).
+2. Phase 4 tracker run — verify `pitch_geometry_suppression_count > 0` — still pending.
+3. GoPro MAX 2 geometry recalibration — on first recorded clip.
+4. Phase 5 (deferred): gnomonic reprojection for YOLO crops.
 
 ## Compact change log
 
+- **2026-06-29 (session 15):** MOG2 run 4 (varThreshold=10, history=200) verified — 52.0% coverage, 360 blobs, frame 472 still empty. Stationary ball confirmed as structural MOG2 limitation. Run 3 locked as wiring target. Offer filter relaxed in 360-mog2-detector.yml (commit `5eae33e`): cpu_cores>=4, ram>=8GB.
 - **2026-06-29 (session 14):** MOG2 run 3 reviewed by ChatGPT — ACCEPTED. 558 blobs, 65.8% coverage, median 1/frame, clean sizes, no noise blowup. Frame 472 still missed — identified as MOG2 background absorption (not circularity). `360-mog2-detector.yml` updated to expose `--mog2-var-threshold` and `--mog2-history` dispatch inputs (commit `3eea6b5`). Run 4 dispatched: varThreshold=10, history=200. YOLO crop gnomonic reprojection scoped as Phase 5 (deferred). Discussion: Stage 1 already uses 4×110° yaw crops — partial distortion reduction but not full gnomonic reprojection.
 - **2026-06-29 (session 13):** MOG2 tuning session. venue_calibration.py rewritten headless (commit `a4640ae`). venue_mask.json created — 19-point St. Margarets polygon, schema fix (commit `f6b969a`). mog2_detector.py tuned: aspect ratio filter `--max-aspect-ratio 2.5`, min-blob-area 100, max-blob-area 800 (commit `5fdebb1`); then min-circularity loosened 0.55→0.50 after frame 472 confirmed visible ground ball missed (commit `10dfaf6`). Run 3 dispatched, awaiting review. Also: geometry config renamed aylestone→st_margarets throughout (commits `d9b64ab`, `e8e478c`, `fa3c568`, `37648fa`, `32783473`).
 - **2026-06-28 (session 12b):** MOG2 blob detection prototype built — `ball_tracker/mog2_detector.py` (commit `1f57b2b`). Standalone, CLI-tunable MOG2/blob thresholds, venue mask support, output JSON matches Stage 1 candidate schema (`source: "mog2"`). Not yet tested on real clip or wired into pipeline.
@@ -387,4 +391,5 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 - **2026-06-24:** FootAndBall benchmark rejected; backward-anchor propagation and football-YOLO adapter built (experiments only).
 - **2026-06-24:** Candidate-fusion, pose selection, temporal ball-likeness score all rejected.
 - **2026-06-24:** Geometry propagation verified (run `28107675223`).
+
 
