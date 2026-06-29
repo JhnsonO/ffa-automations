@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
 """
-FFA 360 Render Segment — v6
+FFA 360 Render Segment — v7
 ============================
 Pure render step. Reads tracking.json (pre-computed), renders a frame window
 as two outputs:
   - render_clean.mp4  : follow-cam output, no overlays
   - render_debug.mp4  : same + HUD overlay + equirect inset with ball marker
 
-v5: Smooth zoom-out fallback — no hard cut.
+v7 changes (over v6):
+  - Wide fallback target uses --fallback-yaw (pitch centre), NOT last ball yaw.
+    Last ball yaw was causing camera to freeze on fence/trees when ball lost.
+  - Wide fallback pitch locked to FALLBACK_PITCH (3° default), not inherited
+    from ball-tracking pitch.
+  - Camera transition smoothing: EMA (alpha=0.12) applied to yaw/pitch whenever
+    delta exceeds 5° between frames, preventing jitter on state transitions.
+  - HUD target values now always defined (no ??? display).
+
+v5/v6: Smooth zoom-out fallback — no hard cut.
     When ball confidence falls, the camera behaves like a human operator:
       - holds the last follow direction briefly
       - continuously widens FOV from follow FOV (90°) toward FALLBACK_FOV
@@ -25,8 +34,8 @@ Render modes:
   (FOLLOW is re-entered when t reaches 0 and EMA is snapped)
 
 Config (overridable via CLI):
-  FALLBACK_YAW          — wide view target yaw
-  FALLBACK_PITCH        — wide view target pitch (lift upward, try +5 / +8)
+  FALLBACK_YAW          — wide view target yaw (pitch centre of venue)
+  FALLBACK_PITCH        — wide view target pitch (locked in wide hold, default 3°)
   FALLBACK_FOV          — wide view target FOV (degrees) — 120° default
   HOLD_BEFORE_ZOOM      — frames of hold before zoom begins
   FALLBACK_ZOOM_FRAMES  — frames over which zoom-out animation completes (~1–1.5s)
@@ -64,10 +73,10 @@ HUD_COLOR    = (255, 255, 255)
 HUD_SHADOW   = (0, 0, 0)
 
 # ---------------------------------------------------------------------------
-# v5 Fallback config
+# v7 Fallback config
 # ---------------------------------------------------------------------------
-FALLBACK_YAW          = 0.0    # pitch-centre yaw
-FALLBACK_PITCH        = 5.0    # lift target — test +5 and +8
+FALLBACK_YAW          = 0.0    # pitch-centre yaw — wide target, NOT last ball pos
+FALLBACK_PITCH        = 3.0    # locked pitch for wide hold (lower = more pitch view)
 FALLBACK_FOV          = 130.0  # local wide fallback FOV
 FALLBACK_ROLL         = 4.0    # horizon-levelling roll offset for this venue (degrees)
 HOLD_BEFORE_ZOOM      = 15     # frames hold at last follow pose before zoom begins
@@ -76,6 +85,10 @@ REACQUIRE_MIN_FRAMES  = 5      # consecutive confirmed frames before zoom-in beg
 
 EMA_ALPHA_TRACKING    = 0.18
 EMA_ALPHA_LOSS        = 0.08
+
+# v7: transition smoothing — applied when camera delta exceeds this threshold
+TRANSITION_SMOOTH_ALPHA  = 0.12   # EMA alpha for yaw/pitch on large transitions
+TRANSITION_SMOOTH_THRESH = 5.0    # degrees — below this, no smoothing applied
 
 # ---------------------------------------------------------------------------
 # Render states
@@ -158,6 +171,22 @@ def lerp_val(a, b, t):
     return a + t * (b - a)
 
 
+def smooth_yaw(current, target, alpha, thresh):
+    """Apply EMA smoothing only when delta exceeds thresh degrees."""
+    diff = (target - current + 540) % 360 - 180
+    if abs(diff) < thresh:
+        return target
+    return current + alpha * diff
+
+
+def smooth_val(current, target, alpha, thresh):
+    """Apply EMA smoothing only when delta exceeds thresh degrees."""
+    diff = target - current
+    if abs(diff) < thresh:
+        return target
+    return current + alpha * diff
+
+
 # ---------------------------------------------------------------------------
 # HUD
 # ---------------------------------------------------------------------------
@@ -201,7 +230,7 @@ def draw_hud(frame, frame_data, frame_idx, fps, cam_yaw, cam_pitch, cam_fov,
     if render_mode in (RENDER_ZOOMING_OUT, RENDER_ZOOMING_IN, RENDER_WIDE_HOLD):
         zoom_pct = int(zoom_t * 100)
         draw_text_shadowed(out,
-                           f"zoom_t={zoom_t:.2f} ({zoom_pct}%)  target=({fallback_yaw:.0f}°,{fallback_pitch:.0f}°,{fallback_fov:.0f}°fov)  hold={hold_counter}",
+                           f"zoom_t={zoom_t:.2f} ({zoom_pct}%)  target=({fallback_yaw:.1f}°,{fallback_pitch:.1f}°,{fallback_fov:.1f}°fov)  hold={hold_counter}",
                            (10, 162), HUD_SCALE, (80, 160, 255), HUD_THICK)
     elif render_mode == RENDER_ZOOMING_IN:
         draw_text_shadowed(out,
@@ -247,14 +276,17 @@ def draw_equirect_inset(equirect_frame, frame_data, inset_w, inset_h):
 
 
 # ---------------------------------------------------------------------------
-# v5 Smooth Zoom Fallback FSM
+# v7 Smooth Zoom Fallback FSM
 # ---------------------------------------------------------------------------
 class SmoothZoomFallbackFSM:
     """
     FOLLOW      : ball confirmed → EMA follow-cam, FOV=OUTPUT_FOV
     ZOOMING_OUT : ball lost (after hold) → t advances 0→1, camera animates to wide pose
-    WIDE_HOLD   : t=1, camera at wide pose, waiting for ball
+    WIDE_HOLD   : t=1, camera at wide pose (pitch-centre yaw, locked pitch), waiting for ball
     ZOOMING_IN  : ball reacquired → t reverses 1→0, camera returns to follow pose
+
+    v7 key change: wide_target_yaw is always fallback_yaw (pitch centre), NOT last ball yaw.
+    Wide hold pitch is always fallback_pitch (locked), NOT inherited from tracking.
     """
 
     def __init__(self, fallback_yaw, fallback_pitch, fallback_fov, fallback_roll,
@@ -265,20 +297,21 @@ class SmoothZoomFallbackFSM:
         self.reacquire_streak  = 0
         self.zoom_t            = 0.0   # 0 = full follow, 1 = full wide
         # Anchor poses for animation
-        self.zoom_start_yaw    = 0.0   # yaw/pitch/fov/roll at moment zoom-out began
+        self.zoom_start_yaw    = 0.0
         self.zoom_start_pitch  = 0.0
         self.zoom_start_fov    = OUTPUT_FOV
-        self.zoom_start_roll   = 0.0   # always 0 when leaving FOLLOW
-        # Fallback targets
+        self.zoom_start_roll   = 0.0
+        # Fallback targets — wide_target_yaw is ALWAYS fallback_yaw (pitch centre)
         self.fallback_yaw      = fallback_yaw
         self.fallback_pitch    = fallback_pitch
         self.fallback_fov      = fallback_fov
         self.fallback_roll     = fallback_roll
-        # Last confirmed FOLLOW pose. This becomes the local wide anchor.
+        # v7: wide target is fixed at pitch centre, not last ball position
+        self.wide_target_yaw   = fallback_yaw
+        self.wide_target_pitch = fallback_pitch
+        # Last confirmed FOLLOW pose (used only for zoom-out start anchor)
         self.last_trusted_yaw   = None
         self.last_trusted_pitch = None
-        self.wide_target_yaw    = fallback_yaw
-        self.wide_target_pitch  = fallback_pitch
 
     def _interp_pose(self, t):
         """Interpolate from zoom-start pose to wide pose using eased t."""
@@ -319,17 +352,15 @@ class SmoothZoomFallbackFSM:
                 )
                 self.hold_counter += 1
                 if self.hold_counter >= HOLD_BEFORE_ZOOM:
-                    # Keep the last trusted FOLLOW pose and widen around it.
-                    # Only use the generic pitch-centre fallback before any
-                    # trusted pose has ever been recorded.
                     self.mode             = RENDER_ZOOMING_OUT
                     self.zoom_t           = 0.0
                     self.zoom_start_yaw   = hold_yaw
                     self.zoom_start_pitch = hold_pitch
                     self.zoom_start_fov   = OUTPUT_FOV
                     self.zoom_start_roll  = 0.0
-                    self.wide_target_yaw   = hold_yaw
-                    self.wide_target_pitch = hold_pitch
+                    # v7: wide target is ALWAYS pitch-centre yaw + locked pitch
+                    self.wide_target_yaw   = self.fallback_yaw
+                    self.wide_target_pitch = self.fallback_pitch
                     self.reacquire_streak = 0
                 return (
                     hold_yaw,
@@ -359,7 +390,6 @@ class SmoothZoomFallbackFSM:
                 self.reacquire_streak += 1
                 if self.reacquire_streak >= REACQUIRE_MIN_FRAMES:
                     self.mode             = RENDER_ZOOMING_IN
-                    # Anchor zoom-in FROM current wide pose
                     self.zoom_start_yaw   = yaw
                     self.zoom_start_pitch = pitch
                     self.zoom_start_fov   = fov
@@ -372,7 +402,6 @@ class SmoothZoomFallbackFSM:
             if confirmed:
                 self.reacquire_streak += 1
                 self.zoom_t = max(0.0, self.zoom_t - dt_in)
-                # Interpolate from wide back toward live EMA (update target each frame)
                 et = ease_inout(self.zoom_t)
                 yaw   = lerp_yaw(ema_yaw,   self.zoom_start_yaw,   et)
                 pitch = lerp_val(ema_pitch,  self.zoom_start_pitch, et)
@@ -386,7 +415,6 @@ class SmoothZoomFallbackFSM:
                     return ema_yaw, ema_pitch, OUTPUT_FOV, 0.0, RENDER_FOLLOW, 0.0, 0, 0
                 return yaw, pitch, fov, roll, RENDER_ZOOMING_IN, self.zoom_t, self.hold_counter, self.reacquire_streak
             else:
-                # Lost again — zoom back out from current position
                 cur_yaw, cur_pitch, cur_fov, roll = self._interp_pose(self.zoom_t)
                 self.mode             = RENDER_ZOOMING_OUT
                 self.zoom_start_yaw   = cur_yaw
@@ -407,7 +435,7 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
                    fallback_yaw, fallback_pitch, fallback_fov, fallback_roll,
                    reacquire_blend_frames=20):
 
-    print("[render v6] Loading tracking.json...")
+    print("[render v7] Loading tracking.json...")
     with open(tracking_path) as f:
         tracking = json.load(f)
 
@@ -415,11 +443,11 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
     frames_data   = tracking.get("frames", [])
     total_tracked = len(frames_data)
     zoom_secs     = FALLBACK_ZOOM_FRAMES / fps
-    print(f"[render v6] {total_tracked} frames @ {fps:.2f} fps")
-    print(f"[render v6] Rendering frames {start_frame}–{end_frame}")
-    print(f"[render v6] Zoom: {FALLBACK_ZOOM_FRAMES} frames ({zoom_secs:.2f}s)  "
+    print(f"[render v7] {total_tracked} frames @ {fps:.2f} fps")
+    print(f"[render v7] Rendering frames {start_frame}–{end_frame}")
+    print(f"[render v7] Zoom: {FALLBACK_ZOOM_FRAMES} frames ({zoom_secs:.2f}s)  "
           f"hold={HOLD_BEFORE_ZOOM}fr")
-    print(f"[render v6] Wide target: yaw={fallback_yaw}° pitch={fallback_pitch}° "
+    print(f"[render v7] Wide target: yaw={fallback_yaw}° pitch={fallback_pitch}° "
           f"fov={fallback_fov}° roll={fallback_roll}°")
 
     end_frame = min(end_frame, total_tracked)
@@ -449,6 +477,10 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
     ema_yaw_ref = 0.0
     prev_best_score = None
 
+    # v7: transition smoothing state
+    smooth_cam_yaw   = None
+    smooth_cam_pitch = None
+
     fsm = SmoothZoomFallbackFSM(fallback_yaw, fallback_pitch, fallback_fov, fallback_roll,
                                 reacquire_blend_frames=reacquire_blend_frames)
     rendered = 0
@@ -456,7 +488,7 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
     for frame_idx in range(start_frame, end_frame):
         ret, equirect = cap.read()
         if not ret:
-            print(f"[render v6] Video ended at frame {frame_idx}")
+            print(f"[render v7] Video ended at frame {frame_idx}")
             break
 
         frame_data    = frames_data[frame_idx] if frame_idx < len(frames_data) else {}
@@ -492,16 +524,24 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
             ema_yaw, ema_pitch, tracker_state, best_score
         )
 
+        # v7: apply transition smoothing to camera yaw/pitch
+        if smooth_cam_yaw is None:
+            smooth_cam_yaw   = cam_yaw
+            smooth_cam_pitch = cam_pitch
+        else:
+            smooth_cam_yaw   = smooth_yaw(smooth_cam_yaw,   cam_yaw,   TRANSITION_SMOOTH_ALPHA, TRANSITION_SMOOTH_THRESH)
+            smooth_cam_pitch = smooth_val(smooth_cam_pitch, cam_pitch, TRANSITION_SMOOTH_ALPHA, TRANSITION_SMOOTH_THRESH)
+
         # Lead offset only when fully in follow (fades out during zoom)
         lead = LEAD_DEG * (1.0 - zoom_t)
-        final_cam_yaw = cam_yaw + lead
+        final_cam_yaw = smooth_cam_yaw + lead
 
-        clean = extract_crop_frame(equirect, final_cam_yaw, cam_pitch, cam_fov,
+        clean = extract_crop_frame(equirect, final_cam_yaw, smooth_cam_pitch, cam_fov,
                                    OUTPUT_W, OUTPUT_H, roll_deg=cam_roll)
         writer_clean.stdin.write(clean.tobytes())
 
         debug = draw_hud(clean, frame_data, frame_idx, fps,
-                         final_cam_yaw, cam_pitch, cam_fov,
+                         final_cam_yaw, smooth_cam_pitch, cam_fov,
                          render_mode, zoom_t, hold_ctr, reacq_streak,
                          fsm.wide_target_yaw,
                          fsm.wide_target_pitch,
@@ -515,17 +555,17 @@ def render_segment(equirect_path, tracking_path, start_frame, end_frame,
 
         rendered += 1
         if rendered % 100 == 0:
-            print(f"[render v6] frame {frame_idx}  mode={render_mode}  "
-                  f"cam=({final_cam_yaw:.1f},{cam_pitch:.1f})  fov={cam_fov:.1f}  t={zoom_t:.2f}")
+            print(f"[render v7] frame {frame_idx}  mode={render_mode}  "
+                  f"cam=({final_cam_yaw:.1f},{smooth_cam_pitch:.1f})  fov={cam_fov:.1f}  t={zoom_t:.2f}")
 
     cap.release()
     writer_clean.stdin.close()
     writer_debug.stdin.close()
     writer_clean.wait()
     writer_debug.wait()
-    print(f"[render v6] Done. {rendered} frames rendered.")
-    print(f"[render v6] Clean : {output_clean}")
-    print(f"[render v6] Debug : {output_debug}")
+    print(f"[render v7] Done. {rendered} frames rendered.")
+    print(f"[render v7] Clean : {output_clean}")
+    print(f"[render v7] Debug : {output_debug}")
 
 
 # ---------------------------------------------------------------------------
@@ -563,5 +603,3 @@ if __name__ == "__main__":
         fallback_roll=args.fallback_roll,
         reacquire_blend_frames=args.reacquire_blend_frames,
     )
-
-
