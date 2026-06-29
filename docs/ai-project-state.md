@@ -224,6 +224,34 @@ Run `28114044649`, artifact `7856116823`. Detected players, not ball reliably. D
 
 **Phase A is COMPLETE. Phase B is unlocked.**
 
+### STAGE 2 — MOG2-PRIMARY RUN — VERIFIED ✅ (29 June 2026)
+
+**Run:** `28355256427`, artifact `7944978610`
+**Input:** Stage 1 artifact `7942126312` (MOG2-primary, 3597 frames)
+
+| Metric | Value |
+|---|---|
+| Total tracklets | 376 |
+| Anchors | 25 |
+| Passing | 96 |
+| Fragments | 255 |
+| Static suspect anchors | 0 |
+| Gaps | 16 |
+
+**Human adjudication (Johnson, 29 June 2026):**
+- likely_ball (20): T0003, T0005, T0009, T0073, T0083, T0101, T0106, T0205, T0207, T0218, T0224, T0237, T0241, T0270, T0351, T0356, T0365, T0366, T0371, T0373
+- likely_false_positive (5): T0016, T0234, T0265, T0291, T0328
+
+**Result vs prior YOLO-primary:** 20/25 verified ball anchors vs 2/41 previously. MOG2-primary confirmed as significant quality improvement.
+
+**Large gaps requiring attention:**
+- f162–930 (769 frames): ambiguous_competing_candidates, 55 competing tracklets
+- f1218–2180 (963 frames): ambiguous_competing_candidates
+
+**Next:** Decide — (A) wire verified anchors into full session render, or (B) diagnose f162–930 gap (ball likely present but drowned by competing blobs).
+
+---
+
 ### PHASE B — STATUS: COMPLETE — VISUAL GATE IN PROGRESS
 
 **All Phase B code verified and merged to main.**
