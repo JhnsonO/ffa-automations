@@ -39,7 +39,7 @@ on:
         default: ''
         type: string
       smoke_test:
-        description: 'Smoke test only (preflight + 10 frames). Overrides max_frames. Use to verify GPU before full run.'
+        description: 'Smoke test only (preflight + 50 frames). Overrides max_frames.'
         required: false
         default: 'false'
         type: choice
@@ -123,8 +123,6 @@ jobs:
           if excluded:
               offers = [o for o in offers if str(o["id"]) not in excluded]
 
-          # GPU allowlist: only architectures known-compatible with pytorch/pytorch:2.1.0-cuda11.8
-          # Reject Blackwell (B100, B200, RTX PRO 4000 Blackwell, GB200) — unsupported by CUDA 11.8
           BLACKWELL_REJECT = ["blackwell", "b100", "b200", "gb200", "rtx pro 4000 b"]
           GPU_ALLOWLIST    = ["3090", "4090", "a40", "a100", "l40"]
           def gpu_ok(o):
@@ -144,7 +142,6 @@ jobs:
           def score(o):
               dph = float(o.get("dph_total", 999))
               gpu = (o.get("gpu_name") or "").lower()
-              # Prefer A100/A40 (most reliable CUDA 11.8 compat) then 4090/3090/L40
               if any(g in gpu for g in ["a100", "a40"]):      bonus = 0.10
               elif any(g in gpu for g in ["4090", "l40"]):    bonus = 0.07
               elif "3090" in gpu:                              bonus = 0.05
@@ -330,16 +327,19 @@ jobs:
             'https://www.googleapis.com/drive/v3/files/$STAGE0_DETECTIONS_FILE_ID?alt=media' 2>&1 | tail -3"
           $SSH "ls -lh /tmp/ffa_stage1/*.json"
 
-      - name: Upload Stage 1 module and YOLO model
+      - name: Upload Stage 1 module, YOLO model, and venue mask
         env:
           IP:   ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
           echo "--- Uploading stage1_candidate_gen.py ---"
-          python3 -c "import base64; open('/tmp/s1_b64.txt','w').write(base64.b64encode(open('ball_tracker/stage1_candidate_gen.py','rb').read()).decode())"
+          B64=$(python3 -c "import base64; open('/tmp/s1_b64.txt','w').write(base64.b64encode(open('ball_tracker/stage1_candidate_gen.py','rb').read()).decode())")
           B64=$(cat /tmp/s1_b64.txt)
           $SSH "echo '$B64' | base64 -d > /tmp/ffa_stage1/stage1_candidate_gen.py && echo 'module uploaded OK'"
+          echo "--- Uploading venue_mask.json ---"
+          B64M=$(python3 -c "import base64; print(base64.b64encode(open('ball_tracker/venue_mask.json','rb').read()).decode())")
+          $SSH "echo '$B64M' | base64 -d > /tmp/ffa_stage1/venue_mask.json && echo 'venue_mask.json uploaded OK'"
           echo "--- Downloading YOLO ball model ---"
           $SSH "pip install -q ultralytics gdown && \
             mkdir -p /tmp/ffa_stage1/models && \
@@ -349,7 +349,7 @@ jobs:
             else echo 'model already present'; fi && \
             ls -lh /tmp/ffa_stage1/models/football-ball-detection.pt"
 
-      - name: Run Stage 1 candidate generation
+      - name: Launch Stage 1 in background
         env:
           IP:            ${{ steps.launch.outputs.ip }}
           PORT:          ${{ steps.launch.outputs.port }}
@@ -358,8 +358,7 @@ jobs:
           MAX_FRAMES:    ${{ github.event.inputs.max_frames }}
           SMOKE_TEST:    ${{ github.event.inputs.smoke_test }}
         run: |
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=60 -o ServerAliveInterval=30 root@$IP"
-          # Smoke test overrides max_frames unconditionally
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
           if [ "$SMOKE_TEST" = "true" ]; then
             MAXARG="--max-frames 50"
             echo "--- SMOKE TEST MODE: max_frames=50 ---"
@@ -367,17 +366,77 @@ jobs:
             MAXARG=""
             if [ -n "$MAX_FRAMES" ]; then MAXARG="--max-frames $MAX_FRAMES"; fi
           fi
-          echo "--- Running Stage 1 candidate generation ---"
-          $SSH "cd /tmp/ffa_stage1 && PYTHONUNBUFFERED=1 python3 -u stage1_candidate_gen.py \
-            --input              equirect_trim.mp4 \
-            --hotspot-map        hotspot_map.json \
-            --stage0-detections  stage0_detections.json \
-            --output-dir         stage1_output \
-            --weights            models/football-ball-detection.pt \
-            --pitch-min-deg      $PITCH_MIN_DEG \
-            --pitch-max-deg      $PITCH_MAX_DEG \
-            $MAXARG"
-          $SSH "ls -lh /tmp/ffa_stage1/stage1_output/ && echo 'Stage 1 outputs OK'"
+          echo "--- Launching Stage 1 in background ---"
+          $SSH "cd /tmp/ffa_stage1 && rm -f DONE FAILED && \
+            nohup bash -c 'PYTHONUNBUFFERED=1 python3 -u stage1_candidate_gen.py \
+              --input              equirect_trim.mp4 \
+              --hotspot-map        hotspot_map.json \
+              --stage0-detections  stage0_detections.json \
+              --venue-mask         venue_mask.json \
+              --output-dir         stage1_output \
+              --weights            models/football-ball-detection.pt \
+              --pitch-min-deg      $PITCH_MIN_DEG \
+              --pitch-max-deg      $PITCH_MAX_DEG \
+              $MAXARG \
+              && touch /tmp/ffa_stage1/DONE \
+              || echo FAILED > /tmp/ffa_stage1/FAILED' \
+            > /tmp/ffa_stage1/run.log 2>&1 &"
+          echo "Stage 1 launched. PID backgrounded."
+
+      - name: Poll for Stage 1 completion
+        env:
+          IP:   ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          MAX_TICKS=700
+          CONSEC_FAIL=0
+          MAX_CONSEC_FAIL=20
+          LAST_LINE_COUNT=0
+
+          for ((i=1; i<=MAX_TICKS; i++)); do
+            sleep 15
+            OUT=$(ssh -i /tmp/vastai_key -p $PORT \
+                      -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes \
+                      root@$IP \
+                      "tail -n +$(( LAST_LINE_COUNT + 1 )) /tmp/ffa_stage1/run.log 2>/dev/null; \
+                       echo '__S1_STATUS_BEGIN__'; \
+                       if [ -f /tmp/ffa_stage1/DONE ]; then echo DONE; \
+                       elif [ -f /tmp/ffa_stage1/FAILED ]; then echo FAILED; \
+                       else echo RUNNING; fi; \
+                       echo '__S1_LINE_COUNT__'; \
+                       wc -l < /tmp/ffa_stage1/run.log 2>/dev/null || echo 0" 2>/dev/null) || {
+              CONSEC_FAIL=$((CONSEC_FAIL+1))
+              echo "[poll $i] SSH unreachable (${CONSEC_FAIL}/${MAX_CONSEC_FAIL})"
+              if [ "$CONSEC_FAIL" -ge "$MAX_CONSEC_FAIL" ]; then
+                echo "ERROR: instance unreachable for too long"
+                exit 1
+              fi
+              continue
+            }
+            CONSEC_FAIL=0
+
+            NEW_LOG=$(echo "$OUT" | sed -n '1,/^__S1_STATUS_BEGIN__$/{/^__S1_STATUS_BEGIN__$/!p}')
+            STATUS=$(echo "$OUT" | sed -n '/^__S1_STATUS_BEGIN__$/{n;p}')
+            NEW_TOTAL=$(echo "$OUT" | sed -n '/^__S1_LINE_COUNT__$/{n;p}')
+            [ -n "$NEW_LOG" ] && echo "$NEW_LOG"
+            LAST_LINE_COUNT="${NEW_TOTAL:-$LAST_LINE_COUNT}"
+
+            case "$STATUS" in
+              DONE)
+                echo "[poll $i] Stage 1 DONE"
+                exit 0
+                ;;
+              FAILED)
+                echo "[poll $i] Stage 1 FAILED — check run.log above"
+                exit 1
+                ;;
+              *)
+                echo "[poll $i] RUNNING..."
+                ;;
+            esac
+          done
+          echo "ERROR: timed out waiting for Stage 1"
+          exit 1
 
       - name: Pull Stage 1 outputs
         env:
