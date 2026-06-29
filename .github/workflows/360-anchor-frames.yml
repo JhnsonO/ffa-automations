@@ -1,0 +1,70 @@
+name: 360 Anchor Frame Extractor
+
+on:
+  workflow_dispatch:
+    inputs:
+      equirect_file_id:
+        description: 'Drive ID of equirect_trim.mp4'
+        required: true
+        default: '1z2p2FgLsjgvIIBw0HZXWEenckMLWpVNX'
+        type: string
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python3 -c "import subprocess; print('ffmpeg OK')"
+
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          pip install -q google-auth google-auth-oauthlib google-api-python-client
+          echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 - << 'PY'
+          import os, json, urllib.request as _req
+          token_data = json.loads(open("/tmp/youtube_token.json").read())
+          creds_data = json.loads(open("/tmp/youtube_credentials.json").read())
+          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
+          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
+          refresh_token = token_data["refresh_token"]
+          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
+          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
+              "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
+          r = _req.urlopen(_req.Request(token_uri, data=payload,
+                           headers={"Content-Type": "application/json"}, method="POST"))
+          tok = json.loads(r.read())
+          if "access_token" not in tok:
+              raise RuntimeError(f"Token refresh failed: {tok}")
+          with open("/tmp/drive_token.txt", "w") as f:
+              f.write(tok["access_token"])
+          print(f"Access token obtained (expires_in={tok.get('expires_in')}s)")
+          PY
+
+      - name: Extract anchor frames and build contact sheet
+        env:
+          EQUIRECT_FILE_ID: ${{ github.event.inputs.equirect_file_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          python3 ball_tracker/extract_anchor_frames.py \
+            --drive-file-id "$EQUIRECT_FILE_ID" \
+            --access-token  "$ACCESS_TOKEN" \
+            --output-dir    anchor_frames_output
+
+      - name: Upload contact sheet and individual frames
+        uses: actions/upload-artifact@v4
+        with:
+          name: anchor-frames-${{ github.run_id }}
+          path: anchor_frames_output/
+          retention-days: 14
