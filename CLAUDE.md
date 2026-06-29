@@ -25,6 +25,8 @@ Before acting:
 3. Read only files explicitly needed for the active task.
 4. State the current gate and exact files to change in no more than three lines, then proceed.
 
+> **This is mandatory and non-negotiable. Steps 1 and 2 must happen before any other action, including responding to the user's first message.**
+
 Do not request previous chat history or inspect broad logs unless the active task cannot be completed without them.
 
 ## Bound the work
