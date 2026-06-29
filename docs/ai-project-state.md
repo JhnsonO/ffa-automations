@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 29 June 2026 (session 15) — MOG2 tuning COMPLETE. Run 4 (varThreshold=10, history=200) confirmed frame 472 still empty — stationary ball is structural MOG2 limitation, not tunable. Run 3 params locked as defaults (min-circ=0.50, varThreshold=16, history=500, 65.8% coverage, 558 blobs). Next: wire MOG2 into Stage 1 as primary detector, define zoom-out trigger thresholds.
+**Last reconciled:** 29 June 2026 (session 15) — MOG2 wired into Stage 1 as primary detector (commit 5a2cc96). YOLO fallback on 0 or >1 blobs. --no-mog2 flag added. mog2_primary_count + mog2_fallthrough_count in run_summary. Next: dispatch Stage 1 tracker run to verify MOG2 wiring and pitch_geometry_suppression_count > 0.
 
 ## Start here
 
@@ -340,9 +340,17 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 - Stationary ball loss handled by Kalman bridge + zoom-out (correct layer)
 - Future option: YOLO check on held region during MOG2 gap (park, don't build now)
 
+**Wired (commit 5a2cc96):**
+- `ball_tracker/stage1_candidate_gen.py` — MOG2 primary detector integrated
+  - Single blob → use as candidate (source="mog2"), skip YOLO
+  - 0 or >1 blobs → fall through to YOLO (existing logic unchanged)
+  - `--no-mog2` flag for regression testing
+  - `mog2_primary_count` + `mog2_fallthrough_count` added to run_summary.json
+  - py_compile verified ✓
+
 **Not yet done:**
+- Dispatch Stage 1 tracker run to verify MOG2 wiring in production
 - Define zoom-out trigger thresholds (blob count, confidence gap, gap frame length)
-- Wire into Stage 1 candidate generation (MOG2 primary, YOLO fallback)
 
 **Phase 5 scoped (deferred):**
 - Gnomonic reprojection of YOLO crops (equirectangular → flat perspective patches)
@@ -365,13 +373,13 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 ## Immediate plan for Johnson
 
-1. **Wire MOG2 into Stage 1** — MOG2 primary, YOLO fallback. Define zoom-out trigger thresholds (blob count, confidence gap, gap frame length).
-2. Phase 4 tracker run — verify `pitch_geometry_suppression_count > 0` — still pending.
-3. GoPro MAX 2 geometry recalibration — on first recorded clip.
-4. Phase 5 (deferred): gnomonic reprojection for YOLO crops.
+1. **Dispatch Stage 1 tracker run** — verify MOG2 wiring: check `mog2_primary_count > 0` and `mog2_fallthrough_count` in run_summary; verify `pitch_geometry_suppression_count > 0` (Phase 4).
+2. GoPro MAX 2 geometry recalibration — on first recorded clip.
+3. Phase 5 (deferred): gnomonic reprojection for YOLO crops.
 
 ## Compact change log
 
+- **2026-06-29 (session 15b):** MOG2 wired into Stage 1 as primary detector (commit `5a2cc96`). Single MOG2 blob → candidate (source="mog2"), skip YOLO. 0 or >1 blobs → YOLO fallback. --no-mog2 flag added. mog2_primary_count + mog2_fallthrough_count in run_summary. py_compile clean.
 - **2026-06-29 (session 15):** MOG2 run 4 (varThreshold=10, history=200) verified — 52.0% coverage, 360 blobs, frame 472 still empty. Stationary ball confirmed as structural MOG2 limitation. Run 3 locked as wiring target. Offer filter relaxed in 360-mog2-detector.yml (commit `5eae33e`): cpu_cores>=4, ram>=8GB.
 - **2026-06-29 (session 14):** MOG2 run 3 reviewed by ChatGPT — ACCEPTED. 558 blobs, 65.8% coverage, median 1/frame, clean sizes, no noise blowup. Frame 472 still missed — identified as MOG2 background absorption (not circularity). `360-mog2-detector.yml` updated to expose `--mog2-var-threshold` and `--mog2-history` dispatch inputs (commit `3eea6b5`). Run 4 dispatched: varThreshold=10, history=200. YOLO crop gnomonic reprojection scoped as Phase 5 (deferred). Discussion: Stage 1 already uses 4×110° yaw crops — partial distortion reduction but not full gnomonic reprojection.
 - **2026-06-29 (session 13):** MOG2 tuning session. venue_calibration.py rewritten headless (commit `a4640ae`). venue_mask.json created — 19-point St. Margarets polygon, schema fix (commit `f6b969a`). mog2_detector.py tuned: aspect ratio filter `--max-aspect-ratio 2.5`, min-blob-area 100, max-blob-area 800 (commit `5fdebb1`); then min-circularity loosened 0.55→0.50 after frame 472 confirmed visible ground ball missed (commit `10dfaf6`). Run 3 dispatched, awaiting review. Also: geometry config renamed aylestone→st_margarets throughout (commits `d9b64ab`, `e8e478c`, `fa3c568`, `37648fa`, `32783473`).
