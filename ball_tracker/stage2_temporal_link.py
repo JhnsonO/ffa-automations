@@ -357,8 +357,10 @@ class Tracklet:
         is_flight = (
             not rejected_static
             and obs_count >= 2
+            and obs_count <= 10        # flight = sparse; long tracks are ground-ball anchors
             and mean_vel >= 1.5        # deg/frame — fast moving
             and net_disp >= 5.0        # crossed meaningful distance
+            and net_disp <= 60.0       # cap: >60deg in one tracklet = likely linking error
             and spatial_spread >= 2.0  # not static
             and mean_conf >= MIN_MEAN_CONF_FOR_ANCHOR
         )
