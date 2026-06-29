@@ -18,6 +18,16 @@ on:
         required: false
         default: '500'
         type: string
+      mog2_var_threshold:
+        description: 'MOG2 varThreshold (default 16)'
+        required: false
+        default: '10'
+        type: string
+      mog2_history:
+        description: 'MOG2 history frames (default 500)'
+        required: false
+        default: '200'
+        type: string
 
 jobs:
   mog2-test:
@@ -202,10 +212,12 @@ jobs:
 
       - name: Upload scripts and run MOG2 detector
         env:
-          IP:           ${{ steps.launch.outputs.ip }}
-          PORT:         ${{ steps.launch.outputs.port }}
-          START_FRAME:  ${{ github.event.inputs.start_frame }}
-          END_FRAME:    ${{ github.event.inputs.end_frame }}
+          IP:                  ${{ steps.launch.outputs.ip }}
+          PORT:                ${{ steps.launch.outputs.port }}
+          START_FRAME:         ${{ github.event.inputs.start_frame }}
+          END_FRAME:           ${{ github.event.inputs.end_frame }}
+          MOG2_VAR_THRESHOLD:  ${{ github.event.inputs.mog2_var_threshold }}
+          MOG2_HISTORY:        ${{ github.event.inputs.mog2_history }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 root@$IP"
           # Upload mog2_detector.py
@@ -219,7 +231,9 @@ jobs:
             --venue-mask venue_mask.json \
             --output mog2_candidates.json \
             --start-frame $START_FRAME \
-            --end-frame $END_FRAME"
+            --end-frame $END_FRAME \
+            --mog2-var-threshold $MOG2_VAR_THRESHOLD \
+            --mog2-history $MOG2_HISTORY"
           $SSH "wc -c /tmp/ffa_track/mog2_candidates.json && echo 'Output OK'"
 
       - name: Pull results
