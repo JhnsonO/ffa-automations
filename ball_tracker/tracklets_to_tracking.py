@@ -10,7 +10,6 @@ For gap frames: linearly interpolate yaw/pitch between surrounding anchors.
 Gap threshold configurable via --interp-gap-max.
 """
 import argparse, json, math
-import numpy as np
 
 INTERP_GAP_MAX = 90  # interpolate across gaps up to this many frames
 FPS = 29.97
