@@ -122,8 +122,8 @@ def detect_video(args):
 
     venue_mask = load_venue_mask(args.venue_mask, first_frame.shape)
     mog2 = cv2.createBackgroundSubtractorMOG2(
-        history=args.history,
-        varThreshold=args.var_threshold,
+        history=args.mog2_history,
+        varThreshold=args.mog2_var_threshold,
         detectShadows=args.detect_shadows,
     )
 
@@ -183,8 +183,8 @@ def parse_args():
     parser.add_argument("--display", action="store_true", help="Show live blob preview")
     parser.add_argument("--start-frame", type=int, default=0, help="First frame to process")
     parser.add_argument("--end-frame", type=int, default=None, help="Stop before this frame")
-    parser.add_argument("--history", type=int, default=500)
-    parser.add_argument("--var-threshold", type=float, default=50)
+    parser.add_argument("--mog2-var-threshold", type=int, default=16)
+    parser.add_argument("--mog2-history", type=int, default=500)
     parser.add_argument("--detect-shadows", action="store_true", default=False)
     parser.add_argument("--min-blob-area", type=float, default=100)
     parser.add_argument("--max-blob-area", type=float, default=800)
@@ -199,4 +199,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
