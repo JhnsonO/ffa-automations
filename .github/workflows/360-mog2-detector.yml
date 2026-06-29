@@ -78,8 +78,8 @@ jobs:
               with urllib.request.urlopen(req) as r: return json.loads(r.read())
           pub_key = open("/tmp/vastai_key.pub").read().strip()
           vast_post("/ssh/", {"ssh_key": pub_key})
-          query = {"verified": {"eq": True}, "rentable": {"eq": True}, "cpu_cores": {"gte": 8},
-                   "cpu_ram": {"gte": 16384}, "disk_space": {"gte": 30}, "inet_down": {"gte": 400}}
+          query = {"verified": {"eq": True}, "rentable": {"eq": True}, "cpu_cores": {"gte": 4},
+                   "cpu_ram": {"gte": 8192}, "disk_space": {"gte": 20}, "inet_down": {"gte": 200}}
           resp   = vast_get("/bundles/", {"q": json.dumps(query)})
           offers = resp.get("offers", [])
           BAD_CPU = ["E5-", "E3-", "Opteron", "Xeon W3", "Xeon X5"]
