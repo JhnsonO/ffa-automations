@@ -418,6 +418,32 @@ def process_candidate(yaw, pitch, raw_conf, source, crop_yaw,
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# MOG2 equirect blob → yaw/pitch conversion
+# ─────────────────────────────────────────────────────────────────────────────
+def _equirect_pixel_to_yaw_pitch(px, py, frame_width, frame_height):
+    """Convert equirectangular pixel (cx, cy) to (yaw_deg, pitch_deg)."""
+    yaw   = (px / frame_width  - 0.5) * 360.0
+    pitch = (0.5 - py / frame_height) * 180.0
+    return yaw, pitch
+
+
+def _mog2_candidate_geometry(x, y, w, h, frame_width, frame_height):
+    """Build detection_geometry for a MOG2 blob in equirect pixel coords."""
+    area   = w * h
+    aspect = round(w / h, 4) if h > 0 else None
+    return {
+        "bbox_xyxy":         [round(float(x), 2), round(float(y), 2),
+                               round(float(x + w), 2), round(float(y + h), 2)],
+        "bbox_width_px":     round(float(w), 2),
+        "bbox_height_px":    round(float(h), 2),
+        "bbox_area_px":      round(float(area), 2),
+        "bbox_aspect_ratio": aspect,
+        "crop_width_px":     frame_width,
+        "crop_height_px":    frame_height,
+    }
+
+
 def run_stage1(args):
     t0 = time.time()
 
@@ -457,6 +483,15 @@ def run_stage1(args):
         print("[stage1] Venue mask not found; using full frame")
     print(f"[stage1] Clip: {total_frames} frames @ {fps:.2f} fps")
 
+    # ── Initialise MOG2 ──────────────────────────────────────────────────────
+    mog2 = None
+    if not getattr(args, "no_mog2", False) and not args.dry_run:
+        mog2 = cv2.createBackgroundSubtractorMOG2(
+            history=500, varThreshold=16, detectShadows=False
+        )
+        print("[stage1] MOG2 primary detector enabled "
+              "(varThreshold=16, history=500, min-circ=0.50)")
+
     model = None
     if not args.dry_run:
         if not args.weights or not os.path.isfile(args.weights):
@@ -480,6 +515,8 @@ def run_stage1(args):
     n_venue_rejected     = 0   # dropped outside optional venue polygon
     n_kept               = 0   # after venue/pitch filters, penalty applied
     n_nms_warnings       = 0   # NMS log lines captured from Ultralytics logger
+    n_mog2_primary       = 0   # frames where MOG2 sole blob used as candidate
+    n_mog2_fallthrough   = 0   # frames where MOG2 result caused YOLO fallthrough
 
     # Intercept Ultralytics logger for NMS warning lines
     import logging as _logging
@@ -528,15 +565,61 @@ def run_stage1(args):
                 if not ret:
                     all_candidates[frame_idx] = []
                     continue
-                dets = detect_ball_candidates(model, frame)
-            for det in dets:
-                yaw, pitch, conf, crop_yaw, bbox_xyxy, crop_w, crop_h = det
-                geom = _make_detection_geometry(
-                    bbox_xyxy[0], bbox_xyxy[1], bbox_xyxy[2], bbox_xyxy[3],
-                    crop_w, crop_h,
-                )
-                candidates_raw.append((yaw, pitch, conf, crop_yaw, "new_detection", geom))
-            n_new_detected += len(dets)
+
+                # ── MOG2 primary ──────────────────────────────────────────────
+                mog2_used = False
+                if mog2 is not None:
+                    fg_mask = mog2.apply(frame)
+                    # Morphological open to remove noise
+                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                    fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel)
+                    contours, _ = cv2.findContours(
+                        fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    )
+                    blobs = []
+                    for cnt in contours:
+                        area = cv2.contourArea(cnt)
+                        if area < 100 or area > 800:
+                            continue
+                        x, y, w, h = cv2.boundingRect(cnt)
+                        aspect = w / h if h > 0 else 999
+                        if aspect > 2.5:
+                            continue
+                        perim = cv2.arcLength(cnt, True)
+                        circ  = (4 * math.pi * area / (perim * perim)) if perim > 0 else 0
+                        if circ < 0.50:
+                            continue
+                        blobs.append((x, y, w, h, circ))
+
+                    if len(blobs) == 1:
+                        # Single confident blob → use as candidate, skip YOLO
+                        x, y, w, h, circ = blobs[0]
+                        cx = x + w / 2.0
+                        cy_px = y + h / 2.0
+                        yaw, pitch = _equirect_pixel_to_yaw_pitch(
+                            cx, cy_px, frame_width, frame_height
+                        )
+                        geom = _mog2_candidate_geometry(x, y, w, h, frame_width, frame_height)
+                        candidates_raw.append((yaw, pitch, round(circ, 4), None, "mog2", geom))
+                        n_mog2_primary += 1
+                        mog2_used = True
+                    else:
+                        # 0 or >1 blobs → fall through to YOLO
+                        n_mog2_fallthrough += 1
+                else:
+                    # warm MOG2 background model even when not used as primary
+                    pass
+
+                if not mog2_used:
+                    dets = detect_ball_candidates(model, frame)
+                    for det in dets:
+                        yaw, pitch, conf, crop_yaw, bbox_xyxy, crop_w, crop_h = det
+                        geom = _make_detection_geometry(
+                            bbox_xyxy[0], bbox_xyxy[1], bbox_xyxy[2], bbox_xyxy[3],
+                            crop_w, crop_h,
+                        )
+                        candidates_raw.append((yaw, pitch, conf, crop_yaw, "new_detection", geom))
+                    n_new_detected += len(dets)
 
         # ── Apply venue mask, pitch filter + penalty ──────────────────────────
         frame_cands = []
@@ -657,8 +740,10 @@ def run_stage1(args):
         "n_pitch_rejected": n_pitch_rejected,
         "n_venue_rejected": n_venue_rejected,
         "venue_mask_enabled": venue_mask_enabled,
-        "n_kept":          n_kept,
-        "n_nms_warnings":  n_nms_warnings,
+        "n_kept":              n_kept,
+        "n_nms_warnings":      n_nms_warnings,
+        "mog2_primary_count":  n_mog2_primary,
+        "mog2_fallthrough_count": n_mog2_fallthrough,
     }
     out_summary = os.path.join(args.output_dir, "run_summary.json")
     with open(out_summary, "w") as f:
@@ -738,6 +823,8 @@ def main():
                     help="Cap frames processed (quick test)")
     ap.add_argument("--dry-run",            action="store_true",
                     help="Skip detection; reuse Stage 0 data only (pipeline/IO test)")
+    ap.add_argument("--no-mog2",            action="store_true",
+                    help="Disable MOG2 primary detector; use YOLO only (regression test)")
     args = ap.parse_args()
     run_stage1(args)
 
