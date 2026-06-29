@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 28 June 2026 (session 12) — MOG2 blob detection prototype built (`mog2_detector.py`, commit `1f57b2b`). Architecture pivot complete: MOG2 + venue polygon primary detector, YOLO fallback.
+**Last reconciled:** 29 June 2026 (session 13) — MOG2 tuning underway. venue_mask.json created (19-point polygon, St. Margarets). venue_calibration.py rewritten headless. mog2_detector.py tuned (aspect ratio filter, tighter defaults). Two detector runs complete; third run (min-circularity 0.50) dispatched and awaiting ChatGPT review.
 
 ## Start here
 
@@ -302,22 +302,29 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 **Next:** dispatch a tracker run against the known fence-lock clip and verify `hotspot_suppression_count` increases and fence lock at yaw≈−77.4° no longer appears in tracking output.
 
-### MOG2 PROTOTYPE — STATUS: BUILT ✓ (28 June 2026)
+### MOG2 PROTOTYPE — STATUS: TUNING IN PROGRESS (29 June 2026)
 
-**File:** `ball_tracker/mog2_detector.py` (commit `1f57b2b`)
+**File:** `ball_tracker/mog2_detector.py` (commit `10dfaf6`)
 
-**Capabilities:**
-- Standalone — no imports from tracker files or YOLO
-- Inputs: equirect video path, `--venue-mask` (optional), `--output`, `--display`, `--start-frame`, `--end-frame`
-- MOG2 config CLI-tunable: `--history`, `--var-threshold`, `--detect-shadows`, `--min-blob-area`, `--max-blob-area`, `--min-circularity`
-- Output JSON: `frame_candidates` schema with `x`, `y`, `w`, `h`, `conf` (compactness), `source: "mog2"`
-- Venue mask applied via `cv2.fillPoly` + `cv2.bitwise_and` before contour detection
+**Current defaults:**
+- `--min-blob-area 100`, `--max-blob-area 800`, `--min-circularity 0.50`, `--max-aspect-ratio 2.5`, top-5 cap per frame
+
+**Venue mask:** `ball_tracker/venue_mask.json` — 19-point polygon, St. Margarets, commit `f6b969a`
+
+**Test runs on `equirect_trim.mp4` (frames 0–500):**
+
+| Run | min-circ | Total blobs | Active frames | Median/frame | Notes |
+|-----|----------|------------|---------------|--------------|-------|
+| 1 (unfiltered) | 0.30 | 3,000 | 99% | 6 | Too noisy |
+| 2 | 0.55 | 359 | 49.6% | 0 | Too sparse — missed visible ground ball at f472 |
+| 3 | 0.50 | TBC | TBC | TBC | Awaiting ChatGPT review |
+
+**Frame 472 confirmed:** ball visibly on ground, right side of pitch near touchline. Run 2 missed it — confirmed filter was too aggressive.
 
 **Not yet done:**
-- Test run on existing equirect clip — measure blob quality on ground-level play and aerial loss behaviour
+- ChatGPT review of run 3 results
 - Define zoom-out trigger thresholds (blob count, confidence gap, gap frame length)
 - Wire into Stage 1 candidate generation (MOG2 primary, YOLO fallback)
-- Create `venue_mask.json` — run `venue_calibration.py` on St. Margarets clip first
 
 ### PHASE B — BIDIRECTIONAL RESOLVER + VLM INTERFACE (original scope)
 
@@ -335,15 +342,15 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 ## Immediate plan for Johnson
 
-1. Run `mog2_detector.py` on an existing equirect clip — review blob quality, measure aerial loss.
-2. Define zoom-out trigger thresholds based on MOG2 output.
-3. Wire MOG2 into Stage 1 candidate generation (primary source, YOLO fallback).
-4. Create `venue_mask.json` — run `venue_calibration.py` on St. Margarets clip.
-5. Phase 4 tracker run — verify `pitch_geometry_suppression_count > 0` after fence-zone fix.
-6. GoPro MAX 2 geometry recalibration — on first recorded clip.
+1. **Review run 3 MOG2 results** (artifact `7939693235`) — did loosening circularity to 0.50 recover frame 472 without blowing up blob count?
+2. If acceptable: define zoom-out trigger thresholds and wire MOG2 into Stage 1.
+3. If still too sparse: loosen min-circularity one more step to 0.45 and re-run.
+4. Phase 4 tracker run — verify `pitch_geometry_suppression_count > 0` after fence-zone fix.
+5. GoPro MAX 2 geometry recalibration — on first recorded clip.
 
 ## Compact change log
 
+- **2026-06-29 (session 13):** MOG2 tuning session. venue_calibration.py rewritten headless (commit `a4640ae`). venue_mask.json created — 19-point St. Margarets polygon, schema fix (commit `f6b969a`). mog2_detector.py tuned: aspect ratio filter `--max-aspect-ratio 2.5`, min-blob-area 100, max-blob-area 800 (commit `5fdebb1`); then min-circularity loosened 0.55→0.50 after frame 472 confirmed visible ground ball missed (commit `10dfaf6`). Run 3 dispatched, awaiting review. Also: geometry config renamed aylestone→st_margarets throughout (commits `d9b64ab`, `e8e478c`, `fa3c568`, `37648fa`, `32783473`).
 - **2026-06-28 (session 12b):** MOG2 blob detection prototype built — `ball_tracker/mog2_detector.py` (commit `1f57b2b`). Standalone, CLI-tunable MOG2/blob thresholds, venue mask support, output JSON matches Stage 1 candidate schema (`source: "mog2"`). Not yet tested on real clip or wired into pipeline.
 - **2026-06-28 (session 12):** Architecture pivot — MOG2 + venue polygon as primary detector, YOLO as fallback. Coloured ball ruled out (product dependency risk). Background suppression selected for fixed-camera false positive elimination. Venue calibration tool built: `ball_tracker/venue_calibration.py` (commit `d8bf670`, 142 lines, functions-only). Stage 1 venue mask integration: `ball_tracker/stage1_candidate_gen.py` patched with `_load_venue_mask()`, `_venue_contains()`, `--venue-mask` arg, `n_venue_rejected` counter in report + run_summary (commit `4670a37`, py_compile clean). GoPro MAX 2 purchased — geometry recalibration needed when in use. Phase B and Phase 4 tracker-run verification deferred pending new architecture validation.
 - **2026-06-25 (session 11):** Phase 4 WIRED. pitch_geometry.py + geometry_st_margarets.json + tests (commit deb3a12, 5/5 pass). Wired into run_tracker.py filter_candidates (commit c18ff51). Awaiting tracker run to verify fence suppression at yaw≈−77.4°.
