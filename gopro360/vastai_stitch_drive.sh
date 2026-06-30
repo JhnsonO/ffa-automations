@@ -372,6 +372,8 @@ except:
   if [ $((TICK % 6)) -eq 0 ]; then
     log "  -- ps snapshot --"
     ps -eo pid,pcpu,nlwp,comm | grep -i ffmpeg | sed 's/^/    /' | while read -r l; do log "$l"; done
+    log "  -- vmstat (r b swpd free buff cache si so bi bo in cs us sy id wa st) --"
+    vmstat 1 2 2>/dev/null | tail -1 | sed 's/^/    /' | while read -r l; do log "$l"; done
   fi
 done
 
