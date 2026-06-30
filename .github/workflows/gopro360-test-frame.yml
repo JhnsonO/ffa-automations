@@ -114,7 +114,7 @@ jobs:
           [tlRB][tcRBScaled]hstack[trAll],[trAll][trRB]hstack[trBotDone],\
           [tlDone][tMid]hstack[tlMid],[tlMid][trBotDone]hstack[topComplete],\
           [botComplete][topComplete]vstack[complete],\
-          [complete]v360=eac:e:interp=linear[v]"
+          [complete]v360=eac:e:interp=linear,crop=3200:3412:x=1294:y=0[v]"
 
           ffmpeg -y -v warning \
             -t 3 -i "${{ steps.get_url.outputs.cdn_url }}" \
