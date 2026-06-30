@@ -253,7 +253,7 @@ stdbuf -oL -eL ffmpeg -y -v info \
 FFMPEG_PID=$!
 
 MIN_SPEED=1.6          # below this → reject instance and redispatch
-SPEED_CHECK_TICK=9    # check at tick 9 = 45s in (speed stable by then)
+SPEED_CHECK_TICK=18   # check at tick 18 = 90s in (more ramp-up time)
 SPEED_CHECKED=0
 
 TICK=0
