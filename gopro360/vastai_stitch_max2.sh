@@ -6,11 +6,12 @@
 # widths/offsets; height substituted literally (1344 -> 1920) since it's
 # directly known from ffprobe. Validated against GoPro's published "true
 # 8K" stitched spec (3840 height) and ~25% EAC pixel savings — both match.
-# VISUALLY VERIFIED on two real MAX 2 clips (GS010419 covered-lens, GS010420
-# clean) via single-frame extraction in gopro360-test-frame.yml — clean
-# seamless stitch, no jaggedness, no void. v360 output explicitly sized to
-# w=5796:h=2898 (full EAC-canvas-derived equirect) instead of relying on
-# v360's auto-sizing, which truncated content and required a wasteful crop.
+# VISUALLY VERIFIED on real MAX 2 clips via single-frame extraction in
+# gopro360-test-frame.yml — clean seamless stitch, no jaggedness, no void.
+# v360 output explicitly sized to w=7680:h=3840 (true 8K, matching GoPro's
+# published stitched spec) — NOT the EAC canvas size (5796x2898), which was
+# an earlier mistake that landed YouTube in its unsupported "in-between"
+# 4K-8K dead zone and got silently downsampled to 4K.
 # Runs on the Vast.ai instance. Called via SSH from GitHub Actions.
 #
 # Required env vars (passed via SSH):
@@ -129,7 +130,7 @@ FILTER_COMPLEX="\
 [tlRB][tcRBScaled]hstack[trAll],[trAll][trRB]hstack[trBotDone],\
 [tlDone][tMid]hstack[tlMid],[tlMid][trBotDone]hstack[topComplete],\
 [botComplete][topComplete]vstack[complete],\
-[complete]v360=eac:e:interp=linear:w=5796:h=2898[v]"
+[complete]v360=eac:e:interp=linear:w=7680:h=3840[v]"
 
 # ── Probe source duration ──────────────────────────────────────────────────────
 log ""
