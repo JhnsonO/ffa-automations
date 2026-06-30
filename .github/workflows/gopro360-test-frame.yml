@@ -27,8 +27,8 @@ jobs:
 
       - name: Install deps
         run: |
-          pip install requests google-auth google-auth-oauthlib google-api-python-client
-          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg python3-pil
+          pip install requests google-auth google-auth-oauthlib google-api-python-client Pillow
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
 
       - name: Write GoPro cookies
         env:
