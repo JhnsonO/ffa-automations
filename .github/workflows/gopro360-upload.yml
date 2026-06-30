@@ -256,9 +256,8 @@ jobs:
               "inet_up":      {"gte": 800},
               "inet_down":    {"gte": 800},
               "disk_space":   {"gte": 150},
-              "cpu_cores":    {"gte": 32},
+              "cpu_cores":    {"gte": 16},
               "cpu_ram":      {"gte": 65536},
-              "cpu_ghz":      {"gte": 4.5},
               "gpu_frac":     {"eq": 1},
               "rentable":     {"eq": True},
               "verified":     {"eq": True},
@@ -288,6 +287,8 @@ jobs:
               "Ryzen 9 9950X", "Ryzen 9 7950X",
               "Ryzen 9 9900X", "Ryzen 9 7900X", "Ryzen 9 5900X",
               "Core i9-14", "Core i9-13", "Core i9-12",
+              "Threadripper PRO", "Threadripper",
+              "Core Ultra 9",
           ]
           before = len(offers)
           offers = [o for o in offers if any(s in (o.get("cpu_name") or "") for s in GOOD_CPU_SUBSTRINGS)]
