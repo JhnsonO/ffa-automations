@@ -164,6 +164,46 @@ if [ "${NPROC}" -lt 16 ]; then
   exit 1
 fi
 
+# ── Preflight host-speed benchmark (BEFORE the multi-GB download) ────────────
+# Runs the dominant cost (v360 EAC→equirect remap + x264) on a synthetic source
+# at the real output resolution, so a slow/contended host is rejected in <90s
+# instead of after a 14GB download + partial encode. Hang-safe by construction:
+# synthetic source, hard -t and -frames:v caps, timeout wrapper, progress to a
+# file (no blocking pipe), and -f null (no disk write). This is why the earlier
+# pre-download benchmark hung; those failure modes are all closed here.
+BENCH_W=7680
+BENCH_H=3840
+PREFLIGHT_MIN=1.25     # = MIN_SPEED (1.3) - 0.05; reject hosts that can't meet the sustained floor
+PREFLIGHT_LOG="${WORKDIR}/preflight.log"
+log "--- Preflight benchmark (v360 ${BENCH_W}x${BENCH_H} + x264, 5s synthetic, floor ${PREFLIGHT_MIN}x) ---"
+rm -f "${PREFLIGHT_LOG}"
+timeout 90 ffmpeg -y -v error -nostdin \
+  -f lavfi -i "testsrc2=size=${BENCH_W}x${BENCH_H}:rate=30" \
+  -t 5 -frames:v 150 -an \
+  -vf "v360=eac:e:interp=linear:w=${BENCH_W}:h=${BENCH_H},format=yuv420p" \
+  -c:v libx264 -preset ultrafast -b:v 20M -threads 0 \
+  -progress "${PREFLIGHT_LOG}" -f null - > /dev/null 2>&1
+PF_RC=$?
+PF_SPEED=$(grep -a "^speed=" "${PREFLIGHT_LOG}" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d 'x ' || true)
+log "  preflight exit=${PF_RC} speed=${PF_SPEED:-?}x"
+PF_OK=$(python3 -c "
+try:
+    print('yes' if float('${PF_SPEED:-0}') >= ${PREFLIGHT_MIN} else 'no')
+except Exception:
+    print('no')
+" 2>/dev/null || echo "no")
+if [ "${PF_RC}" = "124" ] || [ "${PF_OK}" != "yes" ]; then
+  log "PREFLIGHT FAILED: ${PF_SPEED:-0}x < ${PREFLIGHT_MIN}x (rc=${PF_RC}) — rejecting host before download"
+  echo "${PF_SPEED:-0}" > "${WORKDIR}/SPEED" 2>/dev/null || true
+  cp "${WORKDIR}/SPEED" /tmp/ffa360/SPEED 2>/dev/null || true
+  echo "BENCHMARK_FAILED" > "${WORKDIR}/FAILED"
+  cp "${WORKDIR}/FAILED" /tmp/ffa360/FAILED 2>/dev/null || true
+  exit 1
+fi
+log "PREFLIGHT PASSED: ${PF_SPEED}x >= ${PREFLIGHT_MIN}x — proceeding to download"
+echo "${PF_SPEED}" > "${WORKDIR}/SPEED" 2>/dev/null || true
+cp "${WORKDIR}/SPEED" /tmp/ffa360/SPEED 2>/dev/null || true
+
 # ── Download source to local NVMe ───────────────────────────────────────────
 # Avoids N parallel remote seeks against the GoPro CDN (unreliable/slow);
 # local -ss seeks are instant and frame-accurate.
@@ -265,9 +305,13 @@ stdbuf -oL -eL ffmpeg -y -v info \
   "${OUTPUT_EQUIRECT}" > "${STDOUT}" 2>&1 &
 FFMPEG_PID=$!
 
-MIN_SPEED=1.3          # TEMP: lowered from 1.6 — pool is thin on 1.6x+ boxes right now, below this → reject instance and redispatch
-SPEED_CHECK_TICK=18   # check at tick 18 = 90s in (more ramp-up time)
-SPEED_CHECKED=0
+MIN_SPEED=1.3          # sustained floor — below this on 3 consecutive windows → reject and redispatch
+ABORT_MIN=1.15         # = MIN_SPEED - 0.15; instantaneous floor per sampling window
+WARMUP_TICKS=12        # ~60s warm-up before sustained checks begin (tick = 5s)
+SAMPLE_EVERY=6         # evaluate instantaneous speed every ~30s
+CONSEC_SLOW=0          # consecutive sub-ABORT_MIN windows
+PREV_OT_US=0
+PREV_WALL=$(date +%s)
 
 TICK=0
 while kill -0 "${FFMPEG_PID}" 2>/dev/null; do
@@ -276,37 +320,47 @@ while kill -0 "${FFMPEG_PID}" 2>/dev/null; do
   fr=$(grep -a "^frame=" "${PROGRESS}" | tail -1 | cut -d= -f2 || true)
   fps=$(grep -a "^fps=" "${PROGRESS}" | tail -1 | cut -d= -f2 || true)
   ot=$(grep -a "^out_time=" "${PROGRESS}" | tail -1 | cut -d= -f2 || true)
+  ot_us=$(grep -a "^out_time_us=" "${PROGRESS}" | tail -1 | cut -d= -f2 || true)
   sp=$(grep -a "^speed=" "${PROGRESS}" | tail -1 | cut -d= -f2 || true)
   sp_num=$(echo "${sp:-0}" | tr -d 'x')
   vs_target=$(python3 -c "print(f'{${sp_num:-0}/${TARGET_SPEED}*100:.0f}%')" 2>/dev/null || echo "?")
   log "  frame=${fr:-0} fps=${fps:-0} t=${ot:-0:00:00} speed=${sp:-0}x (${vs_target} of ${TARGET_SPEED}x target)"
+  echo "${sp_num:-0}" > "${WORKDIR}/SPEED" 2>/dev/null || true
 
-  # ── Speed check at 45s — kill and redispatch if below floor ──────────────
-  if [ "${SPEED_CHECKED}" = "0" ] && [ "${TICK}" -ge "${SPEED_CHECK_TICK}" ]; then
-    SPEED_CHECKED=1
-    SPEED_OK=$(python3 -c "
-sp = '${sp_num}'
+  # ── Sustained-speed monitor: abort after 3 consecutive slow windows ───────
+  # Catches hosts that start fast then collapse (observed: 9950X3D 1.8x→0.7x).
+  if [ "${TICK}" -ge "${WARMUP_TICKS}" ] && [ $((TICK % SAMPLE_EVERY)) -eq 0 ]; then
+    NOW_WALL=$(date +%s)
+    INST=$(python3 -c "
 try:
-    v = float(sp)
-    print('yes' if v >= ${MIN_SPEED} else 'no')
-except:
-    print('unknown')
-" 2>/dev/null || echo "unknown")
-
-    if [ "${SPEED_OK}" = "no" ]; then
-      log "SPEED CHECK FAILED: ${sp:-0}x is below ${MIN_SPEED}x floor — killing encode and redispatching"
+    dot = (${ot_us:-0} - ${PREV_OT_US}) / 1e6
+    dw  = ${NOW_WALL} - ${PREV_WALL}
+    print(round(dot/dw, 3) if dw > 0 else 0)
+except Exception:
+    print(0)
+" 2>/dev/null || echo 0)
+    PREV_OT_US="${ot_us:-0}"
+    PREV_WALL="${NOW_WALL}"
+    BELOW=$(python3 -c "print('yes' if float('${INST:-0}') < ${ABORT_MIN} else 'no')" 2>/dev/null || echo "no")
+    if [ "${BELOW}" = "yes" ]; then
+      CONSEC_SLOW=$((CONSEC_SLOW+1))
+      log "  SUSTAINED CHECK: instantaneous ${INST}x < ${ABORT_MIN}x (${CONSEC_SLOW}/3 slow windows)"
+    else
+      [ "${CONSEC_SLOW}" -gt 0 ] && log "  SUSTAINED CHECK: instantaneous ${INST}x recovered — resetting"
+      CONSEC_SLOW=0
+    fi
+    if [ "${CONSEC_SLOW}" -ge 3 ]; then
+      log "SUSTAINED CHECK FAILED: 3 consecutive windows below ${ABORT_MIN}x — killing encode and redispatching"
       kill "${FFMPEG_PID}" 2>/dev/null || true
       wait "${FFMPEG_PID}" 2>/dev/null || true
+      echo "${INST:-0}" > "${WORKDIR}/SPEED" 2>/dev/null || true
+      cp "${WORKDIR}/SPEED" /tmp/ffa360/SPEED 2>/dev/null || true
       echo "BENCHMARK_FAILED" > "${WORKDIR}/FAILED"
       cp "${WORKDIR}/FAILED" /tmp/ffa360/FAILED 2>/dev/null || true
       exit 1
-    elif [ "${SPEED_OK}" = "unknown" ]; then
-      log "SPEED CHECK: could not read speed (sp='${sp:-}') — continuing without check"
-    else
-      log "SPEED CHECK PASSED: ${sp:-0}x >= ${MIN_SPEED}x — continuing full encode"
     fi
   fi
-  # ─────────────────────────────────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
 
   if [ $((TICK % 6)) -eq 0 ]; then
     log "  -- ps snapshot --"
@@ -609,6 +663,9 @@ PYEOF
 
 log ""
 log "--- Cleaning up ---"
+# Record final sustained speed for offer-reputation capture by the workflow
+FINAL_SPEED=$(grep -a "^speed=" "${PROGRESS}" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d 'x ' || true)
+echo "${FINAL_SPEED:-0}" > "/tmp/ffa360/SPEED" 2>/dev/null || true
 # Write marker files OUTSIDE WORKDIR so rm -rf doesn't delete them before poll sees them
 touch "/tmp/ffa360_DONE"
 YT_URL_LINE="https://www.youtube.com/watch?v=${YT_ID:-unknown}"

@@ -207,10 +207,10 @@ jobs:
                   return json.loads(r.read())
 
           def redispatch():
-              """Re-dispatch this workflow so we get a fresh attempt (max 3 total)."""
+              """Re-dispatch this workflow so we get a fresh attempt (max 8 total)."""
               attempt = int("${{ github.event.inputs.attempt_num }}" or "1")
-              if attempt >= 3:
-                  print(f"ERROR: Already on attempt {attempt}/3 — giving up to avoid burning credit. Manual retry required.", file=sys.stderr)
+              if attempt >= 8:
+                  print(f"ERROR: Already on attempt {attempt}/8 — giving up to avoid burning credit. Manual retry required.", file=sys.stderr)
                   sys.exit(1)
               payload = json.dumps({
                   "ref": "${{ github.ref_name }}",
@@ -283,7 +283,7 @@ jobs:
           print(f"Found {len(offers)} verified offers from API")
 
           # Whitelist high-IPC modern CPUs only — filter graph is single-threaded so IPC matters more than core count
-          # Ryzen 9 9950X3D = 2.4x realtime, 7950X = 1.62x realtime, i9-10980XE = 0.98x (too slow)
+          # CPU model is only a starting hint; offer-level measured reputation (below) overrides it.
           GOOD_CPU_SUBSTRINGS = [
               "Ryzen 9 9950X", "Ryzen 9 7950X",
               "Ryzen 9 9900X", "Ryzen 9 7900X", "Ryzen 9 5900X",
@@ -293,7 +293,34 @@ jobs:
           offers = [o for o in offers if any(s in (o.get("cpu_name") or "") for s in GOOD_CPU_SUBSTRINGS)]
           print(f"Filtered to {len(offers)} offers with known fast CPUs (excluded {before - len(offers)} others)")
 
-          # Exclude previously tried offers
+          # ── Persistent offer reputation (survives across runs, unlike excluded_offer_ids) ──
+          import datetime, base64
+          REPO = "${{ github.repository }}"
+          now = datetime.datetime.now(datetime.timezone.utc)
+          reputation = {}
+          try:
+              rurl = f"https://api.github.com/repos/{REPO}/contents/gopro360/offer_reputation.json"
+              rreq = urllib.request.Request(rurl, headers={"Authorization": f"token {GH_PAT}", "Accept": "application/vnd.github.v3+json"})
+              with urllib.request.urlopen(rreq, timeout=15) as r:
+                  reputation = json.loads(base64.b64decode(json.loads(r.read())["content"]).decode() or "{}")
+              print(f"Loaded reputation for {len(reputation)} offers")
+          except Exception as e:
+              print(f"No reputation file (or unreadable): {e} — proceeding with empty reputation")
+
+          def is_blocked(oid):
+              rec = reputation.get(str(oid))
+              if not rec or not rec.get("block_until"):
+                  return False
+              try:
+                  return datetime.datetime.fromisoformat(rec["block_until"]) > now
+              except Exception:
+                  return False
+
+          before_block = len(offers)
+          offers = [o for o in offers if not is_blocked(o["id"])]
+          print(f"Dropped {before_block - len(offers)} offers under active reputation block, {len(offers)} remain")
+
+          # Exclude offers already tried in this retry chain
           excluded_raw = "${{ github.event.inputs.excluded_offer_ids }}".strip()
           excluded_ids = set(int(x.strip()) for x in excluded_raw.split(",") if x.strip().isdigit())
           if excluded_ids:
@@ -306,10 +333,35 @@ jobs:
               redispatch()
               sys.exit(1)
 
-          # Sort by cheapest — speed gate in vastai_stitch.sh enforces 1.7x floor
-          offers.sort(key=lambda o: float(o.get("dph_total", 999)))
+          # ── Rank: proven-good reputation first, then CPU tier, then price ──
+          def cpu_tier(name):
+              n = name or ""
+              x3d = "X3D" in n
+              if ("9950X" in n or "9900X" in n) and not x3d: return 0   # plain Zen5 — best measured (~2.1x)
+              if "9950X" in n or "9900X" in n:                 return 1   # Zen5 X3D — lower clock (~1.4x)
+              if "7950X" in n or "7900X" in n:                 return 2
+              if "Core i9-14" in n or "Core i9-13" in n:       return 2
+              if "Core i9-12" in n:                            return 3
+              if "5900X" in n:                                 return 4
+              return 5
+
+          def proven_speed(oid):
+              rec = reputation.get(str(oid))
+              if rec and not is_blocked(oid):
+                  s = rec.get("last_speed")
+                  if isinstance(s, (int, float)) and s >= 1.6:
+                      return s
+              return None
+
+          def rank_key(o):
+              ps = proven_speed(o["id"])
+              if ps is not None:
+                  return (0, -ps, float(o.get("dph_total", 999)))      # proven-good: fastest measured first
+              return (1, cpu_tier(o.get("cpu_name")), float(o.get("dph_total", 999)))
+
+          offers.sort(key=rank_key)
           candidates = offers[:5]
-          print("Top candidates by price:")
+          print("Top candidates (proven-good → CPU tier → price):")
           for o in candidates:
               print(f"  offer {o['id']} — {o.get('cpu_name','?')} {o.get('cpu_cores','?')}c @ {o.get('cpu_ghz','?')}GHz — ${o.get('dph_total', 0):.4f}/hr")
 
@@ -549,12 +601,12 @@ jobs:
               BENCHMARK_FAILED)
                 ATTEMPT_NUM="${{ github.event.inputs.attempt_num }}"
                 ATTEMPT_NUM="${ATTEMPT_NUM:-1}"
-                if [ "$ATTEMPT_NUM" -ge 3 ]; then
-                  echo "ERROR: Benchmark failed on attempt ${ATTEMPT_NUM}/3 — giving up to avoid burning credit. Manual retry required."
+                if [ "$ATTEMPT_NUM" -ge 8 ]; then
+                  echo "ERROR: Benchmark failed on attempt ${ATTEMPT_NUM}/8 — giving up to avoid burning credit. Manual retry required."
                   exit 1
                 fi
                 NEXT_ATTEMPT=$((ATTEMPT_NUM + 1))
-                echo "[poll $i] Benchmark failed — redispatching attempt ${NEXT_ATTEMPT}/3 on a fresh offer..."
+                echo "[poll $i] Benchmark failed — redispatching attempt ${NEXT_ATTEMPT}/8 on a fresh offer..."
                 PREV_EXCLUDED="${{ github.event.inputs.excluded_offer_ids }}"
                 THIS_OFFER="${{ steps.launch.outputs.used_offer_id }}"
                 NEW_EXCLUDED="${PREV_EXCLUDED:+${PREV_EXCLUDED},}${THIS_OFFER}"
@@ -573,6 +625,65 @@ jobs:
           done
           echo "ERROR: timed out waiting for completion"
           exit 1
+
+      - name: Record offer reputation
+        if: always()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          OFFER_ID: ${{ steps.launch.outputs.used_offer_id }}
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          if [ -z "${OFFER_ID}" ] || [ -z "${IP}" ]; then
+            echo "No offer/instance to record — skipping reputation update"
+            exit 0
+          fi
+          SPEED=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes \
+                    -i /tmp/vastai_key -p "${PORT}" "root@${IP}" \
+                    "cat /tmp/ffa360/SPEED 2>/dev/null | head -1 || true" 2>/dev/null || true)
+          SPEED=$(echo "${SPEED}" | tr -d 'x \r\n')
+          if [ -z "${SPEED}" ]; then
+            echo "No SPEED marker on host — skipping reputation update"
+            exit 0
+          fi
+          echo "Recording offer ${OFFER_ID} measured speed ${SPEED}x"
+          REPO="${{ github.repository }}" OFFER_ID="${OFFER_ID}" SPEED="${SPEED}" GH_PAT="${GH_PAT}" python3 - <<'PY'
+          import os, json, base64, urllib.request, urllib.error, datetime
+          REPO=os.environ["REPO"]; OFFER_ID=os.environ["OFFER_ID"]; GH_PAT=os.environ["GH_PAT"]
+          try:
+              speed=float(os.environ["SPEED"])
+          except Exception:
+              print("speed unparseable — skip"); raise SystemExit(0)
+          now=datetime.datetime.now(datetime.timezone.utc)
+          path="gopro360/offer_reputation.json"
+          url=f"https://api.github.com/repos/{REPO}/contents/{path}"
+          def hdr(): return {"Authorization":f"token {GH_PAT}","Accept":"application/vnd.github.v3+json"}
+          for attempt in range(2):
+              sha=None; rep={}
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url, headers=hdr()), timeout=15) as r:
+                      d=json.loads(r.read()); sha=d["sha"]
+                      rep=json.loads(base64.b64decode(d["content"]).decode() or "{}")
+              except urllib.error.HTTPError as e:
+                  if e.code!=404: raise
+              rec=rep.get(OFFER_ID, {})
+              samples=(rec.get("samples") or [])[-4:]+[speed]
+              # Expiring block by measured speed: <1.0x → 7d, 1.0–1.5x → 24h, ≥1.5x → eligible (≥1.6x preferred by ranker)
+              if speed<1.0:   block=(now+datetime.timedelta(days=7)).isoformat()
+              elif speed<1.5: block=(now+datetime.timedelta(hours=24)).isoformat()
+              else:           block=None
+              rep[OFFER_ID]={"last_speed":speed,"last_seen":now.isoformat(),"block_until":block,"samples":samples}
+              body={"message":f"reputation: offer {OFFER_ID} = {speed}x","content":base64.b64encode(json.dumps(rep,indent=2,sort_keys=True).encode()).decode()}
+              if sha: body["sha"]=sha
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url, data=json.dumps(body).encode(), method="PUT", headers={**hdr(),"Content-Type":"application/json"}), timeout=15) as r:
+                      print(f"reputation updated: offer {OFFER_ID} = {speed}x, block_until={block}")
+                  break
+              except urllib.error.HTTPError as e:
+                  if e.code in (409,422) and attempt==0:
+                      print("write conflict — retrying once"); continue
+                  print(f"reputation write failed HTTP {e.code}: {e.read().decode()[:200]}"); break
+          PY
 
       - name: Terminate Vast.ai instance
         if: always()

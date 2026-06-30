@@ -57,6 +57,18 @@ equirectangular video
 - Purchased. Geometry recalibration required: new equirect resolution, hotspot zones will shift, `geometry_st_margarets.json` needs updating for new FOV.
 - All tracker logic, renderer, workflow pipeline transferable unchanged.
 
+**GoPro 360 uploader — host-qualification model (rebuilt 2026-06-30, session 18):**
+Subsystem: `.github/workflows/gopro360-upload.yml` + `gopro360/vastai_stitch.sh` (MAX1, target 1.72x) + `gopro360/vastai_stitch_max2.sh` (MAX2 8K, target 2.87x). Distinct from the tracker; shares the repo only.
+- **Root problem (evidenced over 154 runs, 11–30 June):** 1 success total. Failures are vast host-quality collapse, not an FFmpeg or thread-flag cap. The *same* offer ID swings run-to-run (offer `21191721` 9950X3D: 2.84x→0.0x; offer `40000941` 7950X: 1.79x→0.67x) — contention/throttling on rented hosts. CPU-model whitelisting alone cannot fix this.
+- **Five-component host-qualification patch (this session):**
+  1. **Persistent offer reputation** — `gopro360/offer_reputation.json` (offer_id → last_speed, last_seen, block_until, samples). Survives across runs, unlike per-chain `excluded_offer_ids`. Expiring blocks by measured speed: <1.0x→7d, 1.0–1.5x→24h, ≥1.5x→eligible. Written by a new `Record offer reputation` step (reads `/tmp/ffa360/SPEED` over SSH before terminate).
+  2. **Reputation-ranked selection** — candidates ranked proven-good (≥1.6x measured, not blocked) → CPU tier (plain Zen5 9950X/9900X > X3D > 7950X/i9-13/14 > i9-12 > 5900X) → price. Replaces cheapest-first. X3D detected explicitly and deprioritised vs plain X.
+  3. **Pre-download preflight benchmark** — synthetic v360+x264 at real output res before the multi-GB download; rejects slow hosts in <90s. Hang-safe (synthetic source, `-t`/`-frames:v` caps, `timeout 90`, progress-to-file, `-f null`). Floor = `MIN_SPEED − 0.05` (MAX1 1.55x, MAX2 1.25x).
+  4. **Sustained-speed monitor** — replaces the single 90s check; after 60s warm-up, samples instantaneous speed every ~30s, aborts after 3 consecutive windows below `MIN_SPEED − 0.15` (MAX1 1.45x, MAX2 1.15x). Catches start-fast-then-collapse hosts.
+  5. **Retry budget 3→8** — cheap preflight makes more retries affordable.
+- **5950X removed from whitelist** (worst performer: 22 runs, avg 0.97x, 0 successes).
+- **Open (flagged, not actioned):** `offers_exhausted` was 36% of all runs — whitelist may be too narrow for current vast inventory, independent of speed. Reputation store is last-write-wins (acceptable at current volume).
+
 ### Target pipeline
 
 ```
@@ -407,6 +419,7 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 ## Compact change log
 
+- **2026-06-30 (session 18 — uploader host-qualification):** GoPro 360 uploader rebuilt around host qualification after 154-run analysis (1 success, failures = vast host contention not FFmpeg cap). Five components: persistent offer reputation (`gopro360/offer_reputation.json`, expiring blocks <1.0x→7d / 1.0–1.5x→24h), reputation-ranked selection (proven→CPU-tier→price, X3D deprioritised), hang-safe pre-download preflight benchmark, sustained 3-window speed monitor, retry budget 3→8. Earlier in session: `used_offer_id` blacklist bug fixed, stale `TARGET_SPEED` 4.0→1.72/2.87, explicit `-filter_complex_threads`, 5950X removed from whitelist (22 runs avg 0.97x). Files: `gopro360-upload.yml`, `vastai_stitch.sh`, `vastai_stitch_max2.sh`. MAX2 validation run dispatched — DISPATCHED, UNVERIFIED. Open: `offers_exhausted` 36% of runs (whitelist breadth, separate issue).
 - **2026-06-29 (session 15b):** MOG2 wired into Stage 1 as primary detector (commit `5a2cc96`). Single MOG2 blob → candidate (source="mog2"), skip YOLO. 0 or >1 blobs → YOLO fallback. --no-mog2 flag added. mog2_primary_count + mog2_fallthrough_count in run_summary. py_compile clean.
 - **2026-06-29 (session 15):** MOG2 run 4 (varThreshold=10, history=200) verified — 52.0% coverage, 360 blobs, frame 472 still empty. Stationary ball confirmed as structural MOG2 limitation. Run 3 locked as wiring target. Offer filter relaxed in 360-mog2-detector.yml (commit `5eae33e`): cpu_cores>=4, ram>=8GB.
 - **2026-06-29 (session 14):** MOG2 run 3 reviewed by ChatGPT — ACCEPTED. 558 blobs, 65.8% coverage, median 1/frame, clean sizes, no noise blowup. Frame 472 still missed — identified as MOG2 background absorption (not circularity). `360-mog2-detector.yml` updated to expose `--mog2-var-threshold` and `--mog2-history` dispatch inputs (commit `3eea6b5`). Run 4 dispatched: varThreshold=10, history=200. YOLO crop gnomonic reprojection scoped as Phase 5 (deferred). Discussion: Stage 1 already uses 4×110° yaw crops — partial distortion reduction but not full gnomonic reprojection.
