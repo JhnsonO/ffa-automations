@@ -263,7 +263,7 @@ stdbuf -oL -eL ffmpeg -y -v info \
   "${OUTPUT_EQUIRECT}" > "${STDOUT}" 2>&1 &
 FFMPEG_PID=$!
 
-MIN_SPEED=1.6          # below this → reject instance and redispatch
+MIN_SPEED=1.3          # TEMP: lowered from 1.6 — pool is thin on 1.6x+ boxes right now, below this → reject instance and redispatch
 SPEED_CHECK_TICK=18   # check at tick 18 = 90s in (more ramp-up time)
 SPEED_CHECKED=0
 
@@ -309,8 +309,6 @@ except:
   if [ $((TICK % 6)) -eq 0 ]; then
     log "  -- ps snapshot --"
     ps -eo pid,pcpu,nlwp,comm | grep -i ffmpeg | sed 's/^/    /' | while read -r l; do log "$l"; done
-    log "  -- vmstat (r b swpd free buff cache si so bi bo in cs us sy id wa st) --"
-    vmstat 1 2 2>/dev/null | tail -1 | sed 's/^/    /' | while read -r l; do log "$l"; done
   fi
 done
 
