@@ -6,7 +6,9 @@
 # widths/offsets; height substituted literally (1344 -> 1920) since it's
 # directly known from ffprobe. Validated against GoPro's published "true
 # 8K" stitched spec (3840 height) and ~25% EAC pixel savings — both match.
-# UNVERIFIED VISUALLY as of creation — see ai-project-state.md for test status.
+# VISUALLY VERIFIED on two real MAX 2 clips (GS010419 covered-lens, GS010420
+# clean) via single-frame extraction in gopro360-test-frame.yml — clean
+# seamless stitch, no jaggedness, crop bounds confirmed edge-to-edge content.
 # Runs on the Vast.ai instance. Called via SSH from GitHub Actions.
 #
 # Required env vars (passed via SSH):
@@ -125,7 +127,7 @@ FILTER_COMPLEX="\
 [tlRB][tcRBScaled]hstack[trAll],[trAll][trRB]hstack[trBotDone],\
 [tlDone][tMid]hstack[tlMid],[tlMid][trBotDone]hstack[topComplete],\
 [botComplete][topComplete]vstack[complete],\
-[complete]v360=eac:e:interp=linear,crop=5796:3432:x=0:y=0[v]"
+[complete]v360=eac:e:interp=linear,crop=3200:3412:x=1294:y=0[v]"
 
 # ── Probe source duration ──────────────────────────────────────────────────────
 log ""
