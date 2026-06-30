@@ -77,38 +77,51 @@ jobs:
           img.save('/tmp/ffa360/seam_mask.png')
           "
 
+      - name: Detect video stream indices
+        id: streams
+        run: |
+          INDICES=$(ffprobe -v error -select_streams v -show_entries stream=index -of csv=p=0 "${{ steps.get_url.outputs.cdn_url }}")
+          echo "Video stream indices: ${INDICES}"
+          FRONT=$(echo "${INDICES}" | sed -n '1p')
+          REAR=$(echo "${INDICES}" | sed -n '2p')
+          echo "front=${FRONT}" >> "$GITHUB_OUTPUT"
+          echo "rear=${REAR}" >> "$GITHUB_OUTPUT"
+          echo "Using front=0:${FRONT} rear=0:${REAR}"
+
       - name: Extract one frame through MAX2 filter (3s clip, ~10-15s ffmpeg work)
         run: |
+          FRONT="${{ steps.streams.outputs.front }}"
+          REAR="${{ steps.streams.outputs.rear }}"
           FILTER_COMPLEX="\
           [1:v]format=gray,split=4[mask1][mask2][mask3][mask4],\
-          [0:0]crop=897:1920:x=0:y=0,format=yuvj420p[left],\
-          [0:0]crop=897:1920:x=1081:y=0,format=yuvj420p[right],\
-          [0:0]crop=92:1920:x=897:y=0,format=yuvj420p[segA],\
-          [0:0]crop=92:1920:x=989:y=0,format=yuvj420p[segB],\
+          [0:${FRONT}]crop=897:1920:x=0:y=0,format=yuvj420p[left],\
+          [0:${FRONT}]crop=897:1920:x=1081:y=0,format=yuvj420p[right],\
+          [0:${FRONT}]crop=92:1920:x=897:y=0,format=yuvj420p[segA],\
+          [0:${FRONT}]crop=92:1920:x=989:y=0,format=yuvj420p[segB],\
           [segA][segB][mask1]maskedmerge[crop],\
           [crop]scale=138:1920[cropScaled],\
           [left][cropScaled]hstack[leftAll],[leftAll][right]hstack[leftDone],\
-          [0:0]crop=1932:1920:1978:0[middle],\
-          [0:0]crop=897:1920:x=3910:y=0,format=yuvj420p[lRB],\
-          [0:0]crop=897:1920:x=4991:y=0,format=yuvj420p[rRB],\
-          [0:0]crop=92:1920:x=4807:y=0,format=yuvj420p[segARB],\
-          [0:0]crop=92:1920:x=4899:y=0,format=yuvj420p[segBRB],\
+          [0:${FRONT}]crop=1932:1920:1978:0[middle],\
+          [0:${FRONT}]crop=897:1920:x=3910:y=0,format=yuvj420p[lRB],\
+          [0:${FRONT}]crop=897:1920:x=4991:y=0,format=yuvj420p[rRB],\
+          [0:${FRONT}]crop=92:1920:x=4807:y=0,format=yuvj420p[segARB],\
+          [0:${FRONT}]crop=92:1920:x=4899:y=0,format=yuvj420p[segBRB],\
           [segARB][segBRB][mask2]maskedmerge[cropRB],\
           [cropRB]scale=138:1920[cropRBScaled],\
           [lRB][cropRBScaled]hstack[rAll],[rAll][rRB]hstack[rBotDone],\
           [leftDone][middle]hstack[lMid],[lMid][rBotDone]hstack[botComplete],\
-          [0:1]crop=897:1920:x=0:y=0,format=yuvj420p[flt],\
-          [0:1]crop=897:1920:x=1081:y=0,format=yuvj420p[frt],\
-          [0:1]crop=92:1920:x=897:y=0,format=yuvj420p[segC],\
-          [0:1]crop=92:1920:x=989:y=0,format=yuvj420p[segD],\
+          [0:${REAR}]crop=897:1920:x=0:y=0,format=yuvj420p[flt],\
+          [0:${REAR}]crop=897:1920:x=1081:y=0,format=yuvj420p[frt],\
+          [0:${REAR}]crop=92:1920:x=897:y=0,format=yuvj420p[segC],\
+          [0:${REAR}]crop=92:1920:x=989:y=0,format=yuvj420p[segD],\
           [segC][segD][mask3]maskedmerge[ltc],\
           [ltc]scale=138:1920[ltcScaled],\
           [flt][ltcScaled]hstack[tlh],[tlh][frt]hstack[tlDone],\
-          [0:1]crop=1932:1920:1978:0[tMid],\
-          [0:1]crop=897:1920:x=3910:y=0,format=yuvj420p[tlRB],\
-          [0:1]crop=897:1920:x=4991:y=0,format=yuvj420p[trRB],\
-          [0:1]crop=92:1920:x=4807:y=0,format=yuvj420p[segE],\
-          [0:1]crop=92:1920:x=4899:y=0,format=yuvj420p[segF],\
+          [0:${REAR}]crop=1932:1920:1978:0[tMid],\
+          [0:${REAR}]crop=897:1920:x=3910:y=0,format=yuvj420p[tlRB],\
+          [0:${REAR}]crop=897:1920:x=4991:y=0,format=yuvj420p[trRB],\
+          [0:${REAR}]crop=92:1920:x=4807:y=0,format=yuvj420p[segE],\
+          [0:${REAR}]crop=92:1920:x=4899:y=0,format=yuvj420p[segF],\
           [segE][segF][mask4]maskedmerge[tcRB],\
           [tcRB]scale=138:1920[tcRBScaled],\
           [tlRB][tcRBScaled]hstack[trAll],[trAll][trRB]hstack[trBotDone],\
