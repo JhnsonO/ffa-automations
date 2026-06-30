@@ -177,6 +177,7 @@ PREFLIGHT_MIN=1.25     # = MIN_SPEED (1.3) - 0.05; reject hosts that can't meet 
 PREFLIGHT_LOG="${WORKDIR}/preflight.log"
 log "--- Preflight benchmark (v360 ${BENCH_W}x${BENCH_H} + x264, 5s synthetic, floor ${PREFLIGHT_MIN}x) ---"
 rm -f "${PREFLIGHT_LOG}"
+set +e
 timeout 90 ffmpeg -y -v error -nostdin \
   -f lavfi -i "testsrc2=size=${BENCH_W}x${BENCH_H}:rate=30" \
   -t 5 -frames:v 150 -an \
@@ -184,6 +185,7 @@ timeout 90 ffmpeg -y -v error -nostdin \
   -c:v libx264 -preset ultrafast -b:v 20M -threads 0 \
   -progress "${PREFLIGHT_LOG}" -f null - > /dev/null 2>&1
 PF_RC=$?
+set -e
 PF_SPEED=$(grep -a "^speed=" "${PREFLIGHT_LOG}" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d 'x ' || true)
 log "  preflight exit=${PF_RC} speed=${PF_SPEED:-?}x"
 PF_OK=$(python3 -c "
