@@ -114,7 +114,7 @@ jobs:
           [tlRB][tcRBScaled]hstack[trAll],[trAll][trRB]hstack[trBotDone],\
           [tlDone][tMid]hstack[tlMid],[tlMid][trBotDone]hstack[topComplete],\
           [botComplete][topComplete]vstack[complete],\
-          [complete]v360=eac:e:interp=linear,crop=5796:3432:x=0:y=0[v]"
+          [complete]v360=eac:e:interp=linear[v]"
 
           ffmpeg -y -v warning \
             -t 3 -i "${{ steps.get_url.outputs.cdn_url }}" \
@@ -123,6 +123,7 @@ jobs:
             -map "[v]" -frames:v 1 \
             /tmp/test_frame.png
           ls -la /tmp/test_frame.png
+          ffprobe -v error -show_entries stream=width,height -of csv=p=0 /tmp/test_frame.png
 
       - name: Upload test frame as artifact
         uses: actions/upload-artifact@v4
