@@ -321,7 +321,7 @@ jobs:
               "env":     {"NVIDIA_VISIBLE_DEVICES": "all", "NVIDIA_DRIVER_CAPABILITIES": "all"},
           }
 
-          ip = port = instance_id = None
+          ip = port = instance_id = used_offer_id = None
           for offer in candidates:
               offer_id = offer["id"]
               gpu_name = offer.get("gpu_name", "unknown")
@@ -371,6 +371,7 @@ jobs:
 
               if this_ip:
                   ip, port, instance_id = this_ip, this_port, this_instance
+                  used_offer_id = offer_id
                   break
               else:
                   print(f"  instance {this_instance} never reached running — terminating, trying next offer")
@@ -383,7 +384,6 @@ jobs:
               sys.exit(1)
 
           print(f"Ready: {ip}:{port}")
-          used_offer_id = next((o["id"] for o in candidates if o.get("id")), "")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"instance_id={instance_id}\n")
               f.write(f"ip={ip}\n")
