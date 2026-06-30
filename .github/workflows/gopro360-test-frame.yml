@@ -80,7 +80,7 @@ jobs:
       - name: Detect video stream indices
         id: streams
         run: |
-          INDICES=$(ffprobe -v error -select_streams v -show_entries stream=index -of csv=p=0 "${{ steps.get_url.outputs.cdn_url }}")
+          INDICES=$(ffprobe -v error -select_streams v -show_entries stream=index -of csv=p=0 "${{ steps.get_url.outputs.cdn_url }}" | tr -d ',' | grep -v '^$')
           echo "Video stream indices: ${INDICES}"
           FRONT=$(echo "${INDICES}" | sed -n '1p')
           REAR=$(echo "${INDICES}" | sed -n '2p')
