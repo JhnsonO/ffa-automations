@@ -1,0 +1,132 @@
+name: Test GoPro MAX2 Stitch Filter (single frame, no vast.ai)
+
+on:
+  workflow_dispatch:
+    inputs:
+      filename:
+        description: 'GoPro MAX2 filename e.g. GS010419.360'
+        required: true
+        type: string
+
+jobs:
+  test-frame:
+    name: Extract one stitched frame to verify geometry
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          pip install requests google-auth google-auth-oauthlib google-api-python-client
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg python3-pil
+
+      - name: Write GoPro cookies
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+        run: |
+          python3 -c "
+          import os
+          from pathlib import Path
+          cookies = os.environ.get('GOPRO_COOKIES', '{}').strip() or '{}'
+          Path('gopro_cookies.json').write_text(cookies)
+          "
+
+      - name: Get CDN URL
+        id: get_url
+        env:
+          FILENAME: ${{ github.event.inputs.filename }}
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          import gopro_uploader as u
+
+          filename = os.environ["FILENAME"].strip()
+          session = u.make_session(u.load_cookies_from_file())
+          item = u.fetch_media_by_filename(session, filename)
+          if not item:
+              print(f"ERROR: {filename} not found")
+              sys.exit(1)
+          dl_url = u.get_concat_download_url(session, item["id"])
+          if not dl_url:
+              print("ERROR: no download URL")
+              sys.exit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"cdn_url={dl_url}\n")
+          print("Got CDN URL")
+          PY
+
+      - name: Generate seam mask
+        run: |
+          mkdir -p /tmp/ffa360
+          python3 -c "
+          from PIL import Image
+          w, h = 92, 1920
+          img = Image.new('L', (w, h))
+          row = bytes(int(x * 255 / (w - 1)) for x in range(w))
+          img.putdata(list(row * h))
+          img.save('/tmp/ffa360/seam_mask.png')
+          "
+
+      - name: Extract one frame through MAX2 filter (3s clip, ~10-15s ffmpeg work)
+        run: |
+          FILTER_COMPLEX="\
+          [1:v]format=gray,split=4[mask1][mask2][mask3][mask4],\
+          [0:0]crop=897:1920:x=0:y=0,format=yuvj420p[left],\
+          [0:0]crop=897:1920:x=1081:y=0,format=yuvj420p[right],\
+          [0:0]crop=92:1920:x=897:y=0,format=yuvj420p[segA],\
+          [0:0]crop=92:1920:x=989:y=0,format=yuvj420p[segB],\
+          [segA][segB][mask1]maskedmerge[crop],\
+          [crop]scale=138:1920[cropScaled],\
+          [left][cropScaled]hstack[leftAll],[leftAll][right]hstack[leftDone],\
+          [0:0]crop=1932:1920:1978:0[middle],\
+          [0:0]crop=897:1920:x=3910:y=0,format=yuvj420p[lRB],\
+          [0:0]crop=897:1920:x=4991:y=0,format=yuvj420p[rRB],\
+          [0:0]crop=92:1920:x=4807:y=0,format=yuvj420p[segARB],\
+          [0:0]crop=92:1920:x=4899:y=0,format=yuvj420p[segBRB],\
+          [segARB][segBRB][mask2]maskedmerge[cropRB],\
+          [cropRB]scale=138:1920[cropRBScaled],\
+          [lRB][cropRBScaled]hstack[rAll],[rAll][rRB]hstack[rBotDone],\
+          [leftDone][middle]hstack[lMid],[lMid][rBotDone]hstack[botComplete],\
+          [0:1]crop=897:1920:x=0:y=0,format=yuvj420p[flt],\
+          [0:1]crop=897:1920:x=1081:y=0,format=yuvj420p[frt],\
+          [0:1]crop=92:1920:x=897:y=0,format=yuvj420p[segC],\
+          [0:1]crop=92:1920:x=989:y=0,format=yuvj420p[segD],\
+          [segC][segD][mask3]maskedmerge[ltc],\
+          [ltc]scale=138:1920[ltcScaled],\
+          [flt][ltcScaled]hstack[tlh],[tlh][frt]hstack[tlDone],\
+          [0:1]crop=1932:1920:1978:0[tMid],\
+          [0:1]crop=897:1920:x=3910:y=0,format=yuvj420p[tlRB],\
+          [0:1]crop=897:1920:x=4991:y=0,format=yuvj420p[trRB],\
+          [0:1]crop=92:1920:x=4807:y=0,format=yuvj420p[segE],\
+          [0:1]crop=92:1920:x=4899:y=0,format=yuvj420p[segF],\
+          [segE][segF][mask4]maskedmerge[tcRB],\
+          [tcRB]scale=138:1920[tcRBScaled],\
+          [tlRB][tcRBScaled]hstack[trAll],[trAll][trRB]hstack[trBotDone],\
+          [tlDone][tMid]hstack[tlMid],[tlMid][trBotDone]hstack[topComplete],\
+          [botComplete][topComplete]vstack[complete],\
+          [complete]v360=eac:e:interp=linear,crop=5796:3432:x=0:y=0[v]"
+
+          ffmpeg -y -v warning \
+            -t 3 -i "${{ steps.get_url.outputs.cdn_url }}" \
+            -i /tmp/ffa360/seam_mask.png \
+            -filter_complex "${FILTER_COMPLEX}" \
+            -map "[v]" -frames:v 1 \
+            /tmp/test_frame.png
+          ls -la /tmp/test_frame.png
+
+      - name: Upload test frame as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: max2-test-frame
+          path: /tmp/test_frame.png
+          retention-days: 3
