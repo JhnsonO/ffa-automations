@@ -1,0 +1,52 @@
+name: Check Vast.ai Machine Availability
+
+on:
+  workflow_dispatch:
+    inputs:
+      machine_id:
+        description: 'Vast.ai machine_id to check'
+        required: true
+        type: string
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Query offers for this machine
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.parse
+
+          API_KEY = os.environ["VAST_API_KEY"]
+          MACHINE_ID = "${{ github.event.inputs.machine_id }}"
+          headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+
+          query = json.dumps({
+              "rentable": {"eq": True},
+              "verified": {"eq": True},
+          })
+          url = f"https://console.vast.ai/api/v0/bundles/?{urllib.parse.urlencode({'q': query})}"
+          req = urllib.request.Request(url, headers=headers)
+          with urllib.request.urlopen(req, timeout=20) as r:
+              data = json.loads(r.read())
+
+          offers = data.get("offers", [])
+          print(f"Total offers returned: {len(offers)}")
+          match = [o for o in offers if str(o.get("machine_id")) == MACHINE_ID]
+          if match:
+              for o in match:
+                  print(f"FOUND machine {MACHINE_ID}: offer_id={o['id']} cpu={o.get('cpu_name')} gpu={o.get('gpu_name')} price=${o.get('dph_total'):.4f}/hr cores={o.get('cpu_cores')}")
+          else:
+              print(f"Machine {MACHINE_ID} NOT currently available as an offer (likely still occupied or offline)")
+
+          # Also show top 5 candidates matching our CPU whitelist as fallback info
+          GOOD_CPU = ["Ryzen 9 9950X", "Ryzen 9 7950X", "Ryzen 9 5950X", "Ryzen 9 9900X", "Ryzen 9 7900X", "Ryzen 9 5900X", "Core i9-14", "Core i9-13", "Core i9-12"]
+          good = [o for o in offers if any(s in (o.get("cpu_name") or "") for s in GOOD_CPU)]
+          good.sort(key=lambda o: float(o.get("dph_total", 999)))
+          print(f"\nTop whitelist-matching offers right now ({len(good)} total):")
+          for o in good[:8]:
+              print(f"  machine_id={o.get('machine_id')} offer_id={o['id']} cpu={o.get('cpu_name')} gpu={o.get('gpu_name')} price=${o.get('dph_total'):.4f}/hr")
+          PY
