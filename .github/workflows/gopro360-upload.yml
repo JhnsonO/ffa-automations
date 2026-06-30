@@ -3,6 +3,11 @@ name: Upload GoPro 360 Session (Vast.ai)
 on:
   workflow_dispatch:
     inputs:
+      script_variant:
+        description: 'Stitch script to use: vastai_stitch.sh (MAX1) or vastai_stitch_max2.sh (MAX2)'
+        required: false
+        default: 'vastai_stitch.sh'
+        type: string
       media_id:
         description: 'GoPro media ID for the .360 file'
         required: true
@@ -217,6 +222,7 @@ jobs:
                       "dry_run":             "${{ github.event.inputs.dry_run }}",
                       "excluded_offer_ids":  "${{ github.event.inputs.excluded_offer_ids }}",
                       "attempt_num":         str(attempt + 1),
+                      "script_variant":      "${{ github.event.inputs.script_variant }}",
                   }
               }).encode()
               req = urllib.request.Request(
@@ -421,28 +427,31 @@ jobs:
           curl -s -X POST -H "Authorization: token ${GH_PAT}" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-upload.yml/dispatches" \
-            -d "{"ref":"${{ github.ref_name }}","inputs":{"media_id":"${{ github.event.inputs.media_id }}","filename":"${{ github.event.inputs.filename }}","captured_at":"${{ github.event.inputs.captured_at }}","attempt_num":"${NEXT_ATTEMPT}"}}"
+            -d "{"ref":"${{ github.ref_name }}","inputs":{"media_id":"${{ github.event.inputs.media_id }}","filename":"${{ github.event.inputs.filename }}","captured_at":"${{ github.event.inputs.captured_at }}","attempt_num":"${NEXT_ATTEMPT}","script_variant":"${{ github.event.inputs.script_variant }}"}}"
           echo "Fresh run dispatched. Failing this run (dud host already terminated below)."
           exit 1
 
       - name: Copy stitch script to instance
         if: steps.wait_ssh.outcome == 'success'
+        env:
+          SCRIPT_VARIANT: ${{ github.event.inputs.script_variant }}
         run: |
           python3 - <<'PY'
-          import urllib.request, json, base64
+          import urllib.request, json, base64, os
           from pathlib import Path
 
           PAT  = "${{ secrets.GH_PAT }}"
           REPO = "${{ github.repository }}"
+          SCRIPT = os.environ.get("SCRIPT_VARIANT", "").strip() or "vastai_stitch.sh"
 
           req = urllib.request.Request(
-              f"https://api.github.com/repos/{REPO}/contents/gopro360/vastai_stitch.sh?ref=main",
+              f"https://api.github.com/repos/{REPO}/contents/gopro360/{SCRIPT}?ref=main",
               headers={"Authorization": f"token {PAT}", "Accept": "application/vnd.github.v3+json"}
           )
           with urllib.request.urlopen(req) as r:
               data = json.loads(r.read())
           Path("/tmp/vastai_stitch.sh").write_bytes(base64.b64decode(data["content"]))
-          print("Script fetched OK")
+          print(f"Script fetched OK: {SCRIPT}")
           PY
 
           scp -o StrictHostKeyChecking=no \
@@ -552,7 +561,7 @@ jobs:
                 curl -s -X POST -H "Authorization: token ${{ secrets.GH_PAT }}" \
                   -H "Accept: application/vnd.github.v3+json" \
                   "https://api.github.com/repos/${{ github.repository }}/actions/workflows/gopro360-upload.yml/dispatches" \
-                  -d "{\"ref\":\"${{ github.ref_name }}\",\"inputs\":{\"media_id\":\"${{ github.event.inputs.media_id }}\",\"filename\":\"${{ github.event.inputs.filename }}\",\"captured_at\":\"${{ github.event.inputs.captured_at }}\",\"test_duration_sec\":\"${{ github.event.inputs.test_duration_sec }}\",\"dry_run\":\"${{ github.event.inputs.dry_run }}\",\"excluded_offer_ids\":\"${NEW_EXCLUDED}\",\"attempt_num\":\"${NEXT_ATTEMPT}\"}}"
+                  -d "{\"ref\":\"${{ github.ref_name }}\",\"inputs\":{\"media_id\":\"${{ github.event.inputs.media_id }}\",\"filename\":\"${{ github.event.inputs.filename }}\",\"captured_at\":\"${{ github.event.inputs.captured_at }}\",\"test_duration_sec\":\"${{ github.event.inputs.test_duration_sec }}\",\"dry_run\":\"${{ github.event.inputs.dry_run }}\",\"excluded_offer_ids\":\"${NEW_EXCLUDED}\",\"attempt_num\":\"${NEXT_ATTEMPT}\",\"script_variant\":\"${{ github.event.inputs.script_variant }}\"}}"
                 echo "Fresh run dispatched excluding offers: ${NEW_EXCLUDED}"
                 exit 1
                 ;;
