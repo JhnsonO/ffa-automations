@@ -68,7 +68,9 @@ Subsystem: `.github/workflows/gopro360-upload.yml` + `gopro360/vastai_stitch.sh`
   5. **Retry budget 3→8** — cheap preflight makes more retries affordable.
 - **5950X removed from whitelist** (worst performer: 22 runs, avg 0.97x, 0 successes).
 - **Preflight `set -e` bug fixed (2026-06-30, commit `66cfb4a`):** Under `set -euo pipefail`, `timeout 90 ffmpeg` failure/timeout caused bash to exit before `PF_RC=$?`, `SPEED`, and `BENCHMARK_FAILED` were written — the exit trap wrote `FAILED:124` instead. Fixed: `set +e` / `set -e` wrapper around the preflight ffmpeg call in both scripts. Validation run `28473642367` (dispatched against `e6dbba7`) is **INVALID** — must re-dispatch against `66cfb4a`.
-- **Open (flagged, not actioned):** `offers_exhausted` was 36% of all runs — whitelist may be too narrow for current vast inventory, independent of speed. Reputation store is last-write-wins (acceptable at current volume).
+- **Pool expansion (2026-07-01, commit `db8b97aab5`):** `cpu_cores` floor 32→16, `cpu_ghz >= 4.5` filter removed, GOOD_CPU_SUBSTRINGS expanded with `Threadripper PRO`, `Threadripper`, `Core Ultra 9`. MAX2 validation run dispatched (media_id `6a42be4d8c9f5c76014416b7`, GS010419.360, test_duration_sec=60) — DISPATCHED — UNVERIFIED.
+- **Watch:** offer `43203100` (Japan 9950X, SSH fail) absent from reputation — will waste one boot cycle on re-selection.
+- **Open:** `offers_exhausted` was 36% baseline — pool expansion should address this; needs a few runs to confirm. Reputation store is last-write-wins (acceptable at current volume).
 
 ### Target pipeline
 
@@ -420,6 +422,7 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 ## Compact change log
 
+- **2026-07-01 (session 20 — pool expansion):** `gopro360-upload.yml` patched: `cpu_cores` 32→16, `cpu_ghz >= 4.5` removed, GOOD_CPU_SUBSTRINGS += Threadripper PRO / Threadripper / Core Ultra 9 (commit `db8b97aab5`). MAX2 validation run dispatched — DISPATCHED — UNVERIFIED.
 - **2026-06-30 (session 19 — preflight set -e fix):** Fixed silent preflight failure in both stitch scripts. Under `set -euo pipefail`, `timeout 90 ffmpeg` failure/timeout caused bash to exit before `PF_RC=$?` ran — exit trap wrote `FAILED:124` instead of routing through `BENCHMARK_FAILED`. Fix: `set +e` / `set -e` wrapper around preflight ffmpeg block (commit `66cfb4a`). Validation run `28473642367` (commit `e6dbba7`) is INVALID; must re-dispatch against `66cfb4a`.
 - **2026-06-30 (session 18 — uploader host-qualification):** GoPro 360 uploader rebuilt around host qualification after 154-run analysis (1 success, failures = vast host contention not FFmpeg cap). Five components: persistent offer reputation (`gopro360/offer_reputation.json`, expiring blocks <1.0x→7d / 1.0–1.5x→24h), reputation-ranked selection (proven→CPU-tier→price, X3D deprioritised), hang-safe pre-download preflight benchmark, sustained 3-window speed monitor, retry budget 3→8. Earlier in session: `used_offer_id` blacklist bug fixed, stale `TARGET_SPEED` 4.0→1.72/2.87, explicit `-filter_complex_threads`, 5950X removed from whitelist (22 runs avg 0.97x). Files: `gopro360-upload.yml`, `vastai_stitch.sh`, `vastai_stitch_max2.sh`. MAX2 validation run dispatched — DISPATCHED, UNVERIFIED. Open: `offers_exhausted` 36% of runs (whitelist breadth, separate issue).
 - **2026-06-29 (session 15b):** MOG2 wired into Stage 1 as primary detector (commit `5a2cc96`). Single MOG2 blob → candidate (source="mog2"), skip YOLO. 0 or >1 blobs → YOLO fallback. --no-mog2 flag added. mog2_primary_count + mog2_fallthrough_count in run_summary. py_compile clean.
