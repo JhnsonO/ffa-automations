@@ -234,7 +234,7 @@ wait "${DL_PID}" || { log "ERROR: aria2c download failed:"; tail -20 "${WORKDIR}
 SRC_SIZE_MB=$(du -m "${LOCAL_SOURCE}" | cut -f1)
 log "Downloaded: ${SRC_SIZE_MB}MB -> ${LOCAL_SOURCE}"
 
-TARGET_SPEED=4.0
+TARGET_SPEED=2.87
 
 log "--- System info ---"
 free -m | sed 's/^/  /' | while read -r l; do log "$l"; done
@@ -253,6 +253,7 @@ fi
 stdbuf -oL -eL ffmpeg -y -v info \
   -i "${LOCAL_SOURCE}" \
   -i "${MASK_PNG}" \
+  -filter_complex_threads "${NPROC}" \
   -filter_complex "${FILTER_COMPLEX}" \
   -map "[v]" \
   -map "0:a:0?" \
