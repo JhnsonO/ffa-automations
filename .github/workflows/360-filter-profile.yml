@@ -103,10 +103,11 @@ jobs:
           offers.sort(key=lambda o: float(o.get("dph_total", 999)))
 
           IMAGE_PAYLOAD = {
-              "client_id": "me",
-              "image": "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime",
-              "disk": 20,
+              "image":   "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
+              "disk":    50,
               "runtype": "ssh",
+              "ssh_key": pub_key,
+              "env":     {"NVIDIA_VISIBLE_DEVICES": "all", "NVIDIA_DRIVER_CAPABILITIES": "all"},
           }
 
           ip = port = instance_id = used_offer_id = None
