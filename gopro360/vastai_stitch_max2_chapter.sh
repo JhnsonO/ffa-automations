@@ -327,7 +327,7 @@ wait "${DL_PID}" || { log "ERROR: aria2c download failed:"; tail -20 "${WORKDIR}
 SRC_SIZE_MB=$(du -m "${LOCAL_SOURCE}" | cut -f1)
 log "Downloaded: ${SRC_SIZE_MB}MB -> ${LOCAL_SOURCE}"
 
-TARGET_SPEED=2.87
+TARGET_SPEED=0.90       # updated from stale MAX1-era 2.87 — real measured ceiling on this pipeline is ~0.5-0.9x
 
 log "--- System info ---"
 free -m | sed 's/^/  /' | while read -r l; do log "$l"; done
@@ -358,8 +358,8 @@ stdbuf -oL -eL ffmpeg -y -v info \
   "${OUTPUT_EQUIRECT}" > "${STDOUT}" 2>&1 &
 FFMPEG_PID=$!
 
-MIN_SPEED=1.3          # sustained floor — below this on 3 consecutive windows → reject and redispatch
-ABORT_MIN=1.15         # = MIN_SPEED - 0.15; instantaneous floor per sampling window
+MIN_SPEED=0.55         # lowered from 1.3 — matches the recalibrated preflight floor; real ceiling is ~0.5-0.9x, 1.3 was unreachable
+ABORT_MIN=0.45         # lowered from 1.15 — leaves margin below the 0.55 floor for normal window-to-window variance
 WARMUP_TICKS=12        # ~60s warm-up before sustained checks begin (tick = 5s)
 SAMPLE_EVERY=6         # evaluate instantaneous speed every ~30s
 CONSEC_SLOW=0          # consecutive sub-ABORT_MIN windows
