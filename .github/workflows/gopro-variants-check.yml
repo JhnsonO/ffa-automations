@@ -56,8 +56,17 @@ jobs:
                     f"quality={v.get('quality')} url={'yes' if v.get('url') else 'no'}")
 
           print()
-          print("=== full /media/{id}/download response (raw) ===")
-          print(json.dumps(resp, indent=2)[:4000])
+          print("=== all 'source' variant entries (full detail, unmasked URLs) ===")
+          source_variants = [v for v in variations if v.get('label') == 'source']
+          for i, v in enumerate(source_variants):
+              print(f"source[{i}]:")
+              print(f"  url: {v.get('url')}")
+              print(f"  item_number: {v.get('item_number')}")
+              print(f"  width: {v.get('width')} height: {v.get('height')}")
+              print()
+
+          urls = [v.get('url') for v in source_variants]
+          print(f"Distinct URLs among 'source' entries: {len(set(urls))} of {len(urls)}")
 
           print()
           print("=== /media/{id} (metadata) ===")
