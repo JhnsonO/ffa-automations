@@ -29,6 +29,11 @@ on:
         required: false
         default: 'false'
         type: string
+      force_reupload:
+        description: 'Bypass dedup check and upload even if this media_id was already uploaded (WILL create a duplicate video on YouTube — for validation testing only)'
+        required: false
+        default: 'false'
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -79,6 +84,7 @@ jobs:
           FILENAME: ${{ github.event.inputs.filename }}
           CAPTURED_AT: ${{ github.event.inputs.captured_at }}
           FORCE: ${{ github.event.inputs.force }}
+          FORCE_REUPLOAD: ${{ github.event.inputs.force_reupload }}
           GH_PAT: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
           ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
