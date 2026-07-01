@@ -13,7 +13,7 @@ jobs:
   profile:
     name: Profile v360 vs seam-assembly cost
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: Generate SSH key pair for this run
@@ -232,7 +232,7 @@ jobs:
               -i /tmp/vastai_key \
               -p "${{ steps.launch.outputs.port }}" \
               "root@${{ steps.launch.outputs.ip }}" \
-              "chmod +x /tmp/filter_profile.sh && timeout 1200 bash /tmp/filter_profile.sh"
+              "chmod +x /tmp/filter_profile.sh && timeout 1800 bash /tmp/filter_profile.sh"
 
       - name: Terminate Vast.ai instance
         if: always()
