@@ -1,0 +1,104 @@
+name: GoPro Chapter Check (read-only)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Write GoPro cookies
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+        run: |
+          python3 -c "
+          import os
+          from pathlib import Path
+          cookies = os.environ.get('GOPRO_COOKIES', '{}').strip() or '{}'
+          Path('gopro_cookies.json').write_text(cookies)
+          print('cookies written')
+          "
+
+      - name: List media and group by session number
+        run: |
+          python3 - <<'PY'
+          import re
+          from collections import defaultdict
+          import gopro_uploader as u
+
+          session = u.make_session(u.load_cookies_from_file())
+
+          all_items = []
+          page = 1
+          while page <= 20:
+              data = u.gopro_get(session, "/media/search", params={
+                  "fields": "id,captured_at,created_at,filename,file_size,type",
+                  "order_by": "created_at",
+                  "order": "desc",
+                  "per_page": 50,
+                  "page": page,
+                  "type": "Video",
+              })
+              items = data.get("_embedded", {}).get("media", [])
+              print(f"page {page}: {len(items)} items")
+              if not items:
+                  break
+              all_items.extend(items)
+              pages = data.get("_pages", {})
+              if page >= pages.get("total_pages", 1):
+                  break
+              page += 1
+
+          print(f"\nTotal video items scanned: {len(all_items)}\n")
+
+          # GoPro MAX filename pattern: G[S|P]<chapter 2 digits><session 4 digits>.360/.mp4
+          # e.g. GS010419.360 -> chapter 01, session 0419
+          pattern = re.compile(r'^G[SP](\d{2})(\d{4})\.(360|mp4)$', re.IGNORECASE)
+
+          sessions = defaultdict(list)
+          unmatched = []
+          for item in all_items:
+              fn = item.get("filename", "") or ""
+              m = pattern.match(fn)
+              if m:
+                  chapter, session_num, ext = m.groups()
+                  sessions[session_num].append({
+                      "chapter": chapter,
+                      "filename": fn,
+                      "id": item.get("id"),
+                      "captured_at": item.get("captured_at"),
+                      "size_gb": int(item.get("file_size", 0) or 0) / 1e9,
+                  })
+              else:
+                  unmatched.append(fn)
+
+          print("=== Sessions with multiple chapters ===")
+          multi = {k: v for k, v in sessions.items() if len(v) > 1}
+          if not multi:
+              print("None found — no session in recent history has more than 1 chapter on file.")
+          for session_num, chapters in sorted(multi.items()):
+              chapters.sort(key=lambda c: c["chapter"])
+              total_size = sum(c["size_gb"] for c in chapters)
+              print(f"\nSession {session_num}: {len(chapters)} chapters, {total_size:.2f} GB total")
+              for c in chapters:
+                  print(f"  chapter {c['chapter']} | {c['filename']} | id={c['id']} | {c['size_gb']:.2f} GB | captured_at={c['captured_at']}")
+
+          print(f"\n=== Sessions with exactly 1 chapter: {len({k:v for k,v in sessions.items() if len(v)==1})} ===")
+          print(f"=== Unmatched filenames (pattern didn't fit): {len(unmatched)} ===")
+          for fn in unmatched[:15]:
+              print(f"  {fn}")
+          PY
