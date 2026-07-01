@@ -175,7 +175,7 @@ fi
 # of throughput rather than startup overhead.
 BENCH_W=7680
 BENCH_H=3840
-PREFLIGHT_MIN=0.85          # post-warmup floor
+PREFLIGHT_MIN=0.55          # lowered from 0.85 — real measured sustained speed on best hardware (9950X) is ~0.63x post-warmup, so 0.85 rejected every host. 0.55 leaves margin below the real ceiling.
 PREFLIGHT_WARMUP_US=30000000  # ignore first 30s of output (µs)
 PREFLIGHT_LOG="${WORKDIR}/preflight.log"
 log "--- Preflight benchmark (v360 ${BENCH_W}x${BENCH_H} + x264, 60s synthetic, 30s warm-up, floor ${PREFLIGHT_MIN}x) ---"
