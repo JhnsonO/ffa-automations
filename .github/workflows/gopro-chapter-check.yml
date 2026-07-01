@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install deps
-        run: pip install requests
+        run: pip install requests google-auth google-auth-oauthlib google-api-python-client
 
       - name: Write GoPro cookies
         env:
