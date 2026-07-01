@@ -1,0 +1,271 @@
+name: 360 Filter Graph Profiler (Vast.ai)
+
+on:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    name: Profile v360 vs seam-assembly cost
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Generate SSH key pair for this run
+        run: |
+          ssh-keygen -t ed25519 -f /tmp/vastai_key -N "" -C "ffa-360-profile"
+
+      - name: Search for offer + launch Vast.ai instance
+        id: launch
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, time, json, urllib.request, urllib.parse, urllib.error, sys
+
+          API_KEY = os.environ["VAST_API_KEY"]
+          pub_key = open("/tmp/vastai_key.pub").read().strip()
+
+          BASE    = "https://console.vast.ai/api/v0"
+          BASE_V1 = "https://cloud.vast.ai/api/v1"
+          headers = {
+              "Authorization": f"Bearer {API_KEY}",
+              "Content-Type": "application/json",
+              "Accept": "application/json",
+          }
+
+          def vast_get(path, params=None, base=None):
+              url = f"{base or BASE}{path}"
+              if params:
+                  url += "?" + urllib.parse.urlencode(params)
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  return json.loads(r.read())
+
+          def vast_put(path, data):
+              req = urllib.request.Request(f"{BASE}{path}",
+                  data=json.dumps(data).encode(), method="PUT", headers=headers)
+              with urllib.request.urlopen(req) as r:
+                  return json.loads(r.read())
+
+          def vast_post(path, data):
+              req = urllib.request.Request(f"{BASE}{path}",
+                  data=json.dumps(data).encode(), method="POST", headers=headers)
+              with urllib.request.urlopen(req) as r:
+                  return json.loads(r.read())
+
+          def vast_delete(path, base=None):
+              req = urllib.request.Request(f"{base or BASE}{path}", method="DELETE", headers=headers)
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  return json.loads(r.read())
+
+          print("Registering SSH key...")
+          vast_post("/ssh/", {"ssh_key": pub_key})
+          print("SSH key registered")
+
+          query = json.dumps({
+              "reliability":  {"gte": 0.98},
+              "inet_up":      {"gte": 800},
+              "inet_down":    {"gte": 800},
+              "disk_space":   {"gte": 50},
+              "cpu_cores":    {"gte": 16},
+              "cpu_ram":      {"gte": 32768},
+              "gpu_frac":     {"eq": 1},
+              "rentable":     {"eq": True},
+              "verified":     {"eq": True},
+              "geolocation":  {"notin": ["CN"]},
+          })
+
+          resp = vast_get("/bundles/", {"q": query})
+          offers = resp.get("offers", [])
+          print(f"Found {len(offers)} verified offers")
+
+          # Same tier-0/1 CPU whitelist as production — want the same host class
+          GOOD_CPU_SUBSTRINGS = [
+              "Ryzen 9 9950X", "Ryzen 9 7950X",
+              "Ryzen 9 9900X", "Ryzen 9 7900X", "Ryzen 9 5900X",
+              "Core i9-14", "Core i9-13", "Core i9-12",
+              "Threadripper PRO", "Threadripper",
+              "Core Ultra 9",
+          ]
+          offers = [o for o in offers if any(s in (o.get("cpu_name") or "") for s in GOOD_CPU_SUBSTRINGS)]
+          print(f"Filtered to {len(offers)} known-fast-CPU offers")
+
+          if not offers:
+              print("ERROR: no matching offers", file=sys.stderr)
+              sys.exit(1)
+
+          offers.sort(key=lambda o: float(o.get("dph_total", 999)))
+
+          IMAGE_PAYLOAD = {
+              "client_id": "me",
+              "image": "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime",
+              "disk": 20,
+              "runtype": "ssh",
+          }
+
+          ip = port = instance_id = used_offer_id = None
+          for offer in offers[:5]:
+              offer_id = offer["id"]
+              price = float(offer.get("dph_total", 0))
+              cpu_name = offer.get("cpu_name", "?")
+              location = offer.get("geolocation", "?")
+              print(f"Trying offer {offer_id} — {cpu_name} @ ${price:.4f}/hr ({location})")
+
+              try:
+                  result = vast_put(f"/asks/{offer_id}/", IMAGE_PAYLOAD)
+              except Exception as e:
+                  print(f"  launch failed: {e} — trying next offer")
+                  continue
+
+              this_instance = result.get("new_contract")
+              if not this_instance:
+                  print(f"  no instance ID returned — trying next offer")
+                  continue
+              print(f"  Instance ID: {this_instance}")
+
+              this_ip = this_port = None
+              for attempt in range(20):
+                  time.sleep(15)
+                  try:
+                      resp = vast_get("/instances/", base=BASE_V1)
+                      inst = next((x for x in resp.get("instances", []) if x["id"] == this_instance), None)
+                      if not inst:
+                          print(f"    [{attempt+1}] instance not visible yet")
+                          continue
+                  except Exception as e:
+                      print(f"    [{attempt+1}] poll error: {e}")
+                      continue
+
+                  status   = inst.get("actual_status", "")
+                  ssh_host = inst.get("ssh_host") or inst.get("public_ipaddr")
+                  ssh_port = inst.get("ssh_port", 22)
+                  print(f"    [{attempt+1}] status={status} host={ssh_host} port={ssh_port}")
+
+                  if status == "running" and ssh_host:
+                      this_ip   = ssh_host
+                      this_port = str(ssh_port)
+                      break
+
+              if this_ip:
+                  ip, port, instance_id = this_ip, this_port, this_instance
+                  used_offer_id = offer_id
+                  break
+              else:
+                  print(f"  instance {this_instance} never reached running — terminating, trying next offer")
+                  try: vast_delete(f"/instances/{this_instance}/", base=BASE_V1)
+                  except: pass
+
+          if not ip:
+              print("ERROR: all candidate offers exhausted", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Ready: {ip}:{port}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"instance_id={instance_id}\n")
+              f.write(f"ip={ip}\n")
+              f.write(f"port={port}\n")
+              f.write(f"used_offer_id={used_offer_id}\n")
+          PY
+
+      - name: Wait for SSH
+        id: wait_ssh
+        continue-on-error: true
+        run: |
+          IP="${{ steps.launch.outputs.ip }}"
+          PORT="${{ steps.launch.outputs.port }}"
+          echo "Waiting for SSH on ${IP}:${PORT}..."
+          for i in $(seq 1 8); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
+                   -i /tmp/vastai_key -p "${PORT}" "root@${IP}" \
+                   "echo SSH_OK" 2>/dev/null | grep -q SSH_OK; then
+              echo "SSH is up after ${i} attempts"
+              exit 0
+            fi
+            echo "  [${i}/8] not ready — waiting 5s..."
+            sleep 5
+          done
+          echo "ERROR: SSH never came up"
+          exit 1
+
+      - name: Copy profiler script to instance
+        if: steps.wait_ssh.outcome == 'success'
+        run: |
+          python3 - <<'PY'
+          import urllib.request, json, base64
+          from pathlib import Path
+
+          PAT  = "${{ secrets.GH_PAT }}"
+          REPO = "${{ github.repository }}"
+
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{REPO}/contents/gopro360/filter_profile.sh?ref=main",
+              headers={"Authorization": f"token {PAT}", "Accept": "application/vnd.github.v3+json"}
+          )
+          with urllib.request.urlopen(req) as r:
+              data = json.loads(r.read())
+          Path("/tmp/filter_profile.sh").write_bytes(base64.b64decode(data["content"]))
+          print("Script fetched OK")
+          PY
+
+          scp -o StrictHostKeyChecking=no \
+              -i /tmp/vastai_key \
+              -P "${{ steps.launch.outputs.port }}" \
+              /tmp/filter_profile.sh \
+              "root@${{ steps.launch.outputs.ip }}:/tmp/filter_profile.sh"
+          echo "Script transferred"
+
+      - name: Run profiler (foreground — total run capped at ~10 min)
+        if: steps.wait_ssh.outcome == 'success'
+        run: |
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ServerAliveInterval=30 \
+              -i /tmp/vastai_key \
+              -p "${{ steps.launch.outputs.port }}" \
+              "root@${{ steps.launch.outputs.ip }}" \
+              "chmod +x /tmp/filter_profile.sh && timeout 600 bash /tmp/filter_profile.sh"
+
+      - name: Terminate Vast.ai instance
+        if: always()
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+          INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
+        run: |
+          if [ -z "${INSTANCE_ID}" ]; then
+            echo "No instance ID — nothing to terminate"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.error
+
+          API_KEY     = os.environ["VAST_API_KEY"]
+          INSTANCE_ID = os.environ["INSTANCE_ID"]
+          headers     = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+
+          endpoints = [
+              f"https://console.vast.ai/api/v0/instances/{INSTANCE_ID}/",
+              f"https://cloud.vast.ai/api/v0/instances/{INSTANCE_ID}/",
+              f"https://cloud.vast.ai/api/v1/instances/{INSTANCE_ID}/",
+          ]
+          for url in endpoints:
+              req = urllib.request.Request(url, method="DELETE", headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as r:
+                      print(f"Terminated {INSTANCE_ID} via {url}: {json.loads(r.read())}")
+                  break
+              except urllib.error.HTTPError as e:
+                  body = e.read().decode()[:300]
+                  print(f"  {url} -> HTTP {e.code}: {body}")
+                  if e.code == 404:
+                      continue
+                  break
+              except Exception as e:
+                  print(f"  {url} -> error: {e}")
+                  continue
+          else:
+              print(f"WARNING: could not terminate {INSTANCE_ID} via any endpoint — terminate manually")
+          PY
