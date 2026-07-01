@@ -206,6 +206,34 @@ jobs:
               with urllib.request.urlopen(req, timeout=20) as r:
                   return json.loads(r.read())
 
+          def robust_terminate(instance_id):
+              """Try all known-working vast.ai delete endpoints in sequence, with logging.
+              A single endpoint/error is not sufficient reason to give up — vast.ai's API
+              is inconsistent about which base URL accepts DELETE for a given instance.
+              This mirrors the final 'Terminate Vast.ai instance' step's proven logic,
+              which has never failed to terminate in practice, unlike the old single-
+              endpoint try/except:pass version this replaces."""
+              endpoints = [
+                  f"https://console.vast.ai/api/v0/instances/{instance_id}/",
+                  f"https://cloud.vast.ai/api/v0/instances/{instance_id}/",
+                  f"https://cloud.vast.ai/api/v1/instances/{instance_id}/",
+              ]
+              for url in endpoints:
+                  req = urllib.request.Request(url, method="DELETE", headers=headers)
+                  try:
+                      with urllib.request.urlopen(req, timeout=20) as r:
+                          print(f"    terminated {instance_id} via {url}: {json.loads(r.read())}")
+                      return True
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode()[:200]
+                      print(f"    {url} -> HTTP {e.code}: {body}")
+                      continue  # try next endpoint regardless of error code — do NOT give up early
+                  except Exception as e:
+                      print(f"    {url} -> error: {e}")
+                      continue
+              print(f"    WARNING: could not terminate {instance_id} via any endpoint — may need manual cleanup")
+              return False
+
           def redispatch():
               """Re-dispatch this workflow so we get a fresh attempt (max 8 total)."""
               attempt = int("${{ github.event.inputs.attempt_num }}" or "1")
@@ -428,8 +456,7 @@ jobs:
                   break
               else:
                   print(f"  instance {this_instance} never reached running — terminating, trying next offer")
-                  try: vast_delete(f"/instances/{this_instance}/", base=BASE_V1)
-                  except: pass
+                  robust_terminate(this_instance)
 
           if not ip:
               print("ERROR: All candidate offers exhausted — redispatching", file=sys.stderr)
