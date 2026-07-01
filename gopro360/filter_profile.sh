@@ -110,7 +110,7 @@ run_bench() {
   log "--- Benchmark: ${label} (${RUN_SECONDS}s run, ${WARMUP_US}us warmup) ---"
 
   set +e
-  timeout $((RUN_SECONDS + 60)) bash -c "ffmpeg -y -v error -nostdin ${src_args} \
+  timeout $((RUN_SECONDS + 300)) bash -c "ffmpeg -y -v error -nostdin ${src_args} \
     -filter_complex \"${filter}\" \
     -map \"${maplabel}\" -an -t ${RUN_SECONDS} \
     -c:v libx264 -preset ultrafast -b:v 20M -threads 0 \
