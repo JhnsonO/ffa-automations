@@ -165,35 +165,85 @@ if [ "${NPROC}" -lt 16 ]; then
 fi
 
 # ── Preflight host-speed benchmark (BEFORE the multi-GB download) ────────────
-# Runs the dominant cost (v360 EAC→equirect remap + x264) on a synthetic source
-# at the real output resolution, so a slow/contended host is rejected in <90s
-# instead of after a 14GB download + partial encode. Hang-safe by construction:
-# synthetic source, hard -t and -frames:v caps, timeout wrapper, progress to a
-# file (no blocking pipe), and -f null (no disk write). This is why the earlier
-# pre-download benchmark hung; those failure modes are all closed here.
+# Runs v360 EAC→equirect remap + x264 on 60s of synthetic 8K content.
+# v360 has a large one-off remap-table setup cost that dominates a 5s test
+# but is negligible over a 52-min encode. We therefore:
+#   - run for 60s of encode output
+#   - ignore the first 30s (warmup)
+#   - measure speed as delta out_time_us / wall_time over seconds 30–60
+# This matches the sustained-monitor methodology and gives a fair prediction
+# of throughput rather than startup overhead.
 BENCH_W=7680
 BENCH_H=3840
-PREFLIGHT_MIN=0.85     # lowered from 1.25 — 8K pipeline peaks ~0.56x on real vast.ai hardware
+PREFLIGHT_MIN=0.85          # post-warmup floor
+PREFLIGHT_WARMUP_US=30000000  # ignore first 30s of output (µs)
 PREFLIGHT_LOG="${WORKDIR}/preflight.log"
-log "--- Preflight benchmark (v360 ${BENCH_W}x${BENCH_H} + x264, 5s synthetic, floor ${PREFLIGHT_MIN}x) ---"
+log "--- Preflight benchmark (v360 ${BENCH_W}x${BENCH_H} + x264, 60s synthetic, 30s warm-up, floor ${PREFLIGHT_MIN}x) ---"
 rm -f "${PREFLIGHT_LOG}"
 set +e
-timeout 90 ffmpeg -y -v error -nostdin \
+timeout 300 ffmpeg -y -v error -nostdin \
   -f lavfi -i "testsrc2=size=${BENCH_W}x${BENCH_H}:rate=30" \
-  -t 5 -frames:v 150 -an \
+  -t 60 -an \
   -vf "v360=eac:e:interp=linear:w=${BENCH_W}:h=${BENCH_H},format=yuv420p" \
   -c:v libx264 -preset ultrafast -b:v 20M -threads 0 \
-  -progress "${PREFLIGHT_LOG}" -f null - > /dev/null 2>&1
+  -progress "${PREFLIGHT_LOG}" -f null - > /dev/null 2>&1 &
+PF_PID=$!
+set -e
+
+SNAP_OT_US=""
+SNAP_WALL_MS=""
+PF_POLL=0
+while kill -0 "${PF_PID}" 2>/dev/null; do
+  sleep 5
+  PF_POLL=$((PF_POLL + 5))
+  OT_US=$(grep -a "^out_time_us=" "${PREFLIGHT_LOG}" 2>/dev/null | tail -1 | cut -d= -f2 || echo 0)
+  OT_US=${OT_US:-0}
+  SP=$(grep -a "^speed=" "${PREFLIGHT_LOG}" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d 'x ' || echo "?")
+  log "  [preflight ${PF_POLL}s wall] out_time_us=${OT_US} rolling_speed=${SP}x"
+  if [ -z "${SNAP_OT_US}" ]; then
+    PAST=$(python3 -c "print('yes' if int('${OT_US:-0}') >= ${PREFLIGHT_WARMUP_US} else 'no')" 2>/dev/null || echo "no")
+    if [ "${PAST}" = "yes" ]; then
+      SNAP_OT_US="${OT_US}"
+      SNAP_WALL_MS=$(date +%s%3N)
+      log "  [preflight] warmup complete — measurement window starts (snap_ot_us=${SNAP_OT_US})"
+    fi
+  fi
+done
+
+set +e
+wait "${PF_PID}"
 PF_RC=$?
 set -e
-PF_SPEED=$(grep -a "^speed=" "${PREFLIGHT_LOG}" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d 'x ' || true)
-log "  preflight exit=${PF_RC} speed=${PF_SPEED:-?}x"
+
+FINAL_OT_US=$(grep -a "^out_time_us=" "${PREFLIGHT_LOG}" 2>/dev/null | tail -1 | cut -d= -f2 || echo 0)
+FINAL_WALL_MS=$(date +%s%3N)
+
+if [ -z "${SNAP_OT_US}" ]; then
+  log "PREFLIGHT FAILED: encode never reached 30s output (host too slow to benchmark)"
+  echo "0" > "${WORKDIR}/SPEED" 2>/dev/null || true
+  cp "${WORKDIR}/SPEED" /tmp/ffa360/SPEED 2>/dev/null || true
+  echo "BENCHMARK_FAILED" > "${WORKDIR}/FAILED"
+  cp "${WORKDIR}/FAILED" /tmp/ffa360/FAILED 2>/dev/null || true
+  exit 1
+fi
+
+PF_SPEED=$(python3 -c "
+try:
+    delta_ot = (int('${FINAL_OT_US}') - int('${SNAP_OT_US}')) / 1e6
+    delta_w  = (int('${FINAL_WALL_MS}') - int('${SNAP_WALL_MS}')) / 1e3
+    print(round(delta_ot / delta_w, 3) if delta_w > 0 and delta_ot > 0 else 0)
+except Exception:
+    print(0)
+" 2>/dev/null || echo "0")
+
+log "  preflight post-warmup speed=${PF_SPEED:-?}x (exit=${PF_RC})"
 PF_OK=$(python3 -c "
 try:
     print('yes' if float('${PF_SPEED:-0}') >= ${PREFLIGHT_MIN} else 'no')
 except Exception:
     print('no')
 " 2>/dev/null || echo "no")
+
 if [ "${PF_RC}" = "124" ] || [ "${PF_OK}" != "yes" ]; then
   log "PREFLIGHT FAILED: ${PF_SPEED:-0}x < ${PREFLIGHT_MIN}x (rc=${PF_RC}) — rejecting host before download"
   echo "${PF_SPEED:-0}" > "${WORKDIR}/SPEED" 2>/dev/null || true
@@ -205,6 +255,7 @@ fi
 log "PREFLIGHT PASSED: ${PF_SPEED}x >= ${PREFLIGHT_MIN}x — proceeding to download"
 echo "${PF_SPEED}" > "${WORKDIR}/SPEED" 2>/dev/null || true
 cp "${WORKDIR}/SPEED" /tmp/ffa360/SPEED 2>/dev/null || true
+
 
 # ── Download source to local NVMe ───────────────────────────────────────────
 # Avoids N parallel remote seeks against the GoPro CDN (unreliable/slow);
