@@ -1,0 +1,43 @@
+name: Vast.ai Instance Check (read-only)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  list-instances:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: List current instances
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request
+
+          API_KEY = os.environ["VAST_API_KEY"]
+          headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+
+          req = urllib.request.Request("https://cloud.vast.ai/api/v1/instances/", headers=headers)
+          with urllib.request.urlopen(req, timeout=20) as r:
+              data = json.loads(r.read())
+
+          instances = data.get("instances", [])
+          print(f"Total instances on account: {len(instances)}")
+          print("")
+          for inst in instances:
+              print(f"id={inst.get('id')} status={inst.get('actual_status')} "
+                    f"cpu={inst.get('cpu_name')} gpu={inst.get('gpu_name')} "
+                    f"dph={inst.get('dph_total')} start_date={inst.get('start_date')} "
+                    f"host_id={inst.get('host_id')}")
+
+          # Also pull current credit balance
+          try:
+              ureq = urllib.request.Request("https://cloud.vast.ai/api/v1/users/current/", headers=headers)
+              with urllib.request.urlopen(ureq, timeout=20) as r:
+                  u = json.loads(r.read())
+              print("")
+              print(f"Current credit/balance: {u.get('credit', u.get('balance', 'unknown'))}")
+          except Exception as e:
+              print(f"Could not fetch balance: {e}")
+          PY
