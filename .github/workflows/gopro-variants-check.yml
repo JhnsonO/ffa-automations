@@ -1,0 +1,69 @@
+name: GoPro Variants Check (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      media_id:
+        required: true
+        type: string
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install requests google-auth google-auth-oauthlib google-api-python-client
+
+      - name: Write GoPro cookies
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+        run: |
+          python3 -c "
+          import os
+          from pathlib import Path
+          cookies = os.environ.get('GOPRO_COOKIES', '{}').strip() or '{}'
+          Path('gopro_cookies.json').write_text(cookies)
+          "
+
+      - name: Dump all download variants + full media metadata
+        env:
+          MEDIA_ID: ${{ github.event.inputs.media_id }}
+        run: |
+          python3 - <<'PY'
+          import os, json
+          import gopro_uploader as u
+
+          media_id = os.environ["MEDIA_ID"]
+          session = u.make_session(u.load_cookies_from_file())
+
+          print("=== /media/{id}/download ===")
+          resp = u.gopro_get(session, f"/media/{media_id}/download")
+          variations = resp.get("_embedded", {}).get("variations", [])
+          print(f"{len(variations)} variant(s):")
+          for v in variations:
+              print(f"  label={v.get('label')} width={v.get('width')} height={v.get('height')} "
+                    f"quality={v.get('quality')} url={'yes' if v.get('url') else 'no'}")
+
+          print()
+          print("=== full /media/{id}/download response (raw) ===")
+          print(json.dumps(resp, indent=2)[:4000])
+
+          print()
+          print("=== /media/{id} (metadata) ===")
+          try:
+              meta = u.gopro_get(session, f"/media/{media_id}")
+              print(json.dumps(meta, indent=2)[:4000])
+          except Exception as e:
+              print(f"could not fetch metadata: {e}")
+          PY
