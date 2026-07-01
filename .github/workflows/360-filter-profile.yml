@@ -232,7 +232,7 @@ jobs:
               -i /tmp/vastai_key \
               -p "${{ steps.launch.outputs.port }}" \
               "root@${{ steps.launch.outputs.ip }}" \
-              "chmod +x /tmp/filter_profile.sh && timeout 600 bash /tmp/filter_profile.sh"
+              "chmod +x /tmp/filter_profile.sh && timeout 1200 bash /tmp/filter_profile.sh"
 
       - name: Terminate Vast.ai instance
         if: always()
