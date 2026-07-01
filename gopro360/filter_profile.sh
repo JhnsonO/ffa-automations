@@ -73,6 +73,50 @@ SEAM_FILTER="\
 
 FULL_FILTER="${SEAM_FILTER},[complete]v360=eac:e:interp=linear:w=7680:h=3840[v]"
 
+# ── Candidate redesign: xstack-based seam assembly (ChatGPT proposal) ──────
+# Same crop geometry, same maskedmerge blends, same mask assignments as
+# SEAM_FILTER above (verified: width totals 5796px per eye, mask1->left seam,
+# mask2->right-back seam, mask3/mask4->eye2 equivalents, matching original).
+# Difference: replaces the serial hstack/hstack/hstack/vstack composition
+# ladder with direct xstack placement into final position, to avoid repeated
+# large intermediate-frame materialization. Also restores format=yuvj420p
+# (moved upstream, once per eye, per the "move conversion upstream" idea —
+# the version as given dropped it entirely, which would be a real deviation).
+XSTACK_FILTER="\
+[1:v]format=gray,split=4[m1][m2][m3][m4],\
+[0:0]format=yuvj420p,split=9[e0a][e0b][e0c][e0d][e0e][e0f][e0g][e0h][e0i],\
+[e0a]crop=897:1920:0:0[a0],\
+[e0b]crop=92:1920:897:0[a1],\
+[e0c]crop=92:1920:989:0[a2],\
+[e0d]crop=897:1920:1081:0[a3],\
+[e0e]crop=1932:1920:1978:0[a4],\
+[e0f]crop=897:1920:3910:0[a5],\
+[e0g]crop=92:1920:4807:0[a6],\
+[e0h]crop=92:1920:4899:0[a7],\
+[e0i]crop=897:1920:4991:0[a8],\
+[a1][a2][m1]maskedmerge[ab],\
+[ab]scale=138:1920[abs],\
+[a6][a7][m2]maskedmerge[bb],\
+[bb]scale=138:1920[bbs],\
+[0:1]format=yuvj420p,split=9[e1a][e1b][e1c][e1d][e1e][e1f][e1g][e1h][e1i],\
+[e1a]crop=897:1920:0:0[c0],\
+[e1b]crop=92:1920:897:0[c1],\
+[e1c]crop=92:1920:989:0[c2],\
+[e1d]crop=897:1920:1081:0[c3],\
+[e1e]crop=1932:1920:1978:0[c4],\
+[e1f]crop=897:1920:3910:0[c5],\
+[e1g]crop=92:1920:4807:0[c6],\
+[e1h]crop=92:1920:4899:0[c7],\
+[e1i]crop=897:1920:4991:0[c8],\
+[c1][c2][m3]maskedmerge[cb],\
+[cb]scale=138:1920[cbs],\
+[c6][c7][m4]maskedmerge[db],\
+[db]scale=138:1920[dbs],\
+[a0][abs][a3][a4][a5][bbs][a8]xstack=inputs=7:layout=0_0|897_0|1035_0|1932_0|3864_0|4761_0|4899_0[row0],\
+[c0][cbs][c3][c4][c5][dbs][c8]xstack=inputs=7:layout=0_0|897_0|1035_0|1932_0|3864_0|4761_0|4899_0[row1],\
+[row0][row1]xstack=inputs=2:layout=0_0|0_1920[complete]"
+XSTACK_FULL_FILTER="${XSTACK_FILTER},[complete]v360=eac:e:interp=linear:w=7680:h=3840[v]"
+
 
 # ── Benchmark-only stream remap ──────────────────────────────────────────
 # SEAM_FILTER/FULL_FILTER above use [0:0]/[0:1]/[1:v] because the REAL
@@ -94,6 +138,17 @@ s = s.replace('[MASKPLACEHOLDER]', '[2:v]')
 print(s)
 ")
 BENCH_FULL_FILTER="${BENCH_SEAM_FILTER},[complete]v360=eac:e:interp=linear:w=7680:h=3840[v]"
+
+BENCH_XSTACK_FILTER=$(python3 -c "
+s = '''${XSTACK_FILTER}'''
+s = s.replace('[1:v]format=gray', '[MASKPLACEHOLDER]format=gray')
+s = s.replace('[0:0]', '[0:v]')
+s = s.replace('[0:1]', '[1:v]')
+s = s.replace('[MASKPLACEHOLDER]', '[2:v]')
+print(s)
+")
+BENCH_XSTACK_FULL_FILTER="${BENCH_XSTACK_FILTER},[complete]v360=eac:e:interp=linear:w=7680:h=3840[v]"
+
 
 RUN_SECONDS=90
 WARMUP_US=30000000
@@ -187,13 +242,29 @@ run_bench "full_graph" \
   "${BENCH_FULL_FILTER},[v]format=yuv420p[vout]" \
   "[vout]"
 
+# ── Benchmark 4: xstack candidate, seam assembly alone, NO v360 ──
+run_bench "seam_xstack" \
+  "-f lavfi -i \"testsrc2=size=5888x1920:rate=30\" -f lavfi -i \"testsrc2=size=5888x1920:rate=30\" -i \"${MASK}\"" \
+  "${BENCH_XSTACK_FILTER},[complete]format=yuv420p[v]" \
+  "[v]"
+
+# ── Benchmark 5: xstack candidate, full graph (seam + v360) ──
+run_bench "full_graph_xstack" \
+  "-f lavfi -i \"testsrc2=size=5888x1920:rate=30\" -f lavfi -i \"testsrc2=size=5888x1920:rate=30\" -i \"${MASK}\"" \
+  "${BENCH_XSTACK_FULL_FILTER},[v]format=yuv420p[vout]" \
+  "[vout]"
+
 log ""
 log "=== PROFILE SUMMARY ==="
 V360=$(cat "${WORKDIR}/result_v360_alone.txt" 2>/dev/null || echo 0)
 SEAM=$(cat "${WORKDIR}/result_seam_alone.txt" 2>/dev/null || echo 0)
 FULL=$(cat "${WORKDIR}/result_full_graph.txt" 2>/dev/null || echo 0)
-log "v360 alone     : ${V360}x"
-log "seam alone     : ${SEAM}x"
-log "full graph     : ${FULL}x"
+SEAM_XSTACK=$(cat "${WORKDIR}/result_seam_xstack.txt" 2>/dev/null || echo 0)
+FULL_XSTACK=$(cat "${WORKDIR}/result_full_graph_xstack.txt" 2>/dev/null || echo 0)
+log "v360 alone            : ${V360}x"
+log "seam alone (current)  : ${SEAM}x"
+log "full graph (current)  : ${FULL}x"
+log "seam alone (xstack)   : ${SEAM_XSTACK}x"
+log "full graph (xstack)   : ${FULL_XSTACK}x"
 log "Done."
 touch "${WORKDIR}/DONE"
