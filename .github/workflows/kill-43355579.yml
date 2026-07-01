@@ -1,0 +1,30 @@
+name: Kill Instance 43355579 (one-off)
+on:
+  workflow_dispatch:
+jobs:
+  kill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Terminate
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.error
+          API_KEY = os.environ["VAST_API_KEY"]
+          headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+          for url in [
+              "https://console.vast.ai/api/v0/instances/43355579/",
+              "https://cloud.vast.ai/api/v0/instances/43355579/",
+              "https://cloud.vast.ai/api/v1/instances/43355579/",
+          ]:
+              req = urllib.request.Request(url, method="DELETE", headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as r:
+                      print(f"Terminated via {url}: {json.loads(r.read())}")
+                  break
+              except urllib.error.HTTPError as e:
+                  print(f"  {url} -> HTTP {e.code}: {e.read().decode()[:200]}")
+              except Exception as e:
+                  print(f"  {url} -> error: {e}")
+          PY
