@@ -173,7 +173,7 @@ fi
 # pre-download benchmark hung; those failure modes are all closed here.
 BENCH_W=7680
 BENCH_H=3840
-PREFLIGHT_MIN=1.25     # = MIN_SPEED (1.3) - 0.05; reject hosts that can't meet the sustained floor
+PREFLIGHT_MIN=0.85     # lowered from 1.25 — 8K pipeline peaks ~0.56x on real vast.ai hardware
 PREFLIGHT_LOG="${WORKDIR}/preflight.log"
 log "--- Preflight benchmark (v360 ${BENCH_W}x${BENCH_H} + x264, 5s synthetic, floor ${PREFLIGHT_MIN}x) ---"
 rm -f "${PREFLIGHT_LOG}"
