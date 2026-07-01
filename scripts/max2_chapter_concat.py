@@ -370,6 +370,7 @@ def run():
     gh_pat         = os.environ.get("GH_PAT", "").strip()
     repo           = os.environ.get("REPO", "").strip()
     force          = os.environ.get("FORCE", "false").strip().lower() == "true"
+    force_reupload = os.environ.get("FORCE_REUPLOAD", "false").strip().lower() == "true"
 
     if not all([session_prefix, total_chapters, media_id, gh_pat, repo]):
         log.error("SESSION_PREFIX, TOTAL_CHAPTERS, MEDIA_ID, GH_PAT, REPO are all required")
@@ -386,9 +387,13 @@ def run():
 
     # Dedup check against the REAL production uploaded.db
     existing_yt_id = already_uploaded(repo, gh_pat, media_id)
-    if existing_yt_id:
+    if existing_yt_id and not force_reupload:
         log.info(f"Already uploaded: media_id={media_id} -> https://youtu.be/{existing_yt_id}")
+        log.info("Set force_reupload=true to override and upload anyway (will create a DUPLICATE video on YouTube).")
         return
+    if existing_yt_id and force_reupload:
+        log.warning(f"OVERRIDE: media_id={media_id} already uploaded as https://youtu.be/{existing_yt_id} "
+                    f"but force_reupload=true — proceeding anyway. This WILL create a duplicate video.")
 
     creds = get_credentials()
     drive = get_drive_service(creds)
