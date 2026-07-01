@@ -384,9 +384,10 @@ jobs:
 
           def rank_key(o):
               ps = proven_speed(o["id"])
+              price = float(o.get("dph_total", 999))
               if ps is not None:
-                  return (0, -ps, float(o.get("dph_total", 999)))      # proven-good: fastest measured first
-              return (1, cpu_tier(o.get("cpu_name")), float(o.get("dph_total", 999)))
+                  return (0, price)      # proven-good: cheapest first, escalate price only if cheap ones fail
+              return (1, cpu_tier(o.get("cpu_name")), price)
 
           offers.sort(key=rank_key)
           candidates = offers[:5]
