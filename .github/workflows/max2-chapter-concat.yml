@@ -1,0 +1,87 @@
+name: MAX2 Chapter Concat + Upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_prefix:
+        description: 'Session number e.g. 0419'
+        required: true
+        type: string
+      total_chapters:
+        description: 'Expected number of chapters (from item_count on the parent media)'
+        required: true
+        type: string
+      media_id:
+        description: 'GoPro media ID for the parent session'
+        required: true
+        type: string
+      filename:
+        description: 'Parent session filename e.g. GS010419.360'
+        required: true
+        type: string
+      captured_at:
+        description: 'Capture timestamp (ISO8601)'
+        required: false
+        default: ''
+        type: string
+      force:
+        description: 'Proceed even if fewer than total_chapters are present in Inbox (use with caution)'
+        required: false
+        default: 'false'
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: max2-chapter-concat-${{ github.event.inputs.session_prefix }}
+  cancel-in-progress: false
+
+jobs:
+  concat-upload:
+    name: Concat + Upload session ${{ github.event.inputs.session_prefix }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install google-auth google-auth-oauthlib google-api-python-client
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg exiftool
+
+      - name: Write YouTube/Drive credentials
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: |
+          echo "$YOUTUBE_CREDENTIALS" > youtube_credentials.json
+          echo "$YOUTUBE_TOKEN" > youtube_token.json
+
+      - name: Run concat + upload
+        env:
+          SESSION_PREFIX: ${{ github.event.inputs.session_prefix }}
+          TOTAL_CHAPTERS: ${{ github.event.inputs.total_chapters }}
+          MEDIA_ID: ${{ github.event.inputs.media_id }}
+          FILENAME: ${{ github.event.inputs.filename }}
+          CAPTURED_AT: ${{ github.event.inputs.captured_at }}
+          FORCE: ${{ github.event.inputs.force }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+          ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+          ALERT_EMAIL_KEY: ${{ secrets.ALERT_EMAIL_KEY }}
+        run: python3 scripts/max2_chapter_concat.py
