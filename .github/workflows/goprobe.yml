@@ -1,0 +1,104 @@
+name: GoProbe - Chapter Stream Diagnostic (one-off)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Generate SSH key
+        run: ssh-keygen -t ed25519 -f /tmp/vastai_key -N "" -C "goprobe"
+
+      - name: Launch cheap Vast.ai instance
+        id: launch
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, time, json, urllib.request, urllib.parse
+
+          API_KEY = os.environ["VAST_API_KEY"]
+          pub_key = open("/tmp/vastai_key.pub").read().strip()
+          headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
+
+          def vget(path, params=None, base="https://console.vast.ai/api/v0"):
+              url = f"{base}{path}"
+              if params: url += "?" + urllib.parse.urlencode(params)
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req, timeout=20) as r: return json.loads(r.read())
+
+          def vput(path, data, base="https://console.vast.ai/api/v0"):
+              req = urllib.request.Request(f"{base}{path}", data=json.dumps(data).encode(), method="PUT", headers=headers)
+              with urllib.request.urlopen(req) as r: return json.loads(r.read())
+
+          def vpost(path, data, base="https://console.vast.ai/api/v0"):
+              req = urllib.request.Request(f"{base}{path}", data=json.dumps(data).encode(), method="POST", headers=headers)
+              with urllib.request.urlopen(req) as r: return json.loads(r.read())
+
+          vpost("/ssh/", {"ssh_key": pub_key})
+
+          query = json.dumps({"reliability":{"gte":0.98},"disk_space":{"gte":30},"rentable":{"eq":True},"verified":{"eq":True}})
+          offers = vget("/bundles/", {"q": query}).get("offers", [])
+          offers.sort(key=lambda o: float(o.get("dph_total", 999)))
+
+          for offer in offers[:5]:
+              offer_id = offer["id"]
+              print(f"Trying offer {offer_id} @ ${offer.get('dph_total'):.4f}/hr")
+              result = vput(f"/asks/{offer_id}/", {
+                  "image": "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
+                  "disk": 30, "runtype": "ssh", "ssh_key": pub_key,
+              })
+              inst_id = result.get("new_contract")
+              if not inst_id: continue
+              for attempt in range(15):
+                  time.sleep(10)
+                  resp = vget("/instances/", base="https://cloud.vast.ai/api/v1")
+                  inst = next((x for x in resp.get("instances", []) if x["id"] == inst_id), None)
+                  if inst and inst.get("actual_status") == "running" and inst.get("ssh_host"):
+                      print(f"Ready: {inst['ssh_host']}:{inst.get('ssh_port',22)}")
+                      with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                          f.write(f"instance_id={inst_id}\n")
+                          f.write(f"ip={inst['ssh_host']}\n")
+                          f.write(f"port={inst.get('ssh_port',22)}\n")
+                      exit(0)
+              print(f"Instance {inst_id} never came up, trying next")
+          print("ERROR: no offer worked")
+          exit(1)
+          PY
+
+      - name: Wait for SSH
+        run: |
+          for i in $(seq 1 10); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 -i /tmp/vastai_key \
+                   -p "${{ steps.launch.outputs.port }}" "root@${{ steps.launch.outputs.ip }}" \
+                   "echo OK" 2>/dev/null | grep -q OK; then
+              echo "SSH up"; exit 0
+            fi
+            sleep 5
+          done
+          echo "SSH never came up"; exit 1
+
+      - name: Download chapter 3 and run ffprobe
+        run: |
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=20 -i /tmp/vastai_key \
+              -p "${{ steps.launch.outputs.port }}" "root@${{ steps.launch.outputs.ip }}" \
+              "apt-get update -qq && apt-get install -y -qq ffmpeg curl > /dev/null 2>&1
+               echo '--- Downloading chapter 3 ---'
+               curl -sL -o /tmp/ch3.360 'https://media-cdn-vod-us-west-2.gopro.com/2a2c8057-83d9-4f45-a8f4-f91667ab2a7f/6a42be4d8c9f5c76014416b7/source/default/3.360?ver=1782804302&response-content-disposition=attachment%3B%20filename%3DGS030419.360%3B&Expires=1782913553&Signature=ekbYo3ZGqVvT4C88H228lVbGUIpvIhWmtvII54BMVG~w1s88P6x~~Zp44lUjnv2gRRoLhwvYNTGX-BQxyjubbo3pc88Fw5c0sCB-NACk041cPz9T72eG0FNOAebTHidd-JQppfR8HZskWR6pjy~0xMUXxP-4Ie1VxOaNgNTPl7AvE5ZQkSrXD66~hpKnRsu6WQhd7uPqpAqRyvSCP4QiNLIDGIdDaGTlaIKi9Xj9xcYKOJC8jssciAa4Cvk94FrWpUnViKbo6Ug5nqTWpilSbXrA2leC5Mw4supwUAOXA26YvP1esm~l-DfCUUIPWisAn0OLPpRM7eH5C~wRsMtbTA__&Key-Pair-Id=K2W5RBKCTEO7AM'
+               ls -la /tmp/ch3.360
+               echo '--- Full ffprobe stream dump (JSON) ---'
+               ffprobe -v error -show_streams -show_format -of json /tmp/ch3.360
+               echo '--- ffprobe -show_streams (human readable) ---'
+               ffprobe -v error -show_streams /tmp/ch3.360"
+
+      - name: Terminate instance
+        if: always()
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+          INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
+        run: |
+          if [ -z "${INSTANCE_ID}" ]; then exit 0; fi
+          curl -s -X DELETE -H "Authorization: Bearer ${VAST_API_KEY}" \
+            "https://console.vast.ai/api/v0/instances/${INSTANCE_ID}/"
