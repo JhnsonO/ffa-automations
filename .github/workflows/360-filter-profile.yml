@@ -120,6 +120,10 @@ jobs:
 
               try:
                   result = vast_put(f"/asks/{offer_id}/", IMAGE_PAYLOAD)
+              except urllib.error.HTTPError as e:
+                  body = e.read().decode()[:300]
+                  print(f"  launch failed: HTTP {e.code} — {body} — trying next offer")
+                  continue
               except Exception as e:
                   print(f"  launch failed: {e} — trying next offer")
                   continue
