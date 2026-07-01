@@ -73,6 +73,28 @@ SEAM_FILTER="\
 
 FULL_FILTER="${SEAM_FILTER},[complete]v360=eac:e:interp=linear:w=7680:h=3840[v]"
 
+
+# ── Benchmark-only stream remap ──────────────────────────────────────────
+# SEAM_FILTER/FULL_FILTER above use [0:0]/[0:1]/[1:v] because the REAL
+# pipeline reads a single .360 file with two video streams + a separate
+# mask file. For synthetic benchmarking we use three separate inputs
+# (0=front testsrc2, 1=back testsrc2, 2=mask), so labels must be remapped:
+#   [1:v] (mask, real)  -> [2:v] (mask, synthetic, 3rd input)
+#   [0:0] (front, real) -> [0:v] (front, synthetic, 1st input)
+#   [0:1] (back, real)  -> [1:v] (back, synthetic, 2nd input)
+# Order matters: remap mask first to a placeholder before remapping [0:1],
+# since [0:1]'s target [1:v] would otherwise collide with the original
+# mask label. Done in python for safe literal (non-glob) replacement.
+BENCH_SEAM_FILTER=$(python3 -c "
+s = '''${SEAM_FILTER}'''
+s = s.replace('[1:v]format=gray', '[MASKPLACEHOLDER]format=gray')
+s = s.replace('[0:0]', '[0:v]')
+s = s.replace('[0:1]', '[1:v]')
+s = s.replace('[MASKPLACEHOLDER]', '[2:v]')
+print(s)
+")
+BENCH_FULL_FILTER="${BENCH_SEAM_FILTER},[complete]v360=eac:e:interp=linear:w=7680:h=3840[v]"
+
 RUN_SECONDS=90
 WARMUP_US=30000000
 
@@ -92,7 +114,7 @@ run_bench() {
     -filter_complex \"${filter}\" \
     -map \"${maplabel}\" -an -t ${RUN_SECONDS} \
     -c:v libx264 -preset ultrafast -b:v 20M -threads 0 \
-    -progress \"${plog}\" -f null - > /dev/null 2>&1" &
+    -progress \"${plog}\" -f null - > /dev/null 2>\"${WORKDIR}/stderr_${label}.log\"" &
   local pid=$!
   set -e
 
@@ -127,6 +149,8 @@ run_bench() {
 
   if [ -z "${snap_ot}" ]; then
     log "RESULT ${label}: FAILED — never reached warmup threshold"
+    log "  --- stderr for ${label} ---"
+    cat "${WORKDIR}/stderr_${label}.log" 2>/dev/null | tail -30 | while IFS= read -r line; do log "  | ${line}"; done
     echo "0" > "${WORKDIR}/result_${label}.txt"
     return
   fi
@@ -154,13 +178,13 @@ run_bench "v360_alone" \
 # ── Benchmark 2: seam assembly alone, NO v360, real per-eye size 5888x1920 x2 ──
 run_bench "seam_alone" \
   "-f lavfi -i \"testsrc2=size=5888x1920:rate=30\" -f lavfi -i \"testsrc2=size=5888x1920:rate=30\" -i \"${MASK}\"" \
-  "${SEAM_FILTER},[complete]format=yuv420p[v]" \
+  "${BENCH_SEAM_FILTER},[complete]format=yuv420p[v]" \
   "[v]"
 
 # ── Benchmark 3: full graph (seam assembly + v360), matches real pipeline exactly ──
 run_bench "full_graph" \
   "-f lavfi -i \"testsrc2=size=5888x1920:rate=30\" -f lavfi -i \"testsrc2=size=5888x1920:rate=30\" -i \"${MASK}\"" \
-  "${FULL_FILTER},[v]format=yuv420p[vout]" \
+  "${BENCH_FULL_FILTER},[v]format=yuv420p[vout]" \
   "[vout]"
 
 log ""
