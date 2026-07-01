@@ -1,0 +1,82 @@
+name: Vast.ai Orphan Cleanup
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # every hour
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Sweep for stuck instances
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, json, time, urllib.request, urllib.error
+
+          API_KEY = os.environ["VAST_API_KEY"]
+          headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+
+          MAX_STUCK_AGE_MIN = 15   # created/loading longer than this = orphan
+          STUCK_STATES = {"created", "loading"}
+
+          req = urllib.request.Request("https://cloud.vast.ai/api/v1/instances/", headers=headers)
+          with urllib.request.urlopen(req, timeout=20) as r:
+              data = json.loads(r.read())
+
+          instances = data.get("instances", [])
+          now = time.time()
+          print(f"Total instances on account: {len(instances)}")
+
+          killed = []
+          for inst in instances:
+              inst_id = inst.get("id")
+              status = inst.get("actual_status", "")
+              start = inst.get("start_date")
+              dph = inst.get("dph_total", "?")
+
+              if status not in STUCK_STATES:
+                  print(f"  id={inst_id} status={status} dph={dph} — OK, leaving alone")
+                  continue
+
+              if not start:
+                  print(f"  id={inst_id} status={status} — no start_date, skipping (can't judge age)")
+                  continue
+
+              age_min = (now - float(start)) / 60.0
+              if age_min < MAX_STUCK_AGE_MIN:
+                  print(f"  id={inst_id} status={status} age={age_min:.1f}min — still within grace period")
+                  continue
+
+              print(f"  id={inst_id} status={status} age={age_min:.1f}min dph={dph} — ORPHAN, terminating")
+              endpoints = [
+                  f"https://console.vast.ai/api/v0/instances/{inst_id}/",
+                  f"https://cloud.vast.ai/api/v0/instances/{inst_id}/",
+                  f"https://cloud.vast.ai/api/v1/instances/{inst_id}/",
+              ]
+              done = False
+              for url in endpoints:
+                  dreq = urllib.request.Request(url, method="DELETE", headers=headers)
+                  try:
+                      with urllib.request.urlopen(dreq, timeout=20) as r:
+                          result = json.loads(r.read())
+                      print(f"    terminated via {url}: {result}")
+                      killed.append(inst_id)
+                      done = True
+                      break
+                  except urllib.error.HTTPError as e:
+                      print(f"    {url} -> HTTP {e.code}: {e.read().decode()[:200]}")
+                  except Exception as e:
+                      print(f"    {url} -> error: {e}")
+              if not done:
+                  print(f"    WARNING: could not terminate {inst_id} — needs manual check")
+
+          print("")
+          if killed:
+              print(f"Cleanup complete — terminated {len(killed)} orphan(s): {killed}")
+          else:
+              print("Cleanup complete — no orphans found")
+          PY
