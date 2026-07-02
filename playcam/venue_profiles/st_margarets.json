@@ -1,0 +1,6 @@
+{
+  "yaw": 0.0,
+  "pitch": 4.0,
+  "fov": 85.0,
+  "_notes": "St Margarets, tested 2026-07-02 against equirect_trim.mp4 (t=30-38s). yaw=0 faces active central pitch area. pitch sweep: -20 pointed at empty turf, -8 clipped players at top, +4 centred play without cutting feet. Pitch sign convention is mount-dependent -- re-test per venue, do not assume +4 transfers."
+}
