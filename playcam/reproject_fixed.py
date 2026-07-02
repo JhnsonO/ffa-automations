@@ -18,14 +18,17 @@ Requires: ffmpeg on PATH with the v360 filter (standard in ffmpeg >= 4.3).
 """
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 DEFAULT_YAW = 0.0      # degrees, 0 = straight ahead on the camera's forward reference
-DEFAULT_PITCH = -8.0   # degrees, slight downward tilt toward pitch-level play
-DEFAULT_FOV = 90.0     # degrees, diagonal FOV
+DEFAULT_PITCH = 4.0    # degrees, positive tilt — venue/mount-tested (St Margarets, 2026-07-02):
+                        # -20 pointed at empty turf, -8 clipped players at top, +4 centred play.
+                        # Sign convention is mount-dependent; re-test per venue.
+DEFAULT_FOV = 85.0     # degrees, diagonal FOV — venue-tested, felt tighter/more camera-like than 90
 MAX_FOV = 95.0
 MIN_FOV = 20.0
 OUT_W = 1920
@@ -38,18 +41,47 @@ def parse_args():
     )
     p.add_argument("--input", required=True, type=Path, help="Path to equirectangular input video")
     p.add_argument("--output", required=True, type=Path, help="Path to write the rectilinear MP4")
-    p.add_argument("--yaw", type=float, default=DEFAULT_YAW,
-                    help=f"Yaw in degrees, -180..180 (default {DEFAULT_YAW})")
-    p.add_argument("--pitch", type=float, default=DEFAULT_PITCH,
-                    help=f"Pitch in degrees, -90..90 (default {DEFAULT_PITCH})")
-    p.add_argument("--fov", type=float, default=DEFAULT_FOV,
-                    help=f"Diagonal FOV in degrees, {MIN_FOV}..{MAX_FOV} (default {DEFAULT_FOV})")
+    p.add_argument("--venue-profile", type=Path, default=None,
+                    help="Optional JSON file with {\"yaw\":, \"pitch\":, \"fov\":} defaults for this "
+                         "venue/mount. Explicit --yaw/--pitch/--fov flags override profile values.")
+    p.add_argument("--yaw", type=float, default=None,
+                    help=f"Yaw in degrees, -180..180 (default {DEFAULT_YAW} if no profile given)")
+    p.add_argument("--pitch", type=float, default=None,
+                    help=f"Pitch in degrees, -90..90 (default {DEFAULT_PITCH} if no profile given)")
+    p.add_argument("--fov", type=float, default=None,
+                    help=f"Diagonal FOV in degrees, {MIN_FOV}..{MAX_FOV} (default {DEFAULT_FOV} if no profile given)")
     p.add_argument("--crf", type=int, default=18, help="x264 CRF, lower = higher quality (default 18)")
     p.add_argument("--preset", default="medium", help="x264 preset (default medium)")
     p.add_argument("--start", type=float, default=None, help="Optional start time in seconds (-ss)")
     p.add_argument("--duration", type=float, default=None, help="Optional duration in seconds (-t)")
     p.add_argument("--dry-run", action="store_true", help="Print the ffmpeg command without running it")
     return p.parse_args()
+
+
+def resolve_camera_params(args):
+    """Fill unset --yaw/--pitch/--fov from --venue-profile JSON, then from module defaults.
+    Explicit CLI flags always take priority over the profile file."""
+    profile = {}
+    if args.venue_profile is not None:
+        if not args.venue_profile.exists():
+            print(f"ERROR: --venue-profile file does not exist: {args.venue_profile}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            profile = json.loads(args.venue_profile.read_text())
+        except json.JSONDecodeError as e:
+            print(f"ERROR: --venue-profile is not valid JSON: {e}", file=sys.stderr)
+            sys.exit(1)
+        unknown = {k for k in profile if not k.startswith("_")} - {"yaw", "pitch", "fov"}
+        if unknown:
+            print(f"ERROR: --venue-profile has unknown keys: {sorted(unknown)}", file=sys.stderr)
+            sys.exit(1)
+
+    if args.yaw is None:
+        args.yaw = profile.get("yaw", DEFAULT_YAW)
+    if args.pitch is None:
+        args.pitch = profile.get("pitch", DEFAULT_PITCH)
+    if args.fov is None:
+        args.fov = profile.get("fov", DEFAULT_FOV)
 
 
 def validate(args):
@@ -118,6 +150,7 @@ def build_command(args):
 
 def main():
     args = parse_args()
+    resolve_camera_params(args)
     validate(args)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
