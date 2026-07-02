@@ -222,6 +222,32 @@ def delete_drive_file(drive, file_id, name):
         log.warning(f"Could not delete {name} from Drive: {e}")
 
 
+def upload_to_drive(drive, video_path, folder_id, name, max_retries=3):
+    """Upload the concatenated output to Drive as a durable backup. Kept
+    indefinitely (no retention/cleanup) — non-fatal on failure, YouTube
+    upload proceeds regardless."""
+    from googleapiclient.http import MediaFileUpload
+    log.info(f"Uploading concat output to Drive: {name} ({video_path.stat().st_size / 1e9:.2f} GB)")
+    meta = {"name": name, "parents": [folder_id]}
+    for attempt in range(1, max_retries + 1):
+        try:
+            media = MediaFileUpload(str(video_path), mimetype="video/mp4",
+                                     chunksize=50 * 1024 * 1024, resumable=True)
+            request = drive.files().create(body=meta, media_body=media, fields="id")
+            response = None
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                    log.info(f"  Drive backup upload: {int(status.progress() * 100)}%")
+            file_id = response.get("id")
+            log.info(f"Drive backup upload complete: https://drive.google.com/file/d/{file_id}/view")
+            return file_id
+        except Exception as e:
+            log.error(f"Drive backup upload error (attempt {attempt}/{max_retries}): {e}")
+            time.sleep(5)
+    return None
+
+
 # ── FFmpeg concat + metadata ────────────────────────────────────────────────────
 
 def concatenate_clips(clip_paths, output_path):
@@ -444,6 +470,12 @@ def run():
         log.error(f"Concat/metadata step failed: {e}")
         send_alert(f"[FFA MAX2] Concat failed for session {session_prefix}", f"Error: {e}")
         sys.exit(1)
+
+    # Backup concat output to Drive (every session, kept indefinitely)
+    processed_id = find_or_create_folder(drive, "Processed", root_id)
+    drive_file_id = upload_to_drive(drive, output_path, processed_id, output_name)
+    if not drive_file_id:
+        log.warning("Drive backup upload failed — continuing to YouTube upload anyway.")
 
     # Upload to YouTube
     title, description = make_title_and_description(captured_at, media_id, filename)
