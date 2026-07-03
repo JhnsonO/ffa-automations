@@ -67,7 +67,7 @@ The manual two-chunk validation proves the architecture, **not** unattended end-
 - Install dependencies output un-silenced + SSH keepalive added (`59c7e70`).
 - **Cost/time concern raised by Johnson**: 46 min per iteration on a 120s test clip is disproportionate; ~23 min of that (install + Drive download) is fixed overhead paid on every run regardless of what's being tested. Not yet addressed — candidate options (pre-baked Docker image to skip cold install, caching the Drive source) are unactioned, need Johnson's go-ahead before implementing.
 
-**Next gate:** get Johnson's go-ahead before redispatching (3rd attempt today) — do not auto-redispatch after a codec-guess fix without confirmation, given 2 wrong guesses already this session. If/when redispatched: confirm render completes, then inspect output quality/duration/join integrity, then instance actually terminates (check `vastai-instance-check.yml` after, not just the step's reported conclusion).
+**Next gate:** await `debug-ffmpeg-mux.yml` result (isolated, cheap CPU-only test of the `mpeg4` mux command before committing to another full ~46min GPU run). First attempt (run `28683324261`) failed at SSH-wait — the offer query was missing the `bad_cpu` exclusion (`E5-`/`E3-`/etc.) that `playcam-poc.yml` already applies; it picked a Xeon E5-2686 that never came up. Fixed (`bcfe43c`) and redispatched. Termination on that failed run worked correctly (`console.vast.ai/api/v0`, confirmed in log) — endpoint fallback fix is holding. Once mux is confirmed working in isolation, redispatch `playcam-poc.yml` for a full run; then check render output quality/duration/join integrity, then confirm instance actually terminates via `vastai-instance-check.yml`.
 
 ### Required next implementation
 
