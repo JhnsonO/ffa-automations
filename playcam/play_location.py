@@ -153,15 +153,54 @@ def spherical_centroid(points):
     return yaw_mean([p[0] for p in points]), sum(p[1] for p in points) / len(points)
 
 
+def point_in_polygon(x, y, polygon):
+    """Standard ray-casting point-in-polygon test. polygon: list of [x, y]."""
+    n = len(polygon)
+    inside = False
+    x1, y1 = polygon[0]
+    for i in range(1, n + 1):
+        x2, y2 = polygon[i % n]
+        if y > min(y1, y2):
+            if y <= max(y1, y2):
+                if x <= max(x1, x2):
+                    if y1 != y2:
+                        x_intersect = (y - y1) * (x2 - x1) / (y2 - y1) + x1
+                    if x1 == x2 or x <= x_intersect:
+                        inside = not inside
+        x1, y1 = x2, y2
+    return inside
+
+
+def foot_point_in_play_area(yaw_deg, pitch_deg, play_area):
+    """
+    Project a spherical (yaw, pitch) foot-point to the equirect frame the
+    play_area polygon was calibrated against (via frame_width/frame_height,
+    resolution-independent -- uses fractional position, not actual pixels
+    of the current video), and test containment.
+    """
+    fx, fy = _yaw_pitch_to_equirect_xy(yaw_deg, pitch_deg, 1.0, 1.0)
+    px = fx * play_area["frame_width"]
+    py = fy * play_area["frame_height"]
+    return point_in_polygon(px, py, play_area["polygon"])
+
+
 # ---------------------------------------------------------------------------
 # Deterministic round-trip self-test
 # ---------------------------------------------------------------------------
 
 def _yaw_pitch_to_equirect_xy(yaw_deg, pitch_deg, w_eq, h_eq):
-    """Same formula extract_crop_frame uses to sample the source equirect."""
+    """Same formula extract_crop_frame uses to sample the source equirect.
+
+    BUG FIXED 2026-07-02: previously clamped y to [0, h_eq-1], which assumed
+    h_eq was always a pixel count. When called with h_eq=1.0 (fractional,
+    resolution-independent use -- see foot_point_in_play_area) this clipped
+    every y value to 0.0 regardless of pitch, silently breaking play_area
+    masking for every point. Clamp is now [0, h_eq] and pixel callers that
+    need a valid array index (e.g. run_self_test) round/clamp separately.
+    """
     x = ((yaw_deg / 360.0) + 0.5) * w_eq
     y = (0.5 - pitch_deg / 180.0) * h_eq
-    return x % w_eq, max(0.0, min(h_eq - 1.0, y))
+    return x % w_eq, max(0.0, min(h_eq, y))
 
 
 def run_self_test(tolerance_deg=1.5):
@@ -316,12 +355,13 @@ def best_cluster(clusters):
 # ---------------------------------------------------------------------------
 
 def render_debug_frame(equirect_frame, players, cluster, target, out_path,
-                        thumb_w=960):
+                        thumb_w=960, excluded=None):
     """
     Draw a downscaled equirect thumbnail with:
-      - a dot per detected player (yaw/pitch -> equirect x/y)
+      - a dot per KEPT detected player (yaw/pitch -> equirect x/y)
       - cluster members highlighted
-      - crosshair at the chosen target yaw/pitch
+      - excluded (outside play_area) detections in a muted grey
+      - a crosshair at the chosen target yaw/pitch
     """
     h_eq, w_eq = equirect_frame.shape[:2]
     thumb_h = int(thumb_w * h_eq / w_eq)
@@ -332,6 +372,10 @@ def render_debug_frame(equirect_frame, players, cluster, target, out_path,
         y = int((0.5 - pitch / 180.0) * thumb_h)
         y = max(0, min(thumb_h - 1, y))
         return x, y
+
+    for p in (excluded or []):
+        x, y = yaw_pitch_to_xy(p.get("foot_yaw", p["yaw"]), p.get("foot_pitch", p["pitch"]))
+        cv2.circle(thumb, (x, y), 4, (110, 110, 110), -1)  # muted grey
 
     cluster_set = {id(p) for p in cluster} if cluster else set()
     for p in players:
@@ -346,7 +390,8 @@ def render_debug_frame(equirect_frame, players, cluster, target, out_path,
         cv2.putText(thumb, f"target yaw={target['yaw']:.1f} pitch={target['pitch']:.1f}",
                     (10, thumb_h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-    cv2.putText(thumb, f"players={len(players)} cluster={len(cluster) if cluster else 0}",
+    cv2.putText(thumb, f"players={len(players)} cluster={len(cluster) if cluster else 0} "
+                        f"excluded={len(excluded or [])}",
                 (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
     cv2.imwrite(str(out_path), thumb)
@@ -466,8 +511,10 @@ def main():
 
     # Fixed camera pitch for preview rendering -- NEVER derived from player
     # detections. Priority: --fixed-pitch > --venue-profile > module default.
+    # Also loads play_area (playcam-only; never touches ball_tracker/venue_mask.json).
     fixed_pitch = args.fixed_pitch
-    if fixed_pitch is None and args.venue_profile is not None:
+    play_area = None
+    if args.venue_profile is not None:
         if not args.venue_profile.exists():
             print(f"ERROR: --venue-profile does not exist: {args.venue_profile}", file=sys.stderr)
             sys.exit(1)
@@ -476,12 +523,30 @@ def main():
         except json.JSONDecodeError as e:
             print(f"ERROR: --venue-profile is not valid JSON: {e}", file=sys.stderr)
             sys.exit(1)
-        if "pitch" not in profile:
-            print(f"ERROR: --venue-profile has no 'pitch' key: {args.venue_profile}", file=sys.stderr)
-            sys.exit(1)
-        fixed_pitch = profile["pitch"]
+        if fixed_pitch is None:
+            if "pitch" not in profile:
+                print(f"ERROR: --venue-profile has no 'pitch' key: {args.venue_profile}", file=sys.stderr)
+                sys.exit(1)
+            fixed_pitch = profile["pitch"]
+        if "play_area" in profile:
+            pa = profile["play_area"]
+            if not all(k in pa for k in ("polygon", "frame_width", "frame_height")):
+                print(f"ERROR: play_area missing polygon/frame_width/frame_height: "
+                      f"{args.venue_profile}", file=sys.stderr)
+                sys.exit(1)
+            if len(pa["polygon"]) < 3:
+                print(f"ERROR: play_area.polygon needs >= 3 points, got "
+                      f"{len(pa['polygon'])}", file=sys.stderr)
+                sys.exit(1)
+            play_area = pa
     if fixed_pitch is None:
         fixed_pitch = DEFAULT_FIXED_PITCH
+
+    if play_area is None:
+        print("[play_location] WARNING: no play_area in venue profile -- "
+              "detections are NOT masked to the pitch (will include neighbouring "
+              "pitches, spectators, everyone visible). Run venue_calibration.py "
+              "to add one.")
 
     cap = cv2.VideoCapture(str(args.input))
     if not cap.isOpened():
@@ -537,13 +602,33 @@ def main():
                     for box in r.boxes:
                         x1, y1, x2, y2 = box.xyxy[0].tolist()
                         conf_val = float(box.conf[0])
+                        # Center point drives yaw/pitch used for clustering/camera.
                         yaw, pitch = crop_pixel_to_yaw_pitch((x1 + x2) / 2, (y1 + y2) / 2, crop_yaw)
-                        if PITCH_MIN_DEG <= pitch <= PITCH_MAX_DEG:
-                            all_players.append({
-                                "yaw": round(yaw, 2),
-                                "pitch": round(pitch, 2),
-                                "conf": round(conf_val, 3),
-                            })
+                        if not (PITCH_MIN_DEG <= pitch <= PITCH_MAX_DEG):
+                            continue
+                        # Foot point (bbox bottom-center) drives play_area masking --
+                        # more accurate ground position than the bbox center.
+                        foot_yaw, foot_pitch = crop_pixel_to_yaw_pitch((x1 + x2) / 2, y2, crop_yaw)
+                        all_players.append({
+                            "yaw": round(yaw, 2),
+                            "pitch": round(pitch, 2),
+                            "conf": round(conf_val, 3),
+                            "foot_yaw": round(foot_yaw, 2),
+                            "foot_pitch": round(foot_pitch, 2),
+                        })
+
+            # Apply play_area mask (foot-point containment) BEFORE dedup,
+            # clustering, motion scoring, or debug counts -- per spec.
+            if play_area is not None:
+                in_area, excluded = [], []
+                for p in all_players:
+                    if foot_point_in_play_area(p["foot_yaw"], p["foot_pitch"], play_area):
+                        in_area.append(p)
+                    else:
+                        excluded.append(p)
+                all_players = in_area
+            else:
+                excluded = []
 
             players = dedup_players(all_players)
             clusters = cluster_players(players)
@@ -564,6 +649,7 @@ def main():
                 "timestamp": round(fidx / src_fps, 3),
                 "frame": fidx,
                 "players": players,
+                "excluded_count": len(excluded),
                 "person_centroid_size": len(top_cluster) if top_cluster else 0,
                 "person_centroid_yaw": person_centroid["yaw"] if person_centroid else None,
                 "person_centroid_pitch": person_centroid["pitch"] if person_centroid else None,
@@ -573,7 +659,8 @@ def main():
 
             if not args.no_debug:
                 debug_path = args.debug_dir / f"frame_{fidx:06d}.png"
-                render_debug_frame(frame, players, top_cluster, person_centroid, debug_path)
+                render_debug_frame(frame, players, top_cluster, person_centroid, debug_path,
+                                    excluded=excluded)
 
                 # Rectilinear preview: yaw from detections, pitch FIXED (never
                 # from detections) -- this is the actual watchable-shot check.
@@ -586,7 +673,8 @@ def main():
                 t_str = (f"centroid yaw={person_centroid['yaw']:.1f} pitch={person_centroid['pitch']:.1f}"
                           if person_centroid else "no cluster")
                 print(f"  [{i:3d}/{len(sample_frames)}] frame {fidx:5d} "
-                      f"players={len(players):2d} cluster={record['person_centroid_size']:2d} | {t_str}")
+                      f"players={len(players):2d} excluded={len(excluded):2d} "
+                      f"cluster={record['person_centroid_size']:2d} | {t_str}")
 
     cap.release()
 
