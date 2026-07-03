@@ -323,7 +323,7 @@ def render_wide_safety(records, source_video, clean_start, clean_duration, out_p
          "-ss", "0", "-i", str(source_video),
          "-t", str(duration),
          "-map", "0:v:0", "-map", "1:a:0?",
-         "-c:v", "libopenh264", "-b:v", "6M", "-pix_fmt", "yuv420p",
+         "-c:v", "mpeg4", "-q:v", "3", "-pix_fmt", "yuv420p",
          "-c:a", "aac", "-b:a", "128k",
          "-shortest", str(out_path)],
         capture_output=True, text=True)
