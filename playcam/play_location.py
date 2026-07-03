@@ -72,6 +72,15 @@ DEFAULT_SAMPLE_FPS = 3.0
 DEFAULT_MAX_FRAMES = 200  # safety cap so a bad --duration doesn't run forever
 DEFAULT_FIXED_PITCH = 4.0  # fallback only -- prefer --venue-profile per venue/mount
 
+# Motion weighting (activity_centroid) -- matches a detection to its nearest
+# counterpart in the previous SAMPLED frame (not every video frame) within
+# this radius, treats it as unmatched/new otherwise.
+MOTION_MATCH_RADIUS_DEG = 15.0
+# Below this mean angular speed (deg/sec) across the cluster, treat play as
+# static (restart, players standing) and fall back to the ordinary masked
+# centroid rather than letting a couple of noisy detections skew the target.
+LOW_MOTION_THRESHOLD_DEG_PER_SEC = 1.5
+
 
 # ---------------------------------------------------------------------------
 # Geometry — equirect crop extraction and spherical back-projection
@@ -288,6 +297,86 @@ def run_self_test(tolerance_deg=1.5):
 # ---------------------------------------------------------------------------
 
 def dedup_players(players, radius_deg=DEDUP_RADIUS_DEG):
+    """Merge detections of the same physical person seen in overlapping crops."""
+    if not players:
+        return []
+    order = sorted(range(len(players)), key=lambda i: -players[i]["conf"])
+    used = [False] * len(players)
+    kept = []
+    for i in order:
+        if used[i]:
+            continue
+        kept.append(players[i])
+        used[i] = True
+        for j in range(len(players)):
+            if not used[j]:
+                if angular_distance(players[i]["yaw"], players[i]["pitch"],
+                                     players[j]["yaw"], players[j]["pitch"]) < radius_deg:
+                    used[j] = True
+    return kept
+
+
+def match_motion(current_players, prev_players, dt_sec,
+                  radius_deg=MOTION_MATCH_RADIUS_DEG):
+    """
+    Nearest-neighbour match each current player to the closest player in the
+    previous SAMPLED frame within radius_deg, greedy by distance. Sets
+    vel_deg_per_sec on each current player dict in place (0.0 if unmatched --
+    new detection or previous frame had none).
+    """
+    if not prev_players or dt_sec <= 0:
+        for p in current_players:
+            p["vel_deg_per_sec"] = 0.0
+        return
+
+    pairs = []
+    for i, cur in enumerate(current_players):
+        for j, prev in enumerate(prev_players):
+            d = angular_distance(cur["yaw"], cur["pitch"], prev["yaw"], prev["pitch"])
+            if d <= radius_deg:
+                pairs.append((d, i, j))
+    pairs.sort(key=lambda x: x[0])
+
+    used_prev = set()
+    matched_cur = set()
+    for d, i, j in pairs:
+        if i in matched_cur or j in used_prev:
+            continue
+        current_players[i]["vel_deg_per_sec"] = round(d / dt_sec, 3)
+        matched_cur.add(i)
+        used_prev.add(j)
+
+    for i, p in enumerate(current_players):
+        if i not in matched_cur:
+            p["vel_deg_per_sec"] = 0.0
+
+
+def weighted_activity_centroid(cluster, fallback_centroid):
+    """
+    Motion-weighted centroid over `cluster` (same membership as the ordinary
+    masked centroid -- clustering itself is unchanged). Weight = 1 + vel, so
+    stationary players still contribute, moving players pull harder.
+    Falls back to `fallback_centroid` (the ordinary masked centroid) when
+    mean angular speed across the cluster is below LOW_MOTION_THRESHOLD_DEG_PER_SEC
+    (restarts, players standing) so a couple of noisy detections can't skew
+    the target when nothing is really happening.
+    """
+    if not cluster:
+        return None, 0.0
+    vels = [p.get("vel_deg_per_sec", 0.0) for p in cluster]
+    mean_vel = sum(vels) / len(vels)
+    if mean_vel < LOW_MOTION_THRESHOLD_DEG_PER_SEC:
+        return fallback_centroid, mean_vel
+
+    weights = [1.0 + v for v in vels]
+    sx = sum(w * math.cos(math.radians(p["yaw"])) for w, p in zip(weights, cluster))
+    sy = sum(w * math.sin(math.radians(p["yaw"])) for w, p in zip(weights, cluster))
+    wyaw = math.degrees(math.atan2(sy, sx))
+    wpitch = sum(w * p["pitch"] for w, p in zip(weights, cluster)) / sum(weights)
+    return {"yaw": round(wyaw, 2), "pitch": round(wpitch, 2)}, mean_vel
+
+
+
     """Merge detections of the same physical person seen in overlapping crops."""
     if not players:
         return []
@@ -575,6 +664,8 @@ def main():
     if not args.no_debug:
         args.debug_dir.mkdir(parents=True, exist_ok=True)
         args.preview_dir.mkdir(parents=True, exist_ok=True)
+        (args.preview_dir / "masked").mkdir(parents=True, exist_ok=True)
+        (args.preview_dir / "activity").mkdir(parents=True, exist_ok=True)
 
     records = []
     if start_frame > 0:
@@ -582,6 +673,7 @@ def main():
     with open(args.output, "w") as out_f:
         sample_set = set(sample_frames)
         i = 0
+        prev_players = None
         for fidx in range(start_frame, end_frame):
             ret, frame = cap.read()
             if not ret:
@@ -631,19 +723,29 @@ def main():
                 excluded = []
 
             players = dedup_players(all_players)
+
+            # Motion weighting -- match against previous SAMPLED frame,
+            # not every video frame. dt is the actual elapsed time between
+            # samples, robust to dropped/short frames.
+            dt_sec = step / src_fps if prev_players is not None else 0.0
+            match_motion(players, prev_players or [], dt_sec)
+            prev_players = players
+
             clusters = cluster_players(players)
             top_cluster = best_cluster(clusters)
 
-            # NOTE (2026-07-02): this is currently the centroid of ALL visible
-            # players filtered only by the min-cluster-size spatial radius --
-            # with most/all players in frame in one loose group, it does not
-            # yet reliably distinguish an ACTIVE cluster from a crowd shot.
-            # Named person_centroid rather than "play_cluster" until density/
-            # motion weighting (next step) makes that distinction real.
+            # NOTE (2026-07-02): person_centroid is the centroid of ALL
+            # visible players filtered only by the min-cluster-size spatial
+            # radius -- with most/all players in one loose group, on its own
+            # it does not reliably distinguish an ACTIVE cluster from a
+            # crowd shot. activity_centroid (below) motion-weights the same
+            # cluster membership toward players actually moving.
             person_centroid = None
             if top_cluster:
                 cy_m, cp_m = spherical_centroid([(p["yaw"], p["pitch"]) for p in top_cluster])
                 person_centroid = {"yaw": round(cy_m, 2), "pitch": round(cp_m, 2)}
+
+            activity_centroid, mean_vel = weighted_activity_centroid(top_cluster, person_centroid)
 
             record = {
                 "timestamp": round(fidx / src_fps, 3),
@@ -653,6 +755,9 @@ def main():
                 "person_centroid_size": len(top_cluster) if top_cluster else 0,
                 "person_centroid_yaw": person_centroid["yaw"] if person_centroid else None,
                 "person_centroid_pitch": person_centroid["pitch"] if person_centroid else None,
+                "mean_cluster_motion_deg_per_sec": round(mean_vel, 3),
+                "activity_centroid_yaw": activity_centroid["yaw"] if activity_centroid else None,
+                "activity_centroid_pitch": activity_centroid["pitch"] if activity_centroid else None,
             }
             records.append(record)
             out_f.write(json.dumps(record) + "\n")
@@ -662,15 +767,22 @@ def main():
                 render_debug_frame(frame, players, top_cluster, person_centroid, debug_path,
                                     excluded=excluded)
 
-                # Rectilinear preview: yaw from detections, pitch FIXED (never
-                # from detections) -- this is the actual watchable-shot check.
-                preview_yaw = person_centroid["yaw"] if person_centroid else 0.0
-                preview_path = args.preview_dir / f"frame_{fidx:06d}.png"
-                render_rectilinear_preview(frame, preview_yaw, fixed_pitch, args.preview_fov,
-                                            players, top_cluster, preview_path)
+                # Two comparison previews, same frame: masked-centroid-driven
+                # yaw vs activity-centroid-driven yaw. Pitch FIXED in both --
+                # never from detections.
+                masked_yaw = person_centroid["yaw"] if person_centroid else 0.0
+                activity_yaw = activity_centroid["yaw"] if activity_centroid else masked_yaw
+                render_rectilinear_preview(frame, masked_yaw, fixed_pitch, args.preview_fov,
+                                            players, top_cluster,
+                                            args.preview_dir / "masked" / f"frame_{fidx:06d}.png")
+                render_rectilinear_preview(frame, activity_yaw, fixed_pitch, args.preview_fov,
+                                            players, top_cluster,
+                                            args.preview_dir / "activity" / f"frame_{fidx:06d}.png")
 
             if i % 10 == 0 or i == len(sample_frames):
-                t_str = (f"centroid yaw={person_centroid['yaw']:.1f} pitch={person_centroid['pitch']:.1f}"
+                t_str = (f"person yaw={person_centroid['yaw']:.1f} "
+                          f"activity yaw={activity_centroid['yaw']:.1f} "
+                          f"(mean_vel={mean_vel:.1f}deg/s)"
                           if person_centroid else "no cluster")
                 print(f"  [{i:3d}/{len(sample_frames)}] frame {fidx:5d} "
                       f"players={len(players):2d} excluded={len(excluded):2d} "
@@ -687,9 +799,14 @@ def main():
         mean_pitch = sum(r["person_centroid_pitch"] for r in with_cluster) / len(with_cluster)
         print(f"[play_location] Mean person_centroid: "
               f"yaw={mean_yaw:.1f} pitch={mean_pitch:.1f}")
+        act_with = [r for r in with_cluster if r["activity_centroid_yaw"] is not None]
+        if act_with:
+            mean_act_yaw = yaw_mean([r["activity_centroid_yaw"] for r in act_with])
+            print(f"[play_location] Mean activity_centroid: yaw={mean_act_yaw:.1f}")
     if not args.no_debug:
         print(f"[play_location] Equirect debug frames written to: {args.debug_dir}")
-        print(f"[play_location] Rectilinear preview frames written to: {args.preview_dir}")
+        print(f"[play_location] Masked-centroid previews: {args.preview_dir / 'masked'}")
+        print(f"[play_location] Activity-centroid previews: {args.preview_dir / 'activity'}")
 
 
 if __name__ == "__main__":
