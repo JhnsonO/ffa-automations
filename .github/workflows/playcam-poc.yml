@@ -267,7 +267,7 @@ jobs:
           FPS:  ${{ github.event.inputs.sample_fps }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          $SSH "cd /tmp/playcam_run && python3 playcam/play_location.py \
+          $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/play_location.py \
             --input clip.mp4 \
             --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) \
             --output playcam/output/play_location.jsonl \
@@ -279,7 +279,7 @@ jobs:
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          $SSH "cd /tmp/playcam_run && python3 playcam/wide_safety_camera.py \
+          $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/wide_safety_camera.py \
             --input playcam/output/play_location.jsonl \
             --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) \
             --output playcam/output/wide_safety_timeline.jsonl \
