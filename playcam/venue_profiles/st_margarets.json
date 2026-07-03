@@ -2,5 +2,11 @@
   "yaw": 0.0,
   "pitch": 4.0,
   "fov": 85.0,
+  "play_area": {
+    "polygon": [[1298,1211],[1459,1076],[1551,1024],[1780,941],[1935,904],[2132,878],[2343,889],[2475,907],[2578,939],[2789,1055],[2901,1125],[2996,1185],[2905,1395],[2742,1718],[2135,2031],[1559,1952],[1212,1621],[1074,1362],[1168,1289]],
+    "frame_width": 4032,
+    "frame_height": 2388,
+    "_notes": "Copied from ball_tracker/venue_mask.json (commit f6b969a, frame 300, 19 points, human-calibrated by Johnson for MOG2 masking, 3 player-shirt false points removed). playcam-owned independent copy -- ball_tracker/venue_mask.json is not read or modified at runtime by playcam scripts."
+  },
   "_notes": "St Margarets, tested 2026-07-02 against equirect_trim.mp4 (t=30-38s). yaw=0 faces active central pitch area. pitch sweep: -20 pointed at empty turf, -8 clipped players at top, +4 centred play without cutting feet. Pitch sign convention is mount-dependent -- re-test per venue, do not assume +4 transfers."
 }
