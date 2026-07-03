@@ -42,7 +42,7 @@ jobs:
         id: keygen
         run: |
           pip install -q cryptography
-          python3 - << 'PY'
+          python3 -u - << 'PY'
           from cryptography.hazmat.primitives import serialization
           from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
           import os
@@ -62,7 +62,7 @@ jobs:
         env:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
         run: |
-          python3 - << 'PY'
+          python3 -u - << 'PY'
           import os, json, urllib.request, urllib.parse, sys
 
           API_KEY = os.environ["VAST_API_KEY"]
@@ -82,7 +82,7 @@ jobs:
           pub_key = open("/tmp/vastai_key.pub").read().strip()
           vast_post("/ssh/", {"ssh_key": pub_key})
 
-          # GPU instance -- ultralytics YOLO benefits heavily from CUDA vs CPU.
+          # CPU-only (commit 6d992a0) -- GPU filter dropped, matches proven pattern.
           query = {
               "verified":   {"eq": True},
               "rentable":   {"eq": True},
@@ -108,7 +108,7 @@ jobs:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
           OFFER_ID:     ${{ steps.offer.outputs.offer_id }}
         run: |
-          python3 - << 'PY'
+          python3 -u - << 'PY'
           import os, json, urllib.request, urllib.parse, time, sys
 
           API_KEY  = os.environ["VAST_API_KEY"]
@@ -179,7 +179,7 @@ jobs:
           IP:   ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
-          python3 - << 'PY'
+          python3 -u - << 'PY'
           import os, socket, time, sys
           ip, port = os.environ["IP"], int(os.environ["PORT"])
           for i in range(30):
@@ -231,7 +231,7 @@ jobs:
         run: |
           echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
           echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
-          python3 - << 'PY'
+          python3 -u - << 'PY'
           import os, json, urllib.request as _req
           token_data = json.loads(open("/tmp/youtube_token.json").read())
           creds_data = json.loads(open("/tmp/youtube_credentials.json").read())
@@ -293,7 +293,7 @@ jobs:
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          $SSH "cd /tmp/playcam_run && python3 - << 'PY'
+          $SSH "cd /tmp/playcam_run && python3 -u - << 'PY'
           import json
           recs = [json.loads(l) for l in open('playcam/output/wide_safety_timeline.jsonl')]
           scores = [r['concentration_score'] for r in recs]
@@ -342,7 +342,7 @@ jobs:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
           INSTANCE_ID:  ${{ steps.launch.outputs.instance_id }}
         run: |
-          python3 - << 'PY'
+          python3 -u - << 'PY'
           import os, urllib.request, json
           API_KEY     = os.environ["VAST_API_KEY"]
           instance_id = os.environ.get("INSTANCE_ID", "")
