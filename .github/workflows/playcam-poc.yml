@@ -203,8 +203,8 @@ jobs:
             echo "SSH not ready ($i/24)"; sleep 5
           done
           $SSH "apt-get update -qq && apt-get install -y --no-install-recommends ffmpeg aria2 libgl1 libglib2.0-0 > /dev/null"
-          $SSH "pip install -q ultralytics opencv-python-headless numpy matplotlib"
-          $SSH "python3 -c \"import cv2, numpy, matplotlib, torch; from ultralytics import YOLO; print('deps OK, cuda:', torch.cuda.is_available())\""
+          $SSH "pip install -q 'numpy<2' ultralytics opencv-python-headless matplotlib"
+          $SSH "python3 -c \"import cv2, numpy, matplotlib, torch; from ultralytics import YOLO; print('deps OK, cuda:', torch.cuda.is_available(), 'numpy:', numpy.__version__)\""
 
       - name: Upload playcam/ to instance
         env:
