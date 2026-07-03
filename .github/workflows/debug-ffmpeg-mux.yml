@@ -1,0 +1,196 @@
+name: Debug - ffmpeg mux isolated check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mux-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Generate SSH key pair
+        run: |
+          pip install -q cryptography
+          python3 -u - << 'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+          key = Ed25519PrivateKey.generate()
+          priv = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
+          pub = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+          with open('/tmp/vastai_key', 'wb') as f: f.write(priv)
+          with open('/tmp/vastai_key.pub', 'wb') as f: f.write(pub + b' ffa-debug-mux\n')
+          os.chmod('/tmp/vastai_key', 0o600)
+          PY
+
+      - name: Launch cheap CPU instance
+        id: launch
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 -u - << 'PY'
+          import os, json, time, urllib.request, urllib.parse, sys
+
+          api_key = os.environ['VAST_API_KEY']
+          base = 'https://console.vast.ai/api/v0'
+          cloud = 'https://cloud.vast.ai/api/v1'
+          headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json', 'Accept': 'application/json'}
+          pub_key = open('/tmp/vastai_key.pub').read().strip()
+
+          def request(method, url, data=None, timeout=25):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  return json.loads(r.read())
+
+          def delete_instance(instance_id):
+              for ep in (f'{base}/instances/{instance_id}/',
+                         f'https://cloud.vast.ai/api/v0/instances/{instance_id}/',
+                         f'{cloud}/instances/{instance_id}/'):
+                  try:
+                      request('DELETE', ep, timeout=15)
+                      return
+                  except Exception as exc:
+                      last_exc = exc
+              print(f'Cleanup warning for {instance_id}: all endpoints failed, last error: {last_exc}')
+
+          query = {
+              'verified': {'eq': True},
+              'rentable': {'eq': True},
+              'reliability': {'gte': 0.98},
+              'cpu_cores': {'gte': 4},
+              'cpu_ram': {'gte': 4096},
+              'disk_space': {'gte': 10},
+          }
+          bundles = request('GET', f'{base}/bundles/?' + urllib.parse.urlencode({'q': json.dumps(query)}))
+          offers = bundles.get('offers', [])
+          offers.sort(key=lambda o: float(o.get('dph_total', 999)))
+          if not offers:
+              print('ERROR: no cheap CPU offers found', file=sys.stderr)
+              sys.exit(1)
+
+          print(f'Found {len(offers)} eligible offers; trying up to 5 cheapest.')
+          selected = None
+          for index, offer in enumerate(offers[:5], start=1):
+              offer_id = offer['id']
+              print(f'Trying offer {offer_id} ({index}/5): cpu={offer.get("cpu_name")} $/hr={offer.get("dph_total")}')
+              try:
+                  result = request('PUT', f'{base}/asks/{offer_id}/', {
+                      'client_id': 'me',
+                      'image': 'ubuntu:22.04',
+                      'disk': 10,
+                      'onstart': '',
+                      'runtype': 'ssh',
+                      'ssh_key': pub_key,
+                      'env': {},
+                  })
+              except Exception as exc:
+                  print(f'Launch request failed for offer {offer_id}: {exc}')
+                  continue
+              instance_id = result.get('new_contract')
+              if not instance_id:
+                  print(f'Offer {offer_id} did not return an instance: {result}')
+                  continue
+
+              for attempt in range(30):  # 5 minutes
+                  time.sleep(10)
+                  try:
+                      instances = request('GET', f'{cloud}/instances/')
+                      inst = next((x for x in instances.get('instances', []) if x.get('id') == instance_id), None)
+                  except Exception as exc:
+                      print(f'  [{attempt + 1}/30] status lookup failed: {exc}')
+                      continue
+                  if not inst:
+                      print(f'  [{attempt + 1}/30] instance not listed yet')
+                      continue
+                  status = inst.get('actual_status', '?')
+                  ip = inst.get('ssh_host') or inst.get('public_ipaddr')
+                  port = inst.get('ssh_port', 22)
+                  print(f'  [{attempt + 1}/30] status={status} ip={ip} port={port}')
+                  if status == 'running' and ip:
+                      selected = (instance_id, ip, port, offer)
+                      break
+                  if status in ('error', 'failed', 'stopped'):
+                      break
+              if selected:
+                  break
+              print(f'Offer {offer_id} did not become usable; terminating instance {instance_id} and trying next.')
+              delete_instance(instance_id)
+
+          if not selected:
+              print('ERROR: none of the first five offers became ready', file=sys.stderr)
+              sys.exit(1)
+          instance_id, ip, port, offer = selected
+          print(f'Selected ready instance: id={instance_id} cpu={offer.get("cpu_name")} ip={ip}:{port}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'instance_id={instance_id}\nip={ip}\nport={port}\n')
+          PY
+
+      - name: Wait for SSH
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          for i in $(seq 1 18); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 -i /tmp/vastai_key -p "$PORT" "root@$IP" 'echo OK' 2>/dev/null | grep -q OK; then
+              echo 'SSH ready'; exit 0
+            fi
+            echo "SSH not ready ($i/18)"; sleep 5
+          done
+          echo 'ERROR: SSH never came up'; exit 1
+
+      - name: Run isolated ffmpeg mux test
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+          echo "=== ffmpeg version on this instance ==="
+          $SSH "which ffmpeg || (apt-get update -qq && apt-get install -y -qq ffmpeg > /dev/null); ffmpeg -version | head -5"
+          echo ""
+          echo "=== available encoders (mpeg4, libopenh264, libx264) ==="
+          $SSH "ffmpeg -hide_banner -encoders 2>/dev/null | grep -E 'mpeg4|openh264|x264' || true"
+          echo ""
+          echo "=== generating synthetic test clips (video-only tmp + video+audio source, mirrors real pipeline shape) ==="
+          $SSH "ffmpeg -y -hide_banner -loglevel error -f lavfi -i testsrc=size=1920x1080:rate=30:duration=3 tmp.mp4 && \
+                ffmpeg -y -hide_banner -loglevel error -f lavfi -i testsrc=size=1280x720:rate=30:duration=3 -f lavfi -i sine=frequency=440:duration=3 -c:a aac source.mp4"
+          echo ""
+          echo "=== running the EXACT mux command from render_wide_safety() (mpeg4) ==="
+          $SSH "set -o pipefail; ffmpeg -y -i tmp.mp4 -ss 0 -i source.mp4 -t 3 -map 0:v:0 -map 1:a:0? -c:v mpeg4 -q:v 3 -pix_fmt yuv420p -c:a aac -b:a 128k -shortest out.mp4 2>&1 | tail -40; echo MUX_EXIT=\$?"
+          echo ""
+          echo "=== verifying output ==="
+          $SSH "ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_name,width,height -of default=noprint_wrappers=1 out.mp4 || echo 'ffprobe FAILED — no valid output file'"
+
+      - name: Terminate instance
+        if: always()
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+          INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error
+          instance_id = os.environ.get('INSTANCE_ID', '')
+          if not instance_id:
+              print('No instance ID'); raise SystemExit(0)
+
+          headers = {'Authorization': f"Bearer {os.environ['VAST_API_KEY']}", 'Content-Type': 'application/json'}
+          endpoints = [
+              f'https://console.vast.ai/api/v0/instances/{instance_id}/',
+              f'https://cloud.vast.ai/api/v0/instances/{instance_id}/',
+              f'https://cloud.vast.ai/api/v1/instances/{instance_id}/',
+          ]
+          done = False
+          for url in endpoints:
+              req = urllib.request.Request(url, method='DELETE', headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      print(f'Instance {instance_id} terminated OK via {url}: {r.read().decode()[:200]}')
+                  done = True
+                  break
+              except urllib.error.HTTPError as exc:
+                  print(f'  {url} -> HTTP {exc.code}: {exc.read().decode(errors="replace")[:200]}')
+              except Exception as exc:
+                  print(f'  {url} -> error: {exc}')
+          if not done:
+              print(f'::error::Instance {instance_id} may still be RUNNING — check https://cloud.vast.ai/instances manually')
+          PY
