@@ -2,6 +2,11 @@
   "yaw": 0.0,
   "pitch": 4.0,
   "fov": 85.0,
+  "wide_fallback": {
+    "yaw": 0.0,
+    "fov": 100.0,
+    "_notes": "Placeholder FOV -- Johnson flagged 95-105 as the plausible range, needs a render test to confirm image quality/coverage tradeoff before treating as final. Pitch intentionally not overridden here -- shares camera.pitch (+4) per spec (\"keep pitch fixed unless a venue later needs a separate wide pitch\")."
+  },
   "play_area": {
     "polygon": [[1298,1211],[1459,1076],[1551,1024],[1780,941],[1935,904],[2132,878],[2343,889],[2475,907],[2578,939],[2789,1055],[2901,1125],[2996,1185],[2905,1395],[2742,1718],[2135,2031],[1559,1952],[1212,1621],[1074,1362],[1168,1289]],
     "frame_width": 4032,
