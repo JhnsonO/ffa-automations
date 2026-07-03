@@ -45,6 +45,8 @@ import json
 import math
 import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
+from crop_utils import extract_crop_frame
 
 FIXED_PITCH = 4.0
 FIXED_FOV = 85.0
