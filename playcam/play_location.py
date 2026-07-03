@@ -888,9 +888,17 @@ def main():
             # person_centroid: masked centroid of ALL visible (in-play-area)
             # players -- this is the Phase 1 baseline camera driver.
             person_centroid = None
+            dispersion_deg = None
             if top_cluster:
                 cy_m, cp_m = spherical_centroid([(p["yaw"], p["pitch"]) for p in top_cluster])
                 person_centroid = {"yaw": round(cy_m, 2), "pitch": round(cp_m, 2)}
+                # Mean angular distance of cluster members from their own centroid --
+                # a tight cluster (everyone bunched near the ball) has low dispersion;
+                # players spread evenly across the pitch has high dispersion. Used by
+                # Phase 2.5's concentration score to distinguish "clear dense play"
+                # from "everyone spread out, no real target".
+                dists = [angular_distance(p["yaw"], p["pitch"], cy_m, cp_m) for p in top_cluster]
+                dispersion_deg = round(sum(dists) / len(dists), 2)
 
             # Diagnostic-only single-frame-pair weighting (not promoted).
             activity_centroid, mean_vel = weighted_activity_centroid(top_cluster, person_centroid)
@@ -910,6 +918,8 @@ def main():
                 "person_centroid_size": len(top_cluster) if top_cluster else 0,
                 "person_centroid_yaw": person_centroid["yaw"] if person_centroid else None,
                 "person_centroid_pitch": person_centroid["pitch"] if person_centroid else None,
+                "person_centroid_dispersion_deg": dispersion_deg,
+                "total_retained_players": len(players),
                 "mean_cluster_motion_deg_per_sec": round(mean_vel, 3),
                 "activity_centroid_yaw": activity_centroid["yaw"] if activity_centroid else None,
                 "activity_centroid_pitch": activity_centroid["pitch"] if activity_centroid else None,
