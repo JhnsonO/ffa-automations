@@ -1,6 +1,6 @@
 # FFA 360 / Playcam — AI Project State
 
-**Last reconciled:** 3 July 2026 (run #12 failed - libopenh264 ABI mismatch + termination 404, both fixed, not yet redispatched)
+**Last reconciled:** 3 July 2026 (handoff: mux fix unverified, termination fix confirmed, next step is a real playcam-poc.yml dispatch)
 
 This is the operational handoff. It records what is evidenced in the repo, what has been visually/technically validated, and the next safe task. Do not infer that a design is complete merely because a prototype exists.
 
@@ -52,22 +52,14 @@ The manual two-chunk validation proves the architecture, **not** unattended end-
 
 ### Active blocker — playcam-poc.yml render step (ffmpeg mux)
 
-**Status: run #12 COMPLETE (failed at render, new cause); 2 more fixes pushed; NOT yet redispatched — awaiting go-ahead given cost/time so far.**
+**Status: mux fix pushed, UNVERIFIED. Termination fix CONFIRMED SOLID. Not yet redispatched.**
 
-- `extract_crop_frame()` was previously called but undefined (`NameError`); fixed via `playcam/crop_utils.py` (commits `468f743`, `8b88333`, `cd44f91`). Verified working: Phase 2.5 now processes all 2989 frames with no NameError.
-- `set -o pipefail` added to both remote SSH pipes (commit `4c035d4`) — previously a `| tail -60` pipe was swallowing failing exit codes and showing false-green runs.
-- ffmpeg mux attempt 1: `-c:v libx264 -preset fast` failed (`Unrecognized option 'preset'`) — build has no `--enable-libx264`/`--enable-gpl`. Switched to `libopenh264` (`54c4081`).
-- **Run #12 result (commit `2ace975`, dispatched by Johnson 20:05–20:51 UTC, 46m10s total):**
-  - Install deps 15m12s, Drive download 7m38s, Phase 1 12m30s (200/200 samples clean), Phase 2.5 render 8m17s → **failed**.
-  - ffmpeg mux attempt 2 (`libopenh264`) also failed: `Incorrect library version loaded` — conda ffmpeg's linked openh264 ABI doesn't match the instance's installed `.so`. Different failure class from attempt 1, not a repeat.
-  - **Fixed** (`1412735`): switched mux to `-c:v mpeg4 -q:v 3` — ffmpeg's built-in encoder, no external shared-library dependency, eliminates this failure class entirely.
-  - **Instance-leak confirmed and root-caused**: termination step logged `HTTP 404` on both attempts against `cloud.vast.ai/api/v1/instances/{id}/` — the "fix" pushed earlier this session (`2ace975`) was itself wrong; that single endpoint 404s in production. instance `43731958` was left orphaned (later swept by the hourly `vastai-orphan-cleanup.yml` cron, not by this workflow's own termination step). **Fixed** (`2422ae2`): both the in-loop offer-cleanup and the final termination step now try the same 3-endpoint fallback sequence (`console.vast.ai/api/v0` → `cloud.vast.ai/api/v0` → `cloud.vast.ai/api/v1`) already proven working in `vastai-orphan-cleanup.yml` — do not reduce this back to a single endpoint without new evidence.
-  - Verified via `vastai-instance-check.yml`: 0 instances live on the account as of this reconciliation.
-- Per-offer readiness wait extended 3min → 5min (18→30 attempts, `2ace975`).
-- Install dependencies output un-silenced + SSH keepalive added (`59c7e70`).
-- **Cost/time concern raised by Johnson**: 46 min per iteration on a 120s test clip is disproportionate; ~23 min of that (install + Drive download) is fixed overhead paid on every run regardless of what's being tested. Not yet addressed — candidate options (pre-baked Docker image to skip cold install, caching the Drive source) are unactioned, need Johnson's go-ahead before implementing.
+- **Termination/leak: fixed and confirmed.** Both the in-loop offer-cleanup and final "Terminate Vast.ai instance" step use a 3-endpoint fallback (`console.vast.ai/api/v0` → `cloud.vast.ai/api/v0` → `cloud.vast.ai/api/v1`, commit `2422ae2`) — proven working across 3 separate runs today, including on failed dispatches. Do not reduce back to a single endpoint without new evidence; a single-endpoint fix already 404'd once in production.
+- **Mux codec: 2 wrong guesses, 3rd fix unverified.** `libx264` (missing from build) → `libopenh264` (ABI/library-version mismatch on instance) → currently `-c:v mpeg4 -q:v 3` (commit `1412735`, built-in encoder, no external `.so` dependency). Attempted isolated validation via `debug-ffmpeg-mux.yml` failed twice on Vast.ai SSH flakiness (unrelated to the mux code) — abandoned per Johnson's direction. **The mpeg4 fix has never actually run.** Next `playcam-poc.yml` dispatch is the real test.
+- Offer readiness wait extended 3min→5min; Install dependencies output un-silenced + SSH keepalive added (commits `2ace975`, `59c7e70`) — both untested against a real full run since landing.
+- **Open, unaddressed:** 46min/iteration is mostly fixed overhead (~23min install+download) paid every run regardless of outcome. Options (pre-baked image, source caching) not actioned — needs Johnson's go-ahead.
 
-**Next gate:** `debug-ffmpeg-mux.yml` abandoned per Johnson's direction — 2 of 3 dispatches failed at "Wait for SSH" (Vast.ai host flakiness: `actual_status=running` doesn't guarantee sshd is up yet), never actually exercised the mux command. Not a code defect in the debug tool itself (offer selection and termination both worked correctly on every attempt, including after the `bad_cpu` and SSH-wait-window fixes). Termination endpoint fix (`2422ae2`, 3-endpoint fallback) is now confirmed solid across 3 separate runs today — no further action needed there. The `mpeg4` mux fix (`1412735`) remains **unverified** — next real signal will come from redispatching `playcam-poc.yml` directly, not from further isolated checks. When redispatched: confirm render completes, then inspect output quality/duration/join integrity, then confirm instance actually terminates via `vastai-instance-check.yml`.
+**Next gate:** redispatch `playcam-poc.yml` (not the abandoned debug tool). If it fails, check step name + exact error before touching any code — do not re-guess. If render succeeds: check output quality/duration/join integrity, then confirm the instance actually terminated via `vastai-instance-check.yml`.
 
 ### Required next implementation
 
