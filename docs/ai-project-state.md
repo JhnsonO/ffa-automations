@@ -1,6 +1,6 @@
 # FFA 360 / Playcam — AI Project State
 
-**Last reconciled:** 3 July 2026 (added active ffmpeg mux blocker)
+**Last reconciled:** 3 July 2026 (ffmpeg mux fix pushed, run redispatched — unverified)
 
 This is the operational handoff. It records what is evidenced in the repo, what has been visually/technically validated, and the next safe task. Do not infer that a design is complete merely because a prototype exists.
 
@@ -52,18 +52,17 @@ The manual two-chunk validation proves the architecture, **not** unattended end-
 
 ### Active blocker — playcam-poc.yml render step (ffmpeg mux)
 
-**Status: BLOCKING all playcam-poc.yml runs; not yet fixed.**
+**Status: FIX PUSHED; DISPATCHED — UNVERIFIED.**
 
 - `extract_crop_frame()` was previously called but undefined (`NameError`); fixed via `playcam/crop_utils.py` (commits `468f743`, `8b88333`, `cd44f91`). Verified working: Phase 2.5 now processes all 2989 frames with no NameError.
 - `set -o pipefail` added to both remote SSH pipes (commit `4c035d4`) — previously a `| tail -60` pipe was swallowing failing exit codes and showing false-green runs.
-- With both fixes in place, every run since (5 consecutive: 14:33, 15:11, 15:36, 16:00, 16:29 on 3 July) fails at the same step — `render_wide_safety`'s ffmpeg mux call:
-  - `Unrecognized option 'preset'. Error splitting the argument list: Option not found`
-  - Confirmed genuine ffmpeg incompatibility, not a Python arg-separation bug (checked the exact subprocess arg list at commit `61b829f`, args correctly separated, not shell-joined).
-  - Cause: the Vast.ai image ships ffmpeg 4.3 (2020 conda build), which rejects `-preset` as used in the current mux command.
-- Current HEAD (`56ddd4e`) still has no fix committed for this — the `-preset` flag issue is unresolved as of this reconciliation.
-- A ChatGPT prompt requesting a corrected ffmpeg arg list was drafted and dispatched in a prior session; Johnson's paste-back of the corrected args is the next input needed.
+- 5 consecutive runs (14:33–16:29, 3 July) then failed at `render_wide_safety`'s ffmpeg mux call: `Unrecognized option 'preset'. Error splitting the argument list: Option not found`.
+- **Root cause confirmed from job log's ffmpeg configure string:** the Vast.ai image's ffmpeg (4.3, conda build) has `--enable-libopenh264` but **no** `--enable-libx264` / `--enable-gpl`. `-c:v libx264` targets an encoder that isn't compiled in, so the x264-private `-preset`/`-crf` options are unrecognized by the parser — not a Python arg-splitting bug (arg list was already confirmed correctly separated).
+- **Fix pushed:** commit `54c4081` — `playcam/wide_safety_camera.py`'s `render_wide_safety()` mux call now uses `-c:v libopenh264 -b:v 6M` (the encoder actually present in this ffmpeg build) instead of `-c:v libx264 -preset fast -crf 20`. Compiled clean before push.
+- **Dispatched:** `playcam-poc.yml` triggered on `main` after the fix — run not yet inspected. Treat as `DISPATCHED — UNVERIFIED` until checked.
+- Not yet checked: whether `smooth_camera_path.py` (the non-wide-safety render path) has the same `libx264`/`-preset` call and would hit the identical failure if/when exercised.
 
-**Next gate:** patch the ffmpeg mux command in `playcam/wide_safety_camera.py`'s `render_wide_safety()` (drop/reorder `-preset`, or use `-preset:v`, or confirm ffmpeg version on the image) and redispatch `playcam-poc.yml` before any further resumable-stage refactor work — the monolithic-timeout defect below has not actually been reached in 5 straight attempts because this ffmpeg failure happens first.
+**Next gate:** inspect the dispatched run's outcome. If green, confirm output video quality/duration/join integrity. If it fails elsewhere, report the new failure only — do not re-guess the ffmpeg fix.
 
 ### Required next implementation
 
@@ -195,6 +194,7 @@ Claude is a bounded executor/reviewer, not a general repo-exploration agent.
 
 ## Compact change log
 
+- **2026-07-03:** Root-caused ffmpeg mux failure to missing libx264/gpl in the Vast.ai ffmpeg build; pushed fix (commit `54c4081`) switching `render_wide_safety()` to `libopenh264`; redispatched `playcam-poc.yml` — DISPATCHED, UNVERIFIED.
 - **2026-07-03:** Recorded active blocker: playcam-poc.yml render step fails on ffmpeg `-preset` (ffmpeg 4.3 on Vast.ai image), confirmed across 5 consecutive runs; crop_utils.py and pipefail fixes verified working upstream of it. Not yet fixed as of HEAD `56ddd4e`.
 - **2026-07-03:** State reconciled. Added Playcam as the active priority; recorded validated two-chunk architecture, the monolithic chaining timeout/truncation defect, and the required resumable named-stage refactor. Recorded live camera-mode calibration limits and security gate.
 - **2026-07-03:** Claude token discipline added: scoped reads, no broad repo scans/narration, minimal patching, compact final reports.
