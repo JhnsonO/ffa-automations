@@ -149,7 +149,7 @@ jobs:
           print(f"Instance ID: {instance_id}")
 
           ip = port = None
-          for attempt in range(30):
+          for attempt in range(60):
               time.sleep(10)
               resp = vast_get("/instances/", base=BASE_V1)
               inst = next((x for x in resp.get("instances", []) if x["id"] == instance_id), None)
