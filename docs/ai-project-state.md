@@ -1,6 +1,6 @@
 # FFA 360 Ball Tracker — AI Project State
 
-**Last reconciled:** 29 June 2026 (session 15) — MOG2 wired into Stage 1 as primary detector (commit 5a2cc96). YOLO fallback on 0 or >1 blobs. --no-mog2 flag added. mog2_primary_count + mog2_fallthrough_count in run_summary. Next: dispatch Stage 1 tracker run to verify MOG2 wiring and pitch_geometry_suppression_count > 0.
+**Last reconciled:** 3 July 2026 (session 21) — Claude execution rules tightened to prevent broad repo scans and excess narration. Technical gate unchanged: dispatch the Stage 1 tracker run and inspect `mog2_primary_count`, `mog2_fallthrough_count`, and `pitch_geometry_suppression_count`.
 
 ## Start here
 
@@ -23,6 +23,17 @@ Offline 360° football post-production. The camera follows only a credible **fus
 - **ChatGPT** generates code files, schemas, architecture documents. No usage limits.
 - **Claude** verifies against live repo, runs tests, pushes commits, dispatches workflows. Cannot be replaced for anything requiring repo access or execution.
 - ChatGPT output is verified by Claude before any commit. Claude is the skeptic, not a relay.
+
+### Claude operating mode — low-token execution (3 July 2026)
+
+Claude is a bounded executor/reviewer, not a general repo-exploration agent.
+
+1. Read this file and `CLAUDE.md`, then only files directly required by the active task. Do not scan or re-read unrelated subsystems.
+2. Do not restate plans, narrate progress, or explain internal reasoning. Before editing, give one line naming the exact files to be changed.
+3. Make the smallest safe patch. Do not redesign the pipeline or alter frozen boundaries unless the task explicitly says so.
+4. Run only the named/relevant checks, then commit or dispatch when the task requires it.
+5. Final response format only: changed files; what changed; test/workflow run; result/next gate.
+6. Prefer ChatGPT or Codex for contained implementation drafts. Use Claude for live-repo verification, commits, workflow dispatches, and execution-bound debugging.
 
 ## Architecture — locked 25 June 2026
 
@@ -430,6 +441,7 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 
 ## Compact change log
 
+- **2026-07-03 (session 21 — Claude token discipline):** Added bounded executor rules: task-scoped reads only, no broad repo scans/progress narration, smallest safe patch, compact final output, and Claude reserved for verification/commit/dispatch/live execution work. Technical tracker gate unchanged.
 - **2026-07-01 (session 20b — MAX2 floor recalibration + parallel chapter pipeline, VERIFIED):** Diagnosed pool expansion alone insufficient — all offers still failing stale 1.25x MAX2 preflight floor at real 8K res. Recalibrated `PREFLIGHT_MIN`/`MIN_SPEED`/`ABORT_MIN`/`TARGET_SPEED` in both `vastai_stitch_max2.sh` and `vastai_stitch_max2_chapter.sh` to real measured ceiling (0.55/0.55/0.45/0.90). Fixed instance-leak bug (weak single-endpoint cleanup → robust 3-endpoint terminate). Discovered GoPro API exposes raw per-chapter source files; built new parallel chapter subsystem (`vastai_stitch_max2_chapter.sh`, `gopro360-chapter-upload.yml`, `max2_chapter_concat.py`, `max2-chapter-concat.yml`) with stream-specifier fix and 360 XMP re-injection. End-to-end VERIFIED on session 0419: chapter runs `28533197998`/`28533416803` success, concat+upload run `28551023163` success. Also added `vastai-instance-check.yml`, `vastai-orphan-cleanup.yml`, `goprobe.yml`.
 - **2026-07-01 (session 20 — pool expansion):** `gopro360-upload.yml` patched: `cpu_cores` 32→16, `cpu_ghz >= 4.5` removed, GOOD_CPU_SUBSTRINGS += Threadripper PRO / Threadripper / Core Ultra 9 (commit `db8b97aab5`). MAX2 validation run dispatched — DISPATCHED — UNVERIFIED.
 - **2026-06-30 (session 19 — preflight set -e fix):** Fixed silent preflight failure in both stitch scripts. Under `set -euo pipefail`, `timeout 90 ffmpeg` failure/timeout caused bash to exit before `PF_RC=$?` ran — exit trap wrote `FAILED:124` instead of routing through `BENCHMARK_FAILED`. Fix: `set +e` / `set -e` wrapper around preflight ffmpeg block (commit `66cfb4a`). Validation run `28473642367` (commit `e6dbba7`) is INVALID; must re-dispatch against `66cfb4a`.
@@ -454,5 +466,3 @@ ChatGPT review found Phase B replay wrote repair frames as accepted detections/c
 - **2026-06-24:** FootAndBall benchmark rejected; backward-anchor propagation and football-YOLO adapter built (experiments only).
 - **2026-06-24:** Candidate-fusion, pose selection, temporal ball-likeness score all rejected.
 - **2026-06-24:** Geometry propagation verified (run `28107675223`).
-
-
