@@ -180,9 +180,9 @@ jobs:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          $SSH "apt-get update -qq && apt-get install -y --no-install-recommends ffmpeg aria2 libgl1 libglib2.0-0 > /dev/null"
-          $SSH "pip install -q 'numpy<2' ultralytics opencv-python-headless matplotlib"
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 root@$IP"
+          $SSH "stdbuf -oL -eL apt-get update && stdbuf -oL -eL apt-get install -y --no-install-recommends ffmpeg aria2 libgl1 libglib2.0-0"
+          $SSH "stdbuf -oL -eL pip install 'numpy<2' ultralytics opencv-python-headless matplotlib"
           $SSH "python3 -c \"import cv2, numpy, matplotlib, torch; from ultralytics import YOLO; assert torch.cuda.is_available(), 'CUDA unavailable'; print('deps OK, CUDA:', torch.cuda.get_device_name(0), 'numpy:', numpy.__version__)\""
 
       - name: Upload playcam to instance
