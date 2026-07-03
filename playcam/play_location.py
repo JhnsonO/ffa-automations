@@ -81,6 +81,19 @@ MOTION_MATCH_RADIUS_DEG = 15.0
 # centroid rather than letting a couple of noisy detections skew the target.
 LOW_MOTION_THRESHOLD_DEG_PER_SEC = 1.5
 
+# --- Track association + blended proposed yaw (2026-07-02) ---
+# Per-detection velocity (above) proved too sensitive to a single bad match
+# to be a camera target -- kept as a diagnostic field only. This is the
+# stricter path: short-lived track IDs gated on displacement, group motion
+# measured over a rolling window (not one frame-pair), and the result
+# blended into (not replacing) the masked centroid with a hard clamp.
+TRACK_MAX_MISSED_SAMPLES = 2       # drop a track after this many consecutive misses
+ROLLING_WINDOW_SEC = 2.5           # group motion measured over this window
+STABLE_MIN_COVERAGE_SEC = 2.0      # a track needs at least this much history to count
+STABLE_MIN_TRACKS = 2              # need >=2 stable tracks to trust a group signal
+BLEND_ACTIVITY_WEIGHT = 0.2        # proposed = 0.8*masked + 0.2*stable_group
+BLEND_CLAMP_DEG = 5.0              # contribution clamped to +/-5 deg from masked
+
 
 # ---------------------------------------------------------------------------
 # Geometry — equirect crop extraction and spherical back-projection
@@ -349,6 +362,120 @@ def match_motion(current_players, prev_players, dt_sec,
     for i, p in enumerate(current_players):
         if i not in matched_cur:
             p["vel_deg_per_sec"] = 0.0
+
+
+def update_tracks(tracks, next_track_id, current_players, timestamp,
+                   max_disp_deg=MOTION_MATCH_RADIUS_DEG,
+                   max_missed=TRACK_MAX_MISSED_SAMPLES):
+    """
+    Greedy nearest-neighbour track association gated on max angular
+    displacement (position), with box size and confidence as tie-breakers.
+    Short-lived: a track not matched for max_missed consecutive samples is
+    dropped, not carried forward indefinitely.
+
+    tracks: {track_id: {"history": [(t, yaw, pitch)], "missed": int}}
+    Mutates `tracks` in place. Returns updated next_track_id counter and
+    sets "track_id" on each entry in current_players.
+    """
+    live_ids = [tid for tid, t in tracks.items() if t["missed"] <= max_missed]
+
+    candidates = []
+    for i, p in enumerate(current_players):
+        for tid in live_ids:
+            last_yaw, last_pitch = tracks[tid]["history"][-1][1:3]
+            d = angular_distance(p["yaw"], p["pitch"], last_yaw, last_pitch)
+            if d <= max_disp_deg:
+                size_pen = abs(p.get("box_h", 0) - tracks[tid].get("last_box_h", p.get("box_h", 0)))
+                cost = d + 0.02 * size_pen - 0.1 * p["conf"]
+                candidates.append((cost, i, tid))
+    candidates.sort(key=lambda x: x[0])
+
+    matched_players, matched_tracks = set(), set()
+    for cost, i, tid in candidates:
+        if i in matched_players or tid in matched_tracks:
+            continue
+        p = current_players[i]
+        tracks[tid]["history"].append((timestamp, p["yaw"], p["pitch"]))
+        tracks[tid]["missed"] = 0
+        tracks[tid]["last_box_h"] = p.get("box_h", 0)
+        p["track_id"] = tid
+        matched_players.add(i)
+        matched_tracks.add(tid)
+
+    for tid in live_ids:
+        if tid not in matched_tracks:
+            tracks[tid]["missed"] += 1
+
+    for i, p in enumerate(current_players):
+        if i not in matched_players:
+            tid = next_track_id
+            next_track_id += 1
+            tracks[tid] = {"history": [(timestamp, p["yaw"], p["pitch"])],
+                            "missed": 0, "last_box_h": p.get("box_h", 0)}
+            p["track_id"] = tid
+
+    # Prune long-dead tracks so the dict doesn't grow unbounded
+    for tid in list(tracks.keys()):
+        if tracks[tid]["missed"] > max_missed:
+            del tracks[tid]
+
+    return next_track_id
+
+
+def stable_group_yaw_pitch(tracks, current_players, timestamp, top_cluster,
+                            window_sec=ROLLING_WINDOW_SEC,
+                            min_coverage_sec=STABLE_MIN_COVERAGE_SEC,
+                            min_tracks=STABLE_MIN_TRACKS):
+    """
+    Group-level motion over a rolling window, restricted to tracks that are
+    (a) currently in the masked top_cluster and (b) have continuous history
+    covering at least min_coverage_sec. This is the noise-resistant
+    alternative to single-frame-pair velocity: one bad match in one sample
+    can't swing the result because it needs sustained history.
+
+    Returns (yaw, pitch, member_count) or (None, None, 0) if no stable group.
+    """
+    if not top_cluster:
+        return None, None, 0
+
+    cluster_track_ids = {p.get("track_id") for p in top_cluster if p.get("track_id") is not None}
+
+    stable_positions = []
+    for tid in cluster_track_ids:
+        t = tracks.get(tid)
+        if t is None or t["missed"] > 0:
+            continue
+        hist = t["history"]
+        span = hist[-1][0] - hist[0][0]
+        if span < min_coverage_sec:
+            continue
+        # Only use history within the rolling window for the position itself
+        window_hist = [h for h in hist if timestamp - h[0] <= window_sec]
+        if not window_hist:
+            continue
+        stable_positions.append(hist[-1][1:3])  # current (yaw, pitch)
+
+    if len(stable_positions) < min_tracks:
+        return None, None, 0
+
+    gy, gp = spherical_centroid(stable_positions)
+    return round(gy, 2), round(gp, 2), len(stable_positions)
+
+
+def blend_proposed_yaw(masked_yaw, stable_yaw, weight=BLEND_ACTIVITY_WEIGHT,
+                        clamp_deg=BLEND_CLAMP_DEG):
+    """
+    proposed = masked + clamp(weight * circular_delta(stable - masked), +/-clamp_deg)
+    Equivalent to the requested 0.8*masked + 0.2*stable blend, expressed as
+    a clamped contribution so the clamp bounds how far the stable-group
+    signal can pull the target regardless of how far apart they are.
+    Returns masked_yaw unchanged if stable_yaw is None.
+    """
+    if stable_yaw is None:
+        return round(masked_yaw, 2)
+    delta = ((stable_yaw - masked_yaw + 180) % 360) - 180
+    contribution = max(-clamp_deg, min(clamp_deg, weight * delta))
+    return round(((masked_yaw + contribution + 180) % 360) - 180, 2)
 
 
 def weighted_activity_centroid(cluster, fallback_centroid):
@@ -666,6 +793,7 @@ def main():
         args.preview_dir.mkdir(parents=True, exist_ok=True)
         (args.preview_dir / "masked").mkdir(parents=True, exist_ok=True)
         (args.preview_dir / "activity").mkdir(parents=True, exist_ok=True)
+        (args.preview_dir / "proposed").mkdir(parents=True, exist_ok=True)
 
     records = []
     if start_frame > 0:
@@ -674,6 +802,8 @@ def main():
         sample_set = set(sample_frames)
         i = 0
         prev_players = None
+        tracks = {}
+        next_track_id = 1
         for fidx in range(start_frame, end_frame):
             ret, frame = cap.read()
             if not ret:
@@ -707,6 +837,7 @@ def main():
                             "conf": round(conf_val, 3),
                             "foot_yaw": round(foot_yaw, 2),
                             "foot_pitch": round(foot_pitch, 2),
+                            "box_h": round(y2 - y1, 1),
                         })
 
             # Apply play_area mask (foot-point containment) BEFORE dedup,
@@ -724,31 +855,40 @@ def main():
 
             players = dedup_players(all_players)
 
-            # Motion weighting -- match against previous SAMPLED frame,
-            # not every video frame. dt is the actual elapsed time between
-            # samples, robust to dropped/short frames.
+            timestamp = round(fidx / src_fps, 3)
+
+            # Diagnostic only (per 2026-07-02 review): frame-pair velocity is
+            # too sensitive to a single bad match to drive the camera. Kept
+            # for visibility, not used in proposed_yaw below.
             dt_sec = step / src_fps if prev_players is not None else 0.0
             match_motion(players, prev_players or [], dt_sec)
             prev_players = players
 
+            # Track association: gated nearest-neighbour, short-lived IDs.
+            next_track_id = update_tracks(tracks, next_track_id, players, timestamp)
+
             clusters = cluster_players(players)
             top_cluster = best_cluster(clusters)
 
-            # NOTE (2026-07-02): person_centroid is the centroid of ALL
-            # visible players filtered only by the min-cluster-size spatial
-            # radius -- with most/all players in one loose group, on its own
-            # it does not reliably distinguish an ACTIVE cluster from a
-            # crowd shot. activity_centroid (below) motion-weights the same
-            # cluster membership toward players actually moving.
+            # person_centroid: masked centroid of ALL visible (in-play-area)
+            # players -- this is the Phase 1 baseline camera driver.
             person_centroid = None
             if top_cluster:
                 cy_m, cp_m = spherical_centroid([(p["yaw"], p["pitch"]) for p in top_cluster])
                 person_centroid = {"yaw": round(cy_m, 2), "pitch": round(cp_m, 2)}
 
+            # Diagnostic-only single-frame-pair weighting (not promoted).
             activity_centroid, mean_vel = weighted_activity_centroid(top_cluster, person_centroid)
 
+            # Stable group signal: rolling-window motion over gated tracks,
+            # blended into (not replacing) person_centroid, hard-clamped.
+            stable_yaw, stable_pitch, stable_n = stable_group_yaw_pitch(
+                tracks, players, timestamp, top_cluster)
+            proposed_yaw = (blend_proposed_yaw(person_centroid["yaw"], stable_yaw)
+                             if person_centroid else None)
+
             record = {
-                "timestamp": round(fidx / src_fps, 3),
+                "timestamp": timestamp,
                 "frame": fidx,
                 "players": players,
                 "excluded_count": len(excluded),
@@ -758,6 +898,11 @@ def main():
                 "mean_cluster_motion_deg_per_sec": round(mean_vel, 3),
                 "activity_centroid_yaw": activity_centroid["yaw"] if activity_centroid else None,
                 "activity_centroid_pitch": activity_centroid["pitch"] if activity_centroid else None,
+                "activity_centroid_note": "diagnostic only, not used for camera target",
+                "stable_group_yaw": stable_yaw,
+                "stable_group_track_count": stable_n,
+                "proposed_yaw": proposed_yaw,
+                "proposed_pitch": fixed_pitch,
             }
             records.append(record)
             out_f.write(json.dumps(record) + "\n")
@@ -768,21 +913,26 @@ def main():
                                     excluded=excluded)
 
                 # Two comparison previews, same frame: masked-centroid-driven
-                # yaw vs activity-centroid-driven yaw. Pitch FIXED in both --
-                # never from detections.
+                # Three comparison previews, same frame: masked-centroid,
+                # diagnostic activity-centroid, and blended proposed_yaw.
+                # Pitch FIXED in all three -- never from detections.
                 masked_yaw = person_centroid["yaw"] if person_centroid else 0.0
                 activity_yaw = activity_centroid["yaw"] if activity_centroid else masked_yaw
+                blended_yaw = proposed_yaw if proposed_yaw is not None else masked_yaw
                 render_rectilinear_preview(frame, masked_yaw, fixed_pitch, args.preview_fov,
                                             players, top_cluster,
                                             args.preview_dir / "masked" / f"frame_{fidx:06d}.png")
                 render_rectilinear_preview(frame, activity_yaw, fixed_pitch, args.preview_fov,
                                             players, top_cluster,
                                             args.preview_dir / "activity" / f"frame_{fidx:06d}.png")
+                render_rectilinear_preview(frame, blended_yaw, fixed_pitch, args.preview_fov,
+                                            players, top_cluster,
+                                            args.preview_dir / "proposed" / f"frame_{fidx:06d}.png")
 
             if i % 10 == 0 or i == len(sample_frames):
                 t_str = (f"person yaw={person_centroid['yaw']:.1f} "
-                          f"activity yaw={activity_centroid['yaw']:.1f} "
-                          f"(mean_vel={mean_vel:.1f}deg/s)"
+                          f"proposed yaw={proposed_yaw:.1f} "
+                          f"(stable_n={stable_n})"
                           if person_centroid else "no cluster")
                 print(f"  [{i:3d}/{len(sample_frames)}] frame {fidx:5d} "
                       f"players={len(players):2d} excluded={len(excluded):2d} "
@@ -802,11 +952,46 @@ def main():
         act_with = [r for r in with_cluster if r["activity_centroid_yaw"] is not None]
         if act_with:
             mean_act_yaw = yaw_mean([r["activity_centroid_yaw"] for r in act_with])
-            print(f"[play_location] Mean activity_centroid: yaw={mean_act_yaw:.1f}")
+            print(f"[play_location] Mean activity_centroid (diagnostic): yaw={mean_act_yaw:.1f}")
     if not args.no_debug:
         print(f"[play_location] Equirect debug frames written to: {args.debug_dir}")
         print(f"[play_location] Masked-centroid previews: {args.preview_dir / 'masked'}")
-        print(f"[play_location] Activity-centroid previews: {args.preview_dir / 'activity'}")
+        print(f"[play_location] Activity-centroid previews (diagnostic): {args.preview_dir / 'activity'}")
+        print(f"[play_location] Proposed (blended) previews: {args.preview_dir / 'proposed'}")
+
+        plot_path = args.debug_dir.parent / "yaw_comparison.png"
+        plot_yaw_comparison(records, plot_path)
+        print(f"[play_location] Yaw comparison plot: {plot_path}")
+
+
+def plot_yaw_comparison(records, out_path):
+    """Plot masked / diagnostic-activity / proposed(blended) yaw across the
+    full sampled sequence. Purpose: reject any approach that adds
+    oscillation before cinematic smoothing is ever built."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    ts = [r["timestamp"] for r in records]
+    masked = [r["person_centroid_yaw"] for r in records]
+    activity = [r["activity_centroid_yaw"] for r in records]
+    proposed = [r["proposed_yaw"] for r in records]
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(ts, masked, label="person_centroid_yaw (masked, current baseline)",
+            color="tab:blue", linewidth=2, marker="o", markersize=3)
+    ax.plot(ts, activity, label="activity_centroid_yaw (diagnostic, single-frame-pair)",
+            color="tab:orange", linewidth=1, linestyle="--", marker="x", markersize=3)
+    ax.plot(ts, proposed, label="proposed_yaw (blended, clamped +/-5deg)",
+            color="tab:green", linewidth=1.5, marker="s", markersize=3)
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel("yaw (deg)")
+    ax.set_title("Camera yaw target comparison -- reject oscillation before cinematic smoothing")
+    ax.legend(loc="best", fontsize=8)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
 
 
 if __name__ == "__main__":
