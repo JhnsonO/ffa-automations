@@ -74,10 +74,15 @@ jobs:
                   return json.loads(r.read())
 
           def delete_instance(instance_id):
-              try:
-                  request('DELETE', f'{cloud}/instances/{instance_id}/', timeout=15)
-              except Exception as exc:
-                  print(f'Cleanup warning for {instance_id}: {exc}')
+              for ep in (f'{base}/instances/{instance_id}/',
+                         f'https://cloud.vast.ai/api/v0/instances/{instance_id}/',
+                         f'{cloud}/instances/{instance_id}/'):
+                  try:
+                      request('DELETE', ep, timeout=15)
+                      return
+                  except Exception as exc:
+                      last_exc = exc
+              print(f'Cleanup warning for {instance_id}: all endpoints failed, last error: {last_exc}')
 
           # Register this ephemeral GitHub runner key with Vast.
           request('POST', f'{base}/ssh/', {'ssh_key': pub_key})
@@ -288,30 +293,29 @@ jobs:
           INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
         run: |
           python3 - << 'PY'
-          import os, time, urllib.request, urllib.error
+          import os, urllib.request, urllib.error
           instance_id = os.environ.get('INSTANCE_ID', '')
           if not instance_id:
               print('No instance ID'); raise SystemExit(0)
 
-          def terminate():
-              req = urllib.request.Request(
-                  f'https://cloud.vast.ai/api/v1/instances/{instance_id}/',
-                  method='DELETE',
-                  headers={'Authorization': f"Bearer {os.environ['VAST_API_KEY']}", 'Content-Type': 'application/json'})
-              urllib.request.urlopen(req, timeout=15)
-
-          for attempt in (1, 2):
+          headers = {'Authorization': f"Bearer {os.environ['VAST_API_KEY']}", 'Content-Type': 'application/json'}
+          endpoints = [
+              f'https://console.vast.ai/api/v0/instances/{instance_id}/',
+              f'https://cloud.vast.ai/api/v0/instances/{instance_id}/',
+              f'https://cloud.vast.ai/api/v1/instances/{instance_id}/',
+          ]
+          done = False
+          for url in endpoints:
+              req = urllib.request.Request(url, method='DELETE', headers=headers)
               try:
-                  terminate()
-                  print(f'Instance {instance_id} terminated OK')
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      print(f'Instance {instance_id} terminated OK via {url}: {r.read().decode()[:200]}')
+                  done = True
                   break
               except urllib.error.HTTPError as exc:
-                  body = exc.read().decode(errors='replace')
-                  print(f'Terminate attempt {attempt} FAILED: HTTP {exc.code} {body}')
+                  print(f'  {url} -> HTTP {exc.code}: {exc.read().decode(errors="replace")[:200]}')
               except Exception as exc:
-                  print(f'Terminate attempt {attempt} FAILED: {exc}')
-              if attempt == 1:
-                  time.sleep(5)
-          else:
+                  print(f'  {url} -> error: {exc}')
+          if not done:
               print(f'::error::Instance {instance_id} may still be RUNNING — check https://cloud.vast.ai/instances manually')
           PY
