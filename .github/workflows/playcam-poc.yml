@@ -86,7 +86,6 @@ jobs:
           query = {
               "verified":   {"eq": True},
               "rentable":   {"eq": True},
-              "num_gpus":   {"eq": 1},
               "cpu_cores":  {"gte": 8},
               "cpu_ram":    {"gte": 16384},
               "disk_space": {"gte": 40},
@@ -149,7 +148,7 @@ jobs:
           print(f"Instance ID: {instance_id}")
 
           ip = port = None
-          for attempt in range(60):
+          for attempt in range(30):
               time.sleep(10)
               resp = vast_get("/instances/", base=BASE_V1)
               inst = next((x for x in resp.get("instances", []) if x["id"] == instance_id), None)
