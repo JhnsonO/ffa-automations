@@ -50,6 +50,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from crop_utils import extract_crop_frame
 from smooth_camera_path import (  # noqa: E402  -- reuse, not duplicate
     unwrap_degrees, ease_kinematic,
     DEFAULT_RENDER_FPS, DEFAULT_MAX_PAN_SPEED_DEG_S, DEFAULT_MAX_PAN_ACCEL_DEG_S2,
