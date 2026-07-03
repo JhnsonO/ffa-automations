@@ -1,6 +1,6 @@
 # FFA 360 / Playcam — AI Project State
 
-**Last reconciled:** 3 July 2026 (handoff: mux fix unverified, termination fix confirmed, next step is a real playcam-poc.yml dispatch)
+**Last reconciled:** 3 July 2026 (run 28684124570 failed at Wait for SSH before reaching render; mux fix still unverified; termination confirmed again)
 
 This is the operational handoff. It records what is evidenced in the repo, what has been visually/technically validated, and the next safe task. Do not infer that a design is complete merely because a prototype exists.
 
@@ -59,7 +59,15 @@ The manual two-chunk validation proves the architecture, **not** unattended end-
 - Offer readiness wait extended 3min→5min; Install dependencies output un-silenced + SSH keepalive added (commits `2ace975`, `59c7e70`) — both untested against a real full run since landing.
 - **Open, unaddressed:** 46min/iteration is mostly fixed overhead (~23min install+download) paid every run regardless of outcome. Options (pre-baked image, source caching) not actioned — needs Johnson's go-ahead.
 
-**Next gate:** redispatch `playcam-poc.yml` (not the abandoned debug tool). If it fails, check step name + exact error before touching any code — do not re-guess. If render succeeds: check output quality/duration/join integrity, then confirm the instance actually terminated via `vastai-instance-check.yml`.
+**Latest attempt — run `28684124570` (3 July 2026, dispatched via API, `main`, default 240s window):**
+
+- Offer selection worked as designed: filtered to reliability ≥0.98, tried offer 1 (RTX 5060 Ti, reliability 0.995) which stayed stuck at `status=loading` for the full 5-minute window and was terminated/skipped; offer 2 (RTX 4070S Ti, reliability 0.981) reached `status=running` at attempt 14/30.
+- Failed at **Wait for SSH**: instance reported `running` via the Vast API but sshd never accepted a connection across all 18 retries (90s window) — exit code 1, `ERROR: SSH never came up`.
+- All downstream steps (install, upload, Phase 1, render, artifact upload) were skipped as a result. **The mpeg4 mux fix still has not run.**
+- Termination succeeded cleanly (3-endpoint fallback, `2422ae2`) — no leaked instance.
+- This is the same class of failure that killed 2 of 3 `debug-ffmpeg-mux.yml` dispatches: Vast "running" status does not guarantee sshd is actually reachable yet. The existing reliability filter (`reliability gte 0.98`) does not address this — the failed offer had 0.995 reliability, so a higher floor would not have prevented it.
+
+**Next gate:** redispatch `playcam-poc.yml`. If it fails at Wait for SSH again, this becomes a real problem worth fixing directly (e.g. extend the SSH-wait window past 90s the way `debug-ffmpeg-mux.yml` did — commit `fbae177` extended it 90s→5min there) rather than re-guessing. If it clears SSH and render succeeds: check output quality/duration/join integrity, then confirm the instance actually terminated via `vastai-instance-check.yml`.
 
 ### Required next implementation
 
@@ -191,6 +199,7 @@ Claude is a bounded executor/reviewer, not a general repo-exploration agent.
 
 ## Compact change log
 
+- **2026-07-03:** Run `28684124570` dispatched (defaults) — failed at "Wait for SSH" (90s window, 18 retries) after the selected instance (RTX 4070S Ti, reliability 0.981) reported `running` via API but sshd never came up. First offer tried (reliability 0.995) never left `status=loading` in 5min and was skipped. Termination succeeded, no leak. Mux fix still unverified — never reached the render step.
 - **2026-07-03:** Run #12 completed (46m10s, failed at render). Termination endpoint from prior fix 404'd in production (instance 43731958 leaked, later swept by hourly orphan-cleanup cron) — replaced with the 3-endpoint fallback proven in `vastai-orphan-cleanup.yml` (`2422ae2`). libopenh264 hit an ABI/library-version mismatch on the instance — switched mux to built-in `mpeg4` (`1412735`). Cost/time flagged: ~23min of the 46min run is fixed install+download overhead per iteration, unaddressed.
 
 - **2026-07-03:** Fixed instance-leak (wrong termination endpoint console/v0 -> cloud/v1), extended offer-readiness timeout 3min->5min, un-silenced Install dependencies output + added SSH keepalive so stalls are detectable. Commits `2ace975`, `59c7e70`. Verified 0 live instances on account after leak fix.
