@@ -1,6 +1,6 @@
 # FFA 360 / Playcam — AI Project State
 
-**Last reconciled:** 3 July 2026 (instance-leak + timeout + logging fixes pushed)
+**Last reconciled:** 3 July 2026 (run #12 failed - libopenh264 ABI mismatch + termination 404, both fixed, not yet redispatched)
 
 This is the operational handoff. It records what is evidenced in the repo, what has been visually/technically validated, and the next safe task. Do not infer that a design is complete merely because a prototype exists.
 
@@ -52,17 +52,22 @@ The manual two-chunk validation proves the architecture, **not** unattended end-
 
 ### Active blocker — playcam-poc.yml render step (ffmpeg mux)
 
-**Status: FIXES PUSHED; run #12 IN PROGRESS (dispatched by Johnson, commit `2ace975`), UNVERIFIED.**
+**Status: run #12 COMPLETE (failed at render, new cause); 2 more fixes pushed; NOT yet redispatched — awaiting go-ahead given cost/time so far.**
 
 - `extract_crop_frame()` was previously called but undefined (`NameError`); fixed via `playcam/crop_utils.py` (commits `468f743`, `8b88333`, `cd44f91`). Verified working: Phase 2.5 now processes all 2989 frames with no NameError.
 - `set -o pipefail` added to both remote SSH pipes (commit `4c035d4`) — previously a `| tail -60` pipe was swallowing failing exit codes and showing false-green runs.
-- ffmpeg mux root cause: Vast.ai ffmpeg (4.3, conda build) has `--enable-libopenh264` but no `--enable-libx264`/`--enable-gpl`, so `-c:v libx264 -preset fast -crf 20` was targeting a non-existent encoder. **Fixed** (`54c4081`): mux now uses `-c:v libopenh264 -b:v 6M`.
-- **Instance-leak root cause found and fixed** (`2ace975`): the final "Terminate Vast.ai instance" step was hitting `console.vast.ai/api/v0` — a different, broken endpoint from the confirmed-working `cloud.vast.ai/api/v1` already used by the in-loop offer cleanup in the same file. The call failed silently (exception swallowed), so successful runs never actually terminated their instance. Now both paths use `cloud.vast.ai/api/v1`, with a retry and a loud `::error::` if termination still fails twice. Verified via `vastai-instance-check.yml`: 0 instances live on the account before and after this fix.
-- Per-offer readiness wait extended 3min → 5min (18→30 attempts, `2ace975`) to match the documented Vast.ai boot-to-SSH baseline (up to 5 min) — previous window could kill a viable instance right before it came up.
-- **Install dependencies step un-silenced** (`59c7e70`): apt/pip output was piped to `/dev/null`/`-q`/`-qq`, so a slow-but-working install looked indistinguishable from a stall. Now streams via `stdbuf -oL -eL`, plus SSH keepalive (`ServerAliveInterval=20`/`ServerAliveCountMax=3`, ~60s dead-connection detection) matching the convention already used in `360-track-test.yml`. Note: this is a targeted fix, not the heavier detached-execution + log-polling architecture used in `gopro360-upload.yml` — that pattern exists for multi-hour jobs and would be disproportionate for this multi-minute step.
-- Run #12 (dispatched by Johnson, `workflow_dispatch`, commit `2ace975` — i.e. has the endpoint/timeout fixes but predates the logging fix in `59c7e70`) was in progress at last check, on the `pip install ultralytics` (torch/CUDA) step — not confirmed stalled, just slow/silent at the time.
+- ffmpeg mux attempt 1: `-c:v libx264 -preset fast` failed (`Unrecognized option 'preset'`) — build has no `--enable-libx264`/`--enable-gpl`. Switched to `libopenh264` (`54c4081`).
+- **Run #12 result (commit `2ace975`, dispatched by Johnson 20:05–20:51 UTC, 46m10s total):**
+  - Install deps 15m12s, Drive download 7m38s, Phase 1 12m30s (200/200 samples clean), Phase 2.5 render 8m17s → **failed**.
+  - ffmpeg mux attempt 2 (`libopenh264`) also failed: `Incorrect library version loaded` — conda ffmpeg's linked openh264 ABI doesn't match the instance's installed `.so`. Different failure class from attempt 1, not a repeat.
+  - **Fixed** (`1412735`): switched mux to `-c:v mpeg4 -q:v 3` — ffmpeg's built-in encoder, no external shared-library dependency, eliminates this failure class entirely.
+  - **Instance-leak confirmed and root-caused**: termination step logged `HTTP 404` on both attempts against `cloud.vast.ai/api/v1/instances/{id}/` — the "fix" pushed earlier this session (`2ace975`) was itself wrong; that single endpoint 404s in production. instance `43731958` was left orphaned (later swept by the hourly `vastai-orphan-cleanup.yml` cron, not by this workflow's own termination step). **Fixed** (`2422ae2`): both the in-loop offer-cleanup and the final termination step now try the same 3-endpoint fallback sequence (`console.vast.ai/api/v0` → `cloud.vast.ai/api/v0` → `cloud.vast.ai/api/v1`) already proven working in `vastai-orphan-cleanup.yml` — do not reduce this back to a single endpoint without new evidence.
+  - Verified via `vastai-instance-check.yml`: 0 instances live on the account as of this reconciliation.
+- Per-offer readiness wait extended 3min → 5min (18→30 attempts, `2ace975`).
+- Install dependencies output un-silenced + SSH keepalive added (`59c7e70`).
+- **Cost/time concern raised by Johnson**: 46 min per iteration on a 120s test clip is disproportionate; ~23 min of that (install + Drive download) is fixed overhead paid on every run regardless of what's being tested. Not yet addressed — candidate options (pre-baked Docker image to skip cold install, caching the Drive source) are unactioned, need Johnson's go-ahead before implementing.
 
-**Next gate:** inspect run #12's outcome (or the next dispatch, which will include the `59c7e70` logging). If green, confirm output video quality/duration/join integrity. If it fails, report the new failure only — do not re-guess fixes already applied.
+**Next gate:** get Johnson's go-ahead before redispatching (3rd attempt today) — do not auto-redispatch after a codec-guess fix without confirmation, given 2 wrong guesses already this session. If/when redispatched: confirm render completes, then inspect output quality/duration/join integrity, then instance actually terminates (check `vastai-instance-check.yml` after, not just the step's reported conclusion).
 
 ### Required next implementation
 
@@ -193,6 +198,8 @@ Claude is a bounded executor/reviewer, not a general repo-exploration agent.
 7. Prefer ChatGPT or Codex for contained implementation drafts; reserve Claude for live-repo verification, commits, workflow dispatches, and execution-bound debugging.
 
 ## Compact change log
+
+- **2026-07-03:** Run #12 completed (46m10s, failed at render). Termination endpoint from prior fix 404'd in production (instance 43731958 leaked, later swept by hourly orphan-cleanup cron) — replaced with the 3-endpoint fallback proven in `vastai-orphan-cleanup.yml` (`2422ae2`). libopenh264 hit an ABI/library-version mismatch on the instance — switched mux to built-in `mpeg4` (`1412735`). Cost/time flagged: ~23min of the 46min run is fixed install+download overhead per iteration, unaddressed.
 
 - **2026-07-03:** Fixed instance-leak (wrong termination endpoint console/v0 -> cloud/v1), extended offer-readiness timeout 3min->5min, un-silenced Install dependencies output + added SSH keepalive so stalls are detectable. Commits `2ace975`, `59c7e70`. Verified 0 live instances on account after leak fix.
 - **2026-07-03:** Root-caused ffmpeg mux failure to missing libx264/gpl in the Vast.ai ffmpeg build; pushed fix (commit `54c4081`) switching `render_wide_safety()` to `libopenh264`; redispatched `playcam-poc.yml` — DISPATCHED, UNVERIFIED.
