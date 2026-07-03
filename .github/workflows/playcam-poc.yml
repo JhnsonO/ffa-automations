@@ -195,6 +195,7 @@ jobs:
           $SSH 'mkdir -p /tmp/playcam_run/playcam/venue_profiles /tmp/playcam_run/playcam/output'
           $SCP playcam/play_location.py root@$IP:/tmp/playcam_run/playcam/
           $SCP playcam/smooth_camera_path.py root@$IP:/tmp/playcam_run/playcam/
+          $SCP playcam/crop_utils.py root@$IP:/tmp/playcam_run/playcam/
           $SCP playcam/wide_safety_camera.py root@$IP:/tmp/playcam_run/playcam/
           $SCP "${{ github.event.inputs.venue_profile_path }}" root@$IP:/tmp/playcam_run/playcam/venue_profiles/
 
