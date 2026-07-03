@@ -1,6 +1,6 @@
 # FFA 360 / Playcam — AI Project State
 
-**Last reconciled:** 3 July 2026
+**Last reconciled:** 3 July 2026 (added active ffmpeg mux blocker)
 
 This is the operational handoff. It records what is evidenced in the repo, what has been visually/technically validated, and the next safe task. Do not infer that a design is complete merely because a prototype exists.
 
@@ -49,6 +49,21 @@ This architecture is correct: global Phase 2 smoothing happens once after the Ph
 The committed `chunked_pipeline.py` still chains download, Phase 1, and render loops inside one Python invocation. In the GitHub-runner sandbox, a long chained call can hit the surrounding command timeout; this was observed once as a clean-render truncation to **6.4 seconds instead of 20 seconds**.
 
 The manual two-chunk validation proves the architecture, **not** unattended end-to-end reliability of the current monolithic orchestrator.
+
+### Active blocker — playcam-poc.yml render step (ffmpeg mux)
+
+**Status: BLOCKING all playcam-poc.yml runs; not yet fixed.**
+
+- `extract_crop_frame()` was previously called but undefined (`NameError`); fixed via `playcam/crop_utils.py` (commits `468f743`, `8b88333`, `cd44f91`). Verified working: Phase 2.5 now processes all 2989 frames with no NameError.
+- `set -o pipefail` added to both remote SSH pipes (commit `4c035d4`) — previously a `| tail -60` pipe was swallowing failing exit codes and showing false-green runs.
+- With both fixes in place, every run since (5 consecutive: 14:33, 15:11, 15:36, 16:00, 16:29 on 3 July) fails at the same step — `render_wide_safety`'s ffmpeg mux call:
+  - `Unrecognized option 'preset'. Error splitting the argument list: Option not found`
+  - Confirmed genuine ffmpeg incompatibility, not a Python arg-separation bug (checked the exact subprocess arg list at commit `61b829f`, args correctly separated, not shell-joined).
+  - Cause: the Vast.ai image ships ffmpeg 4.3 (2020 conda build), which rejects `-preset` as used in the current mux command.
+- Current HEAD (`56ddd4e`) still has no fix committed for this — the `-preset` flag issue is unresolved as of this reconciliation.
+- A ChatGPT prompt requesting a corrected ffmpeg arg list was drafted and dispatched in a prior session; Johnson's paste-back of the corrected args is the next input needed.
+
+**Next gate:** patch the ffmpeg mux command in `playcam/wide_safety_camera.py`'s `render_wide_safety()` (drop/reorder `-preset`, or use `-preset:v`, or confirm ffmpeg version on the image) and redispatch `playcam-poc.yml` before any further resumable-stage refactor work — the monolithic-timeout defect below has not actually been reached in 5 straight attempts because this ffmpeg failure happens first.
 
 ### Required next implementation
 
@@ -180,6 +195,7 @@ Claude is a bounded executor/reviewer, not a general repo-exploration agent.
 
 ## Compact change log
 
+- **2026-07-03:** Recorded active blocker: playcam-poc.yml render step fails on ffmpeg `-preset` (ffmpeg 4.3 on Vast.ai image), confirmed across 5 consecutive runs; crop_utils.py and pipefail fixes verified working upstream of it. Not yet fixed as of HEAD `56ddd4e`.
 - **2026-07-03:** State reconciled. Added Playcam as the active priority; recorded validated two-chunk architecture, the monolithic chaining timeout/truncation defect, and the required resumable named-stage refactor. Recorded live camera-mode calibration limits and security gate.
 - **2026-07-03:** Claude token discipline added: scoped reads, no broad repo scans/narration, minimal patching, compact final reports.
 - **2026-07-02 to 2026-07-03:** Playcam Phase 1 geometry fixes, Phase 2.5 wide-safety camera, venue profile, concentration calibration, and two-chunk join validation added.
