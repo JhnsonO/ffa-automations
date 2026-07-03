@@ -39,295 +39,239 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Generate SSH key pair
-        id: keygen
         run: |
           pip install -q cryptography
           python3 -u - << 'PY'
           from cryptography.hazmat.primitives import serialization
           from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
           import os
-          key  = Ed25519PrivateKey.generate()
+          key = Ed25519PrivateKey.generate()
           priv = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
-          pub  = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
-          os.makedirs("/tmp", exist_ok=True)
-          with open("/tmp/vastai_key",     "wb") as f: f.write(priv)
-          with open("/tmp/vastai_key.pub", "wb") as f: f.write(pub + b" ffa-playcam\n")
-          os.chmod("/tmp/vastai_key", 0o600)
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write("pub_key=" + pub.decode() + " ffa-playcam\n")
+          pub = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+          with open('/tmp/vastai_key', 'wb') as f: f.write(priv)
+          with open('/tmp/vastai_key.pub', 'wb') as f: f.write(pub + b' ffa-playcam\n')
+          os.chmod('/tmp/vastai_key', 0o600)
           PY
 
-      - name: Search for Vast.ai GPU offer
-        id: offer
-        env:
-          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
-        run: |
-          python3 -u - << 'PY'
-          import os, json, urllib.request, urllib.parse, sys
-
-          API_KEY = os.environ["VAST_API_KEY"]
-          BASE    = "https://console.vast.ai/api/v0"
-          headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
-
-          def vast_get(path, params=None):
-              url = f"{BASE}{path}"
-              if params: url += "?" + urllib.parse.urlencode(params)
-              with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as r:
-                  return json.loads(r.read())
-
-          def vast_post(path, data):
-              req = urllib.request.Request(f"{BASE}{path}", data=json.dumps(data).encode(), method="POST", headers=headers)
-              with urllib.request.urlopen(req) as r: return json.loads(r.read())
-
-          pub_key = open("/tmp/vastai_key.pub").read().strip()
-          vast_post("/ssh/", {"ssh_key": pub_key})
-
-          # CPU-only (commit 6d992a0) -- GPU filter dropped, matches proven pattern.
-          query = {
-              "verified":   {"eq": True},
-              "rentable":   {"eq": True},
-              "cpu_cores":  {"gte": 8},
-              "cpu_ram":    {"gte": 16384},
-              "disk_space": {"gte": 40},
-              "inet_down":  {"gte": 300},
-          }
-          resp   = vast_get("/bundles/", {"q": json.dumps(query)})
-          offers = resp.get("offers", [])
-          offers.sort(key=lambda o: float(o.get("dph_total", 999)))
-          if not offers:
-              print("ERROR: No matching GPU offers", file=sys.stderr); sys.exit(1)
-          best = offers[0]
-          print(f"Selected: id={best['id']} gpu={best.get('gpu_name')} dph=${best.get('dph_total')}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"offer_id={best['id']}\noffer_gpu={best.get('gpu_name','unknown')}\noffer_dph={best.get('dph_total','?')}\n")
-          PY
-
-      - name: Launch Vast.ai instance
+      - name: Launch reliable Vast.ai GPU instance
         id: launch
         env:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
-          OFFER_ID:     ${{ steps.offer.outputs.offer_id }}
         run: |
           python3 -u - << 'PY'
-          import os, json, urllib.request, urllib.parse, time, sys
+          import os, json, time, urllib.request, urllib.parse, sys
 
-          API_KEY  = os.environ["VAST_API_KEY"]
-          BASE     = "https://console.vast.ai/api/v0"
-          BASE_V1  = "https://cloud.vast.ai/api/v1"
-          headers  = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
+          api_key = os.environ['VAST_API_KEY']
+          base = 'https://console.vast.ai/api/v0'
+          cloud = 'https://cloud.vast.ai/api/v1'
+          headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json', 'Accept': 'application/json'}
+          pub_key = open('/tmp/vastai_key.pub').read().strip()
 
-          def vast_get(path, params=None, base=None):
-              url = f"{(base or BASE)}{path}"
-              if params: url += "?" + urllib.parse.urlencode(params)
-              with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as r:
+          def request(method, url, data=None, timeout=25):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              with urllib.request.urlopen(req, timeout=timeout) as r:
                   return json.loads(r.read())
 
-          def vast_put(path, data):
-              req = urllib.request.Request(f"{BASE}{path}", data=json.dumps(data).encode(), method="PUT", headers=headers)
-              with urllib.request.urlopen(req) as r: return json.loads(r.read())
+          def delete_instance(instance_id):
+              try:
+                  request('DELETE', f'{cloud}/instances/{instance_id}/', timeout=15)
+              except Exception as exc:
+                  print(f'Cleanup warning for {instance_id}: {exc}')
 
-          def vast_delete(path, base=None):
-              req = urllib.request.Request(f"{(base or BASE)}{path}", method="DELETE", headers=headers)
-              with urllib.request.urlopen(req, timeout=10) as r: return json.loads(r.read())
+          # Register this ephemeral GitHub runner key with Vast.
+          request('POST', f'{base}/ssh/', {'ssh_key': pub_key})
 
-          offer_id = os.environ["OFFER_ID"]
-          pub_key  = open("/tmp/vastai_key.pub").read().strip()
+          # This job runs YOLO/Ultralytics: require a real, reliable GPU offer.
+          query = {
+              'verified': {'eq': True},
+              'rentable': {'eq': True},
+              'reliability': {'gte': 0.98},
+              'gpu_ram': {'gte': 8192},
+              'num_gpus': {'gte': 1},
+              'cpu_cores': {'gte': 8},
+              'cpu_ram': {'gte': 16384},
+              'disk_space': {'gte': 40},
+              'inet_down': {'gte': 300},
+          }
+          bundles = request('GET', f'{base}/bundles/?' + urllib.parse.urlencode({'q': json.dumps(query)}))
+          offers = bundles.get('offers', [])
+          bad_cpu = ('E5-', 'E3-', 'Opteron', 'Xeon W3', 'Xeon X5')
+          offers = [o for o in offers if not any(x in (o.get('cpu_name') or '') for x in bad_cpu)]
+          offers.sort(key=lambda o: float(o.get('dph_total', 999)))
+          if not offers:
+              print('ERROR: No reliable GPU offers matched the Playcam requirements', file=sys.stderr)
+              sys.exit(1)
 
-          result = vast_put(f"/asks/{offer_id}/", {
-              "client_id": "me",
-              "image": "pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime",
-              "disk": 40,
-              "onstart": "",
-              "runtype": "ssh",
-              "ssh_key": pub_key,
-              "env": {},
-          })
-          instance_id = result.get("new_contract")
-          if not instance_id:
-              print(f"ERROR: {result}", file=sys.stderr); sys.exit(1)
-          print(f"Instance ID: {instance_id}")
+          print(f'Found {len(offers)} eligible offers; trying up to 5 cheapest reliable offers.')
+          selected = None
+          for index, offer in enumerate(offers[:5], start=1):
+              offer_id = offer['id']
+              print('Trying offer %s (%s/5): gpu=%s vram=%sMB reliability=%s cpu=%s $%s/hr' % (
+                  offer_id, index, offer.get('gpu_name', 'unknown'), offer.get('gpu_ram', '?'),
+                  offer.get('reliability', '?'), offer.get('cpu_name', 'unknown'), offer.get('dph_total', '?')))
+              try:
+                  result = request('PUT', f'{base}/asks/{offer_id}/', {
+                      'client_id': 'me',
+                      'image': 'pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime',
+                      'disk': 40,
+                      'onstart': '',
+                      'runtype': 'ssh',
+                      'ssh_key': pub_key,
+                      'env': {},
+                  })
+              except Exception as exc:
+                  print(f'Launch request failed for offer {offer_id}: {exc}')
+                  continue
+              instance_id = result.get('new_contract')
+              if not instance_id:
+                  print(f'Offer {offer_id} did not return an instance: {result}')
+                  continue
 
-          ip = port = None
-          for attempt in range(30):
-              time.sleep(10)
-              resp = vast_get("/instances/", base=BASE_V1)
-              inst = next((x for x in resp.get("instances", []) if x["id"] == instance_id), None)
-              if not inst: continue
-              status    = inst.get("actual_status", "?")
-              this_ip   = inst.get("ssh_host") or inst.get("public_ipaddr")
-              this_port = inst.get("ssh_port", 22)
-              print(f"  [{attempt+1}/30] status={status} ip={this_ip} port={this_port}")
-              if status == "running" and this_ip:
-                  ip, port = this_ip, this_port; break
-              if status in ("error", "failed", "stopped"):
-                  try: vast_delete(f"/instances/{instance_id}/", base=BASE_V1)
-                  except: pass
-                  sys.exit(1)
+              for attempt in range(18):  # 3 minutes per offer
+                  time.sleep(10)
+                  try:
+                      instances = request('GET', f'{cloud}/instances/')
+                      inst = next((x for x in instances.get('instances', []) if x.get('id') == instance_id), None)
+                  except Exception as exc:
+                      print(f'  [{attempt + 1}/18] status lookup failed: {exc}')
+                      continue
+                  if not inst:
+                      print(f'  [{attempt + 1}/18] instance not listed yet')
+                      continue
+                  status = inst.get('actual_status', '?')
+                  ip = inst.get('ssh_host') or inst.get('public_ipaddr')
+                  port = inst.get('ssh_port', 22)
+                  print(f'  [{attempt + 1}/18] status={status} ip={ip} port={port}')
+                  if status == 'running' and ip:
+                      selected = (instance_id, ip, port, offer)
+                      break
+                  if status in ('error', 'failed', 'stopped'):
+                      break
+              if selected:
+                  break
+              print(f'Offer {offer_id} did not become usable; terminating instance {instance_id} and trying next.')
+              delete_instance(instance_id)
 
-          if not ip:
-              try: vast_delete(f"/instances/{instance_id}/", base=BASE_V1)
-              except: pass
-              print("ERROR: never reached running", file=sys.stderr); sys.exit(1)
-
-          print(f"Ready: {ip}:{port}  id={instance_id}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"ip={ip}\nport={port}\ninstance_id={instance_id}\n")
+          if not selected:
+              print('ERROR: None of the first five reliable GPU offers became ready', file=sys.stderr)
+              sys.exit(1)
+          instance_id, ip, port, offer = selected
+          print(f'Selected ready instance: id={instance_id} gpu={offer.get("gpu_name")} vram={offer.get("gpu_ram")}MB reliability={offer.get("reliability")} ip={ip}:{port}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'instance_id={instance_id}\nip={ip}\nport={port}\n')
           PY
 
       - name: Wait for SSH
         env:
-          IP:   ${{ steps.launch.outputs.ip }}
+          IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
-          python3 -u - << 'PY'
-          import os, socket, time, sys
-          ip, port = os.environ["IP"], int(os.environ["PORT"])
-          for i in range(30):
-              try:
-                  s = socket.create_connection((ip, port), timeout=5); s.close(); print(f"SSH open after {(i+1)*5}s"); break
-              except: print(f"  [{i+1}/30] not ready"); time.sleep(5)
-          else:
-              print("ERROR: SSH never came up", file=sys.stderr); sys.exit(1)
-          PY
-          sleep 20
+          for i in $(seq 1 18); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 -i /tmp/vastai_key -p "$PORT" "root@$IP" 'echo OK' 2>/dev/null | grep -q OK; then
+              echo 'SSH ready'; exit 0
+            fi
+            echo "SSH not ready ($i/18)"; sleep 5
+          done
+          echo 'ERROR: SSH never came up'; exit 1
 
       - name: Install dependencies
         env:
-          IP:   ${{ steps.launch.outputs.ip }}
+          IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          for i in $(seq 1 24); do
-            $SSH "nproc" 2>/dev/null && break
-            echo "SSH not ready ($i/24)"; sleep 5
-          done
           $SSH "apt-get update -qq && apt-get install -y --no-install-recommends ffmpeg aria2 libgl1 libglib2.0-0 > /dev/null"
           $SSH "pip install -q 'numpy<2' ultralytics opencv-python-headless matplotlib"
-          $SSH "python3 -c \"import cv2, numpy, matplotlib, torch; from ultralytics import YOLO; print('deps OK, cuda:', torch.cuda.is_available(), 'numpy:', numpy.__version__)\""
+          $SSH "python3 -c \"import cv2, numpy, matplotlib, torch; from ultralytics import YOLO; assert torch.cuda.is_available(), 'CUDA unavailable'; print('deps OK, CUDA:', torch.cuda.get_device_name(0), 'numpy:', numpy.__version__)\""
 
-      - name: Upload playcam/ to instance
+      - name: Upload playcam to instance
         env:
-          IP:   ${{ steps.launch.outputs.ip }}
+          IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
           SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no"
-          $SSH "mkdir -p /tmp/playcam_run/playcam/venue_profiles /tmp/playcam_run/playcam/output"
+          $SSH 'mkdir -p /tmp/playcam_run/playcam/venue_profiles /tmp/playcam_run/playcam/output'
           $SCP playcam/play_location.py root@$IP:/tmp/playcam_run/playcam/
           $SCP playcam/smooth_camera_path.py root@$IP:/tmp/playcam_run/playcam/
           $SCP playcam/wide_safety_camera.py root@$IP:/tmp/playcam_run/playcam/
           $SCP "${{ github.event.inputs.venue_profile_path }}" root@$IP:/tmp/playcam_run/playcam/venue_profiles/
-          $SSH "ls -la /tmp/playcam_run/playcam/"
 
       - name: Download source window from Drive
         env:
-          IP:              ${{ steps.launch.outputs.ip }}
-          PORT:            ${{ steps.launch.outputs.port }}
-          FILE_ID:         ${{ github.event.inputs.equirect_file_id }}
-          START:           ${{ github.event.inputs.start_seconds }}
-          DURATION:        ${{ github.event.inputs.duration_seconds }}
-          YOUTUBE_TOKEN:       ${{ secrets.YOUTUBE_TOKEN }}
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          FILE_ID: ${{ github.event.inputs.equirect_file_id }}
+          START: ${{ github.event.inputs.start_seconds }}
+          DURATION: ${{ github.event.inputs.duration_seconds }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
         run: |
-          echo "$YOUTUBE_TOKEN"       > /tmp/youtube_token.json
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
           echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
           python3 -u - << 'PY'
-          import os, json, urllib.request as _req
-          token_data = json.loads(open("/tmp/youtube_token.json").read())
-          creds_data = json.loads(open("/tmp/youtube_credentials.json").read())
-          client_id     = token_data.get("client_id") or creds_data["installed"]["client_id"]
-          client_secret = token_data.get("client_secret") or creds_data["installed"]["client_secret"]
-          refresh_token = token_data["refresh_token"]
-          token_uri     = token_data.get("token_uri", "https://oauth2.googleapis.com/token")
-          payload = json.dumps({"client_id": client_id, "client_secret": client_secret,
-                                "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
-          r = _req.urlopen(_req.Request(token_uri, data=payload, headers={"Content-Type": "application/json"}, method="POST"))
-          tok = json.loads(r.read())
-          if "access_token" not in tok: raise RuntimeError(f"Token refresh failed: {tok}")
-          open("/tmp/drive_token.txt", "w").write(tok["access_token"])
-          print(f"Token OK (expires_in={tok.get('expires_in')}s)")
+          import json, urllib.request as req
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          payload = json.dumps({'client_id': token_data.get('client_id') or creds_data['installed']['client_id'], 'client_secret': token_data.get('client_secret') or creds_data['installed']['client_secret'], 'refresh_token': token_data['refresh_token'], 'grant_type': 'refresh_token'}).encode()
+          response = req.urlopen(req.Request(token_data.get('token_uri', 'https://oauth2.googleapis.com/token'), data=payload, headers={'Content-Type': 'application/json'}, method='POST'))
+          token = json.loads(response.read())
+          if 'access_token' not in token: raise RuntimeError(f'Token refresh failed: {token}')
+          open('/tmp/drive_token.txt', 'w').write(token['access_token'])
+          print(f"Token OK (expires_in={token.get('expires_in')}s)")
           PY
           ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          # Full-file download (vast.ai instance has ample disk), then trim the requested window --
-          # more reliable than server-side range-seeking on the Drive media endpoint.
-          $SSH "aria2c -x 8 -s 8 --file-allocation=none \
-            --header='Authorization: Bearer $ACCESS_TOKEN' \
-            --dir=/tmp/playcam_run --out=source_full.mp4 \
-            'https://www.googleapis.com/drive/v3/files/$FILE_ID?alt=media' 2>&1 | tail -5"
-          $SSH "du -sh /tmp/playcam_run/source_full.mp4"
+          $SSH "aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/playcam_run --out=source_full.mp4 'https://www.googleapis.com/drive/v3/files/$FILE_ID?alt=media' 2>&1 | tail -5"
           $SSH "ffmpeg -y -ss $START -i /tmp/playcam_run/source_full.mp4 -t $DURATION -c copy /tmp/playcam_run/clip.mp4"
           $SSH "ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/playcam_run/clip.mp4"
-          $SSH "rm /tmp/playcam_run/source_full.mp4"
+          $SSH 'rm /tmp/playcam_run/source_full.mp4'
 
       - name: Run Phase 1 (play_location.py)
         env:
-          IP:   ${{ steps.launch.outputs.ip }}
+          IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
-          FPS:  ${{ github.event.inputs.sample_fps }}
+          FPS: ${{ github.event.inputs.sample_fps }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/play_location.py \
-            --input clip.mp4 \
-            --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) \
-            --output playcam/output/play_location.jsonl \
-            --fps $FPS --no-debug 2>&1 | tail -40"
+          $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/play_location.py --input clip.mp4 --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/play_location.jsonl --fps $FPS --no-debug 2>&1 | tail -40"
 
-      - name: Run Phase 2.5 (wide_safety_camera.py) + render + plot
+      - name: Run Phase 2.5 (wide safety) and render
         env:
-          IP:   ${{ steps.launch.outputs.ip }}
+          IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/wide_safety_camera.py \
-            --input playcam/output/play_location.jsonl \
-            --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) \
-            --output playcam/output/wide_safety_timeline.jsonl \
-            --render --source-video clip.mp4 \
-            --render-output playcam/output/wide_safety_render.mp4 \
-            --plot-output playcam/output/mode_timeline.png 2>&1 | tail -60"
+          $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/wide_safety_camera.py --input playcam/output/play_location.jsonl --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/wide_safety_timeline.jsonl --render --source-video clip.mp4 --render-output playcam/output/wide_safety_render.mp4 --plot-output playcam/output/mode_timeline.png 2>&1 | tail -60"
 
-      - name: Generate metrics summary
+      - name: Generate metrics and copy artifacts
         env:
-          IP:   ${{ steps.launch.outputs.ip }}
+          IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          $SSH "cd /tmp/playcam_run && python3 -u - << 'PY'
+          $SSH "cd /tmp/playcam_run && python3 - <<'PY'
           import json
           recs = [json.loads(l) for l in open('playcam/output/wide_safety_timeline.jsonl')]
           scores = [r['concentration_score'] for r in recs]
           modes = [r['mode'] for r in recs]
-          changes = sum(1 for i in range(1, len(modes)) if modes[i] != modes[i-1])
-          wide_frac = modes.count('wide') / len(modes)
-          transitions = []
-          prev = None
+          transitions, prev = [], None
           for r in recs:
               if r['mode'] != prev:
                   transitions.append({'t': r['timestamp'], 'mode': r['mode'], 'score': r['concentration_score']})
                   prev = r['mode']
-          summary = {
-              'total_frames': len(recs),
-              'duration_sec': recs[-1]['timestamp'] if recs else 0,
-              'mode_changes': changes,
-              'wide_mode_fraction': round(wide_frac, 3),
-              'score_min': round(min(scores), 3),
-              'score_max': round(max(scores), 3),
-              'score_mean': round(sum(scores)/len(scores), 3),
-              'transitions': transitions,
-          }
-          with open('playcam/output/metrics_summary.json', 'w') as f:
-              json.dump(summary, f, indent=2)
+          summary = {'total_frames': len(recs), 'duration_sec': recs[-1]['timestamp'] if recs else 0, 'mode_changes': sum(a != b for a,b in zip(modes, modes[1:])), 'wide_mode_fraction': round(modes.count('wide') / len(modes), 3), 'score_min': round(min(scores), 3), 'score_max': round(max(scores), 3), 'score_mean': round(sum(scores)/len(scores), 3), 'transitions': transitions}
+          json.dump(summary, open('playcam/output/metrics_summary.json', 'w'), indent=2)
           print(json.dumps(summary, indent=2))
           PY"
           SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no"
           mkdir -p poc_artifacts
-          $SCP "root@$IP:/tmp/playcam_run/playcam/output/wide_safety_render.mp4" poc_artifacts/ || echo "render missing"
+          $SCP "root@$IP:/tmp/playcam_run/playcam/output/wide_safety_render.mp4" poc_artifacts/ || echo 'render missing'
           $SCP "root@$IP:/tmp/playcam_run/playcam/output/wide_safety_timeline.jsonl" poc_artifacts/
           $SCP "root@$IP:/tmp/playcam_run/playcam/output/play_location.jsonl" poc_artifacts/
           $SCP "root@$IP:/tmp/playcam_run/playcam/output/mode_timeline.png" poc_artifacts/
           $SCP "root@$IP:/tmp/playcam_run/playcam/output/metrics_summary.json" poc_artifacts/
-          ls -la poc_artifacts/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -340,19 +284,17 @@ jobs:
         if: always()
         env:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
-          INSTANCE_ID:  ${{ steps.launch.outputs.instance_id }}
+          INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
         run: |
-          python3 -u - << 'PY'
-          import os, urllib.request, json
-          API_KEY     = os.environ["VAST_API_KEY"]
-          instance_id = os.environ.get("INSTANCE_ID", "")
-          if not instance_id: print("No instance ID"); exit(0)
-          headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-          req = urllib.request.Request(f"https://console.vast.ai/api/v0/instances/{instance_id}/",
-                                       method="DELETE", headers=headers)
+          python3 - << 'PY'
+          import os, urllib.request
+          instance_id = os.environ.get('INSTANCE_ID', '')
+          if not instance_id:
+              print('No instance ID'); raise SystemExit(0)
+          req = urllib.request.Request(f'https://console.vast.ai/api/v0/instances/{instance_id}/', method='DELETE', headers={'Authorization': f"Bearer {os.environ['VAST_API_KEY']}", 'Content-Type': 'application/json'})
           try:
               urllib.request.urlopen(req, timeout=15)
-              print(f"Instance {instance_id} terminated OK")
-          except Exception as e:
-              print(f"Terminate failed (may already be gone): {e}")
+              print(f'Instance {instance_id} terminated OK')
+          except Exception as exc:
+              print(f'Terminate warning: {exc}')
           PY
