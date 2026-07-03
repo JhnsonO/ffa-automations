@@ -1,6 +1,6 @@
 # FFA 360 / Playcam — AI Project State
 
-**Last reconciled:** 3 July 2026 (ffmpeg mux fix pushed, run redispatched — unverified)
+**Last reconciled:** 3 July 2026 (instance-leak + timeout + logging fixes pushed)
 
 This is the operational handoff. It records what is evidenced in the repo, what has been visually/technically validated, and the next safe task. Do not infer that a design is complete merely because a prototype exists.
 
@@ -52,17 +52,17 @@ The manual two-chunk validation proves the architecture, **not** unattended end-
 
 ### Active blocker — playcam-poc.yml render step (ffmpeg mux)
 
-**Status: FIX PUSHED; DISPATCHED — UNVERIFIED.**
+**Status: FIXES PUSHED; run #12 IN PROGRESS (dispatched by Johnson, commit `2ace975`), UNVERIFIED.**
 
 - `extract_crop_frame()` was previously called but undefined (`NameError`); fixed via `playcam/crop_utils.py` (commits `468f743`, `8b88333`, `cd44f91`). Verified working: Phase 2.5 now processes all 2989 frames with no NameError.
 - `set -o pipefail` added to both remote SSH pipes (commit `4c035d4`) — previously a `| tail -60` pipe was swallowing failing exit codes and showing false-green runs.
-- 5 consecutive runs (14:33–16:29, 3 July) then failed at `render_wide_safety`'s ffmpeg mux call: `Unrecognized option 'preset'. Error splitting the argument list: Option not found`.
-- **Root cause confirmed from job log's ffmpeg configure string:** the Vast.ai image's ffmpeg (4.3, conda build) has `--enable-libopenh264` but **no** `--enable-libx264` / `--enable-gpl`. `-c:v libx264` targets an encoder that isn't compiled in, so the x264-private `-preset`/`-crf` options are unrecognized by the parser — not a Python arg-splitting bug (arg list was already confirmed correctly separated).
-- **Fix pushed:** commit `54c4081` — `playcam/wide_safety_camera.py`'s `render_wide_safety()` mux call now uses `-c:v libopenh264 -b:v 6M` (the encoder actually present in this ffmpeg build) instead of `-c:v libx264 -preset fast -crf 20`. Compiled clean before push.
-- **Dispatched:** `playcam-poc.yml` triggered on `main` after the fix — run not yet inspected. Treat as `DISPATCHED — UNVERIFIED` until checked.
-- Not yet checked: whether `smooth_camera_path.py` (the non-wide-safety render path) has the same `libx264`/`-preset` call and would hit the identical failure if/when exercised.
+- ffmpeg mux root cause: Vast.ai ffmpeg (4.3, conda build) has `--enable-libopenh264` but no `--enable-libx264`/`--enable-gpl`, so `-c:v libx264 -preset fast -crf 20` was targeting a non-existent encoder. **Fixed** (`54c4081`): mux now uses `-c:v libopenh264 -b:v 6M`.
+- **Instance-leak root cause found and fixed** (`2ace975`): the final "Terminate Vast.ai instance" step was hitting `console.vast.ai/api/v0` — a different, broken endpoint from the confirmed-working `cloud.vast.ai/api/v1` already used by the in-loop offer cleanup in the same file. The call failed silently (exception swallowed), so successful runs never actually terminated their instance. Now both paths use `cloud.vast.ai/api/v1`, with a retry and a loud `::error::` if termination still fails twice. Verified via `vastai-instance-check.yml`: 0 instances live on the account before and after this fix.
+- Per-offer readiness wait extended 3min → 5min (18→30 attempts, `2ace975`) to match the documented Vast.ai boot-to-SSH baseline (up to 5 min) — previous window could kill a viable instance right before it came up.
+- **Install dependencies step un-silenced** (`59c7e70`): apt/pip output was piped to `/dev/null`/`-q`/`-qq`, so a slow-but-working install looked indistinguishable from a stall. Now streams via `stdbuf -oL -eL`, plus SSH keepalive (`ServerAliveInterval=20`/`ServerAliveCountMax=3`, ~60s dead-connection detection) matching the convention already used in `360-track-test.yml`. Note: this is a targeted fix, not the heavier detached-execution + log-polling architecture used in `gopro360-upload.yml` — that pattern exists for multi-hour jobs and would be disproportionate for this multi-minute step.
+- Run #12 (dispatched by Johnson, `workflow_dispatch`, commit `2ace975` — i.e. has the endpoint/timeout fixes but predates the logging fix in `59c7e70`) was in progress at last check, on the `pip install ultralytics` (torch/CUDA) step — not confirmed stalled, just slow/silent at the time.
 
-**Next gate:** inspect the dispatched run's outcome. If green, confirm output video quality/duration/join integrity. If it fails elsewhere, report the new failure only — do not re-guess the ffmpeg fix.
+**Next gate:** inspect run #12's outcome (or the next dispatch, which will include the `59c7e70` logging). If green, confirm output video quality/duration/join integrity. If it fails, report the new failure only — do not re-guess fixes already applied.
 
 ### Required next implementation
 
@@ -194,6 +194,7 @@ Claude is a bounded executor/reviewer, not a general repo-exploration agent.
 
 ## Compact change log
 
+- **2026-07-03:** Fixed instance-leak (wrong termination endpoint console/v0 -> cloud/v1), extended offer-readiness timeout 3min->5min, un-silenced Install dependencies output + added SSH keepalive so stalls are detectable. Commits `2ace975`, `59c7e70`. Verified 0 live instances on account after leak fix.
 - **2026-07-03:** Root-caused ffmpeg mux failure to missing libx264/gpl in the Vast.ai ffmpeg build; pushed fix (commit `54c4081`) switching `render_wide_safety()` to `libopenh264`; redispatched `playcam-poc.yml` — DISPATCHED, UNVERIFIED.
 - **2026-07-03:** Recorded active blocker: playcam-poc.yml render step fails on ffmpeg `-preset` (ffmpeg 4.3 on Vast.ai image), confirmed across 5 consecutive runs; crop_utils.py and pipefail fixes verified working upstream of it. Not yet fixed as of HEAD `56ddd4e`.
 - **2026-07-03:** State reconciled. Added Playcam as the active priority; recorded validated two-chunk architecture, the monolithic chaining timeout/truncation defect, and the required resumable named-stage refactor. Recorded live camera-mode calibration limits and security gate.
