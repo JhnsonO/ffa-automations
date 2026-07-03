@@ -86,7 +86,6 @@ jobs:
           query = {
               "verified":   {"eq": True},
               "rentable":   {"eq": True},
-              "gpu_name":   {"in": ["RTX_3080", "RTX_3090", "RTX_4070", "RTX_4080", "RTX_4090", "RTX_A4000", "RTX_A5000"]},
               "num_gpus":   {"eq": 1},
               "cpu_cores":  {"gte": 8},
               "cpu_ram":    {"gte": 16384},
