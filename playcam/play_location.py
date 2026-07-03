@@ -100,19 +100,34 @@ BLEND_CLAMP_DEG = 5.0              # contribution clamped to +/-5 deg from maske
 # (standalone reimplementation; same math as elsewhere in this repo)
 # ---------------------------------------------------------------------------
 
-def extract_crop_frame(equirect_frame, yaw_deg, fov_deg=CROP_FOV_DEG,
+def extract_crop_frame(equirect_frame, yaw_deg, pitch_deg=0.0, fov_deg=CROP_FOV_DEG,
                         out_w=CROP_W, out_h=CROP_H):
-    """Pure yaw-only perspective crop from an equirectangular frame."""
+    """Perspective crop from an equirectangular frame at (yaw_deg, pitch_deg).
+
+    BUG FIXED 2026-07-02: this function previously had NO pitch parameter at
+    all -- it only ever produced a level (pitch=0) crop. render_rectilinear_preview
+    called it for the base preview image while only applying camera_pitch to
+    the overlay dot projection, so every rendered preview (masked/activity/
+    proposed comparisons) showed a pitch=0 frame regardless of the stated
+    pitch. Detection tiles (CROP_YAWS_DEG, pitch=0.0 default) are unaffected --
+    they were always meant to be level. Camera preview rendering was not.
+    """
     h_eq, w_eq = equirect_frame.shape[:2]
     f = (out_w / 2.0) / math.tan(math.radians(fov_deg / 2.0))
     xs = np.linspace(0, out_w - 1, out_w)
     ys = np.linspace(0, out_h - 1, out_h)
     xv, yv = np.meshgrid(xs, ys)
     rx = (xv - out_w / 2.0) / f
-    ry = -(yv - out_h / 2.0) / f
-    rz = np.ones_like(rx)
-    norm = np.sqrt(rx**2 + ry**2 + rz**2)
-    rx, ry, rz = rx / norm, ry / norm, rz / norm
+    ry2 = -(yv - out_h / 2.0) / f  # camera-space (post-pitch) vertical component
+    rz2 = np.ones_like(rx)
+    norm = np.sqrt(rx**2 + ry2**2 + rz2**2)
+    rx, ry2, rz2 = rx / norm, ry2 / norm, rz2 / norm
+
+    cp = math.radians(pitch_deg)
+    # Undo pitch: recover pre-pitch (ry, rz) from camera-space (ry2, rz2)
+    ry = math.cos(cp) * ry2 + math.sin(cp) * rz2
+    rz = -math.sin(cp) * ry2 + math.cos(cp) * rz2
+
     cy = math.radians(yaw_deg)
     wx = math.cos(cy) * rx + math.sin(cy) * rz
     wy = ry
@@ -631,8 +646,8 @@ def render_rectilinear_preview(equirect_frame, camera_yaw, camera_pitch, camera_
     position in frame varies mainly with distance from camera, so driving
     pitch from it tilts toward empty sky or turf as players move.
     """
-    crop = extract_crop_frame(equirect_frame, camera_yaw, fov_deg=camera_fov,
-                               out_w=out_w, out_h=out_h)
+    crop = extract_crop_frame(equirect_frame, camera_yaw, pitch_deg=camera_pitch,
+                               fov_deg=camera_fov, out_w=out_w, out_h=out_h)
 
     f = (out_w / 2.0) / math.tan(math.radians(camera_fov / 2.0))
     cy_rad = math.radians(camera_yaw)
