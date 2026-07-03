@@ -76,11 +76,22 @@ def parse_args():
     p.add_argument("--render-comparison", action="store_true",
                     help="Also render a fixed-camera-vs-smoothed side-by-side mp4")
     p.add_argument("--source-video", type=Path, default=None,
-                    help="Required with --render-comparison: the equirect source clip")
+                    help="Required with --render-comparison / --render-clean: the equirect source clip")
     p.add_argument("--comparison-duration", type=float, default=25.0,
                     help="Cap comparison render to this many seconds (default 25, max 30)")
     p.add_argument("--comparison-output", type=Path,
                     default=Path("playcam/output/comparison.mp4"))
+
+    p.add_argument("--render-clean", action="store_true",
+                    help="Render a single clean camera feed (no split, no labels) with "
+                         "original audio -- used standalone or as a chunk-pipeline step")
+    p.add_argument("--clean-start", type=float, default=0.0,
+                    help="Global camera-timeline time that --source-video's frame 0 "
+                         "corresponds to (chunk pipeline: chunk's global start offset)")
+    p.add_argument("--clean-duration", type=float, default=None,
+                    help="Duration to render, in --source-video's own time (default: "
+                         "whatever camera-timeline coverage exists for this source)")
+    p.add_argument("--clean-output", type=Path, default=Path("playcam/output/clean.mp4"))
     return p.parse_args()
 
 
@@ -209,6 +220,91 @@ def ease_kinematic(dense_targets, render_fps, max_speed, max_accel, stiffness):
     return out
 
 
+def render_clean(camera_timeline, source_video, clean_start, clean_duration, out_path):
+    """
+    Single clean camera feed: no split, no labels, original audio muxed in.
+    clean_start = the global camera-timeline time source_video's frame 0
+    corresponds to. Used both standalone and as the chunked pipeline's
+    render-pass step (one chunk video -> one clean chunk render).
+    """
+    import cv2
+    import subprocess
+    sys.path.insert(0, str(Path(__file__).parent))
+    from play_location import extract_crop_frame
+
+    cap = cv2.VideoCapture(str(source_video))
+    if not cap.isOpened():
+        print(f"ERROR: cannot open --source-video: {source_video}", file=sys.stderr)
+        sys.exit(1)
+    src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    src_total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    src_duration = src_total_frames / src_fps
+
+    duration = clean_duration if clean_duration is not None else src_duration
+    duration = min(duration, src_duration)
+
+    # Slice the global timeline to this source video's coverage window
+    frames = [e for e in camera_timeline
+              if clean_start <= e[0] < clean_start + duration]
+    if not frames:
+        print(f"ERROR: no camera-timeline entries in window "
+              f"[{clean_start}, {clean_start + duration})", file=sys.stderr)
+        sys.exit(1)
+
+    out_w, out_h = 1920, 1080
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    tmp_path = out_path.with_suffix(".tmp.mp4")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(str(tmp_path), fourcc, src_fps, (out_w, out_h))
+
+    print(f"[render_clean] {len(frames)} frames, window "
+          f"[{clean_start:.1f}, {clean_start + duration:.1f}) -> {out_path}")
+
+    src_frame = None
+    src_idx = -1
+    written = 0
+    for t, smoothed_yaw, vel, accel in frames:
+        local_t = t - clean_start
+        target_src_idx = int(round(local_t * src_fps))
+        while src_idx < target_src_idx:
+            ret, f = cap.read()
+            if not ret:
+                break
+            src_idx += 1
+            src_frame = f
+        if src_frame is None:
+            continue
+        crop = extract_crop_frame(src_frame, smoothed_yaw, pitch_deg=FIXED_PITCH,
+                                   fov_deg=FIXED_FOV, out_w=out_w, out_h=out_h)
+        writer.write(crop)
+        written += 1
+
+    writer.release()
+    cap.release()
+
+    if written == 0:
+        print("ERROR: no frames written", file=sys.stderr)
+        tmp_path.unlink(missing_ok=True)
+        sys.exit(1)
+
+    # Mux original audio (trimmed to the same window) + re-encode video
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(tmp_path),
+         "-ss", "0", "-i", str(source_video),
+         "-t", str(duration),
+         "-map", "0:v:0", "-map", "1:a:0?",
+         "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-b:a", "128k",
+         "-shortest", str(out_path)],
+        capture_output=True, text=True)
+    tmp_path.unlink(missing_ok=True)
+    if result.returncode != 0:
+        print("ERROR: ffmpeg mux failed:", result.stderr[-2000:], file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[render_clean] Done -> {out_path} ({written} frames)")
+
+
 def main():
     args = parse_args()
 
@@ -261,6 +357,14 @@ def main():
     if args.render_comparison:
         render_comparison(eased, args.source_video, args.comparison_duration,
                            args.comparison_output, args.render_fps)
+
+    if args.render_clean:
+        if args.source_video is None:
+            print("ERROR: --render-clean requires --source-video", file=sys.stderr)
+            sys.exit(1)
+        camera_timeline = [(t, sy, v, a) for t, sy, v, a in eased]
+        render_clean(camera_timeline, args.source_video, args.clean_start,
+                     args.clean_duration, args.clean_output)
 
 
 # ---------------------------------------------------------------------------
