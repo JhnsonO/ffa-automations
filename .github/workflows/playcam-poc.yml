@@ -128,21 +128,21 @@ jobs:
                   print(f'Offer {offer_id} did not return an instance: {result}')
                   continue
 
-              for attempt in range(18):  # 3 minutes per offer
+              for attempt in range(30):  # 5 minutes per offer
                   time.sleep(10)
                   try:
                       instances = request('GET', f'{cloud}/instances/')
                       inst = next((x for x in instances.get('instances', []) if x.get('id') == instance_id), None)
                   except Exception as exc:
-                      print(f'  [{attempt + 1}/18] status lookup failed: {exc}')
+                      print(f'  [{attempt + 1}/30] status lookup failed: {exc}')
                       continue
                   if not inst:
-                      print(f'  [{attempt + 1}/18] instance not listed yet')
+                      print(f'  [{attempt + 1}/30] instance not listed yet')
                       continue
                   status = inst.get('actual_status', '?')
                   ip = inst.get('ssh_host') or inst.get('public_ipaddr')
                   port = inst.get('ssh_port', 22)
-                  print(f'  [{attempt + 1}/18] status={status} ip={ip} port={port}')
+                  print(f'  [{attempt + 1}/30] status={status} ip={ip} port={port}')
                   if status == 'running' and ip:
                       selected = (instance_id, ip, port, offer)
                       break
@@ -288,14 +288,30 @@ jobs:
           INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
         run: |
           python3 - << 'PY'
-          import os, urllib.request
+          import os, time, urllib.request, urllib.error
           instance_id = os.environ.get('INSTANCE_ID', '')
           if not instance_id:
               print('No instance ID'); raise SystemExit(0)
-          req = urllib.request.Request(f'https://console.vast.ai/api/v0/instances/{instance_id}/', method='DELETE', headers={'Authorization': f"Bearer {os.environ['VAST_API_KEY']}", 'Content-Type': 'application/json'})
-          try:
+
+          def terminate():
+              req = urllib.request.Request(
+                  f'https://cloud.vast.ai/api/v1/instances/{instance_id}/',
+                  method='DELETE',
+                  headers={'Authorization': f"Bearer {os.environ['VAST_API_KEY']}", 'Content-Type': 'application/json'})
               urllib.request.urlopen(req, timeout=15)
-              print(f'Instance {instance_id} terminated OK')
-          except Exception as exc:
-              print(f'Terminate warning: {exc}')
+
+          for attempt in (1, 2):
+              try:
+                  terminate()
+                  print(f'Instance {instance_id} terminated OK')
+                  break
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode(errors='replace')
+                  print(f'Terminate attempt {attempt} FAILED: HTTP {exc.code} {body}')
+              except Exception as exc:
+                  print(f'Terminate attempt {attempt} FAILED: {exc}')
+              if attempt == 1:
+                  time.sleep(5)
+          else:
+              print(f'::error::Instance {instance_id} may still be RUNNING — check https://cloud.vast.ai/instances manually')
           PY
