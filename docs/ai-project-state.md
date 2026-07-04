@@ -129,6 +129,24 @@ Each stage must:
 - GitHub-runner POC windows are typically **180–300 seconds**; use the resumable stage design before relying on large chained jobs.
 - Production target is Vast.ai. Chunking remains useful there for recovery and throughput even though runner disk limits are less relevant.
 
+## Playcam Phase 3 — Action Zone (gate: 3A/3A.1/3A.2/3A.3 done, diagnostic-only; 3B not started)
+
+**Status:** Design approved (3A only, by Johnson). `playcam/action_zone.py` built and iterated locally across four sub-phases, all verified against the same existing Phase 1 artifact (run `28700918611`, no paid compute, no renderer/ball_tracker/Phase 2.5 changes). Not yet exercised against any other clip.
+
+**Architecture (design doc §B):** two signals per frame — `action_zone_yaw` (raw motion-weighted candidate, always computed and reported even when gated) and `target_yaw = centroid_yaw + clamp(w·confidence·(action_zone_yaw+lead−centroid_yaw), ±15°)` (the bounded value that would actually drive the camera). Hard gates: confidence<0.35 or wide mode → `target_yaw` collapses exactly to `centroid_yaw`.
+
+**Sub-phase results (all against run `28700918611`, 964 samples / 482s):**
+- **3A (baseline):** ca>0.5 on 39.3% of frames; longest continuous "counterattack" run 15.0s; cap saturation 21.5%; mean active bias 7.03°.
+- **3A.1 (lone-detection candidates made ineligible, not just penalized):** ca>0.5 dropped to 26.2% (purely subtractive — 0 new triggers). Longest run unchanged at 15.0s.
+- **3A.2 (sep_growth identity-continuity guard — only credit growth if candidate overlaps ≥50% with prior frame's actual best_sub):** confirmed the 15.0s run's identity does swap mid-run (`84;117`→`126;127`→`115;124;131`, 10/30 zero-overlap transitions) — bug was real, but fixing it changed **0** frames' ca>0.5 status. sep_growth wasn't the actual driver.
+- **3A.3 (diagnostic instrumentation, no scoring change):** root cause of over-triggering found. Weighted contribution breakdown across the 253 ca>0.5 frames: coherence 46%, static-main-cluster credit (`1−main_speed_norm`) 37%, subgroup speed only 9% (0/253 frames have sub_speed_norm>0.7), sep_growth 8%. **The scorer is not detecting fast breakaways — it's detecting any 2+ players moving in loosely the same direction while the rest of the pitch is momentarily calm** (main_speed_norm<0.3 in 97% of high-score frames, which is just normal instantaneous football, not a rare event).
+
+**Venue mask verified NOT a blocker for this data:** `--venue-profile` is always passed by `playcam-poc.yml`; `play_location.jsonl` shows `excluded_count>0` on 99.6% of frames (4,586 of 13,500 raw detections filtered), and off-pitch detections are filtered before the `players` field is ever written — structurally impossible for a counterattack-flagged frame to include an off-pitch player.
+
+**Not yet done:** no weight/threshold changes (explicitly held back pending Johnson's call), no 3B grid tuning, no rendering, `action_zone.py` not yet committed to the repo as of this entry (see below — committed this session).
+
+**Next gate:** Johnson to decide on 3B direction — likely raise `A1` (speed weight, currently underweighted) and/or cap `A3`'s credit so a static main cluster stops being near-automatic, before any labeled-clip grid tuning begins.
+
 ## Ball tracker — MOG2-primary track
 
 ### Status: MOG2 primary detection is validated; broader full-session decisions are deferred
@@ -205,6 +223,7 @@ Claude is a bounded executor/reviewer, not a general repo-exploration agent.
 
 ## Compact change log
 
+- **2026-07-04 (Playcam Phase 3 Action Zone):** Design approved for 3A only. Built `playcam/action_zone.py` (committed this session) through 3A→3A.3: lone-detection candidates made ineligible, sep_growth given an identity-continuity guard, and diagnostic instrumentation added. Root cause of over-triggering found: coherence + static-main-cluster terms (83% of positive signal) drive false positives, not subgroup speed (9%) or growth (8%) — scorer currently reads ordinary spaced-out play as "counterattack." Venue mask confirmed active and not a blocker. No weights changed, no 3B tuning started. See Playcam Phase 3 — Action Zone section above for full breakdown.
 - **2026-07-04 (redispatch):** Run `28700595596` cancelled (predated Pass 1 speed fix). Orphan check dispatched. Redispatched as `28700918611` (head `c51987d`) — first run with max-frames fix + GPU allowlist + cpu_cores=16 all active.
 - **2026-07-04 (speed pass 1):** `playcam-poc.yml` (`dcbff31`) — `cpu_cores` floor 8→16; excluded Blackwell RTX 50-series GPUs (`RTX 5090/5080/5070/5060/5050`) from offer selection, since the pinned `pytorch/pytorch:2.1.0-cuda11.8` image can't use sm_120 and run `28699519056` silently fell back to CPU inference instead of failing. Note: this exclusion is new code, not ported from an existing gopro360 mechanism — checked both `gopro360-upload.yml` and `gopro360-chapter-upload.yml`, neither has GPU-arch filtering. Price/speed ranking + reputation (pass 2) deferred until a clean GPU-matched run gives a timing baseline. Not yet dispatched.
 - **2026-07-04 (root cause):** Found real bug — `play_location.py`'s `DEFAULT_MAX_FRAMES=200` silently capped every Phase 1 run to ~100s regardless of input duration; workflow never overrode it. Fixed (`271b701`) by computing `--max-frames` from `duration_seconds`×`sample_fps`. Redispatched full 482.48s clip as run `28700595596`. Prior "blocked on source" conclusion was wrong — retracted.
