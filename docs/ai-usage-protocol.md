@@ -54,7 +54,7 @@ This is the one job that can't leave Claude — so make it cheap:
 
 - **One bounded ticket per Claude chat.** Ticket done → state updated → chat over.
 - **Fresh chat + state file read beats message 40 of an old chat.** Always.
-- **`docs/ai-project-state.md` IS the handoff.** Keep chat-end summaries to 3 lines: gate, run IDs, next action. The 10-section template is only for genuinely messy sessions where the state file can't hold it.
+- **`docs/ai-project-state.md` IS the handoff.** Chat-end summary = the 5-line "FFA Handoff" template: Gate, Done (commit SHAs), Runs/Artifacts, Risk (omit if none), Next — ending with the fetch-first line. State file gets all durable facts first; the summary only points at it.
 - Start every Claude session with the task in the FIRST message, fully specified (repo, file, gate, what "done" looks like). Vague openers cost a clarification round-trip.
 
 ## Model choice (in Claude)
