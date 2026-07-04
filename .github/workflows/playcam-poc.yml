@@ -195,8 +195,8 @@ jobs:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
-          SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no"
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           $SSH 'mkdir -p /tmp/playcam_run/playcam/venue_profiles /tmp/playcam_run/playcam/output'
           $SCP playcam/play_location.py root@$IP:/tmp/playcam_run/playcam/
           $SCP playcam/smooth_camera_path.py root@$IP:/tmp/playcam_run/playcam/
@@ -228,7 +228,7 @@ jobs:
           print(f"Token OK (expires_in={token.get('expires_in')}s)")
           PY
           ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           $SSH "aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/playcam_run --out=source_full.mp4 'https://www.googleapis.com/drive/v3/files/$FILE_ID?alt=media' 2>&1 | tail -5"
           $SSH "ffmpeg -y -ss $START -i /tmp/playcam_run/source_full.mp4 -t $DURATION -c copy /tmp/playcam_run/clip.mp4"
           $SSH "ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/playcam_run/clip.mp4"
@@ -240,7 +240,7 @@ jobs:
           PORT: ${{ steps.launch.outputs.port }}
           FPS: ${{ github.event.inputs.sample_fps }}
         run: |
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/play_location.py --input clip.mp4 --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/play_location.jsonl --fps $FPS --no-debug 2>&1 | tail -40"
 
       - name: Run Phase 2.5 (wide safety) and render
@@ -248,7 +248,7 @@ jobs:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/wide_safety_camera.py --input playcam/output/play_location.jsonl --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/wide_safety_timeline.jsonl --render --source-video clip.mp4 --render-output playcam/output/wide_safety_render.mp4 --plot-output playcam/output/mode_timeline.png 2>&1 | tail -60"
 
       - name: Generate metrics and copy artifacts
@@ -256,7 +256,7 @@ jobs:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
-          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           $SSH "cd /tmp/playcam_run && python3 - <<'PY'
           import json
           recs = [json.loads(l) for l in open('playcam/output/wide_safety_timeline.jsonl')]
@@ -271,7 +271,7 @@ jobs:
           json.dump(summary, open('playcam/output/metrics_summary.json', 'w'), indent=2)
           print(json.dumps(summary, indent=2))
           PY"
-          SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no"
+          SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           mkdir -p poc_artifacts
           $SCP "root@$IP:/tmp/playcam_run/playcam/output/wide_safety_render.mp4" poc_artifacts/ || echo 'render missing'
           $SCP "root@$IP:/tmp/playcam_run/playcam/output/wide_safety_timeline.jsonl" poc_artifacts/
