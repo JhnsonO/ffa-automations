@@ -12,7 +12,11 @@ def extract_crop_frame(src_frame, yaw_deg, pitch_deg=0.0, fov_deg=85.0, out_w=12
     xs, ys = np.meshgrid(np.arange(out_w) - out_w / 2, np.arange(out_h) - out_h / 2)
     zs = np.full_like(xs, f, dtype=np.float64)
     norm = np.sqrt(xs**2 + ys**2 + zs**2)
-    x, y, z = xs / norm, ys / norm, zs / norm
+    # Image-plane vertical: top row must map to +up. Row 0 gives ys < 0, so negate
+    # so +y = up, matching play_location.extract_crop_frame (ry2 = -(yv-out_h/2)/f)
+    # and the ffmpeg v360 upright convention. Without this the render is flipped
+    # vertically (upside down) while yaw/pitch selection stays correct.
+    x, y, z = xs / norm, -ys / norm, zs / norm
 
     # pitch (around x-axis), positive = up
     y2 = y * math.cos(pitch) + z * math.sin(pitch)
