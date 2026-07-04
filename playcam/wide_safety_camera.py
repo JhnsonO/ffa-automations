@@ -99,6 +99,11 @@ def parse_args():
     p.add_argument("--baseline", action="store_true",
                     help="Force mode=follow always (no wide-safety fallback) -- "
                          "for comparing old yaw-only behaviour against this on the same clip")
+    p.add_argument("--yaw-source-csv", type=Path, default=None,
+                    help="Optional action_zone.py comparison CSV (needs timestamp,target_yaw "
+                         "columns). When supplied, cluster_yaw is overridden by its target_yaw "
+                         "(nearest timestamp match) before mode/FOV/hysteresis logic runs -- "
+                         "that logic is otherwise unchanged. Omit for current centroid behaviour.")
 
     p.add_argument("--render", action="store_true",
                     help="Also render a clean video (per-frame varying yaw+fov, "
@@ -133,8 +138,44 @@ def concentration_score(cluster_size, total_players, dispersion_deg):
     return max(0.0, min(1.0, density * tightness))
 
 
-def load_sparse_records(input_path):
-    """Read the fields Phase 2.5 needs from play_location.jsonl."""
+def load_yaw_source_csv(path):
+    """Load an action_zone.py comparison CSV's (timestamp, target_yaw) pairs,
+    sorted for nearest-timestamp lookup. Analysis-only input; unrelated to
+    ball_tracker, venue mask, or FSM logic -- it only supplies an alternate
+    yaw number at each sparse timestamp."""
+    import csv as csv_mod
+    rows = []
+    with open(path) as f:
+        for rec in csv_mod.DictReader(f):
+            rows.append((float(rec["timestamp"]), float(rec["target_yaw"])))
+    rows.sort()
+    return rows
+
+
+def nearest_yaw(rows, t):
+    if not rows:
+        return None
+    lo, hi = 0, len(rows) - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if rows[mid][0] < t:
+            lo = mid + 1
+        else:
+            hi = mid
+    best = rows[lo]
+    if lo > 0 and abs(rows[lo - 1][0] - t) < abs(best[0] - t):
+        best = rows[lo - 1]
+    return best[1]
+
+
+def load_sparse_records(input_path, yaw_overrides=None):
+    """Read the fields Phase 2.5 needs from play_location.jsonl.
+
+    yaw_overrides: optional sorted list of (timestamp, target_yaw) from
+    load_yaw_source_csv(). When given, cluster_yaw is replaced by the
+    nearest-timestamp override value; default (None) is the unchanged
+    person_centroid_yaw path.
+    """
     out = []
     with open(input_path) as f:
         for line in f:
@@ -142,9 +183,13 @@ def load_sparse_records(input_path):
             if not line:
                 continue
             rec = json.loads(line)
+            t = rec["timestamp"]
+            cluster_yaw = rec.get("person_centroid_yaw")
+            if yaw_overrides is not None:
+                cluster_yaw = nearest_yaw(yaw_overrides, t)
             out.append({
-                "timestamp": rec["timestamp"],
-                "cluster_yaw": rec.get("person_centroid_yaw"),
+                "timestamp": t,
+                "cluster_yaw": cluster_yaw,
                 "cluster_size": rec.get("person_centroid_size", 0),
                 "dispersion": rec.get("person_centroid_dispersion_deg"),
                 "total_players": rec.get("total_retained_players", 0),
@@ -387,7 +432,13 @@ def main():
         sys.exit(1)
 
     venue = load_venue_profile(args.venue_profile)
-    records = load_sparse_records(args.input)
+    yaw_overrides = None
+    if args.yaw_source_csv is not None:
+        if not args.yaw_source_csv.exists():
+            print(f"ERROR: --yaw-source-csv does not exist: {args.yaw_source_csv}", file=sys.stderr)
+            sys.exit(1)
+        yaw_overrides = load_yaw_source_csv(args.yaw_source_csv)
+    records = load_sparse_records(args.input, yaw_overrides)
     if not records:
         print("ERROR: no records in input", file=sys.stderr)
         sys.exit(1)
@@ -431,7 +482,8 @@ def main():
     mode_changes = sum(1 for i in range(1, len(dense_mode)) if dense_mode[i] != dense_mode[i - 1])
     wide_frac = sum(1 for m in dense_mode if m == "wide") / len(dense_mode)
     print(f"[wide_safety_camera] {len(dense_ts)} dense frames -> {args.output} "
-          f"({'BASELINE (follow-only)' if args.baseline else 'wide-safety enabled'})")
+          f"({'BASELINE (follow-only)' if args.baseline else 'wide-safety enabled'}, "
+          f"yaw source: {'action_zone CSV (' + str(args.yaw_source_csv) + ')' if yaw_overrides is not None else 'person_centroid_yaw'})")
     print(f"[wide_safety_camera] mode changes: {mode_changes}, wide-mode fraction: {wide_frac:.1%}")
     max_fov_vel = max(abs(v) for _, _, v, _ in eased_fov) if eased_fov else 0.0
     print(f"[wide_safety_camera] Peak FOV velocity: {max_fov_vel:.1f} deg/s (cap: {args.fov_max_speed})")
