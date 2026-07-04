@@ -94,7 +94,7 @@ jobs:
               'reliability': {'gte': 0.98},
               'gpu_ram': {'gte': 8192},
               'num_gpus': {'gte': 1},
-              'cpu_cores': {'gte': 8},
+              'cpu_cores': {'gte': 16},
               'cpu_ram': {'gte': 16384},
               'disk_space': {'gte': 40},
               'inet_down': {'gte': 300},
@@ -103,6 +103,10 @@ jobs:
           offers = bundles.get('offers', [])
           bad_cpu = ('E5-', 'E3-', 'Opteron', 'Xeon W3', 'Xeon X5')
           offers = [o for o in offers if not any(x in (o.get('cpu_name') or '') for x in bad_cpu)]
+          # Blackwell (RTX 50-series, sm_120) is unsupported by the pinned cuda11.8 image --
+          # confirmed in run 28699519056's log: torch silently fell back to CPU instead of failing.
+          bad_gpu = ('RTX 5090', 'RTX 5080', 'RTX 5070', 'RTX 5060', 'RTX 5050')
+          offers = [o for o in offers if not any(x in (o.get('gpu_name') or '') for x in bad_gpu)]
           offers.sort(key=lambda o: float(o.get('dph_total', 999)))
           if not offers:
               print('ERROR: No reliable GPU offers matched the Playcam requirements', file=sys.stderr)
