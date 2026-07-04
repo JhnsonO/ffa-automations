@@ -68,7 +68,11 @@ The manual two-chunk validation proves the architecture, **not** unattended end-
 - **Fix pushed (`f0e1b62`):** `y = -ys/norm` in `crop_utils.py`. Verified locally **pixel-identical (max_abs_diff=0)** to `play_location`'s crop on a synthetic equirect frame; old output confirmed a pure vertical flip. Smallest-diff, one line + comment. **Not yet re-rendered** — needs a paid rerun to produce a real upright clip.
 - **Second, expected issue — ball lost during transitions.** Camera currently follows player-cluster/concentration centroid, not the ball, so during a pan or wide→follow change the small ball can drop out of frame. This is the known limit of a player-led camera, not a failure. Tuning options (faster yaw on follow-entry, shorten wide→follow sustain 1.5s→1.0s, cap lag during transitions, brief wider FOV hold ~92–95 on follow-entry) and a later high-confidence "ball nudge" (small offset, never full hijack) are noted for a future pass — not yet actioned.
 
-**Next gate:** redispatch `playcam-poc.yml` (paid) to render an upright clip with `f0e1b62`; on completion verify orientation is upright, then assess transition ball-loss before deciding on the tuning pass above. Confirm instance terminated via `vastai-instance-check.yml`.
+**Upright render CONFIRMED:** run `28692555236` (4 July 2026, `1e4fc4f`) succeeded and Johnson visually approved the upright output — the `f0e1b62` orientation fix is validated. Phase 1 + Phase 2.5 upright real-footage POC is passed.
+
+**Next gate — tougher validation window (reliability pass only):** run `28699134976` DISPATCHED — UNVERIFIED (4 July 2026, `995a44d`, start=600s, duration=1200s, same Drive source). Purpose: prove real follow → wide → follow on footage containing stoppages/restarts/spread play, not just wide → follow. On completion report only: all mode-transition timestamps; whether follow→wide→follow occurred; camera snap / yaw lag / FOV issues; ball loss during transitions; overall watchability. No targeting redesign, no threshold/FOV tuning (follow 85 / wide 100 held), no action-centre or ball-guidance, `ball_tracker/` untouched. Confirm instance terminated.
+
+**Keepalive hardening (`995a44d`):** `-o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes` added to all 5 long SSH commands and both SCP commands in `playcam-poc.yml`. Diff vs last-good `1e4fc4f` verified keepalives-only. Note: termination endpoints already console/v0-first with proven cloud/v0→cloud/v1 fallbacks — left intact per the do-not-reduce rule. Full-session single-shot run was considered and rejected (40GB disk + 180-min timeout would kill it); full-session remains chunked-pipeline-refactor territory.
 
 ### Required next implementation
 
@@ -200,6 +204,8 @@ Claude is a bounded executor/reviewer, not a general repo-exploration agent.
 7. Prefer ChatGPT or Codex for contained implementation drafts; reserve Claude for live-repo verification, commits, workflow dispatches, and execution-bound debugging.
 
 ## Compact change log
+
+- **2026-07-04 (later):** Upright render confirmed via run `28692555236` — POC passed. SSH/SCP keepalives added to `playcam-poc.yml` (`995a44d`, diff vs last-good verified). Dispatched tougher 20-min validation window run `28699134976` (start=600s, dur=1200s) — DISPATCHED, UNVERIFIED. Full-clip single-shot rejected (disk/timeout limits).
 
 - **2026-07-04:** Repo-ops infrastructure added: `scripts/gh.sh` (GitHub API helper — get/push/dispatch/latest/run/logs/artifacts; token from `GH_PAT` env, read-only subcommands live-tested), `docs/ai-usage-protocol.md` (Johnson's two-AI working instruction). `CLAUDE.md` extended with Repo operations, Debug budget (max 3 cycles/chat), and ChatGPT handoff contract sections. No pipeline code touched; playcam gate unchanged. Observed: `playcam-poc.yml` run `28692555236` in progress (user-dispatched, presumed upright re-render) — not verified this session.
 
