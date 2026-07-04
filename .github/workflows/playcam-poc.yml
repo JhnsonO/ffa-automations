@@ -33,6 +33,11 @@ on:
         required: false
         default: false
         type: boolean
+      action_zone_csv_path:
+        description: 'Repo path to an action_zone.py comparison CSV (target_yaw column). When set, also renders a second action-zone video using it. Default empty = unchanged behaviour (baseline render only).'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   playcam-poc:
@@ -203,6 +208,7 @@ jobs:
         env:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
+          AZ_CSV: ${{ github.event.inputs.action_zone_csv_path }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
@@ -212,6 +218,9 @@ jobs:
           $SCP playcam/crop_utils.py root@$IP:/tmp/playcam_run/playcam/
           $SCP playcam/wide_safety_camera.py root@$IP:/tmp/playcam_run/playcam/
           $SCP "${{ github.event.inputs.venue_profile_path }}" root@$IP:/tmp/playcam_run/playcam/venue_profiles/
+          if [ -n "$AZ_CSV" ]; then
+            $SCP "$AZ_CSV" root@$IP:/tmp/playcam_run/playcam/output/action_zone_comparison.csv
+          fi
 
       - name: Download source window from Drive
         env:
@@ -259,6 +268,7 @@ jobs:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
           SKIP_RENDER: ${{ github.event.inputs.skip_render }}
+          AZ_CSV: ${{ github.event.inputs.action_zone_csv_path }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           RENDER_FLAGS="--render --source-video clip.mp4 --render-output playcam/output/wide_safety_render.mp4"
@@ -266,6 +276,9 @@ jobs:
             RENDER_FLAGS=""
           fi
           $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/wide_safety_camera.py --input playcam/output/play_location.jsonl --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/wide_safety_timeline.jsonl $RENDER_FLAGS --plot-output playcam/output/mode_timeline.png 2>&1 | tail -60"
+          if [ -n "$AZ_CSV" ] && [ "$SKIP_RENDER" != "true" ]; then
+            $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/wide_safety_camera.py --input playcam/output/play_location.jsonl --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/wide_safety_timeline_actionzone.jsonl --yaw-source-csv playcam/output/action_zone_comparison.csv --render --source-video clip.mp4 --render-output playcam/output/wide_safety_render_actionzone.mp4 --no-plot 2>&1 | tail -60"
+          fi
 
       - name: Generate metrics and copy artifacts
         env:
@@ -290,6 +303,8 @@ jobs:
           SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           mkdir -p poc_artifacts
           $SCP "root@$IP:/tmp/playcam_run/playcam/output/wide_safety_render.mp4" poc_artifacts/ || echo 'render missing'
+          $SCP "root@$IP:/tmp/playcam_run/playcam/output/wide_safety_render_actionzone.mp4" poc_artifacts/ || echo 'action-zone render missing (expected unless action_zone_csv_path was set)'
+          $SCP "root@$IP:/tmp/playcam_run/playcam/output/wide_safety_timeline_actionzone.jsonl" poc_artifacts/ || echo 'action-zone timeline missing (expected unless action_zone_csv_path was set)'
           $SCP "root@$IP:/tmp/playcam_run/playcam/output/wide_safety_timeline.jsonl" poc_artifacts/
           $SCP "root@$IP:/tmp/playcam_run/playcam/output/play_location.jsonl" poc_artifacts/
           $SCP "root@$IP:/tmp/playcam_run/playcam/output/mode_timeline.png" poc_artifacts/
