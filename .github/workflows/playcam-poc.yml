@@ -239,9 +239,11 @@ jobs:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
           FPS: ${{ github.event.inputs.sample_fps }}
+          DURATION: ${{ github.event.inputs.duration_seconds }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
-          $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/play_location.py --input clip.mp4 --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/play_location.jsonl --fps $FPS --no-debug 2>&1 | tail -40"
+          MAX_FRAMES=$(python3 -c "import math; print(math.ceil(${DURATION} * ${FPS}) + 50)")
+          $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/play_location.py --input clip.mp4 --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/play_location.jsonl --fps $FPS --max-frames $MAX_FRAMES --no-debug 2>&1 | tail -40"
 
       - name: Run Phase 2.5 (wide safety) and render
         env:
