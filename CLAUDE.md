@@ -38,6 +38,25 @@ Do not request previous chat history or inspect broad logs unless the active tas
 - Do not add credentials, API keys, or private tokens to repository files, artifacts, or logs.
 - One Claude chat should normally complete one bounded build ticket. Stop after the requested artifact, failed run, or decision-changing result.
 
+## Repo operations
+
+Use `scripts/gh.sh` for all GitHub API work: file reads/pushes, workflow dispatch, run status, failed-run logs, artifacts. It requires `GH_PAT` in the environment. Do not hand-roll curl/Python API boilerplate; if gh.sh lacks an operation, extend gh.sh instead. `gh.sh logs <run_id>` returns the ANSI-stripped error window only — never pull full raw logs into context.
+
+## Debug budget
+
+Maximum 3 diagnose→fix→dispatch cycles per chat. After the third cycle, update the state document and hand off to a fresh chat.
+
+## ChatGPT handoff contract
+
+Every ChatGPT prompt Claude drafts must include verbatim:
+
+1. The frozen-files list relevant to the task (from `docs/ai-project-state.md`).
+2. For workflow files: the last known-working commit SHA and the exact working dependency/setup block as a hard constraint.
+3. The exact data contracts/schemas the code touches.
+4. The instruction: "Return complete file(s) only — no placeholders, elisions, or 'rest unchanged' markers."
+
+Claude verifies all ChatGPT output against the live repo and these constraints before any commit.
+
 ## Communication
 
 Do not narrate routine tool calls. Interrupt only for a real blocker, missing decision, unsafe assumption, or evidence that changes the agreed plan.
