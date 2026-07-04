@@ -52,7 +52,7 @@ CONFIG = {
     "STATIC_SPEED_CAP_DEG_S": 5.0,   # beta_s down-weight saturates by this rolling speed
     "BETA_M": 1.0,                   # motion-weight boost
     "BETA_S": 0.6,                   # static-player down-weight strength
-    "BETA_C": 1.5,                   # breakaway subgroup boost strength
+    "BETA_C": 0.5,                   # breakaway subgroup boost strength (Phase 3B.1: was 1.5 — overpowered centroid)
     "SPEED_NORM_CAP_DEG_S": 30.0,    # instantaneous speed normalisation cap
     "GAP_DEG": 25.0,                 # yaw gap that splits players into separate clusters
     "SUBGROUP_MIN": 2,
@@ -72,7 +72,13 @@ CONFIG = {
     "FOLLOW_FOV": 85.0,              # St Margarets venue profile (docs/ai-project-state.md)
     "WIDE_FOV": 100.0,
     "C1": 1.6, "C2": 1.6, "C3": 1.0, "C4": 1.4,             # confidence sigmoid weights
-    "A1": 1.4, "A2": 1.2, "A3": 0.8, "A4": 1.0, "A5": 2.0,  # counterattack sigmoid weights
+    "A1": 1.4, "A2": 1.2, "A3": 0.8, "A4": 1.0, "A5": 2.0,  # breakaway sigmoid weights
+    # Phase 3B.1: action_intensity_score — broader "where is the live action" signal.
+    # Density + overall activity + sustained-attention persistence are the main terms;
+    # switch-of-play and breakaway are small secondary/optional boosts only.
+    "AI_DENSITY": 1.2, "AI_ACTIVITY": 1.2, "AI_PERSISTENCE": 1.0,
+    "AI_SWITCH": 0.5, "AI_BREAKAWAY": 0.3,
+    "PERSIST_WINDOW": 6,              # ~3s trailing at ~0.5s sampling
 }
 
 
@@ -95,6 +101,16 @@ def circ_variance(dirs_rad):
     sx = sum(math.cos(a) for a in dirs_rad) / len(dirs_rad)
     sy = sum(math.sin(a) for a in dirs_rad) / len(dirs_rad)
     return 1.0 - math.hypot(sx, sy)
+
+
+def circ_resultant_deg(yaws_deg):
+    # R of a yaw window in degrees: 1.0 = perfectly stable (sustained attention centre),
+    # 0.0 = scattered. Used directly as persistence_norm (no extra cap/scale needed).
+    if not yaws_deg:
+        return 0.0
+    sx = sum(math.cos(math.radians(y)) for y in yaws_deg) / len(yaws_deg)
+    sy = sum(math.sin(math.radians(y)) for y in yaws_deg) / len(yaws_deg)
+    return math.hypot(sx, sy)
 
 
 def load_wide_safety_modes(path):
@@ -151,6 +167,7 @@ def process(play_location_path, wide_safety_path, out_csv):
     prev_best_sub_ids = set()
     prev_t = None
     prev_track_pos = {}
+    centroid_yaw_window = deque(maxlen=cfg["PERSIST_WINDOW"])
 
     with open(play_location_path) as f:
         samples = [json.loads(l) for l in f]
@@ -236,8 +253,8 @@ def process(play_location_path, wide_safety_path, out_csv):
                                     "main_speed_norm": main_speed_norm, "sep_growth": sep_growth,
                                     "size_penalty": size_penalty}
 
-        counterattack_score = best_score
-        subgroup_ids = {p["track_id"] for p in best_sub} if (best_sub and counterattack_score > 0.5) else set()
+        breakaway_score = best_score
+        subgroup_ids = {p["track_id"] for p in best_sub} if (best_sub and breakaway_score > 0.5) else set()
 
         right_energy = sum(
             p.get("conf", 0.0) * min(p.get("vel_deg_per_sec", 0.0) / cfg["SPEED_NORM_CAP_DEG_S"], 1.0)
@@ -261,7 +278,7 @@ def process(play_location_path, wide_safety_path, out_csv):
             w *= (1.0 + cfg["BETA_M"] * speed_norm)
             w *= (1.0 - cfg["BETA_S"] * static.get(tid, 0.0))
             if tid in subgroup_ids:
-                w *= (1.0 + cfg["BETA_C"] * counterattack_score)
+                w *= (1.0 + cfg["BETA_C"] * breakaway_score)
             yaws.append(p["yaw"])
             weights.append(max(w, 0.0))
 
@@ -293,6 +310,19 @@ def process(play_location_path, wide_safety_path, out_csv):
             cfg["C1"] * det_norm + cfg["C2"] * (1.0 - disp_norm) + cfg["C3"] * agreement - cfg["C4"] * conflict
         )
 
+        # Phase 3B.1: action_intensity_score inputs.
+        # activity_norm is deliberately broader than the breakaway sub_speed_norm above —
+        # it's conf*speed averaged over ALL players, not just a candidate breakaway subgroup.
+        activity_norm = 0.0
+        if players:
+            activity_norm = min(
+                sum(p.get("conf", 0.0) * min(p.get("vel_deg_per_sec", 0.0) / cfg["SPEED_NORM_CAP_DEG_S"], 1.0)
+                    for p in players) / len(players),
+                1.0,
+            )
+        centroid_yaw_window.append(centroid_yaw)
+        persistence_norm = circ_resultant_deg(list(centroid_yaw_window))
+
         lead = 0.0
         if confidence > cfg["LEAD_CONF_GATE"]:
             lead = max(-cfg["LEAD_MAX_DEG"], min(cfg["LEAD_MAX_DEG"], cfg["K_LEAD_S"] * zone_speed))
@@ -310,14 +340,24 @@ def process(play_location_path, wide_safety_path, out_csv):
         bias_applied = max(-cfg["BIAS_MAX_DEG"], min(cfg["BIAS_MAX_DEG"], raw_bias))
         target_yaw = centroid_yaw + bias_applied
 
+        # Phase 3B.1: action_intensity_score — "where is the live action right now."
+        # Density + broad activity + sustained-attention persistence are the main terms;
+        # switch-of-play and breakaway are small secondary/optional boosts only, per
+        # Johnson's correction: breakaway is a nudge, not the KPI.
+        action_intensity_score = sigmoid(
+            cfg["AI_DENSITY"] * det_norm + cfg["AI_ACTIVITY"] * activity_norm
+            + cfg["AI_PERSISTENCE"] * persistence_norm
+            + cfg["AI_SWITCH"] * switch_of_play_score + cfg["AI_BREAKAWAY"] * breakaway_score
+        )
+
         reason_code = "active"
         reason = (
             f"steady-state: zone {action_zone_yaw:.1f} vs centroid {centroid_yaw:.1f}, "
             f"bias {bias_applied:+.1f}deg (conf {confidence:.2f})"
         )
-        if counterattack_score > 0.5 and subgroup_ids:
+        if breakaway_score > 0.5 and subgroup_ids:
             reason = (
-                f"breakaway: subgroup(n={len(subgroup_ids)}, ca={counterattack_score:.2f}) "
+                f"breakaway: subgroup(n={len(subgroup_ids)}, breakaway={breakaway_score:.2f}) "
                 f"vs main cluster; bias {bias_applied:+.1f}deg applied"
             )
         elif switch_of_play_score > 0.5:
@@ -335,7 +375,7 @@ def process(play_location_path, wide_safety_path, out_csv):
             reason = f"low confidence ({confidence:.2f} < {cfg['CONF_FLOOR']}): fallback to centroid"
 
         recommended_fov = cfg["FOLLOW_FOV"] + (cfg["WIDE_FOV"] - cfg["FOLLOW_FOV"]) * max(
-            1.0 - confidence, counterattack_score * 0.5, switch_of_play_score
+            1.0 - confidence, breakaway_score * 0.5, switch_of_play_score
         )
 
         out_rows.append({
@@ -348,7 +388,8 @@ def process(play_location_path, wide_safety_path, out_csv):
             "target_yaw": round(target_yaw, 2),
             "bias_applied_deg": round(bias_applied, 2),
             "confidence": round(confidence, 3),
-            "counterattack_score": round(counterattack_score, 3),
+            "action_intensity_score": round(action_intensity_score, 3),
+            "breakaway_score": round(breakaway_score, 3),
             "switch_of_play_score": round(switch_of_play_score, 3),
             "lead_deg": round(lead, 2),
             "recommended_fov": round(recommended_fov, 1),
