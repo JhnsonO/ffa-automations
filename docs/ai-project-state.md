@@ -1,6 +1,6 @@
 # FFA 360 / Playcam — AI Project State
 
-**Last reconciled:** 3 July 2026 (run 28684124570 failed at Wait for SSH before reaching render; mux fix still unverified; termination confirmed again)
+**Last reconciled:** 3 July 2026 (run #14 28684441469 full pipeline SUCCESS; mpeg4 mux confirmed; render was upside-down, orientation fixed in crop_utils.py f0e1b62 — not yet re-rendered; transition ball-loss noted for future tuning)
 
 This is the operational handoff. It records what is evidenced in the repo, what has been visually/technically validated, and the next safe task. Do not infer that a design is complete merely because a prototype exists.
 
@@ -50,24 +50,25 @@ The committed `chunked_pipeline.py` still chains download, Phase 1, and render l
 
 The manual two-chunk validation proves the architecture, **not** unattended end-to-end reliability of the current monolithic orchestrator.
 
-### Active blocker — playcam-poc.yml render step (ffmpeg mux)
+### Active item — playcam render orientation + transition tuning
 
-**Status: mux fix pushed, UNVERIFIED. Termination fix CONFIRMED SOLID. Not yet redispatched.**
+**Status: full pipeline VERIFIED end-to-end (run #14). mpeg4 mux CONFIRMED WORKING. Termination CONFIRMED SOLID. Render was upside-down — orientation bug FIXED in `crop_utils.py` (`f0e1b62`), not yet re-rendered.**
 
 - **Termination/leak: fixed and confirmed.** Both the in-loop offer-cleanup and final "Terminate Vast.ai instance" step use a 3-endpoint fallback (`console.vast.ai/api/v0` → `cloud.vast.ai/api/v0` → `cloud.vast.ai/api/v1`, commit `2422ae2`) — proven working across 3 separate runs today, including on failed dispatches. Do not reduce back to a single endpoint without new evidence; a single-endpoint fix already 404'd once in production.
-- **Mux codec: 2 wrong guesses, 3rd fix unverified.** `libx264` (missing from build) → `libopenh264` (ABI/library-version mismatch on instance) → currently `-c:v mpeg4 -q:v 3` (commit `1412735`, built-in encoder, no external `.so` dependency). Attempted isolated validation via `debug-ffmpeg-mux.yml` failed twice on Vast.ai SSH flakiness (unrelated to the mux code) — abandoned per Johnson's direction. **The mpeg4 fix has never actually run.** Next `playcam-poc.yml` dispatch is the real test.
+- **Mux codec: CONFIRMED WORKING (run #14).** `libx264` (missing from build) → `libopenh264` (ABI mismatch) → `-c:v mpeg4 -q:v 3` (commit `1412735`, built-in encoder). Run #14 produced a valid 99.8s `mpeg4` 1920×1080 @29.97fps MP4 (143 MB) — the mpeg4 fix is proven. No further action on the mux.
 - Offer readiness wait extended 3min→5min; Install dependencies output un-silenced + SSH keepalive added (commits `2ace975`, `59c7e70`) — both untested against a real full run since landing.
 - **Open, unaddressed:** 46min/iteration is mostly fixed overhead (~23min install+download) paid every run regardless of outcome. Options (pre-baked image, source caching) not actioned — needs Johnson's go-ahead.
 
-**Latest attempt — run `28684124570` (3 July 2026, dispatched via API, `main`, default 240s window):**
+**Run #14 `28684441469` (3 July 2026, `main`, 240s window) — SUCCESS, full pipeline end-to-end (19m52s):**
 
-- Offer selection worked as designed: filtered to reliability ≥0.98, tried offer 1 (RTX 5060 Ti, reliability 0.995) which stayed stuck at `status=loading` for the full 5-minute window and was terminated/skipped; offer 2 (RTX 4070S Ti, reliability 0.981) reached `status=running` at attempt 14/30.
-- Failed at **Wait for SSH**: instance reported `running` via the Vast API but sshd never accepted a connection across all 18 retries (90s window) — exit code 1, `ERROR: SSH never came up`.
-- All downstream steps (install, upload, Phase 1, render, artifact upload) were skipped as a result. **The mpeg4 mux fix still has not run.**
-- Termination succeeded cleanly (3-endpoint fallback, `2422ae2`) — no leaked instance.
-- This is the same class of failure that killed 2 of 3 `debug-ffmpeg-mux.yml` dispatches: Vast "running" status does not guarantee sshd is actually reachable yet. The existing reliability filter (`reliability gte 0.98`) does not address this — the failed offer had 0.995 reliability, so a higher floor would not have prevented it.
+- Run #13 (`28684124570`) failed first at Wait for SSH (90s window, offer reliability 0.981 reported `running` before sshd was up). Run #14 was a straight redispatch and cleared SSH in 6s on a different offer — confirms that failure was transient host flakiness, not a code bug. No SSH-wait change was needed.
+- All steps green: launch (2m44s) → SSH (6s) → install (1m1s) → upload → download (240s window from Drive) → Phase 1 → Phase 2.5 render → artifacts. Instance terminated cleanly.
+- **Render output verified from artifact:** 2989 frames, 99.6s, `mpeg4` 1920×1080 @29.97fps, 143 MB. Mode logic sound — 1 transition, wide for first ~8.5s then follow; wide_mode_fraction 0.086; score mean 0.455.
+- **Bug found — render was upside-down.** Root cause: `crop_utils.extract_crop_frame` (the render path, called by `wide_safety_camera.render_wide_safety`) did not negate image-plane vertical, so top row mapped to −up. It is algebraically identical to the known-good `play_location.extract_crop_frame` **except** for that missing sign. Yaw and mode-selection were unaffected (they don't depend on the vertical sign).
+- **Fix pushed (`f0e1b62`):** `y = -ys/norm` in `crop_utils.py`. Verified locally **pixel-identical (max_abs_diff=0)** to `play_location`'s crop on a synthetic equirect frame; old output confirmed a pure vertical flip. Smallest-diff, one line + comment. **Not yet re-rendered** — needs a paid rerun to produce a real upright clip.
+- **Second, expected issue — ball lost during transitions.** Camera currently follows player-cluster/concentration centroid, not the ball, so during a pan or wide→follow change the small ball can drop out of frame. This is the known limit of a player-led camera, not a failure. Tuning options (faster yaw on follow-entry, shorten wide→follow sustain 1.5s→1.0s, cap lag during transitions, brief wider FOV hold ~92–95 on follow-entry) and a later high-confidence "ball nudge" (small offset, never full hijack) are noted for a future pass — not yet actioned.
 
-**Next gate:** redispatch `playcam-poc.yml`. If it fails at Wait for SSH again, this becomes a real problem worth fixing directly (e.g. extend the SSH-wait window past 90s the way `debug-ffmpeg-mux.yml` did — commit `fbae177` extended it 90s→5min there) rather than re-guessing. If it clears SSH and render succeeds: check output quality/duration/join integrity, then confirm the instance actually terminated via `vastai-instance-check.yml`.
+**Next gate:** redispatch `playcam-poc.yml` (paid) to render an upright clip with `f0e1b62`; on completion verify orientation is upright, then assess transition ball-loss before deciding on the tuning pass above. Confirm instance terminated via `vastai-instance-check.yml`.
 
 ### Required next implementation
 
@@ -199,6 +200,7 @@ Claude is a bounded executor/reviewer, not a general repo-exploration agent.
 
 ## Compact change log
 
+- **2026-07-03:** Run #14 `28684441469` — full playcam-poc pipeline SUCCESS (19m52s). mpeg4 mux confirmed (valid 99.6s 1920×1080 MP4). Render was upside-down: fixed in `crop_utils.py` (`f0e1b62`, `y=-ys/norm`), verified pixel-identical to known-good `play_location.extract_crop_frame`. Not yet re-rendered. Transition ball-loss noted (player-led camera limit) for future tuning.
 - **2026-07-03:** Run `28684124570` dispatched (defaults) — failed at "Wait for SSH" (90s window, 18 retries) after the selected instance (RTX 4070S Ti, reliability 0.981) reported `running` via API but sshd never came up. First offer tried (reliability 0.995) never left `status=loading` in 5min and was skipped. Termination succeeded, no leak. Mux fix still unverified — never reached the render step.
 - **2026-07-03:** Run #12 completed (46m10s, failed at render). Termination endpoint from prior fix 404'd in production (instance 43731958 leaked, later swept by hourly orphan-cleanup cron) — replaced with the 3-endpoint fallback proven in `vastai-orphan-cleanup.yml` (`2422ae2`). libopenh264 hit an ABI/library-version mismatch on the instance — switched mux to built-in `mpeg4` (`1412735`). Cost/time flagged: ~23min of the 46min run is fixed install+download overhead per iteration, unaddressed.
 
