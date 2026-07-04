@@ -155,9 +155,17 @@ Each stage must:
 - **Notable pattern in "hurts" frames:** `breakaway_score` is consistently high (0.74–0.92) in the worst-hurting frames, and in several of them `centroid_yaw` was already near-perfect (d_centroid 1–3°) before the breakaway boost pulled `action_zone_yaw` 34–39° away. This is direct evidence that the current breakaway boost (`BETA_C=1.5` in the per-player weighting) can actively degrade an already-good centroid signal — consistent with Johnson's instinct that breakaway should be a minor optional boost, not something that can override a good baseline. **`BETA_C` not changed — flagged for Johnson's decision, not touched without approval.**
 - `action_intensity_score` mean was 0.902 but showed little spread on this clip (`density_norm` saturates to 1.0 on ~all frames because this session is a crowded small-sided game) — the density term isn't discriminative on this particular dataset; may behave differently on a less-crowded or wider-pitch clip.
 
-**Not yet done:** `action_intensity_score`/`breakaway_score` renaming not ported into `playcam/action_zone.py` (analysis-only, scratch script); no weight changes committed; renderer, `ball_tracker/`, and Phase 2.5 FSM untouched throughout.
+**3B.1 committed (4 July 2026, `b1ea4a9`):** `playcam/action_zone.py` updated — `counterattack_score` renamed to `breakaway_score` (secondary diagnostic, not KPI), `action_intensity_score` added to CSV output (density + activity + persistence, switch/breakaway as minor terms), `BETA_C` reduced 1.5→0.5. Re-run against same artifact `28700918611` (964 frames, zero paid compute, no dispatch):
 
-**Next gate:** Johnson to decide whether to (a) port the action-centre reframe (rename + `action_intensity_score`) into `action_zone.py` as the new primary metric and dial back `BETA_C`, or (b) get a second, less-saturated clip before committing any of this.
+- Helps: 50.2% (was 48.2%), mean improvement 11.2°.
+- Hurts: 31.5% (was 34.6%), mean regression 6.4° (was 7.1°); worst-hurt frame regression also dropped (max ~34.8° vs ~38.8° before).
+- Matches: 18.3% (was 17.1%).
+- mean|bias| 6.01° (was 6.36°); cap saturation 17.1% (was 18.8%); max frame-to-frame `action_zone_yaw` jump 6.8° with zero jumps >20° (was 13.9–14.0°, also zero >20° jumps).
+- mean `breakaway_score` unchanged at 0.224 (now reported as secondary only); mean `action_intensity_score` 0.902–0.922 depending on run, still saturated on `density_norm` for this crowded-session clip.
+
+**Blocker:** none — change verified end-to-end. `action_intensity_score`'s density term remains non-discriminative on this specific clip (small-sided, high player density throughout); a less-crowded clip would be needed to properly stress-test that term. Renderer, `ball_tracker/`, venue mask, and wide/follow FSM untouched.
+
+**Next gate:** Johnson to review whether 31.5% hurt-rate at `BETA_C=0.5` is acceptable, or whether `BETA_C` should be reduced further / breakaway removed from the per-player weighting entirely and kept as diagnostic-only.
 
 ## Ball tracker — MOG2-primary track
 
