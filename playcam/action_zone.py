@@ -52,7 +52,7 @@ CONFIG = {
     "STATIC_SPEED_CAP_DEG_S": 5.0,   # beta_s down-weight saturates by this rolling speed
     "BETA_M": 1.0,                   # motion-weight boost
     "BETA_S": 0.6,                   # static-player down-weight strength
-    "BETA_C": 0.5,                   # breakaway subgroup boost strength (Phase 3B.1: was 1.5 — overpowered centroid)
+    "BETA_C": 0.0,                   # breakaway subgroup boost strength (3B.2: 0.5->0.0 — ablation showed BETA_C was dominant hurt driver; breakaway_score kept as diagnostic-only output, no longer weights per-player yaw)
     "SPEED_NORM_CAP_DEG_S": 30.0,    # instantaneous speed normalisation cap
     "GAP_DEG": 25.0,                 # yaw gap that splits players into separate clusters
     "SUBGROUP_MIN": 2,
