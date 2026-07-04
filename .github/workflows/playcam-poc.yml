@@ -28,6 +28,11 @@ on:
         required: false
         default: '2'
         type: string
+      skip_render:
+        description: 'Skip Phase 2.5 render (Phase 1 + wide_safety_timeline.jsonl only, no video). Default false = unchanged behaviour.'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   playcam-poc:
@@ -253,9 +258,14 @@ jobs:
         env:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
+          SKIP_RENDER: ${{ github.event.inputs.skip_render }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
-          $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/wide_safety_camera.py --input playcam/output/play_location.jsonl --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/wide_safety_timeline.jsonl --render --source-video clip.mp4 --render-output playcam/output/wide_safety_render.mp4 --plot-output playcam/output/mode_timeline.png 2>&1 | tail -60"
+          RENDER_FLAGS="--render --source-video clip.mp4 --render-output playcam/output/wide_safety_render.mp4"
+          if [ "$SKIP_RENDER" = "true" ]; then
+            RENDER_FLAGS=""
+          fi
+          $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/wide_safety_camera.py --input playcam/output/play_location.jsonl --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/wide_safety_timeline.jsonl $RENDER_FLAGS --plot-output playcam/output/mode_timeline.png 2>&1 | tail -60"
 
       - name: Generate metrics and copy artifacts
         env:
