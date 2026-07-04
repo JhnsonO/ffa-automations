@@ -51,7 +51,7 @@ from collections import defaultdict, deque
 CONFIG = {
     "STATIC_SPEED_CAP_DEG_S": 5.0,   # beta_s down-weight saturates by this rolling speed
     "BETA_M": 1.0,                   # motion-weight boost
-    "BETA_S": 0.6,                   # static-player down-weight strength
+    "BETA_S": 1.0,                   # static-player down-weight strength (3B.11: 0.6->1.0 — offline-verified vs the missed-goal-at-60s clip: at 0.6 a static high-conf bystander still kept ~40% weight, diluting the leftward signal to -4..-9 deg; at 1.0 static players are fully excluded, signal reaches -8..-15 deg, and full-clip sign-flip count drops 22->17 (more stable, not just stronger). Does not fully solve BIAS_MAX_DEG (+/-15) clamp headroom against a -55 deg goal mouth at FOV 85 -- see 3B.11 note.
     "BETA_C": 0.0,                   # breakaway subgroup boost strength (3B.2: 0.5->0.0 — ablation showed BETA_C was dominant hurt driver; breakaway_score kept as diagnostic-only output, no longer weights per-player yaw)
     "SPEED_NORM_CAP_DEG_S": 30.0,    # instantaneous speed normalisation cap
     "GAP_DEG": 25.0,                 # yaw gap that splits players into separate clusters
