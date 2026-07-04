@@ -169,9 +169,9 @@ Each stage must:
 
 **3B.2 committed (4 July 2026, `e534695`):** `BETA_C` 0.5→0.0 per Johnson's approval. `breakaway_score` is unchanged as a computed/reported diagnostic field; it no longer multiplies any player's per-frame weight (`c_mult` is now always 1.0). Verified locally against the same artifact (`28700918611`, zero paid compute): script runs clean, 964/964 rows produced, `breakaway_score` still populated (253 frames >0.5) confirming the field is intact and diagnostic-only.
 
-**Blocker for the planned A/B render:** `wide_safety_camera.py` currently reads only `cluster_yaw` (= `person_centroid_yaw`) from Phase 1 output — there is no wiring for it to consume `action_zone.py`'s `target_yaw`/CSV output. The baseline (centroid) render can be dispatched today with zero new code. The action-zone-target render needs a small additive adapter first (e.g. an optional `--yaw-source-csv` override) — not yet built, not yet approved.
+**Blocker cleared:** `wide_safety_camera.py` (`2d8270e`) — added optional `--yaw-source-csv` flag. When omitted, behaviour is byte-for-byte unchanged (verified: same mode-change count and wide-fraction as pre-adapter). When supplied with an `action_zone.py` CSV, `cluster_yaw` is overridden by nearest-timestamp `target_yaw` before mode/FOV/hysteresis logic runs; FSM itself untouched (confirmed identical mode-change count/wide-fraction between default and CSV-override runs on the same input — only the yaw value differs, mean diff 5.3°, max 15.0° matching `BIAS_MAX_DEG`). `ball_tracker/`, venue mask, and FSM logic not touched.
 
-**Next gate:** Johnson to approve the A/B render plan below, and specifically whether Claude should build the small `wide_safety_camera.py` yaw-source adapter needed for the action-zone-target render (renderer/FSM logic itself untouched either way).
+**Next gate:** Johnson to approve a 60–90s render window (segment of `equirect_full.mp4`) for the first A/B pair — baseline (`person_centroid_yaw`, no flag) vs action-zone (`--yaw-source-csv` pointing at a fresh `action_zone.py` CSV run with `BETA_C=0.0`), same FOV/FSM settings both sides. Not yet dispatched — no paid compute spent on this gate.
 
 ## Ball tracker — MOG2-primary track
 
