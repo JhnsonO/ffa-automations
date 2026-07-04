@@ -179,6 +179,14 @@ Each stage must:
 
 **Blocker:** none. **Next gate:** Johnson to approve dispatching the actual A/B render pair (baseline vs `--yaw-source-csv action_zone_comparison.csv`) on this exact 0–90s window using `wide_safety_camera.py` (`2d8270e`) directly (not through `playcam-poc.yml`, since Phase 1 output already exists) — cost/runtime for two short renders to be quoted before dispatch.
 
+**3B.5 — action_zone_csv_path wiring (4 July 2026, `3e2e28c`):** `playcam-poc.yml` got an additive `action_zone_csv_path` input (default `''`, unchanged behaviour). When set, "Upload playcam to instance" SCPs that CSV to the instance as `action_zone_comparison.csv`, and "Run Phase 2.5" runs a second `wide_safety_camera.py` pass with `--yaw-source-csv` producing `wide_safety_render_actionzone.mp4` + `wide_safety_timeline_actionzone.jsonl` (guarded so it's skipped whenever `skip_render=true`). Artifact-copy step SCPs both new files back with the existing missing-file-safe fallback pattern. `ball_tracker/`, venue mask, FSM logic, and `action_zone.py` scoring all untouched.
+
+**Verified:** full-workflow YAML parses valid (the `on:`→`True` top-level key is a known PyYAML quirk, not an error); all 10 embedded shell blocks pass `bash -n`; ran the exact new command line locally against the aligned window's `play_location.jsonl` + `action_zone_comparison.csv` — output matches the baseline's mode-change count (1) and wide-fraction (29.6%, matches `metrics_summary.json`), confirming only the yaw source differs and the CSV is correctly consumed.
+
+**Blocker before dispatch:** `action_zone_csv_path` is a path the workflow SCPs *from the repo checkout* — the verified `action_zone_comparison.csv` (generated in 3B.4) is not yet committed anywhere in the repo. Needs a small commit (e.g. `playcam/analysis/action_zone_comparison_28718698231.csv`) before the A/B dispatch can reference it.
+
+**Next gate:** Johnson's go/no-go on (a) committing that CSV to the repo and (b) the A/B render dispatch itself — cost/runtime to be quoted at that point.
+
 ## Ball tracker — MOG2-primary track
 
 ### Status: MOG2 primary detection is validated; broader full-session decisions are deferred
