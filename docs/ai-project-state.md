@@ -1,6 +1,6 @@
 # FFA 360 / Playcam — AI Project State
 
-**Last reconciled:** 3 July 2026 (run #14 28684441469 full pipeline SUCCESS; mpeg4 mux confirmed; render was upside-down, orientation fixed in crop_utils.py f0e1b62 — not yet re-rendered; transition ball-loss noted for future tuning)
+**Last reconciled:** 4 July 2026 (run #14 28684441469 full pipeline SUCCESS; mpeg4 mux confirmed; render was upside-down, orientation fixed in crop_utils.py f0e1b62 — not yet re-rendered; transition ball-loss noted for future tuning)
 
 This is the operational handoff. It records what is evidenced in the repo, what has been visually/technically validated, and the next safe task. Do not infer that a design is complete merely because a prototype exists.
 
@@ -191,6 +191,7 @@ Do not store OAuth refresh tokens, client secrets, API keys, or similar credenti
 Claude is a bounded executor/reviewer, not a general repo-exploration agent.
 
 1. Read this file and `CLAUDE.md`, then only files directly required by the active task.
+0. Use `scripts/gh.sh` (needs `GH_PAT` env) for all GitHub API operations — reads, pushes, dispatch, run status, filtered failure logs, artifacts. Do not re-implement API boilerplate.
 2. Do not scan unrelated subsystems, re-read the repo broadly, narrate progress, or explain internal reasoning.
 3. Before editing, state the exact file list in one line.
 4. Make the smallest safe patch; do not redesign architecture or cross frozen boundaries without explicit instruction.
@@ -199,6 +200,8 @@ Claude is a bounded executor/reviewer, not a general repo-exploration agent.
 7. Prefer ChatGPT or Codex for contained implementation drafts; reserve Claude for live-repo verification, commits, workflow dispatches, and execution-bound debugging.
 
 ## Compact change log
+
+- **2026-07-04:** Repo-ops infrastructure added: `scripts/gh.sh` (GitHub API helper — get/push/dispatch/latest/run/logs/artifacts; token from `GH_PAT` env, read-only subcommands live-tested), `docs/ai-usage-protocol.md` (Johnson's two-AI working instruction). `CLAUDE.md` extended with Repo operations, Debug budget (max 3 cycles/chat), and ChatGPT handoff contract sections. No pipeline code touched; playcam gate unchanged. Observed: `playcam-poc.yml` run `28692555236` in progress (user-dispatched, presumed upright re-render) — not verified this session.
 
 - **2026-07-03:** Run #14 `28684441469` — full playcam-poc pipeline SUCCESS (19m52s). mpeg4 mux confirmed (valid 99.6s 1920×1080 MP4). Render was upside-down: fixed in `crop_utils.py` (`f0e1b62`, `y=-ys/norm`), verified pixel-identical to known-good `play_location.extract_crop_frame`. Not yet re-rendered. Transition ball-loss noted (player-led camera limit) for future tuning.
 - **2026-07-03:** Run `28684124570` dispatched (defaults) — failed at "Wait for SSH" (90s window, 18 retries) after the selected instance (RTX 4070S Ti, reliability 0.981) reported `running` via API but sshd never came up. First offer tried (reliability 0.995) never left `status=loading` in 5min and was skipped. Termination succeeded, no leak. Mux fix still unverified — never reached the render step.
