@@ -187,6 +187,8 @@ Each stage must:
 
 **Next gate:** Johnson's go/no-go on (a) committing that CSV to the repo and (b) the A/B render dispatch itself — cost/runtime to be quoted at that point.
 
+**3B.6 — A/B render dispatch #1 FAILED, transient (4 July 2026):** CSV committed (`f890514`, `playcam/analysis/action_zone_comparison_28718698231.csv`, no other files touched). Dispatched `28720296760` with the quoted inputs (`skip_render=false`, `action_zone_csv_path` set) — exactly one run confirmed created (single `204`, verified via `gh.sh latest`). **Failed at "Wait for SSH"** (18/18 retries, instance `43841758` reported `running` but sshd never came up) — matches the same transient host-flakiness pattern seen in run #13 (3 July), not a code defect; the `action_zone_csv_path`/render wiring itself was never exercised. Termination confirmed clean (`console.vast.ai/api/v0`, `{"success": true}`, no leak). **Debug budget: 1 of 3 cycles used.** **Next gate:** straight redispatch with identical inputs (same pattern that cleared in 6s on run #14 after run #13's failure) — Johnson to confirm go-ahead for redispatch #2.
+
 ## Ball tracker — MOG2-primary track
 
 ### Status: MOG2 primary detection is validated; broader full-session decisions are deferred
