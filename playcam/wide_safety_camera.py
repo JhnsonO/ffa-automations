@@ -81,6 +81,17 @@ DEFAULT_HYSTERESIS_SEC = 1.5           # must be sustained this long to flip mod
 DEFAULT_FOV_MAX_SPEED = 15.0   # deg/s widen/narrow rate
 DEFAULT_FOV_MAX_ACCEL = 30.0   # deg/s^2
 
+# Wide-follow (2026-07-04, 3B.8 fix): wide mode no longer centre-locks yaw to
+# venue["wide_yaw"]. It slowly pursues the current cluster_yaw (same signal
+# follow mode uses) so a sustained off-centre attack doesn't get clipped by a
+# fixed-centre wide shot. Deliberately much slower than follow's pan cap
+# (DEFAULT_MAX_PAN_SPEED_DEG_S=25) and range-clamped around the venue's known
+# wide-shot centre so it can drift toward real play but cannot chase a single
+# noisy detection or wrap to a nonsensical yaw. Concentration score,
+# hysteresis thresholds, and follow-mode logic are untouched by this change.
+WIDE_YAW_MAX_SPEED_DEG_S = 10.0   # deg/s -- conservative pursuit rate, per spec
+WIDE_YAW_RANGE_DEG = 45.0         # clamp: venue wide_yaw +/- this range
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Phase 2.5 -- wide-safety / play-follow camera")
@@ -95,6 +106,12 @@ def parse_args():
     p.add_argument("--max-pan-accel", type=float, default=DEFAULT_MAX_PAN_ACCEL_DEG_S2)
     p.add_argument("--fov-max-speed", type=float, default=DEFAULT_FOV_MAX_SPEED)
     p.add_argument("--fov-max-accel", type=float, default=DEFAULT_FOV_MAX_ACCEL)
+    p.add_argument("--wide-yaw-max-speed", type=float, default=WIDE_YAW_MAX_SPEED_DEG_S,
+                    help="Wide-mode yaw pursuit rate cap, deg/s "
+                         f"(default {WIDE_YAW_MAX_SPEED_DEG_S})")
+    p.add_argument("--wide-yaw-range", type=float, default=WIDE_YAW_RANGE_DEG,
+                    help="Wide-mode yaw clamp range around venue wide_yaw, +/- deg "
+                         f"(default {WIDE_YAW_RANGE_DEG})")
     p.add_argument("--spring-stiffness", type=float, default=DEFAULT_SPRING_STIFFNESS)
     p.add_argument("--baseline", action="store_true",
                     help="Force mode=follow always (no wide-safety fallback) -- "
@@ -197,7 +214,9 @@ def load_sparse_records(input_path, yaw_overrides=None):
     return out
 
 
-def run_hysteresis(records, venue, strong_thresh, weak_thresh, hysteresis_sec, baseline):
+def run_hysteresis(records, venue, strong_thresh, weak_thresh, hysteresis_sec, baseline,
+                    wide_yaw_max_speed=WIDE_YAW_MAX_SPEED_DEG_S,
+                    wide_yaw_range=WIDE_YAW_RANGE_DEG):
     """
     Sparse-rate mode decision with hysteresis. Returns list of
     (timestamp, mode, score, target_yaw, target_fov).
@@ -207,6 +226,11 @@ def run_hysteresis(records, venue, strong_thresh, weak_thresh, hysteresis_sec, b
     strong_streak = 0.0
     weak_streak = 0.0
     prev_t = None
+    # Wide-follow pursuit state (3B.8 fix): starts at the venue's known
+    # wide-shot centre and is kept in sync with the current yaw whenever
+    # follow mode is active, so a follow->wide flip resumes the slow pursuit
+    # from wherever the camera actually is, not a stale earlier position.
+    wide_yaw_state = venue["wide_yaw"]
 
     for rec in records:
         t = rec["timestamp"]
@@ -234,14 +258,28 @@ def run_hysteresis(records, venue, strong_thresh, weak_thresh, hysteresis_sec, b
         if mode == "follow" and rec["cluster_yaw"] is not None:
             target_yaw = rec["cluster_yaw"]
             target_fov = venue["follow_fov"]
+            # Keep wide-follow state synced while in follow, so a later
+            # follow->wide flip resumes pursuit from here, not a stale spot.
+            wide_yaw_state = target_yaw
         else:
-            # No stable cluster yaw available, or in wide mode: hold the
-            # venue's known wide/pitch-centre shot. Per spec: play-follow
-            # always resumes toward the CURRENT cluster yaw (not wherever
-            # wide mode was last centred) -- handled naturally here since
-            # target_yaw is simply re-read from rec["cluster_yaw"] the
-            # instant mode flips to follow, with no memory of prior state.
-            target_yaw = venue["wide_yaw"]
+            # No stable cluster yaw available, or in wide mode: keep FOV at
+            # the venue's known wide shot, but (3B.8 fix) no longer lock yaw
+            # to a fixed centre. Slowly pursue the current cluster_yaw --
+            # rate-capped at wide_yaw_max_speed and clamped to
+            # venue["wide_yaw"] +/- wide_yaw_range -- so a sustained
+            # off-centre attack isn't clipped, but a single noisy detection
+            # or a genuine "no idea where play is" moment can't drag the
+            # wide shot somewhere nonsensical. Per spec: play-follow always
+            # resumes toward the CURRENT cluster yaw the instant mode flips
+            # to follow -- unaffected by this change.
+            raw_center = rec["cluster_yaw"] if rec["cluster_yaw"] is not None else venue["wide_yaw"]
+            clamped_center = max(venue["wide_yaw"] - wide_yaw_range,
+                                  min(venue["wide_yaw"] + wide_yaw_range, raw_center))
+            diff = clamped_center - wide_yaw_state
+            max_step = wide_yaw_max_speed * dt
+            step = max(-max_step, min(max_step, diff))
+            wide_yaw_state += step
+            target_yaw = wide_yaw_state
             target_fov = venue["wide_fov"]
 
         out.append((t, mode, round(score, 3), target_yaw, target_fov))
@@ -444,7 +482,9 @@ def main():
         sys.exit(1)
 
     decisions = run_hysteresis(records, venue, args.strong_threshold, args.weak_threshold,
-                                args.hysteresis_sec, args.baseline)
+                                args.hysteresis_sec, args.baseline,
+                                wide_yaw_max_speed=args.wide_yaw_max_speed,
+                                wide_yaw_range=args.wide_yaw_range)
 
     total_duration = records[-1]["timestamp"]
     yaw_samples = [(t, ty) for t, _m, _s, ty, _tf in decisions]
