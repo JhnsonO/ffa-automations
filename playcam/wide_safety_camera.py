@@ -374,6 +374,8 @@ def render_wide_safety(records, source_video, clean_start, clean_duration, out_p
     print(f"[render_wide_safety] {len(frames)} frames, window "
           f"[{clean_start:.1f}, {clean_start + duration:.1f}) -> {out_path}")
 
+    total = len(frames)
+    progress_interval = max(1, total // 20)
     src_frame = None
     src_idx = -1
     written = 0
@@ -392,6 +394,8 @@ def render_wide_safety(records, source_video, clean_start, clean_duration, out_p
                                    fov_deg=r["smoothed_fov"], out_w=out_w, out_h=out_h)
         writer.write(crop)
         written += 1
+        if written % progress_interval == 0 or written == total:
+            print(f"[render_wide_safety] {written}/{total} frames ({written/total*100:.0f}%)", flush=True)
 
     writer.release()
     cap.release()
