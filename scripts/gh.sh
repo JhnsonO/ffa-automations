@@ -10,6 +10,8 @@
 #   gh.sh logs <run_id> [context_lines]              # failed-job logs, error window only
 #   gh.sh artifact <artifact_id> <out.zip>           # download artifact (redirect-safe)
 #   gh.sh artifacts <run_id>                         # list artifacts for a run
+#   gh.sh issue create "<title>" <body_file>         # open a GitHub issue
+#   gh.sh issue list                                 # list open issues
 set -euo pipefail
 
 REPO="JhnsonO/ffa-automations"
@@ -126,6 +128,30 @@ artifact)
   aid="${1:?artifact_id}"; out="${2:?out.zip}"
   curl -sL "${auth[@]}" "${API}/actions/artifacts/${aid}/zip" -o "$out"
   ls -la "$out"
+  ;;
+
+issue)
+  sub="${1:?create|list}"; shift || true
+  case "$sub" in
+  create)
+    title="${1:?title}"; body_file="${2:?body_file}"
+    payload=$(python3 - "$title" "$body_file" <<'PY'
+import json,sys
+print(json.dumps({"title":sys.argv[1],"body":open(sys.argv[2]).read()}))
+PY
+    )
+    curl -sf -X POST "${auth[@]}" "${json[@]}" "${API}/issues" -d "$payload" \
+      | python3 -c "import json,sys; d=json.load(sys.stdin); print('issue #%d %s' % (d['number'], d['html_url']))"
+    ;;
+  list)
+    curl -s "${auth[@]}" "${json[@]}" "${API}/issues?state=open&per_page=30" | python3 -c "
+import json,sys
+for i in json.load(sys.stdin):
+    if 'pull_request' in i: continue
+    print('#%d %s' % (i['number'], i['title']))"
+    ;;
+  *) echo "usage: gh.sh issue create '<title>' <body_file> | gh.sh issue list" >&2; exit 1;;
+  esac
   ;;
 
 *)
