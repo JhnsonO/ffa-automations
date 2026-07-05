@@ -217,7 +217,7 @@ Each stage must:
 
 **Decisions (Johnson, 5 July 2026):**
 
-- Product bar: watchable + catches most goals, and must beat a static wide shot.
+- Product bar (revised 5 July 2026): watchable + follows live match action generally — goals are one instance of action, not the primary target — and must beat a static wide shot.
 - Ball tracker → playcam nudge is ALLOWED (confidence-gated bias, never a hijack). The reverse (player evidence setting ball-tracker yaw) remains forbidden per the ball-tracker product invariant.
 - A paid labeler will produce virtual-camera labels (timestamp, desired_yaw, desired_fov, confidence, event/action metadata; 1 Hz normal play, 2–4 Hz attacks/transitions).
 - **Tuning freeze:** no `action_zone.py` / `wide_safety_camera.py` weight or threshold changes until the scorecard (issue #8) exists. `BETA_C` stays 0.0 permanently.
@@ -226,11 +226,25 @@ Each stage must:
 
 **Issue map:** #5 labeling tool · #6 preview videos · #7 pilot labels · #8 scorecard script · #9 free-signal bake-off (centroid / Action Zone / static-wide baseline) · #10 paid-signal decision gate (ball nudge, pose) · #11 median-of-3 jitter filter (awaiting Johnson's go) · #12 expand to 4–6 labeled clips.
 
-**Key constraint for #5:** label yaw convention and timestamp base must match `play_location.jsonl` exactly — Claude must verify against real Phase 1 data before labels are trusted.
+**Key constraint for #5:** label yaw convention and timestamp base must match `play_location.jsonl` exactly — verified 5 July 2026 against real Phase 1 data (artifact `8086248669`): `yaw` is float degrees, negative = left of forward / positive = right of forward (confirmed range ≈ −60°..+60° in that dataset); `timestamp` is float seconds, `0.000` exactly at clip start.
 
-**Open inputs needed from Johnson:** (a) pick the fresh pilot clip (ideally containing a watched, timestamped goal). (b) #11 jitter filter: Johnson chose HOLD (5 July 2026) — do not ship until he says go. (c) Labeler's device is not yet known — the #5 tool must be a responsive browser app (works on laptop or tablet) and must not assume desktop-only until confirmed.
+**#5 design revised (5 July 2026, chat discussion — NOT YET BUILT):** interaction simplified from sliders to a single point-click on the video frame — labeler clicks where the action is, tool derives `desired_yaw` from click position (requires knowing the preview video's exact projection/degrees-per-pixel from #6 before this can be wired up — open dependency). `desired_fov` is dropped from the label schema entirely, matching the proposed no-zoom camera direction below. Revised label schema: `{timestamp, desired_yaw, confidence, event, notes}` (no `desired_fov`). Delivery also revised: not a standalone downloadable HTML file — hosted on the existing Vultr VM runner, clips streamed from a Google Drive folder (reusing the existing GoPro→Drive pattern), labels auto-saved server-side as the labeler works (no export/import file handling for a non-technical labeler). A standalone prototype (sliders, includes FOV, local file load, manual export) was built and demoed in-chat this session but was NOT committed to the repo — superseded by the above; its video-transport/timestamp/log-table/JSONL logic is still a reasonable reference for the rebuild.
+
+**Open inputs needed from Johnson:** (a) revised 5 July 2026 — product bar is general action-following, not goal-specific, so pilot/training clips do NOT need to contain a watched goal; broader or random pulls from the GoPro cloud archive are acceptable. Still open: Johnson to actually select/provide clip(s), and confirm the Drive folder they'll be sourced from. (b) #11 jitter filter: Johnson chose HOLD (5 July 2026) — do not ship until he says go. (c) resolved 5 July 2026 — labeler is non-technical; tool will be hosted (Vultr VM) rather than a downloadable file, so device compatibility is handled by the browser, not by tool design alone.
 
 **Infra note (5 July 2026, `6c5905e`):** `scripts/gh.sh` extended with `issue create` / `issue list` subcommands. The known `dispatch` false-error bug (3B.9) remains undiagnosed.
+
+### Proposed playcam camera direction (5 July 2026, discussion only — NOT approved, NOT built)
+
+Johnson proposed MOG2 ball detection (already validated in `ball_tracker` — 20/25 anchors vs 2/41 for YOLO-primary) as playcam's PRIMARY camera target, with player-cluster centroid as FALLBACK only when MOG2 loses the ball — replacing the current design (Action Zone as a small ±15°-clamped nudge on top of centroid), and dropping zoom/FOV entirely in favour of fixed-wide pan/tilt only.
+
+**Rationale (holds up on review):** ball speed anti-correlates with the two signals' reliability. Fast ball (shots/breakaways) is MOG2's strength and centroid's proven failure mode (3B.10 — centroid missed the real t≈60s goal because the ball diverged from the player mass). Slow/dead ball is MOG2's known weakness (motion detector loses stationary objects), but players converge on a slow/dead ball (contests, shielding) — except at restarts, where players deliberately spread away from a stationary ball, a known soft failure case (acceptable at fixed wide FOV).
+
+**This is a bigger architecture change than the currently-approved design** (primary/fallback vs. a bounded nudge) and has not been approved as the next build step. Any handoff between the two signals must be confidence-gated with hysteresis, not a hard swap — a hard swap risks reproducing the Phase B replay-oscillation failure mode.
+
+**Known risk, not yet checked — the actual next gate:** whether MOG2 held ball-lock through the real t≈60s goal is unverified. Checking this against existing `ball_tracker` artifacts requires zero paid compute (no new run) and should happen before committing to this direction.
+
+**Also clarified this session:** no learning/training model exists anywhere in this project currently — `playcam` and `ball_tracker` are both hand-tuned classical CV/heuristics, not trained models. A live-correction labeling workflow (run the automated camera, labeler nudges it when wrong, corrections become training data) was discussed as a possible future direction for an eventual learned system, but is unscoped, not started, and is a materially larger project (training loop, overfitting checks, retraining plan) than anything currently in Phase 3C.
 
 ## Ball tracker — MOG2-primary track
 
@@ -308,6 +322,7 @@ Claude is a bounded executor/reviewer, not a general repo-exploration agent.
 
 ## Compact change log
 
+- **2026-07-05 (design review, no code changed):** Reframed product bar from goal-specific to general action-following. Verified `play_location.jsonl` yaw/timestamp convention against real artifact `8086248669`. Revised #5 interaction to point-click yaw-only (dropped `desired_fov`), revised delivery to Vultr-hosted + Drive-sourced clips with server-side auto-save (standalone slider prototype built in-chat, not committed, superseded). Proposed (not approved) MOG2-primary/cluster-fallback camera direction with zoom dropped entirely — gated on checking whether MOG2 held the ball through the real t≈60s goal, not yet checked. Clarified no learned/training model exists in the project.
 - **2026-07-04 (Playcam Phase 3 Action Zone):** Design approved for 3A only. Built `playcam/action_zone.py` (committed this session) through 3A→3A.3: lone-detection candidates made ineligible, sep_growth given an identity-continuity guard, and diagnostic instrumentation added. Root cause of over-triggering found: coherence + static-main-cluster terms (83% of positive signal) drive false positives, not subgroup speed (9%) or growth (8%) — scorer currently reads ordinary spaced-out play as "counterattack." Venue mask confirmed active and not a blocker. No weights changed, no 3B tuning started. See Playcam Phase 3 — Action Zone section above for full breakdown.
 - **2026-07-04 (redispatch):** Run `28700595596` cancelled (predated Pass 1 speed fix). Orphan check dispatched. Redispatched as `28700918611` (head `c51987d`) — first run with max-frames fix + GPU allowlist + cpu_cores=16 all active.
 - **2026-07-04 (speed pass 1):** `playcam-poc.yml` (`dcbff31`) — `cpu_cores` floor 8→16; excluded Blackwell RTX 50-series GPUs (`RTX 5090/5080/5070/5060/5050`) from offer selection, since the pinned `pytorch/pytorch:2.1.0-cuda11.8` image can't use sm_120 and run `28699519056` silently fell back to CPU inference instead of failing. Note: this exclusion is new code, not ported from an existing gopro360 mechanism — checked both `gopro360-upload.yml` and `gopro360-chapter-upload.yml`, neither has GPU-arch filtering. Price/speed ranking + reputation (pass 2) deferred until a clean GPU-matched run gives a timing baseline. Not yet dispatched.
