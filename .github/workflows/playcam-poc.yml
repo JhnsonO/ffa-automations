@@ -261,7 +261,7 @@ jobs:
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           MAX_FRAMES=$(python3 -c "import math; print(math.ceil(${DURATION} * ${FPS}) + 50)")
-          $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/play_location.py --input clip.mp4 --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/play_location.jsonl --fps $FPS --max-frames $MAX_FRAMES --no-debug 2>&1 | tail -40"
+          $SSH "set -o pipefail; cd /tmp/playcam_run && stdbuf -oL -eL python3 playcam/play_location.py --input clip.mp4 --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/play_location.jsonl --fps $FPS --max-frames $MAX_FRAMES --no-debug 2>&1"
 
       - name: Run Phase 2.5 (wide safety) and render
         env:
@@ -275,9 +275,9 @@ jobs:
           if [ "$SKIP_RENDER" = "true" ]; then
             RENDER_FLAGS=""
           fi
-          $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/wide_safety_camera.py --input playcam/output/play_location.jsonl --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/wide_safety_timeline.jsonl $RENDER_FLAGS --plot-output playcam/output/mode_timeline.png 2>&1 | tail -60"
+          $SSH "set -o pipefail; cd /tmp/playcam_run && stdbuf -oL -eL python3 playcam/wide_safety_camera.py --input playcam/output/play_location.jsonl --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/wide_safety_timeline.jsonl $RENDER_FLAGS --plot-output playcam/output/mode_timeline.png 2>&1"
           if [ -n "$AZ_CSV" ] && [ "$SKIP_RENDER" != "true" ]; then
-            $SSH "set -o pipefail; cd /tmp/playcam_run && python3 playcam/wide_safety_camera.py --input playcam/output/play_location.jsonl --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/wide_safety_timeline_actionzone.jsonl --yaw-source-csv playcam/output/action_zone_comparison.csv --render --source-video clip.mp4 --render-output playcam/output/wide_safety_render_actionzone.mp4 --no-plot 2>&1 | tail -60"
+            $SSH "set -o pipefail; cd /tmp/playcam_run && stdbuf -oL -eL python3 playcam/wide_safety_camera.py --input playcam/output/play_location.jsonl --venue-profile playcam/venue_profiles/$(basename ${{ github.event.inputs.venue_profile_path }}) --output playcam/output/wide_safety_timeline_actionzone.jsonl --yaw-source-csv playcam/output/action_zone_comparison.csv --render --source-video clip.mp4 --render-output playcam/output/wide_safety_render_actionzone.mp4 --no-plot 2>&1"
           fi
 
       - name: Generate metrics and copy artifacts
