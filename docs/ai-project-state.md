@@ -209,7 +209,28 @@ Each stage must:
 
 *Jitter filter — result: works, ready to ship independently.* The +27.7°/+31.9° single-frame spikes (t≈64.5s and 3–4 similar events elsewhere: t=4.5, 38.5, 43.5, 85.6) are all lone-frame detector glitches — confirmed by checking the surrounding frames, each spike sits between two consistent low values. A median-of-3 filter (needs one sample of look-ahead, ~0.5s latency) cleanly suppresses all of them and was checked against the 57–64s goal window itself to confirm it does not flatten genuine signal there (max unintended change 1.2°, mostly <0.3°). This is a real, separate, low-risk fix, decoupled from the failed edge-assist work above.
 
-**Blocker:** the coverage objective (get this specific goal in frame) is not achievable via the tested signals without either an exact re-timestamp of the goal (possible the true shot moment is closer to 61–63s, where track 26's run does build up — current estimate is Johnson's recollection, ±2–3s) or a fundamentally different, untested signal (e.g. acceleration/jerk onset rather than net displacement over a window, which lags by construction). **Next gate:** Johnson to choose: (i) ship the median-of-3 jitter filter alone now (independent win, no dependency on the above); (ii) get a frame-accurate goal timestamp from the footage and re-run the edge test against it before writing off this direction; (iii) park follow-mode coverage work here. No paid render recommended under any of these until a candidate actually clears the bar.
+**Blocker:** the coverage objective (get this specific goal in frame) is not achievable via the tested signals without either an exact re-timestamp of the goal (possible the true shot moment is closer to 61–63s, where track 26's run does build up — current estimate is Johnson's recollection, ±2–3s) or a fundamentally different, untested signal (e.g. acceleration/jerk onset rather than net displacement over a window, which lags by construction). **Next gate:** superseded 5 July 2026 by the Phase 3C plan below (GitHub issues #5–#12). Jitter filter shipping is now issue #11 (awaiting Johnson's go); follow-mode coverage work is parked pending the scorecard/bake-off (#8/#9).
+
+## Playcam Phase 3C — Labeled test set + scorecard plan (adopted 5 July 2026)
+
+**Why:** 3B.8–3B.12 demonstrated that single-clip adjudication drives per-clip tuning. 3B.10 proved centroid-led follow is structurally blind at goals (ball diverges from player mass). Plan approved by Johnson; tracked as GitHub issues (the shared to-do list — check `gh.sh issue list`).
+
+**Decisions (Johnson, 5 July 2026):**
+
+- Product bar: watchable + catches most goals, and must beat a static wide shot.
+- Ball tracker → playcam nudge is ALLOWED (confidence-gated bias, never a hijack). The reverse (player evidence setting ball-tracker yaw) remains forbidden per the ball-tracker product invariant.
+- A paid labeler will produce virtual-camera labels (timestamp, desired_yaw, desired_fov, confidence, event/action metadata; 1 Hz normal play, 2–4 Hz attacks/transitions).
+- **Tuning freeze:** no `action_zone.py` / `wide_safety_camera.py` weight or threshold changes until the scorecard (issue #8) exists. `BETA_C` stays 0.0 permanently.
+- Pilot-first: 2 clips (the missed-goal 0–90s window + one never-tuned-on fresh clip) before the wider 4–6 clip set.
+- Ball/pose signal prep is paid; only proceeds if the free-signal bake-off misses goals (issue #10 gate).
+
+**Issue map:** #5 labeling tool · #6 preview videos · #7 pilot labels · #8 scorecard script · #9 free-signal bake-off (centroid / Action Zone / static-wide baseline) · #10 paid-signal decision gate (ball nudge, pose) · #11 median-of-3 jitter filter (awaiting Johnson's go) · #12 expand to 4–6 labeled clips.
+
+**Key constraint for #5:** label yaw convention and timestamp base must match `play_location.jsonl` exactly — Claude must verify against real Phase 1 data before labels are trusted.
+
+**Open inputs needed from Johnson:** (a) pick the fresh pilot clip (ideally containing a watched, timestamped goal); (b) go/no-go on #11.
+
+**Infra note (5 July 2026, `6c5905e`):** `scripts/gh.sh` extended with `issue create` / `issue list` subcommands. The known `dispatch` false-error bug (3B.9) remains undiagnosed.
 
 ## Ball tracker — MOG2-primary track
 
