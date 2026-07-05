@@ -42,6 +42,17 @@ Do not request previous chat history or inspect broad logs unless the active tas
 
 Use `scripts/gh.sh` for all GitHub API work: file reads/pushes, workflow dispatch, run status, failed-run logs, artifacts. It requires `GH_PAT` in the environment. Do not hand-roll curl/Python API boilerplate; if gh.sh lacks an operation, extend gh.sh instead. `gh.sh logs <run_id>` returns the ANSI-stripped error window only — never pull full raw logs into context.
 
+### Vast.ai workflows
+
+Any workflow with a Vast.ai element (instance creation and/or termination) must reuse the proven lifecycle block verbatim from `playcam-poc.yml`'s `Launch reliable Vast.ai GPU instance` step and its paired `Terminate Vast.ai instance` step — do not hand-write a new launch/terminate sequence, even a "simpler" one for a lightweight script. This means:
+
+- A `delete_instance()` helper that tries all 3 endpoints (`console.vast.ai/api/v0`, `cloud.vast.ai/api/v0`, `cloud.vast.ai/api/v1`) before giving up, used for every cleanup call site, not just the final step.
+- Try up to 5 cheapest matching offers in one dispatch, cleaning up each one that doesn't reach `running` before trying the next — don't fail/require a manual redispatch on the first bad offer.
+- Write `instance_id` to `$GITHUB_OUTPUT` only once an instance is confirmed selected (`running` + reachable IP) — at that point exactly one live instance exists and it's always tracked, so the final termination step never has to guess.
+- Final termination step prints `::error::...` (not a plain warning) if all endpoints fail, so a leak surfaces as a visible run failure instead of a silent log line.
+
+Adapt the offer *query* (GPU vs CPU-only, resource thresholds) to the script's actual needs — that part is legitimately script-specific. The launch-retry/cleanup/termination *mechanics* are not; copy them. This was a real gap (not just theoretical) as of 5 July 2026 — see `docs/ai-project-state.md` change log for the incident.
+
 ## Debug budget
 
 Maximum 3 diagnose→fix→dispatch cycles per chat. After the third cycle, update the state document and hand off to a fresh chat.
