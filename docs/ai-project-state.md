@@ -228,7 +228,7 @@ Each stage must:
 
 **Key constraint for #5:** label yaw convention and timestamp base must match `play_location.jsonl` exactly — Claude must verify against real Phase 1 data before labels are trusted.
 
-**Open inputs needed from Johnson:** (a) pick the fresh pilot clip (ideally containing a watched, timestamped goal); (b) go/no-go on #11.
+**Open inputs needed from Johnson:** (a) pick the fresh pilot clip (ideally containing a watched, timestamped goal). (b) #11 jitter filter: Johnson chose HOLD (5 July 2026) — do not ship until he says go. (c) Labeler's device is not yet known — the #5 tool must be a responsive browser app (works on laptop or tablet) and must not assume desktop-only until confirmed.
 
 **Infra note (5 July 2026, `6c5905e`):** `scripts/gh.sh` extended with `issue create` / `issue list` subcommands. The known `dispatch` false-error bug (3B.9) remains undiagnosed.
 
