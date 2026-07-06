@@ -427,7 +427,14 @@ equirectangular video
 
 ## Security gate — urgent
 
-Do not store OAuth refresh tokens, client secrets, API keys, or similar credentials in repository source files. A credential is currently embedded in `playcam/chunked_pipeline.py`; rotate/revoke it and move replacement access to GitHub Actions Secrets or another secret store before treating the public repository as safe. Do not paste the credential into logs, issues, docs, or chat.
+Do not store OAuth refresh tokens, client secrets, API keys, or similar credentials in repository source files. Do not paste credentials into logs, issues, docs, or chat.
+
+**Status (6 July 2026, `ee5d66f`):** the Drive OAuth client id / client secret / refresh token hardcoded in `playcam/chunked_pipeline.py` were removed from HEAD. The script now reads `GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET`, `GDRIVE_REFRESH_TOKEN` from the environment at token-refresh time (lazy, inside `get_access_token()`, so `--help`/argparse still work) and exits with a clear error if any is missing. Verified locally: syntax OK, `--help` OK, missing-env exits 1 with instruction, no credential strings remain in the file. No workflow currently invokes `chunked_pipeline.py`, so no YAML secrets wiring was needed yet — any future workflow that runs it must pass the three `GDRIVE_*` values from GitHub Actions Secrets.
+
+**Still open — requires Johnson (Claude cannot do this):**
+1. The old credentials remain in git history and must be treated as compromised: revoke/rotate the OAuth client secret and refresh token in Google Cloud Console.
+2. Add the replacement values as GitHub Actions Secrets named `GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET`, `GDRIVE_REFRESH_TOKEN`.
+3. Only after rotation is the public repo safe; removing from HEAD alone is not sufficient. No history rewrite/force-push was done (out of policy).
 
 ## Claude operating mode — low-token execution
 
