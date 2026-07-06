@@ -49,7 +49,7 @@ jobs:
             set +a
           fi
           export LABELING_TOOL_PORT="${LABELING_TOOL_PORT:-8090}"
-          nohup python3 app.py >> /tmp/labeling-tool.log 2>&1 &
+          nohup python3 "$HOME/ffa-labeling-tool/app.py" >> /tmp/labeling-tool.log 2>&1 &
           EOF
           chmod +x "$WRAPPER"
 
