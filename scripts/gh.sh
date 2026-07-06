@@ -12,6 +12,7 @@
 #   gh.sh artifacts <run_id>                         # list artifacts for a run
 #   gh.sh issue create "<title>" <body_file>         # open a GitHub issue
 #   gh.sh issue list                                 # list open issues
+#   gh.sh issue close <num> [comment_file]           # comment (optional) + close issue
 set -euo pipefail
 
 REPO="JhnsonO/ffa-automations"
@@ -143,6 +144,19 @@ PY
     curl -sf -X POST "${auth[@]}" "${json[@]}" "${API}/issues" -d "$payload" \
       | python3 -c "import json,sys; d=json.load(sys.stdin); print('issue #%d %s' % (d['number'], d['html_url']))"
     ;;
+  close)
+    num="${1:?issue_number}"; body_file="${2:-}"
+    if [ -n "$body_file" ]; then
+      payload=$(python3 - "$body_file" <<'PY'
+import json,sys
+print(json.dumps({"body":open(sys.argv[1]).read()}))
+PY
+      )
+      curl -sf -X POST "${auth[@]}" "${json[@]}" "${API}/issues/${num}/comments" -d "$payload" >/dev/null
+    fi
+    curl -sf -X PATCH "${auth[@]}" "${json[@]}" "${API}/issues/${num}" -d '{"state":"closed"}' \
+      | python3 -c "import json,sys; d=json.load(sys.stdin); print('issue #%d %s' % (d['number'], d['state']))"
+    ;;
   list)
     curl -s "${auth[@]}" "${json[@]}" "${API}/issues?state=open&per_page=30" | python3 -c "
 import json,sys
@@ -150,7 +164,7 @@ for i in json.load(sys.stdin):
     if 'pull_request' in i: continue
     print('#%d %s' % (i['number'], i['title']))"
     ;;
-  *) echo "usage: gh.sh issue create '<title>' <body_file> | gh.sh issue list" >&2; exit 1;;
+  *) echo "usage: gh.sh issue create '<title>' <body_file> | close <num> [comment_file] | list" >&2; exit 1;;
   esac
   ;;
 
