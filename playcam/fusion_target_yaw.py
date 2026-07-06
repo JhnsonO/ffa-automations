@@ -1,64 +1,70 @@
 #!/usr/bin/env python3
-"""Offline 4-tier camera target_yaw fusion (playcam).
+"""Offline camera target_yaw fusion (playcam).
 
-CORRECTED 6 July 2026: this version takes its ball-lock signal from the
-EXISTING, established ball tracker's own Stage 2 output (tracklets.json,
-status=="anchor") -- NOT from raw MOG2 candidates. An earlier version of
-this script built its own confidence/geometry/persistence/continuity logic
-directly on raw mog2_candidates.json; that bypassed the actual ball tracker
-entirely and re-implemented (poorly) something the tracker's own Stage 2
-linker already does properly. That approach is retired. Player-flow's job
-is to sit ON TOP of the established tracker as an ahead-of-play framing
-signal -- not to compete with it or be used to second-guess it.
+REVISED 6 July 2026 (2nd correction): reframed around Johnson's explicit
+safety spec so player-flow cannot cause unbounded drift. The mental model
+is now: "Ball/player cluster = where the camera lives. Flow = which side
+of that area the camera gives extra room to." Flow is a single, small,
+continuously fading look-ahead OFFSET added on top of wherever the anchor
+already is -- never a separate signal that can walk the camera off on its
+own, and never able to point outside the venue's usable range.
 
-The ball tracker itself (ball_tracker/run_tracker.py, stage2_temporal_link.py,
-and everything else under Frozen tracker boundaries in
-docs/ai-project-state.md) is NOT modified, NOT re-run, and NOT diagnosed by
-this script. This script only *reads* its already-produced, already-frozen
-Stage 2 output (tracklets.json) and trusts its own status field as-is.
+Ball input still comes from the established tracker's own Stage 2 output
+(tracklets.json, status=="anchor") -- unchanged from the prior correction,
+still not raw MOG2, still not re-diagnosing the tracker. What changed this
+revision is entirely in how the flow offset is applied and safeguarded:
 
-Priority order (highest first):
-  1. Ball-lock        -- a status=="anchor" tracklet (the tracker's own
-                         Stage 2 linker's highest-quality tier: >=8
-                         observations, mean confidence >=0.20, coverage
-                         >=0.50, anchor_strength >=0.55 -- these thresholds
-                         are stage2_temporal_link.py's own, unmodified,
-                         reused verbatim) has a directly-observed frame in
-                         this sample's window. target_yaw = that anchor's
-                         yaw, PLUS a small ahead-of-play lead offset in the
-                         sustained flow direction, if flow is sustained
-                         (bounded, conservative -- see TIER1_LEAD_OFFSET_DEG).
-  2. Flow-hold         -- an anchor was seen recently (within
-                         --hold-max-samples) but isn't in this window; hold
-                         near the last anchor yaw, nudged by current flow
-                         direction if present, rather than reverting to
-                         centroid immediately.
-  3. Flow-only bias    -- no recent anchor, but the player-flow signal
-                         shows *sustained* multi-track agreement; nudge
-                         centroid yaw gently in that direction.
-  4. Centroid fallback -- none of the above; person_centroid_yaw as-is.
+  1. Anchor position ("where the camera lives"), in priority order:
+       - a fresh status=="anchor" tracklet observation this sample -> its yaw
+       - else, if one was seen within --hold-max-samples (~2s) -> hold there
+       - else -> person_centroid_yaw (player-group centroid; safety fallback)
+  2. Flow offset ("which side to give extra room"): a single continuously-
+     decaying value, not a per-tier nudge. When flow is sustained, it ramps
+     TOWARD a bounded look-ahead offset (default 10deg, within Johnson's
+     specified 5-15deg range) in the flow direction; whenever flow is not
+     sustained (slows, reverses, disappears), it ramps back toward zero at
+     the same rate -- "fades out quickly", never snaps to/from zero.
+     Applied additively on top of the anchor position in ALL cases,
+     including a fresh precise anchor -- exactly Johnson's "anchored at
+     -30, then lean a controlled amount further left" model, not a replacement.
+  3. Hard venue clamp: anchor+offset is clamped to the venue's usable yaw
+     range before being pursued -- reuses the SAME range already
+     established and used by the real renderer (`wide_safety_camera.py`:
+     WIDE_YAW_RANGE_DEG=45, applied around venue["wide_yaw"] from
+     playcam/venue_profiles/st_margarets.json, currently yaw=0.0). This
+     script cannot pan the proposed target outside venue_wide_yaw+/-45deg,
+     regardless of what ball/flow evidence suggests.
+  4. Rate limiting, not EMA: the previous version used an ad-hoc EMA smooth.
+     This revision instead pursues the clamped target at a maximum angular
+     speed, mirroring wide_safety_camera.py's own established wide-mode
+     pursuit pattern exactly (max_step = max_pan_speed * dt). Constant
+     reused verbatim from smooth_camera_path.py's DEFAULT_MAX_PAN_SPEED_DEG_S
+     (=25 deg/s) -- copied, not imported, to avoid pulling crop_utils/cv2
+     into an offline yaw-only script. This is real rate-limiting, not
+     cosmetic smoothing, and is the single mechanism guaranteeing "no hard
+     snaps" for every source of change (fresh anchor, held anchor, flow
+     offset ramp, or falling back to centroid).
 
-A final light exponential smoothing pass is applied across the whole
-target_yaw sequence (circular-safe) to damp step changes at tier
-transitions -- see SMOOTHING_ALPHA.
+Wide-mode zoom-out-when-uncertain (Johnson's "safety" bullet) is NOT
+implemented here -- this script only ever proposes a yaw, it has no FOV/
+zoom concept. That behaviour already exists in wide_safety_camera.py's own
+wide/follow FSM and is unaffected by this script; wiring this script's
+output into that FSM is a separate future integration step.
 
 Inputs:
-  - tracklets.json     (ball_tracker Stage 2 output, e.g. artifact 7944978610
-                        from run 28355256427 -- already computed, already
-                        committed-adjacent evidence in docs/ai-project-state.md;
-                        NOT regenerated by this script, zero paid compute)
-  - play_location.jsonl (playcam/play_location.py output)
+  - tracklets.json      (ball_tracker Stage 2 output, e.g. artifact 7944978610
+                         from run 28355256427 -- already computed, zero paid
+                         compute to reuse)
+  - play_location.jsonl  (playcam/play_location.py output)
+  - playcam/venue_profiles/st_margarets.json (read directly for wide_yaw;
+                         not modified)
 
-This script imports and reuses rather than duplicating:
+Reuses rather than duplicates:
   - playcam.player_flow_bias.compute_flow_signal()  (direction/sustain)
 
-Decision cadence matches play_location.jsonl's native ~2Hz sampling, not
-full video frame rate -- this remains an offline logic check, not a
-per-frame render signal. Wiring into an actual per-frame render, and
-whether the two source files truly share an identical frame clock, are
-both explicitly NOT verified here -- see docs/ai-project-state.md for the
-alignment assumption this relies on (same ~2-minute source clip, frame
-range 6-3596 in both, CLIP_FPS shared).
+Still offline, still no render, still no paid compute, still no tracker/
+renderer/frozen file modified or re-run. Decision cadence still matches
+play_location.jsonl's ~2Hz sampling, not full frame rate.
 """
 import argparse
 import csv
@@ -71,61 +77,80 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from playcam.player_flow_bias import compute_flow_signal, load_records as load_play_location  # noqa: E402
 
-CLIP_FPS = 3596 / 120.0  # shared assumption with mog2/tracklet frame range 6-3596 for this clip
+CLIP_FPS = 3596 / 120.0  # shared assumption with tracklets/play_location frame range 6-3596 for this clip
 
-# --- Tier 1: ball-lock (from the established tracker's own Stage 2 anchors) ---
-# ANCHOR_STATUSES intentionally does not include "passing" (96 tracklets that
-# cleared Stage 2's linker but were never individually adjudicated) or
-# "fragment" (255, Stage 2's own rejects). "anchor" is Stage 2's strictest,
+# --- Anchor source (established tracker's own Stage 2 output) --------------
+# Unchanged from the prior correction: only Stage 2's own strictest,
 # pre-existing category (stage2_temporal_link.py: MIN_OBS_FOR_ANCHOR=8,
 # MIN_MEAN_CONF_FOR_ANCHOR=0.20, MIN_COVERAGE_FOR_ANCHOR=0.50,
-# MIN_ANCHOR_STRENGTH=0.55) and the only category Johnson has directly
-# adjudicated (20/25 judged likely-ball -- i.e. even this tier is ~80%
-# precision, not 100%; that residual uncertainty is the tracker's own, not
-# introduced by this script).
+# MIN_ANCHOR_STRENGTH=0.55) counts as a reliable ball position. No
+# interpolation within a tracklet's span; no additional continuity gate
+# on top -- Stage 2's own linker already established these as coherent.
 ANCHOR_STATUSES = ("anchor",)
+HOLD_MAX_SAMPLES = 4  # ~2s: how long to hold the last anchor position before falling to centroid
 
-# Small, bounded ahead-of-play lead added ON TOP of a trusted anchor position
-# when flow is sustained. Deliberately the smallest of the three nudges --
-# we already have a precise, human-partially-vetted position here, so flow
-# should only ever lean it slightly toward where play is developing, never
-# override it.
-TIER1_LEAD_OFFSET_DEG = 3.0
+# --- Flow look-ahead offset --------------------------------------------------
+# Bounded magnitude, within Johnson's specified 5-15deg range -- picked
+# near the low-middle of that range as a conservative first-pass default.
+LOOKAHEAD_OFFSET_DEG = 10.0
+# Per-sample blend toward the current target offset (0 when flow isn't
+# sustained, +/-LOOKAHEAD_OFFSET_DEG when it is). At ~2Hz, alpha=0.35 fades
+# the offset to <10% of its value within about 3s of flow going quiet --
+# "fades out quickly" without a hard on/off snap. Same alpha reused from
+# this project's prior EMA smoothing precedent, not newly invented.
+FLOW_OFFSET_ALPHA = 0.35
 
-# --- Tier 2: flow-hold -----------------------------------------------------
-# How many ~2Hz samples (~0.5s each) to keep holding near the last known
-# anchor position after it disappears, before giving up on it entirely.
-# Unchanged from the prior version's reasoning: conservative, ~2s, well
-# short of the ~13s flow-only build-up seen in this clip's t=41-54s window.
-HOLD_MAX_SAMPLES = 4
-HOLD_FLOW_NUDGE_DEG = 2.0
+# --- Hard venue yaw clamp ----------------------------------------------------
+# CORRECTED after smoke-testing: an earlier pass of this script reused
+# wide_safety_camera.py's WIDE_YAW_RANGE_DEG=45 (venue wide_yaw +/- 45) as
+# the clamp. That constant is specific to the real renderer's WIDE-mode
+# idle-drift pursuit (a conservative subset used only when there is no
+# confident target) -- NOT the physical pitch boundary. Applying it here
+# would have clamped genuine anchor positions (e.g. the known real goal at
+# yaw~-55deg, and 57/240 samples in this run) to an artificially narrow
+# window, actively fighting the tracker's own valid evidence. The actual
+# "cannot pan into fences, empty corners, or off-pitch areas" boundary is
+# the venue profile's own human-calibrated play_area polygon
+# (playcam/venue_profiles/st_margarets.json, "human-calibrated by Johnson
+# for MOG2 masking" per docs/ai-project-state.md) -- its x-extent converted
+# to yaw is the real usable range, computed directly below rather than
+# hardcoded, so it stays correct if a different venue profile is used.
+VENUE_PROFILE_PATH = REPO_ROOT / "playcam" / "venue_profiles" / "st_margarets.json"
 
-# --- Tier 3: flow-only bias -------------------------------------------------
-# Real sustained-sample mean_delta_yaw_deg values in this clip mostly fall
-# in the ~1.5-5 deg/sample range (see player_flow_bias.py validation notes
-# in docs/ai-project-state.md). Largest of the three nudges: this is the
-# ONLY signal available when there's no anchor evidence at all.
-FLOW_BIAS_NUDGE_DEG = 4.0
-
-# Final smoothing pass, applied to the whole target_yaw sequence regardless
-# of tier, to damp step changes at tier transitions. alpha=0.35 reuses the
-# same EMA precedent already used elsewhere in this project's camera-bias
-# smoothing (activity bias, prior session) -- a reasonable starting point,
-# not tuned to this clip's specific goal.
-SMOOTHING_ALPHA = 0.35
+# --- Rate limit (replaces the previous EMA smoothing pass) ------------------
+# Copied verbatim from playcam/smooth_camera_path.py (DEFAULT_MAX_PAN_SPEED_DEG_S)
+# -- not imported directly, to avoid pulling crop_utils/cv2 into an offline
+# yaw-only script. Mirrors wide_safety_camera.py's own pursuit pattern
+# (max_step = max_pan_speed * dt) so every source of yaw change (fresh
+# anchor, held anchor, flow ramp, or centroid fallback) is rate-limited
+# identically -- the single mechanism guaranteeing no hard snaps.
+MAX_PAN_SPEED_DEG_S = 25.0
 
 
 def circular_delta(a, b):
     return ((a - b + 180) % 360) - 180
 
 
+def load_venue_bounds(path):
+    """Returns (wide_yaw, venue_lo, venue_hi). wide_yaw is still read for
+    reference/reporting; venue_lo/hi are the play_area polygon's actual
+    x-extent converted to yaw -- the real physical pitch/venue boundary,
+    not the narrower wide-mode-only subset."""
+    profile = json.loads(Path(path).read_text(encoding="utf-8"))
+    wide_yaw = profile.get("wide_fallback", {}).get("yaw", 0.0)
+    play_area = profile.get("play_area")
+    if not play_area:
+        return wide_yaw, -180.0, 180.0
+    frame_width = play_area["frame_width"]
+    xs = [pt[0] for pt in play_area["polygon"]]
+    yaws = [(x / frame_width - 0.5) * 360.0 for x in xs]
+    return wide_yaw, min(yaws), max(yaws)
+
+
 def load_anchor_lookup(tracklets_path, anchor_statuses=ANCHOR_STATUSES):
     """Frame-indexed lookup of directly-observed anchor-tracklet positions.
-    Returns dict: frame_idx -> list of (yaw, weighted_conf). Only frames
-    actually present in a tracklet's `frames` list are used -- no
-    interpolation/extrapolation within a tracklet's span, so coverage is
-    honestly sparse rather than manufactured.
-    """
+    Returns dict: frame_idx -> list of (yaw, weighted_conf). No
+    interpolation/extrapolation within a tracklet's span."""
     data = json.loads(Path(tracklets_path).read_text(encoding="utf-8"))
     lookup = {}
     for t in data["tracklets"]:
@@ -138,12 +163,9 @@ def load_anchor_lookup(tracklets_path, anchor_statuses=ANCHOR_STATUSES):
 
 
 def sample_anchor_for_window(anchor_lookup, frame_lo, frame_hi):
-    """Highest-confidence anchor observation within [frame_lo, frame_hi],
-    or None. No additional continuity/persistence gating is applied here --
-    Stage 2's own linker already established these as coherent tracklets;
-    re-gating them would be exactly the kind of second-guessing of the
-    established tracker this revision is meant to stop doing.
-    """
+    """Highest-confidence anchor observation within [frame_lo, frame_hi], or
+    None. No additional continuity/persistence gating -- Stage 2's own
+    linker already established these as coherent."""
     best = None
     for f in range(frame_lo, frame_hi + 1):
         for (yaw, conf) in anchor_lookup.get(f, []):
@@ -152,8 +174,9 @@ def sample_anchor_for_window(anchor_lookup, frame_lo, frame_hi):
     return best
 
 
-def run_fusion(tracklets_path, play_location_path, args):
+def run_fusion(tracklets_path, play_location_path, venue_profile_path, args):
     anchor_lookup = load_anchor_lookup(tracklets_path)
+    wide_yaw, venue_lo, venue_hi = load_venue_bounds(venue_profile_path)
 
     records = load_play_location(play_location_path)
     flow_rows = compute_flow_signal(
@@ -161,9 +184,11 @@ def run_fusion(tracklets_path, play_location_path, args):
     )
     flow_by_ts = {round(r["timestamp"], 3): r for r in flow_rows}
 
-    raw_rows = []
-    last_ball_yaw = None
-    samples_since_ball = None  # None until the first anchor is ever seen
+    rows = []
+    last_anchor_yaw = None
+    samples_since_anchor = None  # None until the first anchor is ever seen
+    flow_offset = 0.0
+    camera_yaw_state = None  # rate-limited output state
     prev_t = 0.0
 
     for i, rec in enumerate(records):
@@ -181,79 +206,81 @@ def run_fusion(tracklets_path, play_location_path, args):
 
         ball_conf = ""
         if anchor_hit is not None:
-            tier = 1
+            anchor_source = "anchor"
             anchor_yaw, conf = anchor_hit
             ball_conf = round(conf, 3)
-            lead = args.tier1_lead_offset_deg * flow_dir if flow_sustained else 0.0
-            target_yaw = ((anchor_yaw + lead + 180) % 360) - 180
-            last_ball_yaw = anchor_yaw
-            samples_since_ball = 0
+            last_anchor_yaw = anchor_yaw
+            samples_since_anchor = 0
+            anchor_position = anchor_yaw
         elif (
-            samples_since_ball is not None
-            and samples_since_ball < args.hold_max_samples
-            and last_ball_yaw is not None
+            samples_since_anchor is not None
+            and samples_since_anchor < args.hold_max_samples
+            and last_anchor_yaw is not None
         ):
-            tier = 2
-            samples_since_ball += 1
-            nudge = args.hold_flow_nudge_deg * flow_dir
-            target_yaw = ((last_ball_yaw + nudge + 180) % 360) - 180
-        elif flow_sustained and flow_dir != 0 and centroid_yaw is not None:
-            tier = 3
-            nudge = args.flow_bias_nudge_deg * flow_dir
-            target_yaw = ((centroid_yaw + nudge + 180) % 360) - 180
-            if samples_since_ball is not None:
-                samples_since_ball += 1
+            anchor_source = "held_anchor"
+            samples_since_anchor += 1
+            anchor_position = last_anchor_yaw
         else:
-            tier = 4
-            target_yaw = centroid_yaw
-            if samples_since_ball is not None:
-                samples_since_ball += 1
+            anchor_source = "centroid"
+            if samples_since_anchor is not None:
+                samples_since_anchor += 1
+            anchor_position = centroid_yaw
 
-        raw_rows.append(
+        # Flow look-ahead offset: ramp toward the bounded target, in either
+        # direction, at the same rate -- ramps UP when sustained (no
+        # instant jump to full offset) and fades back toward 0 otherwise.
+        target_offset = args.lookahead_offset_deg * flow_dir if (flow_sustained and flow_dir != 0) else 0.0
+        flow_offset += (target_offset - flow_offset) * args.flow_offset_alpha
+
+        combined_raw_yaw = None
+        clamped_yaw = None
+        if anchor_position is not None:
+            combined_raw_yaw = ((anchor_position + flow_offset + 180) % 360) - 180
+            clamped_yaw = max(venue_lo, min(venue_hi, combined_raw_yaw))
+
+        # Rate-limited pursuit of the clamped target -- mirrors
+        # wide_safety_camera.py's own wide-mode pursuit exactly.
+        dt = (t - prev_t) if i > 0 else 0.0
+        if clamped_yaw is not None:
+            if camera_yaw_state is None:
+                camera_yaw_state = clamped_yaw
+            else:
+                diff = circular_delta(clamped_yaw, camera_yaw_state)
+                max_step = args.max_pan_speed_deg_s * dt
+                step = max(-max_step, min(max_step, diff))
+                camera_yaw_state = ((camera_yaw_state + step + 180) % 360) - 180
+
+        rows.append(
             {
                 "timestamp": t,
-                "tier": tier,
-                "target_yaw": target_yaw,
-                "centroid_yaw": centroid_yaw,
+                "anchor_source": anchor_source,
+                "anchor_position": round(anchor_position, 2) if anchor_position is not None else "",
                 "flow_direction": flow_dir,
                 "flow_sustained": flow_sustained,
-                "flow_agreeing_tracks": flow.get("agreeing_tracks", 0),
+                "flow_offset_deg": round(flow_offset, 2),
+                "combined_raw_yaw": round(combined_raw_yaw, 2) if combined_raw_yaw is not None else "",
+                "clamped_yaw": round(clamped_yaw, 2) if clamped_yaw is not None else "",
+                "target_yaw": round(camera_yaw_state, 2) if camera_yaw_state is not None else "",
                 "ball_conf": ball_conf,
-                "last_ball_yaw": round(last_ball_yaw, 2) if last_ball_yaw is not None else "",
-                "samples_since_ball": samples_since_ball if samples_since_ball is not None else "",
+                "samples_since_anchor": samples_since_anchor if samples_since_anchor is not None else "",
             }
         )
         prev_t = t
 
-    # Final circular-safe EMA smoothing pass over target_yaw.
-    smoothed = None
-    for row in raw_rows:
-        ty = row["target_yaw"]
-        if ty is None:
-            row["target_yaw"] = ""
-            row["target_yaw_smoothed"] = round(smoothed, 2) if smoothed is not None else ""
-            continue
-        if smoothed is None:
-            smoothed = ty
-        else:
-            smoothed = smoothed + circular_delta(ty, smoothed) * args.smoothing_alpha
-            smoothed = ((smoothed + 180) % 360) - 180
-        row["target_yaw"] = round(ty, 2)
-        row["target_yaw_smoothed"] = round(smoothed, 2)
-
-    return raw_rows
+    return rows, wide_yaw, venue_lo, venue_hi
 
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("tracklets", help="Stage 2 tracklets.json from the established ball tracker")
     p.add_argument("play_location", help="play_location.jsonl (from play_location.py)")
+    p.add_argument("--venue-profile", default=str(VENUE_PROFILE_PATH),
+                    help="Venue profile JSON to read wide_fallback.yaw from")
     p.add_argument("--output", default="fusion_target_yaw.csv")
-    p.add_argument("--tier1-lead-offset-deg", type=float, default=TIER1_LEAD_OFFSET_DEG)
     p.add_argument("--hold-max-samples", type=int, default=HOLD_MAX_SAMPLES)
-    p.add_argument("--hold-flow-nudge-deg", type=float, default=HOLD_FLOW_NUDGE_DEG)
-    p.add_argument("--flow-bias-nudge-deg", type=float, default=FLOW_BIAS_NUDGE_DEG)
-    p.add_argument("--smoothing-alpha", type=float, default=SMOOTHING_ALPHA)
+    p.add_argument("--lookahead-offset-deg", type=float, default=LOOKAHEAD_OFFSET_DEG)
+    p.add_argument("--flow-offset-alpha", type=float, default=FLOW_OFFSET_ALPHA)
+    p.add_argument("--max-pan-speed-deg-s", type=float, default=MAX_PAN_SPEED_DEG_S)
     p.add_argument("--min-moving-vel", type=float, default=2.0)
     p.add_argument("--min-agreeing-tracks", type=int, default=3)
     p.add_argument("--min-sustain-samples", type=int, default=3)
@@ -262,25 +289,32 @@ def parse_args():
 
 def main():
     args = parse_args()
-    rows = run_fusion(args.tracklets, args.play_location, args)
+    rows, wide_yaw, venue_lo, venue_hi = run_fusion(
+        args.tracklets, args.play_location, args.venue_profile, args
+    )
     fieldnames = [
-        "timestamp", "tier", "target_yaw", "target_yaw_smoothed", "centroid_yaw",
-        "flow_direction", "flow_sustained", "flow_agreeing_tracks", "ball_conf",
-        "last_ball_yaw", "samples_since_ball",
+        "timestamp", "anchor_source", "anchor_position", "flow_direction", "flow_sustained",
+        "flow_offset_deg", "combined_raw_yaw", "clamped_yaw", "target_yaw", "ball_conf",
+        "samples_since_anchor",
     ]
     with open(args.output, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(rows)
 
-    tier_counts = {1: 0, 2: 0, 3: 0, 4: 0}
+    source_counts = {"anchor": 0, "held_anchor": 0, "centroid": 0}
+    clamp_hits = 0
     for r in rows:
-        tier_counts[r["tier"]] += 1
+        source_counts[r["anchor_source"]] += 1
+        if r["combined_raw_yaw"] != "" and r["clamped_yaw"] != "" and r["combined_raw_yaw"] != r["clamped_yaw"]:
+            clamp_hits += 1
     print(f"Wrote {args.output}: {len(rows)} rows")
+    print(f"Venue: wide_yaw={wide_yaw}, usable range=[{venue_lo}, {venue_hi}]")
     print(
-        f"Tier distribution: ball-lock={tier_counts[1]} flow-hold={tier_counts[2]} "
-        f"flow-only={tier_counts[3]} centroid={tier_counts[4]}"
+        f"Anchor source distribution: anchor={source_counts['anchor']} "
+        f"held_anchor={source_counts['held_anchor']} centroid={source_counts['centroid']}"
     )
+    print(f"Venue clamp actually triggered on {clamp_hits} samples")
 
 
 if __name__ == "__main__":
