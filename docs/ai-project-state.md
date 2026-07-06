@@ -1,6 +1,6 @@
 # FFA 360 / Playcam — AI Project State
 
-**Last reconciled:** 6 July 2026 (`ball_tracker/mog2_blob_filter.py` built and validated against real 2-minute candidate data, commit `339b7db`; static_suspect + wide_flat_suspect only — velocity/breakaway tagging and wiring into a v4 fusion CSV are NOT yet done; see Ball tracker — MOG2-primary track section)
+**Last reconciled:** 6 July 2026 (`ball_tracker/mog2_blob_filter.py` (`339b7db`) and `playcam/player_flow_bias.py` (`0f06425`) both built and validated against real 120s clip data; neither is wired into a fusion CSV or rendered yet — see Ball tracker — MOG2-primary track section)
 
 This is the operational handoff. It records what is evidenced in the repo, what has been visually/technically validated, and the next safe task. Do not infer that a design is complete merely because a prototype exists.
 
@@ -282,6 +282,24 @@ Johnson proposed MOG2 ball detection (already validated in `ball_tracker` — 20
 **Not yet done:** velocity-threshold rejection and high-velocity cluster-separation ("breakaway") tagging from the original ChatGPT architecture proposal are NOT implemented — only the static/geometric half. No fusion CSV (v4) consumes this filter's output yet; `mog2_fusion_comparison_v2.csv` remains the current working fusion version, untouched. No render dispatched, no paid compute spent this session.
 
 **Blocker:** none for what was built. **Next gate:** Johnson's call on (a) whether static-suspect/wide-flat-suspect alone is worth wiring into a v4 fusion CSV before attempting velocity/breakaway tagging, or (b) hold for the full heuristic set (velocity + breakaway) before the next fusion iteration. Either path needs a fresh render to visually confirm before further tuning, per the project's standing discipline that a code-level improvement isn't validated until Johnson watches it.
+
+### Player-flow average-direction-of-travel signal (6 July 2026, `0f06425`)
+
+**Origin:** design discussion in a separate 6 July chat ("Trim offset mapping for video frame extraction"), prompted by Johnson's observation that players generally move toward the ball, so sustained multi-player *direction* of travel (not position) could bias the camera when ball evidence is weak. Distinct from the existing `stable_group_yaw_pitch()` in `play_location.py`, which averages stable tracks' current position, not their movement direction.
+
+**Built:** `playcam/player_flow_bias.py` — standalone, additive. Consumes the existing `play_location.jsonl` output (`track_id`/`yaw`/`vel_deg_per_sec` per player per sample); does not modify `play_location.py`, any capture/render file, or any frozen file; needs no new detection and no paid compute. Per timestamp: computes circular delta_yaw per track vs. the previous sample, excludes tracks below `--min-moving-vel` (default 2.0 deg/sec, near the real median of 2.17 observed in this data — this is what excludes a stationary/near-stationary keeper "for free", per Johnson's call in the design chat, no explicit keeper detection built), requires >= `--min-agreeing-tracks` (default 3) tracks agreeing on left/right, and marks a sample `sustained` once that majority direction holds for >= `--min-sustain-samples` consecutive samples (default 3, ~1.0s at 2Hz).
+
+**Validated against real data** (same clip/artifact as the MOG2 filter work — `8093733676`, `play_location.jsonl`, t=0-120s, 240 samples, zero paid compute):
+
+- 92/240 samples (38%) registered a sustained flow direction somewhere across the clip.
+- **Real test against the known t~59-60s goal (left side, per Johnson's adjudication):** a sustained *leftward* flow signal builds from t~41s and runs continuously (with two brief gaps) to t=54.054s (run length reaches 15 samples, i.e. ~7s of unbroken agreement, preceded by an earlier ~3s leftward run from t~41s) — this is a genuine ~13-14s leftward build-up ending about 1.5-4.5s before the goal. From t=54.555-59.059s the signal goes quiet (direction=0, moving-track count drops to 1-3) rather than firing wrong -- i.e. during the shot itself, fewer players were registering enough velocity to qualify as "moving", so the signal fails safe (no direction) rather than misdirecting. Immediately after, t=59.559-60.56s shows a short sustained rightward run (3 samples), consistent with post-goal player reset/restart drift.
+- No wrong-direction sustained signal was found anywhere in the 53-62s window.
+
+**Honest limits:** (1) this is one goal in one 120-second clip — same overfitting risk already flagged for other single-clip tuning in this project (issue #8, scorecard, still outstanding). (2) The signal did not fire *during* the goal itself; its value here is the ~13s of correct leftward lean beforehand, not an instant-of-event trigger — a camera holding a bias from that build-up would likely already have been framing left by the time the shot happened, but this is inference from the numbers, not a rendered/watched result. (3) Thresholds (`min-moving-vel=2.0`, `min-agreeing-tracks=3`, `min-sustain-samples=3`) are first-pass, chosen from this clip's real distribution, not swept/optimized.
+
+**Not yet done:** no combination with MOG2 or centroid_yaw, no absolute target_yaw output, no `--yaw-source-csv`-compatible CSV, no render dispatched. This script currently outputs a direction/confidence signal only.
+
+**Blocker:** none. **Next gate:** decide whether to build the fusion step next (proposed 4-tier policy from the design chat: MOG2-confident ball lock > flow-hold when ball lost but flow sustained > small predictive bias when only flow present > centroid otherwise) and, if so, whether to test it against this same clip's known events before committing to a render, or expand to a second clip first to address the one-clip overfitting risk directly.
 
 **Traced a specific v2 failure at t≈48-50s (5 July 2026):** at t≈48.0s a genuine, repeated left-side MOG2 candidate (yaw≈−39.6°, 3 consecutive native frames) got discarded because a second, simultaneously-confident candidate existed in the same frames (yaw≈+50°) — the v2 "exactly one confident blob" rule rejects any ambiguous frame outright rather than disambiguating. In the gap, that unrelated +50° candidate then got accepted as "confirmed" by v2's persistence check a few samples later, plus several more unrelated single-frame jumps (+5°, +26°, +16°, −13°) also got accepted as "confirmed" — because v2's persistence only checked "was something confidently seen last time and now," never whether the two readings were actually consistent with each other.
 
