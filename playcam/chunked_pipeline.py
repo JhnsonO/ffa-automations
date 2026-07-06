@@ -36,6 +36,7 @@ Usage:
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -43,10 +44,16 @@ from pathlib import Path
 PLAYCAM_DIR = Path(__file__).parent
 WORK_DIR = PLAYCAM_DIR / "output" / "chunked"
 
-CLIENT_ID = "1062583777620-th4s8tiqbv69neq9icdj8hcn9vvh9nns.apps.googleusercontent.com"
-CLIENT_SECRET = "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"
-REFRESH_TOKEN = ("1//03eBp3pTvBn7lCgYIARAAGAMSNwF-L9Ir9lWZeZoQ2cHB1glI4uBW1oGwPDkewQ9Uq1"
-                  "vENWMDmqlKpLZstEUcPNQ94PUjA2ntEdc")
+
+def _require_env(name):
+    val = os.environ.get(name, "").strip()
+    if not val:
+        print(f"ERROR: required environment variable {name} is not set. "
+              f"Set GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET, GDRIVE_REFRESH_TOKEN "
+              f"(e.g. via GitHub Actions Secrets).", file=sys.stderr)
+        sys.exit(1)
+    return val
+
 
 
 def parse_args():
@@ -68,10 +75,13 @@ def parse_args():
 
 
 def get_access_token():
+    client_id = _require_env("GDRIVE_CLIENT_ID")
+    client_secret = _require_env("GDRIVE_CLIENT_SECRET")
+    refresh_token = _require_env("GDRIVE_REFRESH_TOKEN")
     result = subprocess.run(
         ["curl", "-s", "-X", "POST", "https://oauth2.googleapis.com/token",
-         "-d", f"client_id={CLIENT_ID}", "-d", f"client_secret={CLIENT_SECRET}",
-         "-d", f"refresh_token={REFRESH_TOKEN}", "-d", "grant_type=refresh_token"],
+         "-d", f"client_id={client_id}", "-d", f"client_secret={client_secret}",
+         "-d", f"refresh_token={refresh_token}", "-d", "grant_type=refresh_token"],
         capture_output=True, text=True)
     data = json.loads(result.stdout)
     if "access_token" not in data:
