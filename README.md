@@ -235,3 +235,50 @@ workflow does the rest.
   is force-cancelled mid-flight, check the Vast.ai console for orphaned instances.
 - **No public GoPro API** is the root reason for the Playwright fragility. Proper
   OAuth access would remove the cookie dance entirely.
+
+---
+
+## 11. Camera labeling tool (Issue #5)
+
+Browser tool for labeling desired virtual-camera yaw on 360° equirectangular
+preview clips: click where the camera should point, the tool derives yaw from
+the click position and saves the label immediately (no export/import step).
+Lives entirely under `labeling_tool/` and never imports `ball_tracker/` or
+`playcam/`.
+
+**Run it locally (local-folder clip source, no credentials needed):**
+
+```bash
+pip install --break-system-packages -r labeling_tool/requirements.txt
+cp your_test_clip.mp4 labeling_tool/clips/
+cd labeling_tool && python3 app.py
+# open http://localhost:8090
+```
+
+**Env vars it reads:**
+
+- `LABELING_TOOL_PORT` — bind port, default `8090`. Always binds `0.0.0.0`.
+- `GOOGLE_SERVICE_ACCOUNT_JSON` — same service-account JSON used elsewhere in
+  this repo (see `sheet_manager.py`). If unset, the Drive path is skipped
+  entirely and only local/cached clips are listed — no error, no crash.
+- `FFA_LABELING_DRIVE_FOLDER_ID` — Drive folder id to pull clips from. Falls
+  back to a `.ffa_labeling_drive_folder_id` file (same convention as the
+  existing `.ffa_drive_folder_id`) if the env var isn't set.
+
+**Point it at a real Drive folder later:** share the Drive folder with the
+service account's email (from the JSON key), then set
+`FFA_LABELING_DRIVE_FOLDER_ID` (or drop a `.ffa_labeling_drive_folder_id` file
+in the repo root) to that folder's id. Matching video files are cached into
+`labeling_tool/drive_cache/` on first request and served like local clips —
+no code change needed.
+
+**Deploy to the VM:** Actions → *Deploy Labeling Tool* → Run workflow. Installs
+the tool into `~/ffa-labeling-tool` on the `self-hosted` runner, starts it
+immediately, and installs an `@reboot` entry plus a 5-minute watchdog cron so
+it survives reboots and crashes (mirrors *Install Scanner Crontab on VM*).
+Existing `clips/`, `labels/` and `drive_cache/` data on the VM is never wiped
+by a redeploy. Reaching the bound port from outside the VM (firewall/tunnel)
+is a separate infra step, not something this workflow solves. To enable Drive
+on the VM without touching the workflow, create `~/ffa-labeling-tool/.env`
+by hand with `GOOGLE_SERVICE_ACCOUNT_JSON=...` and
+`FFA_LABELING_DRIVE_FOLDER_ID=...` — the wrapper script sources it if present.

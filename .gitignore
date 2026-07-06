@@ -22,6 +22,15 @@ __pycache__/
 .venv/
 venv/
 
+# Labeling tool runtime data (clips are large video files, labels are
+# per-labeler output -- neither belongs in git). Dirs kept via .gitkeep.
+labeling_tool/clips/*
+!labeling_tool/clips/.gitkeep
+labeling_tool/drive_cache/*
+!labeling_tool/drive_cache/.gitkeep
+labeling_tool/labels/*
+!labeling_tool/labels/.gitkeep
+
 # ─────────────────────────────────────────────────────────────
 # NOTE: state files are intentionally TRACKED — do not add them here:
 #   uploaded.db, upload_queue.json, size_check.json

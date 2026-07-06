@@ -1,0 +1,88 @@
+name: Deploy Labeling Tool
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy camera labeling tool to self-hosted VM
+    runs-on: self-hosted
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Python dependencies
+        run: |
+          pip3 install --break-system-packages -r labeling_tool/requirements.txt
+
+      - name: Copy tool into persistent runner directory
+        run: |
+          TARGET="$HOME/ffa-labeling-tool"
+          # Data dirs are created (not wiped) so labels/clips already saved on
+          # the VM from a prior deploy are never touched by a redeploy.
+          mkdir -p "$TARGET/clips" "$TARGET/labels" "$TARGET/drive_cache"
+          cp -f labeling_tool/app.py "$TARGET/app.py"
+          cp -f labeling_tool/requirements.txt "$TARGET/requirements.txt"
+          rm -rf "$TARGET/static"
+          cp -r labeling_tool/static "$TARGET/static"
+          if [ -f .ffa_labeling_drive_folder_id ]; then
+            cp .ffa_labeling_drive_folder_id "$TARGET/.ffa_labeling_drive_folder_id"
+          fi
+          echo "Deployed to $TARGET"
+
+      - name: Write wrapper script and install crontab
+        run: |
+          TARGET="$HOME/ffa-labeling-tool"
+          WRAPPER="$TARGET/run.sh"
+          cat > "$WRAPPER" <<'EOF'
+          #!/bin/bash
+          cd "$HOME/ffa-labeling-tool" || exit 1
+          # Optional local env file for secrets (GOOGLE_SERVICE_ACCOUNT_JSON,
+          # FFA_LABELING_DRIVE_FOLDER_ID) -- create this by hand on the VM.
+          # Never written by this workflow.
+          if [ -f "$HOME/ffa-labeling-tool/.env" ]; then
+            set -a
+            source "$HOME/ffa-labeling-tool/.env"
+            set +a
+          fi
+          export LABELING_TOOL_PORT="${LABELING_TOOL_PORT:-8090}"
+          nohup python3 app.py >> /tmp/labeling-tool.log 2>&1 &
+          EOF
+          chmod +x "$WRAPPER"
+
+          PGREP_PATTERN="ffa-labeling-tool/app.py"
+          NEW_CRON=$(crontab -l 2>/dev/null | grep -v "$WRAPPER" | grep -v "ffa-labeling-tool watchdog" || true)
+          {
+            [ -n "$NEW_CRON" ] && echo "$NEW_CRON"
+            echo "@reboot $WRAPPER"
+            echo "*/5 * * * * pgrep -f '$PGREP_PATTERN' >/dev/null || $WRAPPER # ffa-labeling-tool watchdog"
+          } | crontab -
+
+          echo "=== Runner user: $(whoami) ==="
+          echo "=== Home: $HOME ==="
+          echo "=== Installed crontab ==="
+          crontab -l
+          echo "=== Wrapper script ==="
+          cat "$WRAPPER"
+
+      - name: Start the tool now (don't wait for reboot/cron tick)
+        run: |
+          TARGET="$HOME/ffa-labeling-tool"
+          PGREP_PATTERN="ffa-labeling-tool/app.py"
+          # Idempotent: stop any already-running copy before starting fresh
+          # so this dispatch always reflects the code just deployed above.
+          pkill -f "$PGREP_PATTERN" || true
+          sleep 1
+          "$TARGET/run.sh"
+          sleep 3
+          if pgrep -f "$PGREP_PATTERN" >/dev/null; then
+            PID=$(pgrep -f "$PGREP_PATTERN" | head -1)
+            PORT="${LABELING_TOOL_PORT:-8090}"
+            echo "Labeling tool started, pid $PID, bound 0.0.0.0:$PORT"
+          else
+            echo "::error::Labeling tool did not start -- see /tmp/labeling-tool.log below"
+            cat /tmp/labeling-tool.log || true
+            exit 1
+          fi

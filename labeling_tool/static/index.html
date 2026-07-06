@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>FFA Camera Labeling Tool</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; padding: 20px 16px 60px; }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 19px; font-weight: 600; margin-bottom: 2px; }
+  .sub { color: #8b949e; font-size: 13px; margin-bottom: 18px; }
+
+  .topbar { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  select, button, input[type=text] { background: #161b22; border: 1px solid #30363d; color: #e6edf3; border-radius: 6px; padding: 8px 10px; font-size: 13px; }
+  button { cursor: pointer; }
+  button:hover { border-color: #58a6ff; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.primary { background: #238636; border-color: #238636; font-weight: 600; }
+  button.primary:hover { background: #2ea043; }
+  button.danger { background: #2d1117; border-color: #da3633; color: #f85149; }
+
+  .layout { display: grid; grid-template-columns: 1fr 320px; gap: 16px; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+
+  .video-card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 14px; }
+  .video-wrap { position: relative; background: #000; border-radius: 8px; overflow: hidden; }
+  video { display: block; width: 100%; height: auto; cursor: crosshair; }
+  .click-dot { position: absolute; width: 14px; height: 14px; margin-left: -7px; margin-top: -7px; border-radius: 50%; background: rgba(88,166,255,0.85); border: 2px solid #fff; pointer-events: none; opacity: 0; transition: opacity 0.6s ease; }
+
+  .controls { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .controls input[type=range] { flex: 1; min-width: 120px; }
+  .time { font-family: monospace; font-size: 12px; color: #8b949e; min-width: 92px; }
+  .speed-group button.active { background: #1f6feb; border-color: #1f6feb; }
+
+  .hint { font-size: 11.5px; color: #8b949e; margin-top: 10px; line-height: 1.6; }
+  .hint kbd { background: #21262d; border: 1px solid #30363d; border-radius: 4px; padding: 1px 5px; font-family: monospace; }
+
+  .panel { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 14px; height: fit-content; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: #58a6ff; margin-bottom: 10px; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 11.5px; color: #8b949e; margin-bottom: 4px; }
+  .event-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .event-grid button { font-size: 12px; padding: 8px 6px; }
+  .event-grid button.active { background: #1f6feb; border-color: #1f6feb; }
+  .conf-row { display: flex; align-items: center; gap: 8px; }
+  .conf-row input[type=range] { flex: 1; }
+  .conf-val { font-family: monospace; font-size: 12px; width: 34px; text-align: right; }
+  textarea { width: 100%; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; color: #e6edf3; font-size: 12px; resize: vertical; min-height: 50px; }
+
+  .status { font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-top: 10px; display: none; }
+  .status.ok { background: #0f2c18; border: 1px solid #238636; color: #3fb950; display: block; }
+  .status.err { background: #2d1117; border: 1px solid #da3633; color: #f85149; display: block; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+  tr.selected { background: #0c1e35; }
+  td input, td select { width: 100%; background: transparent; border: 1px solid transparent; color: #e6edf3; font-size: 12.5px; padding: 3px 4px; border-radius: 4px; }
+  td input:hover, td select:hover, td input:focus, td select:focus { border-color: #30363d; background: #0d1117; }
+  .row-actions button { padding: 4px 8px; font-size: 11px; }
+  .empty { color: #8b949e; font-size: 13px; padding: 16px 0; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⚽ FFA Camera Labeling Tool</h1>
+  <div class="sub">Click where the camera should point. Yaw and timestamp are captured automatically.</div>
+
+  <div class="topbar">
+    <select id="clipSelect"><option value="">Loading clips…</option></select>
+    <span id="clipMeta" class="sub" style="margin:0"></span>
+  </div>
+
+  <div class="layout">
+    <div class="video-card">
+      <div class="video-wrap" id="videoWrap">
+        <video id="player" preload="metadata"></video>
+        <div class="click-dot" id="clickDot"></div>
+      </div>
+
+      <div class="controls">
+        <button id="playBtn">▶</button>
+        <button id="stepBack">⏮ frame</button>
+        <button id="stepFwd">frame ⏭</button>
+        <span class="time"><span id="curTime">0.000</span> / <span id="durTime">0.000</span></span>
+        <input type="range" id="scrub" min="0" max="1000" step="1" value="0"/>
+        <div class="speed-group">
+          <button data-speed="0.5">0.5x</button>
+          <button data-speed="1" class="active">1x</button>
+          <button data-speed="2">2x</button>
+        </div>
+      </div>
+
+      <div class="hint">
+        Click the frame to save a label at the current playhead. Keys <kbd>1</kbd>-<kbd>6</kbd> set
+        goal/shot/attack/restart/normal/other (applies to the next click and re-tags the last one).
+        <kbd>space</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> step one frame ·
+        <kbd>[</kbd>/<kbd>]</kbd> adjust confidence.
+      </div>
+      <div id="status" class="status"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Next label defaults</h2>
+      <div class="field">
+        <label>Event (sticky — applies to next click)</label>
+        <div class="event-grid" id="eventGrid">
+          <button data-event="goal">Goal</button>
+          <button data-event="shot">Shot</button>
+          <button data-event="attack" class="active">Attack</button>
+          <button data-event="restart">Restart</button>
+          <button data-event="normal">Normal</button>
+          <button data-event="other">Other</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>Confidence (sticky)</label>
+        <div class="conf-row">
+          <input type="range" id="confSlider" min="0" max="1" step="0.05" value="0.8"/>
+          <span class="conf-val" id="confVal">0.80</span>
+        </div>
+      </div>
+      <div class="field">
+        <label>Notes for last click</label>
+        <textarea id="lastNotes" placeholder="optional"></textarea>
+      </div>
+      <div style="font-size:11.5px;color:#8b949e">
+        Last saved: <span id="lastSummary">—</span>
+      </div>
+    </div>
+  </div>
+
+  <table id="labelTable">
+    <thead>
+      <tr><th style="width:80px">Time (s)</th><th style="width:80px">Yaw°</th><th style="width:110px">Event</th><th style="width:90px">Conf.</th><th>Notes</th><th style="width:70px"></th></tr>
+    </thead>
+    <tbody id="labelBody"></tbody>
+  </table>
+  <div id="emptyMsg" class="empty" style="display:none">No labels yet for this clip.</div>
+</div>
+
+<script>
+const EVENTS = ["goal", "shot", "attack", "restart", "normal", "other"];
+
+const player = document.getElementById("player");
+const videoWrap = document.getElementById("videoWrap");
+const clickDot = document.getElementById("clickDot");
+const clipSelect = document.getElementById("clipSelect");
+const clipMeta = document.getElementById("clipMeta");
+const playBtn = document.getElementById("playBtn");
+const scrub = document.getElementById("scrub");
+const curTimeEl = document.getElementById("curTime");
+const durTimeEl = document.getElementById("durTime");
+const statusEl = document.getElementById("status");
+const labelBody = document.getElementById("labelBody");
+const emptyMsg = document.getElementById("emptyMsg");
+const confSlider = document.getElementById("confSlider");
+const confVal = document.getElementById("confVal");
+const lastNotesEl = document.getElementById("lastNotes");
+const lastSummaryEl = document.getElementById("lastSummary");
+const eventGrid = document.getElementById("eventGrid");
+
+const FRAME_STEP = 1 / 30; // nominal frame duration; browsers don't expose exact fps reliably
+
+let currentClipId = null;
+let labels = []; // newest-first
+let stickyEvent = "attack";
+let stickyConfidence = 0.8;
+let lastLabelId = null;
+let scrubbing = false;
+
+function showStatus(msg, ok) {
+  statusEl.textContent = msg;
+  statusEl.className = "status " + (ok ? "ok" : "err");
+  clearTimeout(showStatus._t);
+  showStatus._t = setTimeout(() => { statusEl.className = "status"; }, 2500);
+}
+
+function wrapYaw(y) {
+  return ((y + 180) % 360 + 360) % 360 - 180;
+}
+
+// Maps a click clientX/Y to a [0,1) fraction of the video's native width,
+// accounting for CSS letterboxing (object-fit-style) between the element's
+// rendered box and the video's native resolution. Returns null if the click
+// landed in a letterbox bar rather than on the actual frame.
+function clickToFraction(evt) {
+  const rect = player.getBoundingClientRect();
+  const vw = player.videoWidth, vh = player.videoHeight;
+  if (!vw || !vh) return null;
+  const elW = rect.width, elH = rect.height;
+  const videoAspect = vw / vh, elAspect = elW / elH;
+  let contentW, contentH, offsetX, offsetY;
+  if (elAspect > videoAspect) {
+    contentH = elH; contentW = elH * videoAspect;
+    offsetX = (elW - contentW) / 2; offsetY = 0;
+  } else {
+    contentW = elW; contentH = elW / videoAspect;
+    offsetX = 0; offsetY = (elH - contentH) / 2;
+  }
+  const xInEl = evt.clientX - rect.left;
+  const yInEl = evt.clientY - rect.top;
+  const xInContent = xInEl - offsetX;
+  const yInContent = yInEl - offsetY;
+  if (xInContent < 0 || xInContent > contentW || yInContent < 0 || yInContent > contentH) return null;
+  return { frac: xInContent / contentW, dotX: xInEl, dotY: yInEl };
+}
+
+async function loadClips() {
+  clipSelect.innerHTML = "<option value=''>Loading…</option>";
+  const res = await fetch("/api/clips");
+  const clips = await res.json();
+  clipSelect.innerHTML = "";
+  if (clips.length === 0) {
+    clipSelect.innerHTML = "<option value=''>No clips found — add files to labeling_tool/clips/</option>";
+    return;
+  }
+  for (const c of clips) {
+    const opt = document.createElement("option");
+    opt.value = c.id;
+    opt.textContent = c.id + (c.source === "drive_cache" ? "  (drive)" : "");
+    clipSelect.appendChild(opt);
+  }
+  await selectClip(clips[0].id);
+}
+
+async function selectClip(clipId) {
+  currentClipId = clipId;
+  clipSelect.value = clipId;
+  player.src = "/clips/" + encodeURIComponent(clipId);
+  lastLabelId = null;
+  lastSummaryEl.textContent = "—";
+  const res = await fetch("/api/labels/" + encodeURIComponent(clipId));
+  const data = await res.json();
+  labels = data.slice().reverse(); // newest first for display
+  renderTable();
+}
+
+function renderTable() {
+  labelBody.innerHTML = "";
+  emptyMsg.style.display = labels.length ? "none" : "block";
+  for (const rec of labels) {
+    labelBody.appendChild(buildRow(rec));
+  }
+}
+
+function buildRow(rec) {
+  const tr = document.createElement("tr");
+  tr.dataset.id = rec.id;
+  if (rec.id === lastLabelId) tr.classList.add("selected");
+
+  const tdTime = document.createElement("td");
+  tdTime.textContent = rec.timestamp.toFixed(3);
+
+  const tdYaw = document.createElement("td");
+  tdYaw.textContent = rec.desired_yaw.toFixed(1);
+
+  const tdEvent = document.createElement("td");
+  const evSel = document.createElement("select");
+  for (const e of EVENTS) {
+    const o = document.createElement("option");
+    o.value = e; o.textContent = e;
+    if (e === rec.event) o.selected = true;
+    evSel.appendChild(o);
+  }
+  evSel.addEventListener("change", () => updateLabel(rec.id, { event: evSel.value }));
+  tdEvent.appendChild(evSel);
+
+  const tdConf = document.createElement("td");
+  const confInput = document.createElement("input");
+  confInput.type = "number"; confInput.min = "0"; confInput.max = "1"; confInput.step = "0.05";
+  confInput.value = rec.confidence;
+  confInput.addEventListener("change", () => updateLabel(rec.id, { confidence: parseFloat(confInput.value) }));
+  tdConf.appendChild(confInput);
+
+  const tdNotes = document.createElement("td");
+  const notesInput = document.createElement("input");
+  notesInput.type = "text"; notesInput.value = rec.notes || "";
+  notesInput.addEventListener("change", () => updateLabel(rec.id, { notes: notesInput.value }));
+  tdNotes.appendChild(notesInput);
+
+  const tdActions = document.createElement("td");
+  tdActions.className = "row-actions";
+  const seekBtn = document.createElement("button");
+  seekBtn.textContent = "⏵"; seekBtn.title = "Seek here";
+  seekBtn.addEventListener("click", () => { player.currentTime = rec.timestamp; });
+  const delBtn = document.createElement("button");
+  delBtn.textContent = "✕"; delBtn.className = "danger";
+  delBtn.addEventListener("click", () => deleteLabel(rec.id));
+  tdActions.appendChild(seekBtn);
+  tdActions.appendChild(delBtn);
+
+  tr.append(tdTime, tdYaw, tdEvent, tdConf, tdNotes, tdActions);
+  return tr;
+}
+
+function findLabel(id) { return labels.find(r => r.id === id); }
+
+async function saveLabel(rec) {
+  // Optimistic insert so rapid clicking never feels laggy or drops a row.
+  const tempId = "tmp_" + Math.random().toString(36).slice(2);
+  const optimistic = { ...rec, id: tempId };
+  labels.unshift(optimistic);
+  lastLabelId = tempId;
+  renderTable();
+  updateLastSummary(optimistic);
+
+  try {
+    const res = await fetch("/api/labels/" + encodeURIComponent(currentClipId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(rec),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const saved = await res.json();
+    const idx = labels.findIndex(r => r.id === tempId);
+    if (idx !== -1) labels[idx] = saved;
+    if (lastLabelId === tempId) lastLabelId = saved.id;
+    renderTable();
+    updateLastSummary(saved);
+  } catch (e) {
+    // Roll back the optimistic row on failure so the table reflects reality.
+    labels = labels.filter(r => r.id !== tempId);
+    renderTable();
+    showStatus("Save failed: " + e.message, false);
+  }
+}
+
+async function updateLabel(id, patch) {
+  const rec = findLabel(id);
+  if (!rec) return;
+  const updated = { ...rec, ...patch };
+  labels = labels.map(r => (r.id === id ? updated : r));
+  renderTable();
+  try {
+    const res = await fetch("/api/labels/" + encodeURIComponent(currentClipId) + "/" + encodeURIComponent(id), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updated),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const saved = await res.json();
+    labels = labels.map(r => (r.id === id ? saved : r));
+    renderTable();
+  } catch (e) {
+    showStatus("Update failed: " + e.message, false);
+  }
+}
+
+async function deleteLabel(id) {
+  const prev = labels;
+  labels = labels.filter(r => r.id !== id);
+  renderTable();
+  try {
+    const res = await fetch("/api/labels/" + encodeURIComponent(currentClipId) + "/" + encodeURIComponent(id), { method: "DELETE" });
+    if (!res.ok) throw new Error(await res.text());
+  } catch (e) {
+    labels = prev;
+    renderTable();
+    showStatus("Delete failed: " + e.message, false);
+  }
+}
+
+function updateLastSummary(rec) {
+  lastSummaryEl.textContent = `t=${rec.timestamp.toFixed(2)}s  yaw=${rec.desired_yaw.toFixed(1)}°  ${rec.event}`;
+  lastNotesEl.value = rec.notes || "";
+}
+
+function flashDot(x, y) {
+  clickDot.style.left = x + "px";
+  clickDot.style.top = y + "px";
+  clickDot.style.opacity = "1";
+  clearTimeout(flashDot._t);
+  flashDot._t = setTimeout(() => { clickDot.style.opacity = "0"; }, 500);
+}
+
+// --- click-to-label -----------------------------------------------------
+player.addEventListener("click", (evt) => {
+  if (!currentClipId) return;
+  const hit = clickToFraction(evt);
+  if (!hit) return;
+  const yaw = wrapYaw((hit.frac - 0.5) * 360);
+  flashDot(hit.dotX, hit.dotY);
+  saveLabel({
+    timestamp: player.currentTime,
+    desired_yaw: Math.round(yaw * 100) / 100,
+    confidence: stickyConfidence,
+    event: stickyEvent,
+    notes: "",
+  });
+});
+
+// --- transport controls --------------------------------------------------
+playBtn.addEventListener("click", () => { player.paused ? player.play() : player.pause(); });
+player.addEventListener("play", () => { playBtn.textContent = "⏸"; });
+player.addEventListener("pause", () => { playBtn.textContent = "▶"; });
+
+document.getElementById("stepBack").addEventListener("click", () => { player.pause(); player.currentTime = Math.max(0, player.currentTime - FRAME_STEP); });
+document.getElementById("stepFwd").addEventListener("click", () => { player.pause(); player.currentTime = Math.min(player.duration || Infinity, player.currentTime + FRAME_STEP); });
+
+document.querySelectorAll(".speed-group button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    player.playbackRate = parseFloat(btn.dataset.speed);
+    document.querySelectorAll(".speed-group button").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+  });
+});
+
+player.addEventListener("timeupdate", () => {
+  if (!scrubbing) scrub.value = player.duration ? String(Math.round((player.currentTime / player.duration) * 1000)) : "0";
+  curTimeEl.textContent = player.currentTime.toFixed(3);
+});
+player.addEventListener("loadedmetadata", () => {
+  durTimeEl.textContent = player.duration.toFixed(3);
+  clipMeta.textContent = `${player.videoWidth}×${player.videoHeight}`;
+});
+scrub.addEventListener("input", () => {
+  scrubbing = true;
+  if (player.duration) player.currentTime = (parseInt(scrub.value, 10) / 1000) * player.duration;
+});
+scrub.addEventListener("change", () => { scrubbing = false; });
+
+// --- sticky defaults panel ------------------------------------------------
+function setStickyEvent(ev) {
+  stickyEvent = ev;
+  document.querySelectorAll("#eventGrid button").forEach(b => b.classList.toggle("active", b.dataset.event === ev));
+}
+eventGrid.querySelectorAll("button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    setStickyEvent(btn.dataset.event);
+    if (lastLabelId) updateLabel(lastLabelId, { event: btn.dataset.event });
+  });
+});
+confSlider.addEventListener("input", () => {
+  stickyConfidence = parseFloat(confSlider.value);
+  confVal.textContent = stickyConfidence.toFixed(2);
+});
+lastNotesEl.addEventListener("change", () => {
+  if (lastLabelId) updateLabel(lastLabelId, { notes: lastNotesEl.value });
+});
+
+// --- keyboard shortcuts ----------------------------------------------------
+const EVENT_KEYS = { "1": "goal", "2": "shot", "3": "attack", "4": "restart", "5": "normal", "6": "other" };
+document.addEventListener("keydown", (evt) => {
+  const tag = (evt.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return; // don't hijack typing
+  if (evt.code === "Space") { evt.preventDefault(); player.paused ? player.play() : player.pause(); }
+  else if (evt.key === "ArrowLeft") { evt.preventDefault(); player.pause(); player.currentTime = Math.max(0, player.currentTime - FRAME_STEP); }
+  else if (evt.key === "ArrowRight") { evt.preventDefault(); player.pause(); player.currentTime = Math.min(player.duration || Infinity, player.currentTime + FRAME_STEP); }
+  else if (evt.key === "[") { stickyConfidence = Math.max(0, Math.round((stickyConfidence - 0.05) * 100) / 100); confSlider.value = stickyConfidence; confVal.textContent = stickyConfidence.toFixed(2); }
+  else if (evt.key === "]") { stickyConfidence = Math.min(1, Math.round((stickyConfidence + 0.05) * 100) / 100); confSlider.value = stickyConfidence; confVal.textContent = stickyConfidence.toFixed(2); }
+  else if (EVENT_KEYS[evt.key]) {
+    const ev = EVENT_KEYS[evt.key];
+    setStickyEvent(ev);
+    if (lastLabelId) updateLabel(lastLabelId, { event: ev });
+  }
+});
+
+clipSelect.addEventListener("change", () => selectClip(clipSelect.value));
+
+loadClips();
+</script>
+</body>
+</html>
