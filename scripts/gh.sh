@@ -14,6 +14,7 @@
 #   gh.sh issue list                                 # list open issues
 #   gh.sh issue close <num> [comment_file]           # comment (optional) + close issue
 #   gh.sh issue comment <num> <body_file>            # add a comment to an issue
+#   gh.sh issue comments <num>                       # list comments on an issue
 set -euo pipefail
 
 REPO="JhnsonO/ffa-automations"
@@ -155,6 +156,17 @@ PY2
     curl -sf -X POST "${auth[@]}" "${json[@]}" "${API}/issues/${num}/comments" -d "$payload" \
       | python3 -c "import json,sys; d=json.load(sys.stdin); print('comment on #' + d['html_url'].split('/issues/')[1].split('#')[0])"
     ;;
+  comments)
+    num="${1:?issue_number}"
+    curl -sf "${auth[@]}" "${json[@]}" "${API}/issues/${num}/comments?per_page=100" \
+      | python3 -c "
+import json,sys
+for c in json.load(sys.stdin):
+    print('----- comment id %s by %s at %s -----' % (c['id'], c['user']['login'], c['created_at']))
+    print(c['body'])
+    print()"
+    ;;
+
   close)
     num="${1:?issue_number}"; body_file="${2:-}"
     if [ -n "$body_file" ]; then
@@ -175,7 +187,7 @@ for i in json.load(sys.stdin):
     if 'pull_request' in i: continue
     print('#%d %s' % (i['number'], i['title']))"
     ;;
-  *) echo "usage: gh.sh issue create '<title>' <body_file> | close <num> [comment_file] | list" >&2; exit 1;;
+  *) echo "usage: gh.sh issue create '<title>' <body_file> | close <num> [comment_file] | list | comments <num> | comment <num> <body_file>" >&2; exit 1;;
   esac
   ;;
 
