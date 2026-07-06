@@ -13,6 +13,7 @@
 #   gh.sh issue create "<title>" <body_file>         # open a GitHub issue
 #   gh.sh issue list                                 # list open issues
 #   gh.sh issue close <num> [comment_file]           # comment (optional) + close issue
+#   gh.sh issue comment <num> <body_file>            # add a comment to an issue
 set -euo pipefail
 
 REPO="JhnsonO/ffa-automations"
@@ -143,6 +144,16 @@ PY
     )
     curl -sf -X POST "${auth[@]}" "${json[@]}" "${API}/issues" -d "$payload" \
       | python3 -c "import json,sys; d=json.load(sys.stdin); print('issue #%d %s' % (d['number'], d['html_url']))"
+    ;;
+  comment)
+    num="${1:?issue_number}"; body_file="${2:?body_file}"
+    payload=$(python3 - "$body_file" <<'PY2'
+import json,sys
+print(json.dumps({"body":open(sys.argv[1]).read()}))
+PY2
+    )
+    curl -sf -X POST "${auth[@]}" "${json[@]}" "${API}/issues/${num}/comments" -d "$payload" \
+      | python3 -c "import json,sys; d=json.load(sys.stdin); print('comment on #' + d['html_url'].split('/issues/')[1].split('#')[0])"
     ;;
   close)
     num="${1:?issue_number}"; body_file="${2:-}"
