@@ -1,6 +1,6 @@
 # FFA 360 / Playcam — AI Project State
 
-**Last reconciled:** 6 July 2026 (Render validation done: two local, zero-paid-compute renders — Test A known clip t=35-65s, Test B independent window t=0-30s of the same source recording. Safety properties hold in both: no drift, no snaps, rate/venue bounds respected. Core problem NOT solved: the goal mouth is not in frame during the actual shot in Test A — do not claim otherwise. See Render validation — Test A + Test B section below.)
+**Last reconciled:** 6 July 2026 — later same day: Action-Region Planner plan approved and issued as #13–#17; #4 (spam), #9, #10 closed. (Earlier 6 July: Render validation done: two local, zero-paid-compute renders — Test A known clip t=35-65s, Test B independent window t=0-30s of the same source recording. Safety properties hold in both: no drift, no snaps, rate/venue bounds respected. Core problem NOT solved: the goal mouth is not in frame during the actual shot in Test A — do not claim otherwise. See Render validation — Test A + Test B section below.))
 
 This is the operational handoff. It records what is evidenced in the repo, what has been visually/technically validated, and the next safe task. Do not infer that a design is complete merely because a prototype exists.
 
@@ -224,7 +224,26 @@ Each stage must:
 - Pilot-first: 2 clips (the missed-goal 0–90s window + one never-tuned-on fresh clip) before the wider 4–6 clip set.
 - Ball/pose signal prep is paid; only proceeds if the free-signal bake-off misses goals (issue #10 gate).
 
-**Issue map:** #5 labeling tool · #6 preview videos · #7 pilot labels · #8 scorecard script · #9 free-signal bake-off (centroid / Action Zone / static-wide baseline) · #10 paid-signal decision gate (ball nudge, pose) · #11 median-of-3 jitter filter (awaiting Johnson's go) · #12 expand to 4–6 labeled clips.
+**Issue map (revised 6 July 2026):** #5 labeling tool · #6 preview videos · #7 pilot labels · #8 scorecard script · #11 median-of-3 jitter filter (awaiting Johnson's go) · #12 expand to 4–6 labeled clips · #13–#17 Action-Region Planner milestones M1–M5 (see section below). CLOSED: #4 (scanner spam) · #9 and #10 (superseded by the planner plan — supersession rationale recorded in their closing comments).
+
+### Action-Region Planner — approved plan (6 July 2026)
+
+**Decision (Johnson, 6 July 2026):** adopt the offline action-region planner as the new playcam camera architecture, replacing the direct “ball/centroid/flow steers yaw” experiments. Core principle: MOG blobs, centroids, and flow are **evidence about where action is**, never direct camera targets. The planner outputs a smooth yaw timeline consumed by the existing renderer via `--yaw-source-csv`; renderer and ball_tracker/ are untouched. Full architecture spec lives in the milestone issues.
+
+**Milestones (strictly gated, in order):**
+
+- **M0 = existing #5–#8** (labeling tool, previews, 2 pilot labeled clips, scorecard). Nothing new; must complete first.
+- **M1 = #13** yaw–time activity heatmap, 3 signals only (MOG density, flow magnitude, flow direction). GO/NO-GO gate: destination regions must appear ≥0.5 s early on the missed-goal clip, else stop before building anything further.
+- **M2 = #14** transition detector, diagnostics only (source-fade × destination-emergence × travel plausibility, multi-hypothesis incl. explicit unknown state, hysteresis).
+- **M3 = #15** simple 3-behaviour camera controller → yaw CSV → existing renderer. Gate: scorecard beats centroid baseline AND goal mouth in frame at the shot.
+- **M4 = #16** candidate-graph Viterbi path optimiser (8–15 candidate yaws/frame, second-order smoothness). Gate: ≥ M3 score on both clips.
+- **M5 = #17** renderer integration + two-clip test. Gate: same constants on both clips, zero tuning between them; Johnson's visual approval. Only if M5 fails does the paid-signal question (old #10) reopen.
+
+**Anti-tuning rules (binding across M1–M5):** conservative defaults chosen once from data inspection, then frozen; changes must be justified by scorecard results; never tune between the two pilot clips; explicit unknown state instead of invented targets; circular yaw maths everywhere; calibrated play-area bounds as hard limits; `BETA_C` stays 0.0.
+
+**Execution model per milestone:** fresh Claude chat per milestone → Claude reads CLAUDE.md + this file → Claude supplies ChatGPT codegen prompt → Johnson pastes ChatGPT output back → Claude verifies against repo/frozen boundaries, commits, dispatches, updates this file.
+
+**Supersession note:** the “Proposed playcam camera direction (5 July)” and multi-signal flow-bias ideas below are superseded as *camera control* mechanisms; MOG2's validated detection strength is still used, but only as Layer-1 evidence inside the planner.
 
 **Key constraint for #5:** label yaw convention and timestamp base must match `play_location.jsonl` exactly — verified 5 July 2026 against real Phase 1 data (artifact `8086248669`): `yaw` is float degrees, negative = left of forward / positive = right of forward (confirmed range ≈ −60°..+60° in that dataset); `timestamp` is float seconds, `0.000` exactly at clip start.
 
