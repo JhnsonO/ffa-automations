@@ -12,7 +12,13 @@ This is the operational handoff. It records what is evidenced in the repo, what 
 4. A workflow is `DISPATCHED — UNVERIFIED` until its artifact/output is inspected.
 5. Do not claim the Playcam resumable-stage refactor is complete until it is committed and validated end-to-end.
 
-## Current priority — Playcam chunked pipeline resilience
+## Current priority — Phase 3C / Action-Region Planner (M0 gate)
+
+Full detail lives in "Playcam Phase 3C — Labeled test set + scorecard plan" below; this pointer exists so a fresh chat bootstrapping from the top of this file doesn't miss it. Status: M0 prerequisites in progress. #5 (labeling tool) DONE — built, deployed, verified 6 July 2026. #6 (real preview clips), #7 (2 pilot labeled clips), #8 (scorecard script) still open. M1–M5 (Action-Region Planner milestones, issues #13–#17) are gated behind M0 and cannot start until it completes. **Next gate:** #6 — get real preview clips onto the labeling tool (it currently has no real clips, only a synthetic local test clip used to verify the tool itself); separately, `vultr-ffa` needs an inbound-facing port/tunnel opened so the tool is reachable from a browser.
+
+## Playcam chunked pipeline resilience — PARKED, not the current priority
+
+No activity on this thread since 3 July 2026; superseded in priority (not in validity) by the Phase 3C / Action-Region Planner work above. The architecture and defect below are still accurate if/when this resumes — nothing here has been invalidated, it's simply not what's being actively worked.
 
 ### Status: ARCHITECTURE PROVEN; ORCHESTRATOR REFACTOR REQUIRED
 
