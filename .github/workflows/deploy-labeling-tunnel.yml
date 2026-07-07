@@ -56,7 +56,7 @@ jobs:
           echo "=== Installed crontab ==="
           crontab -l
 
-      - name: Start tunnel now and capture the URL
+      - name: Start tunnel now, verify it's actually reachable
         run: |
           TARGET="$HOME/ffa-labeling-tool"
           PGREP_PATTERN="ffa-labeling-tool/cloudflared"
@@ -78,6 +78,26 @@ jobs:
           if [ -z "$URL" ]; then
             echo "::error::cloudflared did not report a URL within 20s -- log below"
             cat /tmp/labeling-tunnel.log || true
+            exit 1
+          fi
+          echo "cloudflared reported: $URL -- verifying it actually resolves before declaring success"
+
+          # A printed URL only means cloudflared computed it locally, not that
+          # the tunnel finished registering with Cloudflare's edge. Actually
+          # curl it (same path a real browser would take) before trusting it.
+          CODE=""
+          for i in $(seq 1 20); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL/" || true)
+            [ "$CODE" = "200" ] && break
+            sleep 2
+          done
+
+          echo "=== cloudflared log (/tmp/labeling-tunnel.log) ==="
+          cat /tmp/labeling-tunnel.log || true
+          echo "==================================================="
+
+          if [ "$CODE" != "200" ]; then
+            echo "::error::Tunnel URL never became reachable (last HTTP code: $CODE) -- cloudflared log printed above"
             exit 1
           fi
 
