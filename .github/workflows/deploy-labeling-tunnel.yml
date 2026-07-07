@@ -1,0 +1,91 @@
+name: Deploy Labeling Tunnel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  tunnel:
+    name: Expose labeling tool via Cloudflare Tunnel
+    runs-on: self-hosted
+    timeout-minutes: 10
+
+    steps:
+      - name: Install cloudflared (if missing)
+        run: |
+          TARGET="$HOME/ffa-labeling-tool"
+          mkdir -p "$TARGET"
+          if [ ! -x "$TARGET/cloudflared" ]; then
+            ARCH=$(uname -m)
+            case "$ARCH" in
+              x86_64) CF_ARCH=amd64 ;;
+              aarch64|arm64) CF_ARCH=arm64 ;;
+              armv7l) CF_ARCH=arm ;;
+              *) echo "::error::Unsupported arch $ARCH for cloudflared"; exit 1 ;;
+            esac
+            curl -fL -o "$TARGET/cloudflared" \
+              "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
+            chmod +x "$TARGET/cloudflared"
+          fi
+          "$TARGET/cloudflared" --version
+
+      - name: Write wrapper script and install crontab
+        run: |
+          TARGET="$HOME/ffa-labeling-tool"
+          WRAPPER="$TARGET/run-tunnel.sh"
+          cat > "$WRAPPER" <<'EOF'
+          #!/bin/bash
+          cd "$HOME/ffa-labeling-tool" || exit 1
+          PORT="${LABELING_TOOL_PORT:-8090}"
+          # Quick Tunnel mode: no account/domain needed. Cloudflare assigns a
+          # random https://<slug>.trycloudflare.com URL on every start -- it
+          # changes each time this restarts. Purely outbound; no inbound port
+          # or firewall/Vultr-Cloud-Firewall change needed on the VM.
+          nohup "$HOME/ffa-labeling-tool/cloudflared" tunnel --url "http://localhost:$PORT" \
+            >> /tmp/labeling-tunnel.log 2>&1 &
+          EOF
+          chmod +x "$WRAPPER"
+
+          PGREP_PATTERN="ffa-labeling-tool/cloudflared"
+          NEW_CRON=$(crontab -l 2>/dev/null | grep -v "$WRAPPER" | grep -v "ffa-labeling-tunnel watchdog" || true)
+          {
+            [ -n "$NEW_CRON" ] && echo "$NEW_CRON"
+            echo "@reboot $WRAPPER"
+            echo "*/5 * * * * pgrep -f '$PGREP_PATTERN' >/dev/null || $WRAPPER # ffa-labeling-tunnel watchdog"
+          } | crontab -
+
+          echo "=== Installed crontab ==="
+          crontab -l
+
+      - name: Start tunnel now and capture the URL
+        run: |
+          TARGET="$HOME/ffa-labeling-tool"
+          PGREP_PATTERN="ffa-labeling-tool/cloudflared"
+          # Idempotent: stop any already-running tunnel first. Note this means
+          # every dispatch of this workflow rotates the URL.
+          pkill -f "$PGREP_PATTERN" || true
+          sleep 1
+          rm -f /tmp/labeling-tunnel.log
+          "$TARGET/run-tunnel.sh"
+
+          echo "Waiting for cloudflared to report its URL..."
+          URL=""
+          for i in $(seq 1 20); do
+            URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/labeling-tunnel.log | head -1 || true)
+            [ -n "$URL" ] && break
+            sleep 1
+          done
+
+          if [ -z "$URL" ]; then
+            echo "::error::cloudflared did not report a URL within 20s -- log below"
+            cat /tmp/labeling-tunnel.log || true
+            exit 1
+          fi
+
+          echo "LABELING_TOOL_URL: $URL"
+          {
+            echo "### Labeling tool is live"
+            echo ""
+            echo "**URL:** $URL"
+            echo ""
+            echo "_Cloudflare Quick Tunnel — this URL rotates every time this workflow re-runs. Treat it as a shared link, not a permanent address._"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -8,6 +8,7 @@
 #   gh.sh latest [workflow.yml] [n]                  # compact recent runs
 #   gh.sh run <run_id>                               # run + job/step conclusions
 #   gh.sh logs <run_id> [context_lines]              # failed-job logs, error window only
+#   gh.sh grep-log <run_id> <pattern>                # any job's log, matching lines only
 #   gh.sh artifact <artifact_id> <out.zip>           # download artifact (redirect-safe)
 #   gh.sh artifacts <run_id>                         # list artifacts for a run
 #   gh.sh issue create "<title>" <body_file>         # open a GitHub issue
@@ -116,6 +117,18 @@ else:
     for i in sorted(hits):
         if i != prev+1: print('  ---')
         print(lines[i]); prev=i"
+  done
+  ;;
+
+grep-log)
+  rid="${1:?run_id}"; pat="${2:?grep_pattern}"
+  # Unlike `logs`, works on any job regardless of conclusion. Only matching
+  # lines are printed -- for pulling one dynamic value (e.g. a runtime URL)
+  # out of a log without dumping the whole thing.
+  jobs=$(curl -s "${auth[@]}" "${API}/actions/runs/${rid}/jobs" \
+    | python3 -c "import json,sys; print(' '.join(str(j['id']) for j in json.load(sys.stdin)['jobs']))")
+  for jid in $jobs; do
+    curl -sL "${auth[@]}" "${API}/actions/jobs/${jid}/logs" | grep -oE "$pat" || true
   done
   ;;
 
