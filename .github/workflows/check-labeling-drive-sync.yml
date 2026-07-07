@@ -26,18 +26,8 @@ jobs:
         run: |
           ENV_FILE="$HOME/ffa-labeling-tool/.env"
           if [ -f "$ENV_FILE" ]; then
-            python3 -c "
-import json, re
-with open('$ENV_FILE') as f:
-    for line in f:
-        if line.startswith('GOOGLE_SERVICE_ACCOUNT_JSON='):
-            raw = line.split('=', 1)[1].strip()
-            data = json.loads(raw)
-            print('Service account (share the Drive folder with this address if not already):', data.get('client_email', '?'))
-            break
-    else:
-        print('GOOGLE_SERVICE_ACCOUNT_JSON not found in .env')
-"
+            EMAIL=$(grep '^GOOGLE_SERVICE_ACCOUNT_JSON=' "$ENV_FILE" | python3 -c "import sys, json; raw = sys.stdin.readline().split('=', 1)[1].strip(); print(json.loads(raw).get('client_email', '?'))")
+            echo "Service account (share the Drive folder with this address if not already): $EMAIL"
           else
             echo ".env not found at $ENV_FILE"
           fi
