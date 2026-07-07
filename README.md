@@ -273,21 +273,22 @@ in the repo root) to that folder's id. Matching video files are cached into
 no code change needed.
 
 **Deploy to the VM:** Actions → *Deploy Labeling Tool* → Run workflow. Installs
-the tool into `~/ffa-labeling-tool` on the `self-hosted` runner, starts it
-immediately, and installs an `@reboot` entry plus a 5-minute watchdog cron so
-it survives reboots and crashes (mirrors *Install Scanner Crontab on VM*).
+the tool into `~/ffa-labeling-tool` on the `self-hosted` runner and runs it as
+a `systemd` service (`ffa-labeling-tool.service`) — a system-level unit if the
+runner has passwordless sudo, otherwise a user-level unit with `loginctl
+enable-linger`. `Restart=always` handles crashes; systemd's own boot targets
+handle reboots. This replaced an earlier `nohup`+crontab-watchdog approach
+that turned out not to survive the runner's own end-of-job process cleanup —
+systemd-managed processes aren't part of that job's process tree, so they do.
 Existing `clips/`, `labels/` and `drive_cache/` data on the VM is never wiped
 by a redeploy. To enable Drive on the VM without touching the workflow,
 create `~/ffa-labeling-tool/.env` by hand with `GOOGLE_SERVICE_ACCOUNT_JSON=...`
-and `FFA_LABELING_DRIVE_FOLDER_ID=...` — the wrapper script sources it if
-present.
+and `FFA_LABELING_DRIVE_FOLDER_ID=...` — the systemd unit reads it via
+`EnvironmentFile` if present.
 
-**Reach it from a browser:** Actions → *Deploy Labeling Tunnel* → Run
-workflow. Installs `cloudflared` on the VM and opens a Cloudflare Quick
-Tunnel to `localhost:8090` — purely outbound, so it needs no inbound port
-and no Vultr Cloud Firewall change. The resulting `https://<random>.trycloudflare.com`
-URL is printed in the workflow run's summary; it rotates every time this
-workflow is re-run, so treat it as a one-time shared link rather than a
-bookmark. `@reboot` + a 5-minute watchdog keep the tunnel itself alive
-between dispatches (same pattern as the tool's own crontab), but re-running
-the workflow is the only way to get a fresh URL on demand.
+**Reach it from a browser:** currently via a Vultr firewall rule restricted to
+Johnson's IP (see `.github/workflows/open-labeling-tool-firewall.yml`), not a
+tunnel. `.github/workflows/deploy-labeling-tunnel.yml` (Cloudflare Quick
+Tunnel) is built and parked, not in active use for now — kept in case a
+tunnel is wanted later, but the firewall route is simpler for single-user
+access and was the explicit choice made 7 July 2026.

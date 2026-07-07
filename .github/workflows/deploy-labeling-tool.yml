@@ -33,57 +33,105 @@ jobs:
           fi
           echo "Deployed to $TARGET"
 
-      - name: Write wrapper script and install crontab
+      - name: Install and enable systemd service
         run: |
           TARGET="$HOME/ffa-labeling-tool"
-          WRAPPER="$TARGET/run.sh"
-          cat > "$WRAPPER" <<'EOF'
-          #!/bin/bash
-          cd "$HOME/ffa-labeling-tool" || exit 1
-          # Optional local env file for secrets (GOOGLE_SERVICE_ACCOUNT_JSON,
-          # FFA_LABELING_DRIVE_FOLDER_ID) -- create this by hand on the VM.
-          # Never written by this workflow.
-          if [ -f "$HOME/ffa-labeling-tool/.env" ]; then
-            set -a
-            source "$HOME/ffa-labeling-tool/.env"
-            set +a
-          fi
-          export LABELING_TOOL_PORT="${LABELING_TOOL_PORT:-8090}"
-          setsid nohup python3 "$HOME/ffa-labeling-tool/app.py" >> /tmp/labeling-tool.log 2>&1 < /dev/null &
+          SERVICE="ffa-labeling-tool"
+          PORT="${LABELING_TOOL_PORT:-8090}"
+          USER_NAME="$(whoami)"
+
+          # Retire the old nohup+cron lifecycle -- systemd owns this now.
+          # Idempotent: harmless if these were never installed.
+          crontab -l 2>/dev/null | grep -v "ffa-labeling-tool/run.sh" | grep -v "ffa-labeling-tool watchdog" | crontab - 2>/dev/null || true
+          pkill -f "ffa-labeling-tool/app.py" 2>/dev/null || true
+          rm -f "$TARGET/run.sh"
+
+          if sudo -n true 2>/dev/null; then
+            echo "Passwordless sudo available -- installing a system-level unit."
+            echo "USE_SYSTEM=1" >> "$GITHUB_ENV"
+            sudo tee /etc/systemd/system/${SERVICE}.service > /dev/null <<EOF
+          [Unit]
+          Description=FFA Camera Labeling Tool
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=$USER_NAME
+          WorkingDirectory=$TARGET
+          ExecStart=/usr/bin/python3 $TARGET/app.py
+          EnvironmentFile=-$TARGET/.env
+          Environment=LABELING_TOOL_PORT=$PORT
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
           EOF
-          chmod +x "$WRAPPER"
-
-          PGREP_PATTERN="ffa-labeling-tool/app.py"
-          NEW_CRON=$(crontab -l 2>/dev/null | grep -v "$WRAPPER" | grep -v "ffa-labeling-tool watchdog" || true)
-          {
-            [ -n "$NEW_CRON" ] && echo "$NEW_CRON"
-            echo "@reboot $WRAPPER"
-            echo "*/5 * * * * pgrep -f '$PGREP_PATTERN' >/dev/null || $WRAPPER # ffa-labeling-tool watchdog"
-          } | crontab -
-
-          echo "=== Runner user: $(whoami) ==="
-          echo "=== Home: $HOME ==="
-          echo "=== Installed crontab ==="
-          crontab -l
-          echo "=== Wrapper script ==="
-          cat "$WRAPPER"
-
-      - name: Start the tool now (don't wait for reboot/cron tick)
-        run: |
-          TARGET="$HOME/ffa-labeling-tool"
-          PGREP_PATTERN="ffa-labeling-tool/app.py"
-          # Idempotent: stop any already-running copy before starting fresh
-          # so this dispatch always reflects the code just deployed above.
-          pkill -f "$PGREP_PATTERN" || true
-          sleep 1
-          "$TARGET/run.sh"
-          sleep 3
-          if pgrep -f "$PGREP_PATTERN" >/dev/null; then
-            PID=$(pgrep -f "$PGREP_PATTERN" | head -1)
-            PORT="${LABELING_TOOL_PORT:-8090}"
-            echo "Labeling tool started, pid $PID, bound 0.0.0.0:$PORT"
+            sudo systemctl daemon-reload
+            sudo systemctl enable "${SERVICE}.service"
+            sudo systemctl restart "${SERVICE}.service"
           else
-            echo "::error::Labeling tool did not start -- see /tmp/labeling-tool.log below"
-            cat /tmp/labeling-tool.log || true
+            echo "No passwordless sudo -- using a user-level unit (needs lingering to survive this job's session ending)."
+            echo "USE_SYSTEM=0" >> "$GITHUB_ENV"
+            mkdir -p "$HOME/.config/systemd/user"
+            cat > "$HOME/.config/systemd/user/${SERVICE}.service" <<EOF
+          [Unit]
+          Description=FFA Camera Labeling Tool
+          After=network.target
+
+          [Service]
+          Type=simple
+          WorkingDirectory=$TARGET
+          ExecStart=/usr/bin/python3 $TARGET/app.py
+          EnvironmentFile=-$TARGET/.env
+          Environment=LABELING_TOOL_PORT=$PORT
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=default.target
+          EOF
+            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+            if loginctl enable-linger "$USER_NAME" 2>&1; then
+              echo "Lingering enabled for $USER_NAME."
+            else
+              echo "::warning::enable-linger failed -- service may still die when this job's session ends. Ask Johnson to run once, as root: loginctl enable-linger $USER_NAME"
+            fi
+            systemctl --user daemon-reload
+            systemctl --user enable "${SERVICE}.service"
+            systemctl --user restart "${SERVICE}.service"
+          fi
+
+      - name: Verify the service is actually up (state + real HTTP check)
+        run: |
+          SERVICE="ffa-labeling-tool"
+          PORT="${LABELING_TOOL_PORT:-8090}"
+          sleep 2
+
+          if [ "${USE_SYSTEM:-0}" = "1" ]; then
+            STATE=$(sudo systemctl is-active "${SERVICE}.service" || true)
+          else
+            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+            STATE=$(systemctl --user is-active "${SERVICE}.service" || true)
+          fi
+          echo "systemd unit state: $STATE"
+
+          CODE=""
+          for i in $(seq 1 15); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" || true)
+            [ "$CODE" = "200" ] && break
+            sleep 2
+          done
+          echo "HTTP check: $CODE"
+
+          if [ "$STATE" != "active" ] || [ "$CODE" != "200" ]; then
+            echo "::error::unit state=$STATE, HTTP=$CODE -- journal below"
+            if [ "${USE_SYSTEM:-0}" = "1" ]; then
+              sudo journalctl -u "${SERVICE}.service" -n 40 --no-pager || true
+            else
+              export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+              journalctl --user -u "${SERVICE}.service" -n 40 --no-pager || true
+            fi
             exit 1
           fi
+          echo "Labeling tool is up via systemd (mode=$([ "${USE_SYSTEM:-0}" = "1" ] && echo system || echo user)), bound 0.0.0.0:$PORT"
