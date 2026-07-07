@@ -42,6 +42,7 @@ Clip source, in priority order:
 This tool does not import, execute, or otherwise touch ball_tracker/ or
 playcam/. Keep it that way -- it is intentionally standalone.
 """
+import base64
 import json
 import os
 import re
@@ -185,7 +186,28 @@ def _clip_path(clip_id: str) -> Path:
 # --- Google Drive (optional, secondary path) --------------------------------
 
 def _drive_enabled() -> bool:
-    return bool(os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"))
+    return bool(
+        os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
+        or os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    )
+
+
+def _drive_credentials_info():
+    """Load service-account info as a dict, preferring the base64-wrapped
+    env var. Base64 has no backslashes/newlines/quotes, so it survives
+    systemd's EnvironmentFile= shell-style unescaping (systemd >=246) of
+    unquoted values untouched -- that unescaping was corrupting the literal
+    \\n sequences inside the PEM private_key field when the raw JSON was
+    written directly (7 July 2026 incident, see docs/ai-project-state.md).
+    Falls back to the raw-JSON env var for local/manual runs outside the
+    deploy workflow's systemd path, where this corruption doesn't apply."""
+    b64 = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
+    if b64:
+        return json.loads(base64.b64decode(b64))
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if raw:
+        return json.loads(raw)
+    return None
 
 
 def _drive_folder_id():
@@ -219,7 +241,7 @@ def sync_drive_clips():
         from googleapiclient.http import MediaIoBaseDownload
 
         creds = service_account.Credentials.from_service_account_info(
-            json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
+            _drive_credentials_info(),
             scopes=["https://www.googleapis.com/auth/drive.readonly"],
         )
         drive = build("drive", "v3", credentials=creds, cache_discovery=False)
