@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FFA — Operations Tracker</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #ffffff;
+    --bg-secondary: #f5f5f7;
+    --text: #1a1a1a;
+    --text-sub: #6b6b6b;
+    --border: #e5e5e5;
+    --accent: #1d6f42;
+    --red: #c0392b;
+    --amber: #b8860b;
+    --green: #1d8a4e;
+    --blue: #3a5a9c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181a; --bg-secondary: #212226; --text: #e8e8e8; --text-sub: #9a9a9a;
+      --border: #2e2f33; --accent: #4caf7d; --red: #e07a6e; --amber: #e0b84f;
+      --green: #5fbf8f; --blue: #7fa0d8;
+    }
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.45; font-size: 15px;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 20px 16px 60px; }
+  .masthead { margin-bottom: 18px; }
+  .masthead h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+  .masthead .sub { color: var(--text-sub); font-size: 13px; margin-top: 3px; }
+  .flag {
+    display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px;
+    border-radius: 20px; background: var(--amber); color: #1a1a1a; margin-left: 6px;
+    vertical-align: middle;
+  }
+  .grid { display: grid; gap: 10px; }
+  .g2 { grid-template-columns: repeat(2, 1fr); }
+  .g3 { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 480px) { .g3 { grid-template-columns: repeat(2, 1fr); } }
+  .kpi { background: var(--bg-secondary); border-radius: 10px; padding: 12px; }
+  .kpi-label { font-size: 11px; color: var(--text-sub); text-transform: uppercase; letter-spacing: 0.03em; }
+  .kpi-value { font-size: 20px; font-weight: 700; margin-top: 3px; }
+  .kpi-sub { font-size: 11px; color: var(--text-sub); margin-top: 2px; }
+  .tab-bar {
+    display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 22px 0 16px;
+    overflow-x: auto;
+  }
+  .tab {
+    padding: 8px 12px; font-size: 13.5px; font-weight: 600; color: var(--text-sub);
+    cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap;
+  }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .section { margin-bottom: 22px; }
+  .section-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-sub); margin-bottom: 8px; }
+  .card {
+    background: var(--bg-secondary); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px;
+  }
+  .card-accent { border-left: 3px solid var(--accent); }
+  .card-title { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+  .card-desc { font-size: 13px; color: var(--text-sub); }
+  .pill {
+    display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px;
+    border-radius: 20px; margin-right: 5px; margin-bottom: 4px;
+  }
+  .pill-green { background: rgba(29,138,78,0.15); color: var(--green); }
+  .pill-blue { background: rgba(58,90,156,0.15); color: var(--blue); }
+  .pill-amber { background: rgba(184,134,11,0.15); color: var(--amber); }
+  .pill-red { background: rgba(192,57,43,0.15); color: var(--red); }
+  .item { display: flex; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+  .item:last-child { border-bottom: none; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+  .dot-red { background: var(--red); }
+  .dot-amber { background: var(--amber); }
+  .dot-green { background: var(--green); }
+  .dot-blue { background: var(--blue); }
+  .item-text { font-weight: 600; font-size: 13.5px; }
+  .item-sub { font-size: 12.5px; color: var(--text-sub); margin-top: 2px; }
+  .needs-input {
+    border: 1px dashed var(--amber); border-radius: 10px; padding: 10px 14px; margin-bottom: 8px;
+    font-size: 13px; color: var(--text-sub);
+  }
+  .needs-input b { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="masthead">
+    <h1>FFA — Operations Tracker</h1>
+    <div class="sub">Rebuilt from the April snapshot · updated 7 Jul 2026 through conversation</div>
+  </div>
+
+  <div class="grid g3">
+    <div class="kpi">
+      <div class="kpi-label">Sessions / week</div>
+      <div class="kpi-value">4–6</div>
+      <div class="kpi-sub">Winter vs summer</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Monthly players</div>
+      <div class="kpi-value">~50<span class="flag">unconfirmed</span></div>
+      <div class="kpi-sub">April figure, peak ~100</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Price / player</div>
+      <div class="kpi-value">£4.75–4.99</div>
+      <div class="kpi-sub">Still the majority path</div>
+    </div>
+  </div>
+
+  <div class="tab-bar" id="tabs">
+    <div class="tab active" data-tab="operations">Operations</div>
+    <div class="tab" data-tab="revenue">Revenue</div>
+    <div class="tab" data-tab="growth">Growth</div>
+    <div class="tab" data-tab="problems">Pain points</div>
+    <div class="tab" data-tab="actions">Action plan</div>
+  </div>
+
+  <!-- OPERATIONS -->
+  <div class="tab-content active" id="operations">
+    <div class="section">
+      <div class="section-title">Session types</div>
+      <div class="grid g2">
+        <div class="card card-accent" style="border-left-color:#534AB7;">
+          <div class="card-title">Monday league</div>
+          <span class="pill pill-blue">Closed group</span>
+          <span class="pill pill-blue">Quality control</span>
+          <div class="card-desc" style="margin-top:6px;">20–30 regulars, randomised teams weekly. Individual table tracks goals + points (win/draw/loss). Google Sheets → website.</div>
+        </div>
+        <div class="card card-accent" style="border-left-color:#1D9E75;">
+          <div class="card-title">Open kickabouts</div>
+          <span class="pill pill-green">Public</span>
+          <span class="pill pill-green">Casual</span>
+          <div class="card-desc" style="margin-top:6px;">Tue–Sat, 18-player cap, 14 minimum to run. Formats vary — 5v5 to 7v7.</div>
+        </div>
+      </div>
+      <div class="needs-input">
+        <b>Monday league cumulative players:</b> was 32 unique players as of April (that's total pool since league start, not weekly attendance — active core on a given week is closer to 20). Update this number when you have it.
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Venues &amp; booking</div>
+      <div class="card">
+        <div class="card-desc">Two council block-booked venues: <b>St Margaret's Pastures</b> and <b>Aylestone Recreation Ground</b>. Bookings run through Acuity (ffamatches.as.me). WhatsApp signup list with payment ticks.</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Team</div>
+      <div class="card">
+        <div class="card-desc">
+          <b>Johnson</b> — founder, overall ops.<br>
+          <b>PA</b> — WhatsApp signups, payment ticks, booking issues, monthly memberships, customer support, Elite concierge booking.<br>
+          <b>Kris</b> — media, clips, socials.<br>
+          <b>2–3 friends</b> — help run sessions.
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Equipment</div>
+      <div class="card"><div class="card-desc">Bibs, footballs, 2 GoPros + XbotGo Chameleon for filming, boot rentals.</div></div>
+    </div>
+  </div>
+
+  <!-- REVENUE -->
+  <div class="tab-content" id="revenue">
+    <div class="section">
+      <div class="section-title">Pay-per-session — primary revenue</div>
+      <div class="card"><div class="card-desc">£4.75–4.99/player via Acuity. Still where most players sit — this is the dominant revenue path, not the tiers.</div></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Membership tiers — launched since April, slow uptake</div>
+      <div class="grid g3">
+        <div class="card"><div class="card-title">Starter</div><div class="card-desc">£17 / 4 sessions</div></div>
+        <div class="card"><div class="card-title">Regular</div><div class="card-desc">£32 / 8 sessions</div></div>
+        <div class="card"><div class="card-title">Elite</div><div class="card-desc">£45 / 12 sessions + £2.50 overage. PA-managed concierge booking.</div></div>
+      </div>
+      <div class="card" style="margin-top:8px;"><div class="card-desc">Most players still default to pay-per-session. Tiers haven't caught on the way the restructure intended — worth digging into why (price point? awareness? friction to commit?).</div></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Merch</div>
+      <div class="card"><div class="card-desc">Men's + women's lines via the website. <b>No drop since April</b> — this is effectively a dormant revenue stream right now, not an active one that just needs better tracking.</div></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Tournaments</div>
+      <div class="card"><div class="card-desc">3 run to date (up from 2 in April).</div></div>
+      <div class="card"><div class="card-desc"><b>Next tournament:</b> 26 September 2026.</div></div>
+      <div class="needs-input"><b>Tournament #3 details still needed:</b> date, format, entry fee, turnout, and what you changed from the first two — drop these in whenever you have them.</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Sponsorship — still untapped</div>
+      <div class="card"><div class="card-desc">Partners page live on the site but empty. No sponsors secured. Missing revenue and credibility boost.</div></div>
+    </div>
+  </div>
+
+  <!-- GROWTH -->
+  <div class="tab-content" id="growth">
+    <div class="section">
+      <div class="section-title">April's zero-budget growth plan — status</div>
+      <div class="card">
+        <div class="item"><div class="dot dot-green"></div><div><div class="item-text">Google Business Profile</div><div class="item-sub">Launched</div></div></div>
+        <div class="item"><div class="dot dot-green"></div><div><div class="item-text">Local SEO — officialffa.co.uk</div><div class="item-sub">Launched</div></div></div>
+        <div class="item"><div class="dot dot-red"></div><div><div class="item-text">Footy Addicts / Fatsoma listings</div><div class="item-sub">Not launched</div></div></div>
+        <div class="item"><div class="dot dot-red"></div><div><div class="item-text">University outreach (Leicester, DMU)</div><div class="item-sub">Not launched</div></div></div>
+      </div>
+      <div class="card" style="margin-top:8px;"><div class="card-desc">2 of 4 levers are live, but player numbers are still the #1 challenge — either GBP + SEO alone aren't enough, or it's too early to see the effect. The 2 unlaunched levers are the obvious next move before inventing new ones.</div></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Content channels</div>
+      <div class="card"><div class="card-desc">YouTube is the strongest channel. TikTok improving. Instagram still lagging behind both.</div></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Scoped but not built</div>
+      <div class="card"><div class="card-desc"><b>Viral clip detection script</b> — YouTube Analytics API → Google Sheet, to surface which clips actually perform so Kris can prioritise what gets cut and posted. Directly relevant to the Instagram lag.</div></div>
+    </div>
+  </div>
+
+  <!-- PAIN POINTS -->
+  <div class="tab-content" id="problems">
+    <div class="section">
+      <div class="section-title">Still active</div>
+      <div class="card">
+        <div class="item"><div class="dot dot-red"></div><div><div class="item-text">Player numbers — chicken-and-egg</div><div class="item-sub">Still the core challenge. People wait to see others commit before booking.</div></div></div>
+        <div class="item"><div class="dot dot-red"></div><div><div class="item-text">Pitch cost vs attendance</div><div class="item-sub">Block-booked at 2 venues — you pay whether 8 or 18 show up. Still a strain.</div></div></div>
+        <div class="item"><div class="dot dot-amber"></div><div><div class="item-text">No sponsors</div><div class="item-sub">Partners page ready but empty. Missing revenue and credibility.</div></div></div>
+        <div class="item"><div class="dot dot-amber"></div><div><div class="item-text">Merch line dormant</div><div class="item-sub">No drop since April — tracking system is moot until it's active again.</div></div></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Resolved since April</div>
+      <div class="card">
+        <div class="item"><div class="dot dot-green"></div><div><div class="item-text">Post-session admin</div><div class="item-sub">Was the top bottleneck in April (upload automation + broader admin). Mostly resolved now.</div></div></div>
+        <div class="item"><div class="dot dot-green"></div><div><div class="item-text">Session cancellations</div><div class="item-sub">Rare now — not really a live problem anymore.</div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ACTIONS -->
+  <div class="tab-content" id="actions">
+    <div class="section">
+      <div class="section-title">Reprioritised for where things actually stand</div>
+      <div class="card">
+        <div class="item"><div class="dot dot-blue"></div><div><div class="item-text">1. Attack player numbers directly</div><div class="item-sub">Still the #1 problem despite 2 growth levers live. Either finish the other 2 (Footy Addicts/Fatsoma, uni outreach) or build the viral clip script to fuel content-driven growth.</div></div></div>
+        <div class="item"><div class="dot dot-blue"></div><div><div class="item-text">2. Land a first sponsor</div><div class="item-sub">Partners page has sat empty since at least April. Even one local sponsor changes the credibility story.</div></div></div>
+        <div class="item"><div class="dot dot-blue"></div><div><div class="item-text">3. Decide the merch line's fate</div><div class="item-sub">Relaunch with an inventory system, or shelve it formally rather than letting it sit dormant.</div></div></div>
+        <div class="item"><div class="dot dot-blue"></div><div><div class="item-text">4. Investigate tier adoption</div><div class="item-sub">Tiers launched but pay-per-session still dominates. Worth finding out why before assuming the pricing itself is the problem.</div></div></div>
+        <div class="item"><div class="dot dot-blue"></div><div><div class="item-text">5. Formalise a tournament calendar</div><div class="item-sub">Next one locked in for 26 Sept 2026. 3 run now — enough of a track record to plan a regular cadence with sponsorship tied in.</div></div></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.tab).classList.add('active');
+  });
+});
+</script>
+</body>
+</html>
