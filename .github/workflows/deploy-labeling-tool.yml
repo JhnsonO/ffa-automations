@@ -33,6 +33,23 @@ jobs:
           fi
           echo "Deployed to $TARGET"
 
+      - name: Configure Drive credentials (optional, non-fatal if secret is unset)
+        if: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON != '' }}
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, stat
+          raw = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+          data = json.loads(raw)
+          compact = json.dumps(data)
+          target = os.path.expanduser("~/ffa-labeling-tool/.env")
+          with open(target, "w") as f:
+              f.write("GOOGLE_SERVICE_ACCOUNT_JSON=" + compact + "\n")
+          os.chmod(target, stat.S_IRUSR | stat.S_IWUSR)
+          print("Drive credentials written to .env (600 perms). Service account:", data.get("client_email", "?"))
+          PYEOF
+
       - name: Install and enable systemd service
         run: |
           TARGET="$HOME/ffa-labeling-tool"
