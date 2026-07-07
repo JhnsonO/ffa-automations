@@ -42,6 +42,10 @@ Do not request previous chat history or inspect broad logs unless the active tas
 
 Use `scripts/gh.sh` for all GitHub API work: file reads/pushes, workflow dispatch, run status, failed-run logs, artifacts. It requires `GH_PAT` in the environment. Do not hand-roll curl/Python API boilerplate; if gh.sh lacks an operation, extend gh.sh instead. `gh.sh logs <run_id>` returns the ANSI-stripped error window only — never pull full raw logs into context.
 
+### Cloning discipline
+
+Do not `git clone` the full repo by default. For single-file reads or single-file pushes, use `gh.sh get`/`gh.sh push` instead — it transfers one file, not the whole tree (code, databases, git history). Only clone when a task genuinely requires editing across multiple files or needs a local working tree (e.g. running tests). Ask the user for confirmation before cloning, stating why a single-file operation isn't sufficient.
+
 ### Vast.ai workflows
 
 Any workflow with a Vast.ai element (instance creation and/or termination) must reuse the proven lifecycle block verbatim from `playcam-poc.yml`'s `Launch reliable Vast.ai GPU instance` step and its paired `Terminate Vast.ai instance` step — do not hand-write a new launch/terminate sequence, even a "simpler" one for a lightweight script. This means:
