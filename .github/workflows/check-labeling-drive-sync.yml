@@ -21,3 +21,32 @@ jobs:
           fi
           echo "--- clip list (local + drive_cache) ---"
           cat /tmp/clips.json
+
+      - name: Identify service account (client_email only -- never the private key) and recent Drive log lines
+        run: |
+          ENV_FILE="$HOME/ffa-labeling-tool/.env"
+          if [ -f "$ENV_FILE" ]; then
+            python3 -c "
+import json, re
+with open('$ENV_FILE') as f:
+    for line in f:
+        if line.startswith('GOOGLE_SERVICE_ACCOUNT_JSON='):
+            raw = line.split('=', 1)[1].strip()
+            data = json.loads(raw)
+            print('Service account (share the Drive folder with this address if not already):', data.get('client_email', '?'))
+            break
+    else:
+        print('GOOGLE_SERVICE_ACCOUNT_JSON not found in .env')
+"
+          else
+            echo ".env not found at $ENV_FILE"
+          fi
+
+          echo "--- last Drive-related journal lines (app-level sync attempts) ---"
+          SERVICE="ffa-labeling-tool"
+          if [ "${USE_SYSTEM:-0}" = "1" ] || sudo systemctl status "${SERVICE}.service" >/dev/null 2>&1; then
+            sudo journalctl -u "${SERVICE}.service" --no-pager | grep -i "drive" | tail -15 || echo "(no Drive-related lines found in system journal)"
+          else
+            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+            journalctl --user -u "${SERVICE}.service" --no-pager | grep -i "drive" | tail -15 || echo "(no Drive-related lines found in user journal)"
+          fi
