@@ -42,15 +42,23 @@ jobs:
             exit 0
           fi
           python3 - <<'PYEOF'
-          import json, os, stat
+          import base64, json, os, stat
           raw = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
           data = json.loads(raw)
           compact = json.dumps(data)
+          # Base64-wrap before writing: systemd's EnvironmentFile= applies
+          # shell-style backslash-escape processing to unquoted values
+          # (systemd >=246), which corrupts the literal \n sequences inside
+          # the PEM private_key field -- confirmed root cause of the 7 July
+          # 2026 "Unable to load PEM file ... InvalidByte" failure. Base64
+          # output has no backslashes/newlines/quotes, so it survives that
+          # parser untouched. See docs/ai-project-state.md.
+          b64 = base64.b64encode(compact.encode()).decode()
           target = os.path.expanduser("~/ffa-labeling-tool/.env")
           with open(target, "w") as f:
-              f.write("GOOGLE_SERVICE_ACCOUNT_JSON=" + compact + "\n")
+              f.write("GOOGLE_SERVICE_ACCOUNT_JSON_B64=" + b64 + "\n")
           os.chmod(target, stat.S_IRUSR | stat.S_IWUSR)
-          print("Drive credentials written to .env (600 perms). Service account:", data.get("client_email", "?"))
+          print("Drive credentials written to .env (base64-wrapped, 600 perms). Service account:", data.get("client_email", "?"))
           PYEOF
 
       - name: Install and enable systemd service
