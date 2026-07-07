@@ -1,0 +1,23 @@
+name: Check Labeling Tool Drive Sync
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Curl the running labeling tool's clip list (read-only, no restart)
+    runs-on: self-hosted
+    timeout-minutes: 2
+
+    steps:
+      - name: GET /api/clips
+        run: |
+          PORT="${LABELING_TOOL_PORT:-8090}"
+          CODE=$(curl -s -o /tmp/clips.json -w "%{http_code}" "http://127.0.0.1:$PORT/api/clips" || true)
+          echo "HTTP check: $CODE"
+          if [ "$CODE" != "200" ]; then
+            echo "::error::labeling tool did not respond 200 on /api/clips (got $CODE) -- is ffa-labeling-tool.service up?"
+            exit 1
+          fi
+          echo "--- clip list (local + drive_cache) ---"
+          cat /tmp/clips.json
