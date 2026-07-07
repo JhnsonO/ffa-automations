@@ -1,0 +1,36 @@
+name: Check Disk Usage (read-only)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Report biggest space consumers on vultr-ffa (no deletions)
+    runs-on: self-hosted
+    timeout-minutes: 3
+
+    steps:
+      - name: df -h
+        run: df -h / "$HOME" 2>/dev/null || true
+
+      - name: Top-level breakdown from /
+        run: sudo du -xsh /* 2>/dev/null | sort -rh | head -20 || true
+
+      - name: Home directory breakdown
+        run: du -sh "$HOME"/* 2>/dev/null | sort -rh | head -20 || true
+
+      - name: Common cache/log offenders
+        run: |
+          echo "--- journal disk usage ---"
+          sudo journalctl --disk-usage 2>/dev/null || true
+          echo "--- apt cache ---"
+          du -sh /var/cache/apt 2>/dev/null || true
+          echo "--- pip cache ---"
+          du -sh "$HOME/.cache/pip" 2>/dev/null || true
+          echo "--- docker (if present) ---"
+          docker system df 2>/dev/null || echo "docker not present or not accessible"
+          echo "--- GitHub Actions runner _work dir ---"
+          find "$HOME" -maxdepth 2 -iname "_work" -exec du -sh {} \; 2>/dev/null || true
+          echo "--- labeling tool drive_cache ---"
+          du -sh "$HOME/ffa-labeling-tool/drive_cache" 2>/dev/null || echo "not found"
+          du -sh "$HOME/ffa-labeling-tool/clips" 2>/dev/null || echo "not found"
