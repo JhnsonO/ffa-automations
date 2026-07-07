@@ -1,0 +1,78 @@
+name: Open Labeling Tool Firewall (IP-restricted)
+
+on:
+  workflow_dispatch:
+    inputs:
+      allowed_ip:
+        description: 'Public IPv4 to allow through to port 8090 (e.g. 82.14.1.2). Only this IP will reach the tool.'
+        required: true
+
+jobs:
+  open-port:
+    name: Allow one IP through to the labeling tool's port
+    runs-on: self-hosted
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate input IP
+        env:
+          ALLOWED_IP: ${{ github.event.inputs.allowed_ip }}
+        run: |
+          if ! [[ "$ALLOWED_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            echo "::error::'$ALLOWED_IP' doesn't look like a plain IPv4 address (e.g. 82.14.1.2)."
+            exit 1
+          fi
+          BAD=0
+          for OCTET in $(echo "$ALLOWED_IP" | tr '.' ' '); do
+            if [ "$OCTET" -gt 255 ]; then BAD=1; fi
+          done
+          if [ "$BAD" = "1" ]; then
+            echo "::error::'$ALLOWED_IP' has an octet over 255 -- not a valid IPv4 address."
+            exit 1
+          fi
+          echo "Validated: $ALLOWED_IP"
+
+      - name: Open the port on the VM's own firewall (ufw if active, else iptables)
+        env:
+          ALLOWED_IP: ${{ github.event.inputs.allowed_ip }}
+        run: |
+          PORT=8090
+          if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -qi "Status: active"; then
+            echo "ufw is active -- adding a scoped allow rule (existing rules untouched)."
+            sudo ufw allow from "$ALLOWED_IP" to any port "$PORT" proto tcp comment 'ffa-labeling-tool'
+            sudo ufw status verbose
+          else
+            echo "ufw not active -- using iptables directly."
+            sudo iptables -I INPUT -p tcp -s "$ALLOWED_IP" --dport "$PORT" -j ACCEPT -m comment --comment "ffa-labeling-tool"
+            sudo iptables -L INPUT -n --line-numbers | grep -i "$PORT" || true
+            if command -v netfilter-persistent >/dev/null 2>&1; then
+              sudo netfilter-persistent save || echo "::warning::netfilter-persistent save failed -- rule may not survive a reboot."
+            elif [ -d /etc/iptables ]; then
+              sudo sh -c 'iptables-save > /etc/iptables/rules.v4' || echo "::warning::could not persist iptables rules -- rule may not survive a reboot."
+            else
+              echo "::warning::No iptables persistence mechanism found -- this rule will NOT survive a VM reboot. Re-run this workflow after any reboot."
+            fi
+          fi
+
+      - name: Confirm the labeling tool itself is still up (independent of the deploy job that started it)
+        run: |
+          STATE=$(sudo systemctl is-active ffa-labeling-tool.service 2>/dev/null || echo unknown)
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8090/ || true)
+          echo "ffa-labeling-tool.service state: $STATE, local HTTP check: $CODE"
+          if [ "$STATE" != "active" ] || [ "$CODE" != "200" ]; then
+            echo "::warning::Firewall rule is set, but the tool itself doesn't look healthy right now (state=$STATE, HTTP=$CODE). Re-run 'Deploy Labeling Tool' first."
+          fi
+
+      - name: Report the reachable URL
+        env:
+          ALLOWED_IP: ${{ github.event.inputs.allowed_ip }}
+        run: |
+          PUBLIC_IP=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me || echo "UNKNOWN")
+          echo "URL: http://$PUBLIC_IP:8090"
+          {
+            echo "### Labeling tool"
+            echo ""
+            echo "**URL:** http://$PUBLIC_IP:8090"
+            echo ""
+            echo "_Restricted to $ALLOWED_IP only via the VM's own firewall. This only covers the VM's own firewall -- if this instance also has a Vultr Cloud Firewall attached in the dashboard, that's a separate control Claude has no access to check or change; if the URL still isn't reachable after this run, check there._"
+          } >> "$GITHUB_STEP_SUMMARY"
