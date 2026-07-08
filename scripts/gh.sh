@@ -44,19 +44,18 @@ push)
 try: print(json.load(sys.stdin).get('sha',''))
 except Exception: print('')")
   base64 -w0 "$local_file" > /tmp/.gh_b64
-  payload=$(python3 - "$msg" "$branch" "$sha" <<'PY'
+  python3 - "$msg" "$branch" "$sha" > /tmp/.gh_payload.json <<'PY'
 import json,sys
 msg,branch,sha=sys.argv[1],sys.argv[2],sys.argv[3]
 d={"message":msg,"branch":branch,"content":open("/tmp/.gh_b64").read().strip()}
 if sha: d["sha"]=sha
 print(json.dumps(d))
 PY
-  )
   curl -sf -X PUT "${auth[@]}" -H "Content-Type: application/json" \
-    "${API}/contents/${repo_path}" -d "$payload" \
+    "${API}/contents/${repo_path}" --data-binary @/tmp/.gh_payload.json \
     | python3 -c "import json,sys; d=json.load(sys.stdin); print('commit', d['commit']['sha'][:7], d['content']['path'])" \
     || { echo "ERROR: push failed for ${repo_path}" >&2; exit 1; }
-  rm -f /tmp/.gh_b64
+  rm -f /tmp/.gh_b64 /tmp/.gh_payload.json
   ;;
 
 dispatch)
