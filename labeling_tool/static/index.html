@@ -199,16 +199,19 @@ function wrapYaw(y) {
 // saved (schema has no pitch field), and yaw is a linear function of
 // horizontal position in the raw equirect frame -- so cropping/zooming
 // doesn't need any perspective correction, just the crop's pixel offset.
-const TILE_CENTERS_DEG = [0, 90, 180, 270];
-const TILE_WIDTH_DEG = 110;   // >90 so each tile slightly overlaps its neighbors --
-                              // action right at a 90-degree boundary isn't split.
+// Tile centers/widths constrained to the venue's calibrated play_area yaw span
+// (st_margarets.json: -84.1deg..+87.5deg), not the full 360deg sphere -- see
+// docs/ai-project-state.md "Feedback on the 4-tile grid" for why this changed
+// from the original 4-tile [0,90,180,270] layout.
+const TILE_CENTERS_DEG = [-38.7, 42.1];
+const TILE_WIDTH_DEG = 90.8;  // 2 * 90.8 - 171.6 = 10deg overlap at the boundary
 // Vertical crop band (fraction of full frame height). Full 360 height covers
 // 180 degrees of pitch (sky to nadir); most of that is sky/rigging/foreground
 // netting, not pitch. First-guess band based on the sample frame -- tune after
 // looking at a real clip if the pitch sits higher/lower than this.
 const VERT_TOP_FRAC = 0.32;
 const VERT_BOTTOM_FRAC = 0.85;
-const TILE_LABELS = ["0°", "90°", "180°", "-90°"];
+const TILE_LABELS = ["-38.7°", "42.1°"];
 
 let tiles = []; // per-tile crop geometry, built once video metadata is known
 let renderLoopStarted = false;
