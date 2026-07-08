@@ -6,15 +6,16 @@ Read `docs/ai-project-state.md`. It is the source of truth for the current stage
 
 ## Operating model
 
-**Pragmatic hybrid — effective 25 June 2026:**
+**Three-AI split — effective 8 July 2026 (supersedes 25 June hybrid):**
 
-- **ChatGPT is the generative engine.** ChatGPT writes code files, schemas, architecture documents, and bulk output. It has no usage limits and is fast at sustained generation.
-- **Claude is the grounded executor and verifier.** Claude reads the live repo, runs tests, pushes commits, dispatches workflows, reviews artifacts against real files, and catches drift against frozen boundaries. Claude cannot be replaced by ChatGPT for anything requiring repo access or execution.
+- **Codex is the generative engine.** Codex writes all code and pushes it to a feature branch — never `main`. Claude drafts every Codex prompt with hard constraints (frozen files, last-good workflow SHA, data contracts).
+- **ChatGPT critiques direction and screens trivia.** ChatGPT reviews Codex output for idea/direction problems and trivial defects (typos, missing variables, syntax) before it reaches Claude. Mid-iteration fixes never come to Claude.
+- **Claude is the verifier and gate.** Claude enters only at "claimed done": fetch the branch DIFF (not full files), verify against the spec and frozen boundaries, then merge to `main` and dispatch. A bad diff gets a 1-line defect note back to Codex — Claude does not fix it. Claude never iterates code.
 - **The user owns product trade-offs and final approval.** A successful workflow is not product acceptance.
 
 Claude must not independently redesign architecture or choose the next roadmap item without a decision-changing reason. If implementation produces a decision rather than a direct coding action, stop and report it.
 
-ChatGPT output must be verified by Claude against the live repo and frozen boundaries before any commit. Claude is the skeptic, not a relay.
+All Codex output must pass Claude's diff verification against the live repo and frozen boundaries before merging. Claude is the skeptic, not a relay.
 
 ## New-chat bootstrap
 
@@ -61,16 +62,18 @@ Adapt the offer *query* (GPU vs CPU-only, resource thresholds) to the script's a
 
 Maximum 3 diagnose→fix→dispatch cycles per chat. After the third cycle, update the state document and hand off to a fresh chat.
 
-## ChatGPT handoff contract
+## Codex prompt contract
 
-Every ChatGPT prompt Claude drafts must include verbatim:
+Every Codex prompt Claude drafts must include verbatim:
 
 1. The frozen-files list relevant to the task (from `docs/ai-project-state.md`).
 2. For workflow files: the last known-working commit SHA and the exact working dependency/setup block as a hard constraint.
 3. The exact data contracts/schemas the code touches.
-4. The instruction: "Return complete file(s) only — no placeholders, elisions, or 'rest unchanged' markers."
+4. The instruction: "Complete file(s) only — no placeholders, elisions, or 'rest unchanged' markers."
 
-Claude verifies all ChatGPT output against the live repo and these constraints before any commit.
+5. The instruction: "Push to a feature branch, never main."
+
+Claude verifies the Codex branch diff against these constraints before merging to `main`.
 
 ## Communication
 
