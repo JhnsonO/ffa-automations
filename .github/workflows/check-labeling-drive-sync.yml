@@ -22,6 +22,19 @@ jobs:
           echo "--- clip list (local + drive_cache) ---"
           cat /tmp/clips.json
 
+      - name: Serve clip smoke test (HTTP range request, real clip filenames with spaces)
+        run: |
+          PORT="${LABELING_TOOL_PORT:-8090}"
+          for clip in "Copy of equirect_full.mp4" "Copy of equirect_trim.mp4"; do
+            enc=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$clip")
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Range: bytes=0-1023" "http://127.0.0.1:$PORT/clips/$enc")
+            echo "Serve check [$clip]: $CODE"
+            if [ "$CODE" != "206" ] && [ "$CODE" != "200" ]; then
+              echo "::error::clip did not serve ($clip got $CODE)"
+              exit 1
+            fi
+          done
+
       - name: Identify service account (client_email only -- never the private key) and recent Drive log lines
         run: |
           ENV_FILE="$HOME/ffa-labeling-tool/.env"
