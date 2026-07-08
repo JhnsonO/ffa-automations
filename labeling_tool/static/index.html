@@ -203,15 +203,18 @@ function wrapYaw(y) {
 // (st_margarets.json: -84.1deg..+87.5deg), not the full 360deg sphere -- see
 // docs/ai-project-state.md "Feedback on the 4-tile grid" for why this changed
 // from the original 4-tile [0,90,180,270] layout.
-const TILE_CENTERS_DEG = [-38.7, 42.1];
-const TILE_WIDTH_DEG = 90.8;  // 2 * 90.8 - 171.6 = 10deg overlap at the boundary
+// 4 tiles (not 2) across the same play_area span -- narrower per-tile crop
+// looks visibly less warped than a wide 90.8deg crop, and fills the existing
+// 2x2 grid markup with no empty cells.
+const TILE_CENTERS_DEG = [-60.4, -19.0, 22.4, 63.8];
+const TILE_WIDTH_DEG = 47.4;  // uniform 6deg overlap at each of the 3 boundaries
 // Vertical crop band (fraction of full frame height). Full 360 height covers
 // 180 degrees of pitch (sky to nadir); most of that is sky/rigging/foreground
 // netting, not pitch. First-guess band based on the sample frame -- tune after
 // looking at a real clip if the pitch sits higher/lower than this.
 const VERT_TOP_FRAC = 0.32;
 const VERT_BOTTOM_FRAC = 0.85;
-const TILE_LABELS = ["-38.7°", "42.1°"];
+const TILE_LABELS = ["-60.4°", "-19.0°", "22.4°", "63.8°"];
 
 let tiles = []; // per-tile crop geometry, built once video metadata is known
 let renderLoopStarted = false;
