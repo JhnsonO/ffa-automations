@@ -25,8 +25,11 @@
 
   .video-card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 14px; }
   .video-wrap { position: relative; background: #000; border-radius: 8px; overflow: hidden; }
-  video { display: block; width: 100%; height: auto; cursor: crosshair; }
-  .click-dot { position: absolute; width: 14px; height: 14px; margin-left: -7px; margin-top: -7px; border-radius: 50%; background: rgba(88,166,255,0.85); border: 2px solid #fff; pointer-events: none; opacity: 0; transition: opacity 0.6s ease; }
+  #player { position: absolute; width: 2px; height: 2px; opacity: 0.01; pointer-events: none; }
+  .tile-grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 4px; }
+  .tile-cell { position: relative; }
+  .tile-cell canvas { display: block; width: 100%; height: auto; cursor: crosshair; background: #000; }
+  .tile-label { position: absolute; top: 4px; left: 6px; font-size: 10.5px; color: #8b949e; background: rgba(13,17,23,0.7); padding: 1px 5px; border-radius: 4px; pointer-events: none; }
 
   .controls { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
   .controls input[type=range] { flex: 1; min-width: 120px; }
@@ -76,7 +79,12 @@
     <div class="video-card">
       <div class="video-wrap" id="videoWrap">
         <video id="player" preload="metadata"></video>
-        <div class="click-dot" id="clickDot"></div>
+        <div class="tile-grid" id="tileGrid">
+          <div class="tile-cell"><canvas class="tile" data-tile="0"></canvas><span class="tile-label" data-tile-label="0"></span></div>
+          <div class="tile-cell"><canvas class="tile" data-tile="1"></canvas><span class="tile-label" data-tile-label="1"></span></div>
+          <div class="tile-cell"><canvas class="tile" data-tile="2"></canvas><span class="tile-label" data-tile-label="2"></span></div>
+          <div class="tile-cell"><canvas class="tile" data-tile="3"></canvas><span class="tile-label" data-tile-label="3"></span></div>
+        </div>
       </div>
 
       <div class="controls">
@@ -93,7 +101,9 @@
       </div>
 
       <div class="hint">
-        Click the frame to save a label at the current playhead. Keys <kbd>1</kbd>-<kbd>6</kbd> set
+        Click any of the 4 zoomed tiles where the action is to save a label at the current playhead
+        (each tile is a zoomed slice of the same clip, centered on yaw 0°/90°/180°/-90°, with a bit
+        of overlap so nothing gets lost at the edges). Keys <kbd>1</kbd>-<kbd>6</kbd> set
         goal/shot/attack/restart/normal/other (applies to the next click and re-tags the last one).
         <kbd>space</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> step one frame ·
         <kbd>[</kbd>/<kbd>]</kbd> adjust confidence.
@@ -145,7 +155,8 @@ const EVENTS = ["goal", "shot", "attack", "restart", "normal", "other"];
 
 const player = document.getElementById("player");
 const videoWrap = document.getElementById("videoWrap");
-const clickDot = document.getElementById("clickDot");
+const tileCanvases = Array.from(document.querySelectorAll("canvas.tile"));
+const tileLabels = Array.from(document.querySelectorAll(".tile-label"));
 const clipSelect = document.getElementById("clipSelect");
 const clipMeta = document.getElementById("clipMeta");
 const playBtn = document.getElementById("playBtn");
@@ -181,30 +192,110 @@ function wrapYaw(y) {
   return ((y + 180) % 360 + 360) % 360 - 180;
 }
 
-// Maps a click clientX/Y to a [0,1) fraction of the video's native width,
-// accounting for CSS letterboxing (object-fit-style) between the element's
-// rendered box and the video's native resolution. Returns null if the click
-// landed in a letterbox bar rather than on the actual frame.
-function clickToFraction(evt) {
-  const rect = player.getBoundingClientRect();
+// --- 4-tile "zoomed grid" view ---------------------------------------------
+// Same single video (one decode, always in sync) as before -- no dewarping,
+// no extra rendered files. Each tile is just a horizontal+vertical crop of
+// the same equirect frame, scaled up ("zoomed"). Only desired_yaw is ever
+// saved (schema has no pitch field), and yaw is a linear function of
+// horizontal position in the raw equirect frame -- so cropping/zooming
+// doesn't need any perspective correction, just the crop's pixel offset.
+const TILE_CENTERS_DEG = [0, 90, 180, 270];
+const TILE_WIDTH_DEG = 110;   // >90 so each tile slightly overlaps its neighbors --
+                              // action right at a 90-degree boundary isn't split.
+// Vertical crop band (fraction of full frame height). Full 360 height covers
+// 180 degrees of pitch (sky to nadir); most of that is sky/rigging/foreground
+// netting, not pitch. First-guess band based on the sample frame -- tune after
+// looking at a real clip if the pitch sits higher/lower than this.
+const VERT_TOP_FRAC = 0.32;
+const VERT_BOTTOM_FRAC = 0.85;
+const TILE_LABELS = ["0°", "90°", "180°", "-90°"];
+
+let tiles = []; // per-tile crop geometry, built once video metadata is known
+let renderLoopStarted = false;
+let flashMarker = null; // { tileIndex, x, y (canvas-internal px), until }
+
+function buildTileGeometry() {
   const vw = player.videoWidth, vh = player.videoHeight;
-  if (!vw || !vh) return null;
-  const elW = rect.width, elH = rect.height;
-  const videoAspect = vw / vh, elAspect = elW / elH;
-  let contentW, contentH, offsetX, offsetY;
-  if (elAspect > videoAspect) {
-    contentH = elH; contentW = elH * videoAspect;
-    offsetX = (elW - contentW) / 2; offsetY = 0;
-  } else {
-    contentW = elW; contentH = elW / videoAspect;
-    offsetX = 0; offsetY = (elH - contentH) / 2;
+  if (!vw || !vh) return;
+  const srcY = Math.round(VERT_TOP_FRAC * vh);
+  const srcH = Math.round((VERT_BOTTOM_FRAC - VERT_TOP_FRAC) * vh);
+  const MAX_CANVAS_W = 800; // cap internal resolution for render performance
+
+  tiles = TILE_CENTERS_DEG.map((centerDeg, i) => {
+    const centerPx = ((centerDeg / 360) + 0.5) * vw;
+    const widthPx = (TILE_WIDTH_DEG / 360) * vw;
+    let startPx = ((centerPx - widthPx / 2) % vw + vw) % vw;
+    let segs;
+    if (startPx + widthPx <= vw) {
+      segs = [{ srcX: startPx, w: widthPx, destX: 0 }];
+    } else {
+      const seg1W = vw - startPx;
+      const seg2W = widthPx - seg1W;
+      segs = [{ srcX: startPx, w: seg1W, destX: 0 }, { srcX: 0, w: seg2W, destX: seg1W }];
+    }
+    const scale = Math.min(1, MAX_CANVAS_W / widthPx);
+    const canvas = tileCanvases[i];
+    canvas.width = Math.round(widthPx * scale);
+    canvas.height = Math.round(srcH * scale);
+    tileLabels[i].textContent = "yaw " + TILE_LABELS[i];
+    return { segs, widthPx, srcY, srcH, scale, canvas, ctx: canvas.getContext("2d") };
+  });
+
+  if (!renderLoopStarted) { renderLoopStarted = true; requestAnimationFrame(renderTiles); }
+}
+
+function renderTiles() {
+  if (tiles.length && player.videoWidth) {
+    for (const t of tiles) {
+      for (const seg of t.segs) {
+        t.ctx.drawImage(
+          player,
+          seg.srcX, t.srcY, seg.w, t.srcH,
+          seg.destX * t.scale, 0, seg.w * t.scale, t.canvas.height
+        );
+      }
+    }
+    if (flashMarker && performance.now() < flashMarker.until) {
+      const t = tiles[flashMarker.tileIndex];
+      t.ctx.beginPath();
+      t.ctx.arc(flashMarker.x, flashMarker.y, 8, 0, 2 * Math.PI);
+      t.ctx.fillStyle = "rgba(88,166,255,0.85)";
+      t.ctx.fill();
+      t.ctx.lineWidth = 2;
+      t.ctx.strokeStyle = "#fff";
+      t.ctx.stroke();
+    } else if (flashMarker) {
+      flashMarker = null;
+    }
   }
-  const xInEl = evt.clientX - rect.left;
-  const yInEl = evt.clientY - rect.top;
-  const xInContent = xInEl - offsetX;
-  const yInContent = yInEl - offsetY;
-  if (xInContent < 0 || xInContent > contentW || yInContent < 0 || yInContent > contentH) return null;
-  return { frac: xInContent / contentW, dotX: xInEl, dotY: yInEl };
+  requestAnimationFrame(renderTiles);
+}
+
+// Click on a tile -> crop-space pixel -> source equirect pixel -> yaw.
+// Same wrapYaw() convention as before; only the crop offset is new.
+function tileClickToYaw(tileIndex, evt) {
+  const t = tiles[tileIndex];
+  if (!t) return null;
+  const rect = t.canvas.getBoundingClientRect();
+  const scaleX = t.canvas.width / rect.width;
+  const scaleY = t.canvas.height / rect.height;
+  const x = (evt.clientX - rect.left) * scaleX;
+  const y = (evt.clientY - rect.top) * scaleY;
+  if (x < 0 || x > t.canvas.width || y < 0 || y > t.canvas.height) return null;
+
+  const cropX = x / t.scale; // back into crop-space (pre-downscale) pixels
+  const seg0 = t.segs[0];
+  let sourceX;
+  if (cropX < seg0.w) {
+    sourceX = seg0.srcX + cropX;
+  } else {
+    const seg1 = t.segs[1];
+    sourceX = seg1.srcX + (cropX - seg0.w);
+  }
+  const vw = player.videoWidth;
+  sourceX = ((sourceX % vw) + vw) % vw;
+  const frac = sourceX / vw;
+  return { yaw: wrapYaw((frac - 0.5) * 360), canvasX: x, canvasY: y };
 }
 
 async function loadClips() {
@@ -367,27 +458,24 @@ function updateLastSummary(rec) {
   lastNotesEl.value = rec.notes || "";
 }
 
-function flashDot(x, y) {
-  clickDot.style.left = x + "px";
-  clickDot.style.top = y + "px";
-  clickDot.style.opacity = "1";
-  clearTimeout(flashDot._t);
-  flashDot._t = setTimeout(() => { clickDot.style.opacity = "0"; }, 500);
+function flashDot(tileIndex, x, y) {
+  flashMarker = { tileIndex, x, y, until: performance.now() + 500 };
 }
 
 // --- click-to-label -----------------------------------------------------
-player.addEventListener("click", (evt) => {
-  if (!currentClipId) return;
-  const hit = clickToFraction(evt);
-  if (!hit) return;
-  const yaw = wrapYaw((hit.frac - 0.5) * 360);
-  flashDot(hit.dotX, hit.dotY);
-  saveLabel({
-    timestamp: player.currentTime,
-    desired_yaw: Math.round(yaw * 100) / 100,
-    confidence: stickyConfidence,
-    event: stickyEvent,
-    notes: "",
+tileCanvases.forEach((canvas, i) => {
+  canvas.addEventListener("click", (evt) => {
+    if (!currentClipId) return;
+    const hit = tileClickToYaw(i, evt);
+    if (!hit) return;
+    flashDot(i, hit.canvasX, hit.canvasY);
+    saveLabel({
+      timestamp: player.currentTime,
+      desired_yaw: Math.round(hit.yaw * 100) / 100,
+      confidence: stickyConfidence,
+      event: stickyEvent,
+      notes: "",
+    });
   });
 });
 
@@ -414,6 +502,7 @@ player.addEventListener("timeupdate", () => {
 player.addEventListener("loadedmetadata", () => {
   durTimeEl.textContent = player.duration.toFixed(3);
   clipMeta.textContent = `${player.videoWidth}×${player.videoHeight}`;
+  buildTileGeometry();
 });
 scrub.addEventListener("input", () => {
   scrubbing = true;
