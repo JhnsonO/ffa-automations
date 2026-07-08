@@ -101,9 +101,9 @@
       </div>
 
       <div class="hint">
-        Click any of the 4 zoomed tiles where the action is to save a label at the current playhead
-        (each tile is a zoomed slice of the same clip, centered on yaw 0°/90°/180°/-90°, with a bit
-        of overlap so nothing gets lost at the edges). Keys <kbd>1</kbd>-<kbd>6</kbd> set
+        Click anywhere on the strip where the action is to save a label at the current playhead
+        (the 4 tiles are a left-to-right slice of the same pitch view — the ball moves
+        continuously from one tile into the next). Keys <kbd>1</kbd>-<kbd>6</kbd> set
         goal/shot/attack/restart/normal/other (applies to the next click and re-tags the last one).
         <kbd>space</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> step one frame ·
         <kbd>[</kbd>/<kbd>]</kbd> adjust confidence.
@@ -124,17 +124,20 @@
           <button data-event="other">Other</button>
         </div>
       </div>
-      <div class="field">
-        <label>Confidence (sticky)</label>
-        <div class="conf-row">
-          <input type="range" id="confSlider" min="0" max="1" step="0.05" value="0.8"/>
-          <span class="conf-val" id="confVal">0.80</span>
+      <details class="field">
+        <summary style="cursor:pointer;color:#8b949e;font-size:12px;">Advanced</summary>
+        <div class="field" style="margin-top:8px;">
+          <label>Confidence (sticky)</label>
+          <div class="conf-row">
+            <input type="range" id="confSlider" min="0" max="1" step="0.05" value="0.8"/>
+            <span class="conf-val" id="confVal">0.80</span>
+          </div>
         </div>
-      </div>
-      <div class="field">
-        <label>Notes for last click</label>
-        <textarea id="lastNotes" placeholder="optional"></textarea>
-      </div>
+        <div class="field">
+          <label>Notes for last click</label>
+          <textarea id="lastNotes" placeholder="optional"></textarea>
+        </div>
+      </details>
       <div style="font-size:11.5px;color:#8b949e">
         Last saved: <span id="lastSummary">—</span>
       </div>
