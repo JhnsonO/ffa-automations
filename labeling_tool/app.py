@@ -62,7 +62,7 @@ for d in (CLIPS_DIR, DRIVE_CACHE_DIR, LABELS_DIR):
     d.mkdir(exist_ok=True)
 
 VIDEO_EXTS = {".mp4", ".mov", ".m4v"}
-CLIP_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+CLIP_ID_RE = re.compile(r"^[A-Za-z0-9 _.()-]+$")
 
 app = Flask(__name__, static_folder=None)
 
@@ -83,6 +83,8 @@ def _lock_for(clip_id: str) -> threading.Lock:
 
 def _safe_clip_id(clip_id: str) -> str:
     if not clip_id or not CLIP_ID_RE.match(clip_id):
+        abort(400, "invalid clip id")
+    if ".." in clip_id or clip_id in (".", ".."):
         abort(400, "invalid clip id")
     return clip_id
 
