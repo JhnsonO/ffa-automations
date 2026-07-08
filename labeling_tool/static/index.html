@@ -26,8 +26,8 @@
   .video-card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 14px; }
   .video-wrap { position: relative; background: #000; border-radius: 8px; overflow: hidden; }
   #player { position: absolute; width: 2px; height: 2px; opacity: 0.01; pointer-events: none; }
-  .tile-grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; grid-auto-flow: column; gap: 4px; height: 78vh; }
-  .tile-cell { position: relative; }
+  .tile-grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); grid-auto-flow: column; gap: 4px; height: 78vh; }
+  .tile-cell { position: relative; min-height: 0; overflow: hidden; }
   .tile-cell canvas { display: block; width: 100%; height: 100%; cursor: crosshair; background: #000; }
   .tile-label { position: absolute; top: 4px; left: 6px; font-size: 10.5px; color: #8b949e; background: rgba(13,17,23,0.7); padding: 1px 5px; border-radius: 4px; pointer-events: none; }
 
