@@ -40,6 +40,10 @@ jobs:
           # random https://<slug>.trycloudflare.com URL on every start -- it
           # changes each time this restarts. Purely outbound; no inbound port
           # or firewall/Vultr-Cloud-Firewall change needed on the VM.
+          # Runner's self-hosted "orphan process cleanup" kills anything still
+          # carrying its RUNNER_TRACKING_ID env var after the job ends, even if
+          # setsid/nohup'd -- unset it so cloudflared survives job completion.
+          unset RUNNER_TRACKING_ID
           setsid nohup "$HOME/ffa-labeling-tool/cloudflared" tunnel --url "http://127.0.0.1:$PORT" \
             >> /tmp/labeling-tunnel.log 2>&1 < /dev/null &
           EOF
