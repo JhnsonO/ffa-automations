@@ -54,11 +54,8 @@ class FollowCameraFlat:
 
         if self.mode == Mode.FOLLOW and cx is not None and cy is not None:
             target_cx, target_cy = cx, cy
-            target_w = self.w * 0.55
-            target_h = target_w * 9 / 16
-            if target_h > self.h:
-                target_h = self.h * 0.95
-                target_w = target_h * 16 / 9
+            # Zoom intentionally removed for v1 per Johnson, 9 Jul 2026.
+            target_w, target_h = self._wide_size()
         else:
             target_cx, target_cy = self.w / 2.0, self.h / 2.0
             target_w, target_h = self._wide_size()
