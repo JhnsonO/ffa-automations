@@ -1,22 +1,16 @@
 [
   {
     "profile_name": "gopro_max2_msv_4k60",
-    "resolution": [
-      3840,
-      2160
-    ],
+    "resolution": [3840, 2160],
     "fov_deg": 170,
     "projection": "equidistant",
-    "distortion_correction_strength": 1.0,
-    "calibration_status": "visually_tuned",
-    "notes": "MAX2 single-lens Max SuperView 16:9 4K60. FOV/strength tuned 9 Jul 2026 via undistort.py --preview against real fence-line footage (St Margarets, GX010424.MP4 trim). Not full camera calibration, but no longer a placeholder guess."
+    "distortion_correction_strength": 0.0,
+    "calibration_status": "deferred",
+    "notes": "MAX2 single-lens Max SuperView 16:9 4K60. Correction strength reverted to 0.0 (raw passthrough) on 9 Jul 2026 -- f90d967's strength=1.0/fov=170 combo was visually over-corrected per Johnson's real review of output stills (edge stretching), despite that commit's own notes claiming a tuned/approved result. Pragmatic default: MAX2 already applies in-camera MSV correction, so little raw lens distortion likely remains. Revisit only if a real tracked render segment visibly shows edge warping."
   },
   {
     "profile_name": "gopro_max2_mhv_4k60",
-    "resolution": [
-      3840,
-      2160
-    ],
+    "resolution": [3840, 2160],
     "fov_deg": 177,
     "projection": "equidistant",
     "distortion_correction_strength": 0.85,
