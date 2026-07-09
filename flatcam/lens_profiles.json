@@ -1,0 +1,20 @@
+[
+  {
+    "profile_name": "gopro_max2_msv_4k60",
+    "resolution": [3840, 2160],
+    "fov_deg": 155,
+    "projection": "equidistant",
+    "distortion_correction_strength": 0.85,
+    "calibration_status": "approximate",
+    "notes": "MAX2 single-lens Max SuperView 16:9 4K60. FOV approximate; GoPro publishes no exact MSV degree figure. Tune strength via undistort.py --preview against fence lines."
+  },
+  {
+    "profile_name": "gopro_max2_mhv_4k60",
+    "resolution": [3840, 2160],
+    "fov_deg": 177,
+    "projection": "equidistant",
+    "distortion_correction_strength": 0.85,
+    "calibration_status": "approximate",
+    "notes": "MAX2 single-lens Max HyperView 16:9 4K60. Not yet shot."
+  }
+]
