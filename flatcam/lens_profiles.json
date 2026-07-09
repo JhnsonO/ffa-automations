@@ -1,16 +1,22 @@
 [
   {
     "profile_name": "gopro_max2_msv_4k60",
-    "resolution": [3840, 2160],
-    "fov_deg": 155,
+    "resolution": [
+      3840,
+      2160
+    ],
+    "fov_deg": 170,
     "projection": "equidistant",
-    "distortion_correction_strength": 0.85,
-    "calibration_status": "approximate",
-    "notes": "MAX2 single-lens Max SuperView 16:9 4K60. FOV approximate; GoPro publishes no exact MSV degree figure. Tune strength via undistort.py --preview against fence lines."
+    "distortion_correction_strength": 1.0,
+    "calibration_status": "visually_tuned",
+    "notes": "MAX2 single-lens Max SuperView 16:9 4K60. FOV/strength tuned 9 Jul 2026 via undistort.py --preview against real fence-line footage (St Margarets, GX010424.MP4 trim). Not full camera calibration, but no longer a placeholder guess."
   },
   {
     "profile_name": "gopro_max2_mhv_4k60",
-    "resolution": [3840, 2160],
+    "resolution": [
+      3840,
+      2160
+    ],
     "fov_deg": 177,
     "projection": "equidistant",
     "distortion_correction_strength": 0.85,
