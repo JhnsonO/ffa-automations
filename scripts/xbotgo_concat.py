@@ -340,25 +340,35 @@ def send_alert(subject, body):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def run():
-    group_prefix = os.environ.get("GROUP_PREFIX", "").strip()
-    force        = os.environ.get("FORCE", "false").strip().lower() == "true"
+    group_prefix   = os.environ.get("GROUP_PREFIX", "").strip()
+    force          = os.environ.get("FORCE", "false").strip().lower() == "true"
+    skip_duplicate = os.environ.get("SKIP_DUPLICATE", "false").strip().lower() == "true"
 
     if not group_prefix:
         log.error("GROUP_PREFIX not set")
         sys.exit(1)
 
-    log.info(f"XbotGo concat starting: group_prefix={group_prefix} force={force}")
+    log.info(f"XbotGo concat starting: group_prefix={group_prefix} force={force} skip_duplicate={skip_duplicate}")
 
     con   = init_db()
     creds = get_credentials()
     drive = get_drive_service(creds)
     yt    = get_youtube_service(creds)
 
-    # Check not already done
+    # Check not already done (unless explicitly overridden)
     row = con.execute("SELECT youtube_id FROM xbotgo_uploads WHERE group_prefix=?", (group_prefix,)).fetchone()
-    if row:
+    if row and not skip_duplicate:
         log.info(f"Already uploaded: {group_prefix} -> https://youtu.be/{row[0]}")
+        log.info("Re-run with skip_duplicate=true to force reprocessing (e.g. you missed a clip).")
         return
+
+    if row and skip_duplicate:
+        # Re-run: give this pass a unique DB/output key so we don't clobber the original record
+        rerun_suffix = datetime.now(timezone.utc).strftime("%H%M%S")
+        db_key = f"{group_prefix}_rerun{rerun_suffix}"
+        log.info(f"skip_duplicate=true — original upload preserved, this pass will be logged as '{db_key}'")
+    else:
+        db_key = group_prefix
 
     # Locate folders
     root_id  = get_xbotgo_root(drive)
@@ -392,7 +402,7 @@ def run():
         local_clips.append(dest)
 
     # Concatenate
-    output_name = f"{group_prefix}_concat.mp4"
+    output_name = f"{db_key}_concat.mp4"
     output_path = WORK_DIR / output_name
     try:
         concatenate_clips(local_clips, output_path)
@@ -424,9 +434,9 @@ def run():
         )
         sys.exit(1)
 
-    # Log to DB
-    mark_uploaded(con, group_prefix, output_name, yt_id, len(clips))
-    log.info(f"Logged to xbotgo.db: {group_prefix}")
+    # Log to DB (uses db_key so duplicate re-runs don't overwrite the original record)
+    mark_uploaded(con, db_key, output_name, yt_id, len(clips))
+    log.info(f"Logged to xbotgo.db: {db_key}")
 
     # Clean up source clips from Drive Inbox
     log.info("Cleaning up source clips from Drive Inbox...")
