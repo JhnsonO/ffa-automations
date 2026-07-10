@@ -8,6 +8,7 @@ from enum import Enum
 FOLLOW_T = 0.45
 WIDE_T = 0.30
 HYSTERESIS_S = 1.5
+EDGE_MARGIN = 0.9  # flat crop-in to hide lens-edge distortion; constant, not content-driven
 
 class Mode(str, Enum):
     FOLLOW = "FOLLOW"
@@ -37,8 +38,10 @@ class FollowCameraFlat:
 
     def _wide_size(self) -> tuple[float, float]:
         if self.w / self.h >= 16 / 9:
-            return self.h * 16 / 9, float(self.h)
-        return float(self.w), self.w * 9 / 16
+            w, h = self.h * 16 / 9, float(self.h)
+        else:
+            w, h = float(self.w), self.w * 9 / 16
+        return w * EDGE_MARGIN, h * EDGE_MARGIN
 
     def _clamp(self, cx: float, cy: float, cw: float, ch: float) -> tuple[float, float]:
         return min(max(cx, cw / 2), self.w - cw / 2), min(max(cy, ch / 2), self.h - ch / 2)
