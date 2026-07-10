@@ -189,7 +189,7 @@ def replay_render(segment: Path, profile: dict, strength: float, path_rows: list
 
     writer = cv2.VideoWriter(str(out_mp4), cv2.VideoWriter_fourcc(*"mp4v"), fps, (OUT_W, OUT_H))
     label = f"strength {strength:.2f}"
-    fields = ["frame_idx", "raw_cx", "raw_cy", "cx", "cy", "crop_w", "crop_h", "v_cover"]
+    fields = ["frame_idx", "raw_cx", "raw_cy", "cx", "cy", "crop_w", "crop_h", "v_cover", "corner_err_px"]
     csv_fh = open(out_csv, "w", newline="", encoding="utf-8")
     csv_writer = csv.DictWriter(csv_fh, fieldnames=fields)
     csv_writer.writeheader()
@@ -216,12 +216,33 @@ def replay_render(segment: Path, profile: dict, strength: float, path_rows: list
         uy = (ut[1] + ub[1]) / 2.0
         true_vspan = max(1e-6, ub[1] - ut[1])
         v_cover = ch / true_vspan
+        # Corner check (edge-midpoint inversion does not prove the rectangle holds
+        # at the corners under radial warping): invert the raw box's four actual
+        # corners and compare each to the nearest corner of the assumed output
+        # rectangle (ux,uy,cw,ch). Worst-case distance across the four is logged;
+        # this is a diagnostic, not a silent correction — no gate is auto-applied.
+        raw_corners = [
+            (raw_cx - base_cw / 2.0, raw_cy - base_ch / 2.0),
+            (raw_cx + base_cw / 2.0, raw_cy - base_ch / 2.0),
+            (raw_cx - base_cw / 2.0, raw_cy + base_ch / 2.0),
+            (raw_cx + base_cw / 2.0, raw_cy + base_ch / 2.0),
+        ]
+        true_corners = [invert_point(sx, sy, valid, cx_, cy_) for cx_, cy_ in raw_corners]
+        assumed_corners = [
+            (ux - cw / 2.0, uy - ch / 2.0), (ux + cw / 2.0, uy - ch / 2.0),
+            (ux - cw / 2.0, uy + ch / 2.0), (ux + cw / 2.0, uy + ch / 2.0),
+        ]
+        corner_err = max(
+            ((tc[0] - ac[0]) ** 2 + (tc[1] - ac[1]) ** 2) ** 0.5
+            for tc, ac in zip(true_corners, assumed_corners)
+        )
         und = undistort_frame(frame, prof)
         out = crop_frame(und, ReplayState(ux, uy, cw, ch), OUT_W, OUT_H)
         writer.write(burn_label(out, label))
         csv_writer.writerow({"frame_idx": idx, "raw_cx": f"{raw_cx:.2f}", "raw_cy": f"{raw_cy:.2f}",
                              "cx": f"{ux:.2f}", "cy": f"{uy:.2f}",
-                             "crop_w": f"{cw:.1f}", "crop_h": f"{ch:.1f}", "v_cover": f"{v_cover:.4f}"})
+                             "crop_w": f"{cw:.1f}", "crop_h": f"{ch:.1f}", "v_cover": f"{v_cover:.4f}",
+                             "corner_err_px": f"{corner_err:.2f}"})
         ok, frame = cap.read()
         idx += 1
 
