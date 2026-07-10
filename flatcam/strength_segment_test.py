@@ -22,13 +22,14 @@ Method
      - the exact dest->source mapping for that strength is obtained by passing
        coordinate-encoded float32 images through the public undistort_frame()
        (no formula duplication; exact by construction);
-     - each raw-space crop centre is inverted through that mapping so the SAME
-       SCENE POINT stays centred at every strength;
-     - local horizontal scale (dSource/dDest, finite differences) at that point
-       rescales the crop so the crop's HORIZONTAL SCENE FOV matches the
-       baseline. Aspect is held at 16:9 (pan axis is the axis that matters in
-       the pan-only design; vertical scene FOV may differ slightly - stated
-       limitation, visible in the per-strength CSVs).
+     - the raw-space crop's boundary extremes (left/right/top/bottom midpoints)
+       are each inverted through that mapping. Horizontal scene span and centre
+       are therefore EXACT by construction at every strength (a centre-point
+       local-gradient approximation was measured to mis-size the span by up to
+       -64% under this warp and was rejected). Height follows the fixed 16:9
+       output aspect; its per-frame deviation from the true vertical scene span
+       is logged as v_cover in the per-strength CSVs (stated limitation of a
+       rectangular 16:9 crop over a non-conformal warp).
 4. Per-frame transformed centres/scales are logged to camera_path_s{XXX}.csv
    next to the canonical raw-space camera_path.csv so residual framing
    differences are inspectable.
@@ -146,17 +147,6 @@ def invert_point(sx: np.ndarray, sy: np.ndarray, valid: np.ndarray, px: float, p
     return float(x1 + wx), float(y1 + wy)
 
 
-def local_scales(sx: np.ndarray, sy: np.ndarray, ux: float, uy: float, half: int = 4) -> tuple[float, float]:
-    """dSource/dDest at (ux, uy) by central differences: gx horizontal, gy vertical."""
-    h, w = sx.shape
-    x = int(round(ux)); y = int(round(uy))
-    xa, xb = max(0, x - half), min(w - 1, x + half)
-    ya, yb = max(0, y - half), min(h - 1, y + half)
-    gx = (float(sx[y, xb]) - float(sx[y, xa])) / max(1, xb - xa)
-    gy = (float(sy[yb, x]) - float(sy[ya, x])) / max(1, yb - ya)
-    return max(gx, 1e-6), max(gy, 1e-6)
-
-
 def burn_label(img: np.ndarray, text: str) -> np.ndarray:
     cv2.putText(img, text, LABEL_ORG, cv2.FONT_HERSHEY_SIMPLEX, LABEL_SCALE, (0, 0, 0), LABEL_THICK + 3, cv2.LINE_AA)
     cv2.putText(img, text, LABEL_ORG, cv2.FONT_HERSHEY_SIMPLEX, LABEL_SCALE, (255, 255, 255), LABEL_THICK, cv2.LINE_AA)
@@ -198,8 +188,8 @@ def replay_render(segment: Path, profile: dict, strength: float, path_rows: list
     sx, sy, valid = build_mapping_fields(w, h, prof)
 
     writer = cv2.VideoWriter(str(out_mp4), cv2.VideoWriter_fourcc(*"mp4v"), fps, (OUT_W, OUT_H))
-    label = f"strength {strength:.1f}"
-    fields = ["frame_idx", "raw_cx", "raw_cy", "cx", "cy", "gx", "gy", "crop_w", "crop_h"]
+    label = f"strength {strength:.2f}"
+    fields = ["frame_idx", "raw_cx", "raw_cy", "cx", "cy", "crop_w", "crop_h", "v_cover"]
     csv_fh = open(out_csv, "w", newline="", encoding="utf-8")
     csv_writer = csv.DictWriter(csv_fh, fieldnames=fields)
     csv_writer.writeheader()
@@ -210,16 +200,28 @@ def replay_render(segment: Path, profile: dict, strength: float, path_rows: list
         row = path_rows[min(idx, n_rows - 1)]
         raw_cx, raw_cy = float(row["cx"]), float(row["cy"])
         base_cw, base_ch = float(row["crop_w"]), float(row["crop_h"])
-        ux, uy = invert_point(sx, sy, valid, raw_cx, raw_cy)
-        gx, gy = local_scales(sx, sy, ux, uy)
-        cw = min(float(w), base_cw / gx)         # horizontal scene FOV preserved
-        ch = min(float(h), cw * 9.0 / 16.0)      # aspect held at 16:9 (stated limitation)
+        # Exact boundary inversion: the warp is too nonlinear for a centre-point
+        # local gradient (measured up to -64% span error / +219 px centre bias at
+        # s=0.3), so the raw crop's horizontal extremes and vertical extremes are
+        # each inverted through the mapping directly. Horizontal span/centre are
+        # exact by construction; height follows the 16:9 output requirement and
+        # its deviation from the true vertical scene span is logged as v_cover.
+        ul = invert_point(sx, sy, valid, raw_cx - base_cw / 2.0, raw_cy)
+        ur = invert_point(sx, sy, valid, raw_cx + base_cw / 2.0, raw_cy)
+        ut = invert_point(sx, sy, valid, raw_cx, raw_cy - base_ch / 2.0)
+        ub = invert_point(sx, sy, valid, raw_cx, raw_cy + base_ch / 2.0)
+        cw = min(float(w), max(16.0, ur[0] - ul[0]))
+        ch = min(float(h), cw * 9.0 / 16.0)
+        ux = (ul[0] + ur[0]) / 2.0
+        uy = (ut[1] + ub[1]) / 2.0
+        true_vspan = max(1e-6, ub[1] - ut[1])
+        v_cover = ch / true_vspan
         und = undistort_frame(frame, prof)
         out = crop_frame(und, ReplayState(ux, uy, cw, ch), OUT_W, OUT_H)
         writer.write(burn_label(out, label))
         csv_writer.writerow({"frame_idx": idx, "raw_cx": f"{raw_cx:.2f}", "raw_cy": f"{raw_cy:.2f}",
-                             "cx": f"{ux:.2f}", "cy": f"{uy:.2f}", "gx": f"{gx:.4f}", "gy": f"{gy:.4f}",
-                             "crop_w": f"{cw:.1f}", "crop_h": f"{ch:.1f}"})
+                             "cx": f"{ux:.2f}", "cy": f"{uy:.2f}",
+                             "crop_w": f"{cw:.1f}", "crop_h": f"{ch:.1f}", "v_cover": f"{v_cover:.4f}"})
         ok, frame = cap.read()
         idx += 1
 
