@@ -86,9 +86,14 @@ def _run(cmd: list[str]) -> None:
 
 
 def trim_segment(src: Path, dst: Path, start_sec: float, end_sec: float) -> None:
+    # Stream-copy, not re-encode: some minimal ffmpeg builds (observed on the
+    # Vast.ai CPU image: ffmpeg 4.3, conda) reject libx264 CLI options like
+    # -preset outright ("Unrecognized option 'preset'"). Copy sidesteps codec
+    # options entirely and is faster; precision is nearest-keyframe rather than
+    # frame-exact, acceptable for a visual A/B test (not a calibration).
     _run([
-        "ffmpeg", "-y", "-ss", f"{start_sec:.3f}", "-to", f"{end_sec:.3f}", "-i", str(src),
-        "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "18", str(dst),
+        "ffmpeg", "-y", "-ss", f"{start_sec:.3f}", "-i", str(src),
+        "-t", f"{max(0.0, end_sec - start_sec):.3f}", "-c", "copy", "-an", str(dst),
     ])
 
 
