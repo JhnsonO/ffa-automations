@@ -23,14 +23,17 @@
 
 **Flatcam v1 config now locked:** raw lens (strength 0.0), pan-only FSM, EDGE_MARGIN 0.80. All verified on GX010424 real footage (Drive id `1xfr5gvMeYtkyVs1DdqU3GROcuVUt6BvQ`).
 
-## Flatcam — NEXT: full-clip validation render (active gate)
+## Flatcam — full-clip render workflow built, merged, dispatched (10 July 2026)
 
-Sandbox renders were 3s segments only (CPU too slow for full clip, ~1.2s/frame at 4K). Next step is a full-length render of GX010424 (174s) on proper compute, then Johnson watches the whole thing for: pan smoothness across real play sequences, FSM behaviour during stoppages (WIDE_FALLBACK transitions), and whether 0.80 margin holds up across the full pitch range.
+`.github/workflows/flatcam-render.yml` added: CPU-only Vast.ai `workflow_dispatch`, Vast lifecycle mechanics copied verbatim from `playcam-poc.yml` (`428ac208`) — only the offer query adapted (no GPU fields; `cpu_cores>=16`, `cpu_ram>=32768MB`, `disk_space>=60`). Drive download reuses the existing YOUTUBE_TOKEN/YOUTUBE_CREDENTIALS oauth-refresh pattern verbatim. Runs `render_segment_flat.py --input source.mp4 --profile gopro_max2_msv_4k60 --venue flatcam/venues/st_margarets_msv.json --output full_render.mp4 --csv-out full_render.csv` on the full downloaded clip (script has no trim flags, so no windowing — matches full-clip requirement). No frozen files touched; diff was a single new file, 288 additions.
 
-Plan (execute in order, each gated on the previous):
-1. **Full render of GX010424** — needs a workflow or Vast.ai run (CPU render at ~1.2s/frame = ~3.5h sandbox, unacceptable; GPU box or beefier CPU runner required). Estimate cost before dispatch. Claude drafts Codex prompt for a `flatcam-render.yml` workflow_dispatch (inputs: Drive file id, profile, venue, output artifact) mirroring the existing render workflow's Drive-download/artifact-upload patterns. Frozen: everything except the new YAML.
-2. **Johnson full-clip sign-off** — visual gate, no code.
-3. **Live-match test** — record a real FFA session on Max 2 flat mode, run pipeline end-to-end, judge production quality.
-4. **Only after 3 passes:** decide flatcam's relationship to playcam/360 pipeline (replace vs complement), revisit deferred items (undistort calibration, dynamic zoom v2).
+Merged to `main` @ `2e291533`. Dispatched with real inputs (`drive_file_id=1xfr5gvMeYtkyVs1DdqU3GROcuVUt6BvQ`, `profile=gopro_max2_msv_4k60`, `venue=flatcam/venues/st_margarets_msv.json`). Run `29073069722`: https://github.com/JhnsonO/ffa-automations/actions/runs/29073069722 — **DISPATCHED — UNVERIFIED**, one status check only confirmed `in_progress` (no fast failure), not polled further.
+
+**Next gate:** inspect run outcome/artifact (`flatcam-full-render-29073069722`) once complete — confirm it ran end-to-end and produced `full_render.mp4` + `full_render.csv`. Then Johnson watches the full 174s render for: pan smoothness across real play, FSM behaviour during stoppages (WIDE_FALLBACK transitions), whether 0.80 margin holds up pitch-wide. That visual sign-off is the actual product gate — a green run only proves execution.
+
+Plan after that (each gated on the previous):
+1. Johnson full-clip sign-off — visual gate, no code.
+2. Live-match test — record a real FFA session on Max 2 flat mode, run pipeline end-to-end, judge production quality.
+3. Only after both pass: decide flatcam's relationship to playcam/360 pipeline (replace vs complement), revisit deferred items (undistort calibration, dynamic zoom v2).
 
 Do NOT: touch undistort/lens strength, re-tune FSM constants, add features beyond the render workflow. Scope discipline per CLAUDE.md.
