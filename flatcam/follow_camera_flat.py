@@ -8,7 +8,7 @@ from enum import Enum
 FOLLOW_T = 0.45
 WIDE_T = 0.30
 HYSTERESIS_S = 1.5
-EDGE_MARGIN = 0.85  # flat crop-in to hide lens-edge distortion; constant, not content-driven
+EDGE_MARGIN = 0.80  # flat crop-in to hide lens-edge distortion; constant, not content-driven
 
 class Mode(str, Enum):
     FOLLOW = "FOLLOW"
