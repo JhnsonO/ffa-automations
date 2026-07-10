@@ -12,6 +12,11 @@ on:
         required: false
         default: 'false'
         type: string
+      skip_duplicate:
+        description: 'Ignore duplicate-upload check and re-process even if this prefix was already uploaded'
+        required: false
+        default: 'false'
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -82,6 +87,7 @@ jobs:
         env:
           GROUP_PREFIX: ${{ github.event.inputs.group_prefix }}
           FORCE: ${{ github.event.inputs.force }}
+          SKIP_DUPLICATE: ${{ github.event.inputs.skip_duplicate }}
           GH_PAT: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
           ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
