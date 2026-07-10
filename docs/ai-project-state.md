@@ -29,9 +29,11 @@
 
 **Run 1 (`29073069722`) FAILED** — instance launched fine (AMD EPYC 7502, 64 cores), but `Wait for SSH` timed out after 18 attempts. Cause: launch step used `image: python:3.11-slim` for the CPU-only offer instead of the proven Vast image — that generic image has no `sshd` installed, so Vast's SSH runtype never came up. Fixed @ `c2320fee`: image reverted to the exact proven `pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime` from `playcam-poc.yml` (CPU-only offer query unchanged; the image itself was not "legitimately script-specific" — only the offer query was meant to be adapted, that was the actual mistake).
 
-**Run 2 (`29073246636`) dispatched** with the same inputs (`drive_file_id=1xfr5gvMeYtkyVs1DdqU3GROcuVUt6BvQ`, `profile=gopro_max2_msv_4k60`, `venue=flatcam/venues/st_margarets_msv.json`): https://github.com/JhnsonO/ffa-automations/actions/runs/29073246636 — **DISPATCHED — UNVERIFIED**, one status check confirmed `in_progress`, not polled further. Debug budget: 1 of 3 cycles used.
+**Run 2 (`29073246636`) SUCCEEDED** — all steps green, instance terminated cleanly, no leak. Artifact `flatcam-full-render-29073246636` (575.7 MB) uploaded, containing `full_render.mp4` + `full_render.csv` for the full 174s GX010424 clip. Run: https://github.com/JhnsonO/ffa-automations/actions/runs/29073246636
 
-**Next gate:** inspect run outcome/artifact (`flatcam-full-render-29073069722`) once complete — confirm it ran end-to-end and produced `full_render.mp4` + `full_render.csv`. Then Johnson watches the full 174s render for: pan smoothness across real play, FSM behaviour during stoppages (WIDE_FALLBACK transitions), whether 0.80 margin holds up pitch-wide. That visual sign-off is the actual product gate — a green run only proves execution.
+A green run proves execution only, not product quality — the actual gate is Johnson watching the full render.
+
+**Next gate:** Johnson downloads and watches the full render (`flatcam-full-render-29073246636`, run https://github.com/JhnsonO/ffa-automations/actions/runs/29073246636) for: pan smoothness across real play, FSM behaviour during stoppages (WIDE_FALLBACK transitions), whether 0.80 margin holds up pitch-wide. That visual sign-off is the actual product gate.
 
 Plan after that (each gated on the previous):
 1. Johnson full-clip sign-off — visual gate, no code.
