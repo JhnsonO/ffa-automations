@@ -1,0 +1,86 @@
+name: Flatcam Lens Distortion Stills
+
+on:
+  workflow_dispatch:
+    inputs:
+      drive_file_id:
+        description: 'Drive file ID of the source flat MP4'
+        required: false
+        default: '1xfr5gvMeYtkyVs1DdqU3GROcuVUt6BvQ'
+        type: string
+      profile:
+        description: 'Lens profile name (flatcam/lens_profiles.json)'
+        required: false
+        default: 'gopro_max2_msv_4k60'
+        type: string
+      timestamp:
+        description: 'Timestamp in the clip to grab the frame from (ffmpeg -ss format)'
+        required: false
+        default: '00:01:00'
+        type: string
+      artifact_name:
+        description: 'Name for the uploaded stills artifact'
+        required: false
+        default: 'flatcam-lens-stills'
+        type: string
+
+jobs:
+  flatcam-stills:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg libgl1 libglib2.0-0
+          pip install -q 'numpy<2' opencv-python-headless
+
+      - name: Download source clip from Drive
+        env:
+          FILE_ID: ${{ github.event.inputs.drive_file_id }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -u - << 'PY'
+          import json, urllib.request as req
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          payload = json.dumps({'client_id': token_data.get('client_id') or creds_data['installed']['client_id'], 'client_secret': token_data.get('client_secret') or creds_data['installed']['client_secret'], 'refresh_token': token_data['refresh_token'], 'grant_type': 'refresh_token'}).encode()
+          response = req.urlopen(req.Request(token_data.get('token_uri', 'https://oauth2.googleapis.com/token'), data=payload, headers={'Content-Type': 'application/json'}, method='POST'))
+          token = json.loads(response.read())
+          if 'access_token' not in token: raise RuntimeError(f'Token refresh failed: {token}')
+          open('/tmp/drive_token.txt', 'w').write(token['access_token'])
+          print(f"Token OK (expires_in={token.get('expires_in')}s)")
+          PY
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          curl -sL -H "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://www.googleapis.com/drive/v3/files/$FILE_ID?alt=media" \
+            -o /tmp/source.mp4
+          ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/source.mp4
+
+      - name: Extract single frame
+        env:
+          TS: ${{ github.event.inputs.timestamp }}
+        run: |
+          ffmpeg -y -ss "$TS" -i /tmp/source.mp4 -frames:v 1 /tmp/frame.jpg
+          ffprobe -v error -show_entries stream=width,height -of default=noprint_wrappers=1 /tmp/frame.jpg
+
+      - name: Generate lens-strength comparison stills
+        env:
+          PROFILE: ${{ github.event.inputs.profile }}
+        run: |
+          cd flatcam
+          python3 lens_stills.py --profile "$PROFILE" --input /tmp/frame.jpg --output-dir ../flatcam_artifacts
+
+      - name: Upload stills artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.artifact_name }}-${{ github.run_id }}
+          path: flatcam_artifacts/
+          retention-days: 14
