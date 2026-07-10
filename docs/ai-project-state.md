@@ -52,3 +52,11 @@ Plan after both issues are resolved and re-verified:
 2. Only after that passes: decide flatcam's relationship to playcam/360 pipeline (replace vs complement), revisit dynamic zoom v2.
 
 Do NOT: pick a new distortion_correction_strength value, re-tune FSM constants, or dispatch a new render without Johnson's explicit go. Scope discipline per CLAUDE.md.
+
+## Flatcam — lens distortion comparison stills workflow built, merged, dispatched (10 July 2026)
+
+`.github/workflows/flatcam-stills.yml` + `flatcam/lens_stills.py` added (merge `9ebda929`, feature branch `flatcam-lens-stills`). Addresses issue #2 (lens curve) from the full-clip sign-off: `distortion_correction_strength` has only been tried at 0.0 (current) and 1.0 (rejected 9 July). No full render, no Vast.ai instance — standard GitHub-hosted runner only. Pulls one frame via ffmpeg from the same Drive source (`GX010424 copy.mp4`, id `1xfr5gvMeYtkyVs1DdqU3GROcuVUt6BvQ`, default timestamp `00:01:00`, arbitrary per Johnson — stills don't move through the video so timing doesn't matter), runs it through `undistort_frame()` at six strengths (0.0/0.25/0.4/0.55/0.7/1.0) with the override applied in-memory only, then center-crops each to 3072x1728 (3840x2160 x EDGE_MARGIN 0.80, matching `follow_camera_flat.py`'s production crop). Uploads only the 6 JPGs as the artifact. `flatcam/lens_profiles.json` itself not touched. Diff verified before merge: 2 files added, 0 modified, 150 lines.
+
+**Run DISPATCHED — UNVERIFIED**: run `29077900462`, https://github.com/JhnsonO/ffa-automations/actions/runs/29077900462. One status check done post-dispatch (in_progress, no fast failure) — not polled further per budget.
+
+**Next gate:** Johnson reviews the 6 stills and picks a strength (or confirms 0.0 stays) before any change to `lens_profiles.json` or a real render re-run. No do-not-touch rule lifted by this task.
