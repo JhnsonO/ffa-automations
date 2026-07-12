@@ -336,7 +336,7 @@ def process_clips():
     tab_names = [
         s["properties"]["title"]
         for s in meta["sheets"]
-        if s["properties"]["title"] != INDEX_TAB
+        if s["properties"]["title"] not in (INDEX_TAB, ADD_VIDEO_TAB, CLIPS_TRACKER_TAB)
     ]
 
     total_processed = 0
@@ -344,7 +344,10 @@ def process_clips():
         processed = _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab)
         total_processed += processed
 
-    print(f"\nprocess-clips complete. {total_processed} clip(s) processed across {len(tab_names)} tab(s).")
+    backfilled = _reconcile_clips_tracker(sheets_svc, spreadsheet_id, tab_names)
+
+    print(f"\nprocess-clips complete. {total_processed} clip(s) processed, "
+          f"{backfilled} tracker row(s) backfilled, across {len(tab_names)} tab(s).")
 
 
 def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
@@ -474,9 +477,6 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
         _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, DONE)
         link_formula = f'=HYPERLINK("{drive_link}","▶ View Clip")'
         _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 6, link_formula, raw=True)
-
-        # Append to Clips Tracker
-        _append_to_clips_tracker(sheets_svc, spreadsheet_id, safe_name, tab_name, tags, drive_link)
 
         print(f"  ✅ Done: {safe_name}")
         processed += 1
@@ -968,27 +968,63 @@ def ensure_clips_tracker_tab(sheets_svc, spreadsheet_id):
         print(f"Created '{CLIPS_TRACKER_TAB}' tab")
 
 
-def _append_to_clips_tracker(sheets_svc, spreadsheet_id, clip_name, session_name, tags, drive_link):
-    """Append a new row to the Clips Tracker tab after a clip is processed."""
+def _reconcile_clips_tracker(sheets_svc, spreadsheet_id, tab_names) -> int:
+    """Ensure every clip with a Drive link in a video tab has a Clips Tracker row.
+
+    Matches on the Drive link URL (stable, not human-edited). Backfills rows
+    missed by mid-run crashes and numbers new rows from max existing # + 1.
+    Runs once per process-clips pass: 1 tracker read + 1 batchGet for all tabs.
+    """
     ensure_clips_tracker_tab(sheets_svc, spreadsheet_id)
 
-    # Get current rows to determine next #
-    result = _execute_with_backoff(sheets_svc.spreadsheets().values().get(
+    tracker = _execute_with_backoff(sheets_svc.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range=f"'{CLIPS_TRACKER_TAB}'!A:A",
+        range=f"'{CLIPS_TRACKER_TAB}'!A:E",
+        valueRenderOption="FORMULA",
     ))
-    existing_rows = result.get("values", [])
-    next_num = len(existing_rows)  # header is row 1, so len gives next number
+    tracker_rows = tracker.get("values", [])
+    existing_links = set()
+    max_num = 0
+    for row in tracker_rows[1:]:
+        num = str(row[0]).strip() if row else ""
+        if num.isdigit():
+            max_num = max(max_num, int(num))
+        link = _extract_url(str(row[4])) if len(row) > 4 else ""
+        if link:
+            existing_links.add(link)
 
-    drive_formula = f'=HYPERLINK("{drive_link}","▶ View Clip")' if drive_link else ""
+    if not tab_names:
+        return 0
 
-    _execute_with_backoff(sheets_svc.spreadsheets().values().append(
+    batch = _execute_with_backoff(sheets_svc.spreadsheets().values().batchGet(
         spreadsheetId=spreadsheet_id,
-        range=f"'{CLIPS_TRACKER_TAB}'!A:H",
-        valueInputOption="USER_ENTERED",
-        insertDataOption="INSERT_ROWS",
-        body={"values": [[next_num, clip_name, session_name, tags, drive_formula, "", "", ""]]},
+        ranges=[f"'{t}'!C6:F" for t in tab_names],
+        valueRenderOption="FORMULA",
     ))
+
+    new_rows = []
+    for tab, vr in zip(tab_names, batch.get("valueRanges", [])):
+        for row in vr.get("values", []):
+            name = str(row[0]).strip() if len(row) > 0 else ""
+            tags = str(row[1]).strip() if len(row) > 1 else ""
+            link = _extract_url(str(row[3])) if len(row) > 3 else ""
+            if not link or link in existing_links:
+                continue
+            existing_links.add(link)
+            max_num += 1
+            formula = f'=HYPERLINK("{link}","\u25b6 View Clip")'
+            new_rows.append([max_num, name or f"clip_{max_num}", tab, tags, formula, "", "", ""])
+
+    if new_rows:
+        _execute_with_backoff(sheets_svc.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{CLIPS_TRACKER_TAB}'!A:H",
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body={"values": new_rows},
+        ))
+        print(f"  Tracker reconcile: {len(new_rows)} missing row(s) backfilled")
+    return len(new_rows)
 
 
 if __name__ == "__main__":
