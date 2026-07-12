@@ -1,4 +1,15 @@
 
+## VNC access restored + made self-healing (12 July 2026)
+
+**Root cause:** no VNC server process existed on the VM at all (x11vnc/vncserver both absent from `ps aux`, port 5900 not listening) — whatever served it originally likely died with the manual terminal session that started it, since it was never a persistent service. Firewall was NOT the issue (`5900/tcp ALLOW Anywhere` already open); logged UFW blocks were UDP probe packets from Johnson's phone, irrelevant to the actual TCP VNC protocol.
+
+**Fix (VM-side, not a repo code change):** confirmed `Xvfb :99` (the virtual display Chrome renders to) has been running since 5 June, untouched. Started `x11vnc -display :99 -rfbport 5900` pointed at that existing display — does not touch/restart Chrome or the X server. Generated a fresh VNC password (`ffa92762`, stored at `~/.vnc/passwd` on the VM) since none existed on disk. Installed a self-healing cron watchdog (`* * * * *` + `@reboot`, pattern copied from the existing working `ffa-labeling-tunnel` watchdog already in this VM's crontab) that restarts x11vnc if it ever dies again — confirmed working: the first x11vnc instance was killed by the Actions runner's own orphan-process cleanup at job-end (expected, same mechanism that blocked the cloudflared tunnel previously), but the cron-spawned replacement (different PID, spawned outside any job's process tree) survived a subsequent job's cleanup untouched.
+
+**Verified:** port 5900 listening (x11vnc), reachable per Johnson's next message. No workflow files added — all changes are VM-side state (crontab + `~/.vnc/passwd` + `~/x11vnc_watchdog.sh`), done via temporary diagnostic workflows that were deleted after use (no permanent repo footprint).
+
+**Note for future sessions:** if VNC ever stops working again, check `crontab -l` on the VM for the `x11vnc_watchdog.sh` lines before assuming it needs rebuilding — the watchdog should already self-heal; investigate why the watchdog itself died (e.g. VM reboot without the `@reboot` line firing correctly) rather than repeating this whole diagnosis.
+
+
 ## Clip Extractor — corrected diagnosis: session genuinely revoked ~28 June, not just a path bug (12 July 2026, run 29209210035 cancelled by Johnson)
 
 **9cb3c6a's path/sync fix is correct and stays** — verified the sync step runs and copies successfully every time. But the "no valid cookie DB" check still failed after sync, so root's *actual* live file (not the copy) was inspected directly via sudo: it is **itself** a 4096-byte, schema-0, empty SQLite shell, last written **28 June 21:31 UTC** — identical state to the old broken runner-owned copy. No `-wal`/`-shm` sidecars exist either (checked; not a WAL-mode red herring).
