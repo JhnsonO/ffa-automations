@@ -28,3 +28,16 @@ jobs:
           echo ""
           echo "=== crontab HOME resolution check ==="
           crontab -l | head -5
+
+      - name: Regenerate all-digit password and restart x11vnc
+        run: |
+          NEWPASS="$(shuf -i 10000000-99999999 -n1)"
+          x11vnc -storepasswd "$NEWPASS" "$HOME/.vnc/passwd"
+          echo "NEW_ALL_DIGIT_PASSWORD=$NEWPASS"
+          pkill -f "x11vnc.*-display :99" || true
+          sleep 2
+          bash "$HOME/x11vnc_watchdog.sh"
+          sleep 2
+          echo "=== confirm restarted with new pid ==="
+          pgrep -af "x11vnc.*-display :99"
+          ss -tlnp 2>/dev/null | grep 5900 || sudo ss -tlnp | grep 5900
