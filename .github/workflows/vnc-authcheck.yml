@@ -1,0 +1,30 @@
+name: VNC Auth Check (temporary)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Inspect live x11vnc process + auth log
+        run: |
+          echo "=== current x11vnc process(es) ==="
+          pgrep -af x11vnc || echo "no x11vnc running right now"
+          echo ""
+          echo "=== exact cmdline of running x11vnc (null-safe) ==="
+          for p in $(pgrep -f "x11vnc.*-display :99"); do
+            echo "--- pid $p ---"
+            tr '\0' ' ' < /proc/$p/cmdline; echo
+          done
+          echo ""
+          echo "=== passwd file that's actually being pointed to ==="
+          ls -la "$HOME/.vnc/passwd" 2>&1
+          echo "md5: $(md5sum "$HOME/.vnc/passwd" 2>&1)"
+          echo ""
+          echo "=== x11vnc's own log tail ==="
+          tail -n 60 "$HOME/.x11vnc.log" 2>&1 || echo "no log file found"
+          echo ""
+          echo "=== crontab HOME resolution check ==="
+          crontab -l | head -5
