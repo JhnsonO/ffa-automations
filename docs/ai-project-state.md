@@ -1,4 +1,11 @@
 
+## VNC password correction (12 July 2026)
+
+**Original password `ffa92762` (mixed letters+digits) was rejected on Johnson's device** — server log confirmed genuine `password check failed` on real connection attempts from his IP, ruling out any plumbing/path bug. Regenerated as all-digit to remove any mobile-keyboard autocapitalization risk. **Current password: `58869612`**, stored at `~/.vnc/passwd` on the VM (mtime 22:01 12 July), confirmed via read-only check to be what the live cron-respawned x11vnc instance is actually using.
+
+**Process note:** two intermediate passwords (`45793261`, then `58869612`) were generated while diagnosing — only `58869612` is current/correct. All temporary diagnostic/mutating workflows used for this (`vnc-diagnose`, `vnc-authcheck`, `vnc-readonly`) have been deleted; no permanent workflow files remain from this VNC troubleshooting, all state lives on the VM (crontab + passwd file).
+
+
 ## VNC access restored + made self-healing (12 July 2026)
 
 **Root cause:** no VNC server process existed on the VM at all (x11vnc/vncserver both absent from `ps aux`, port 5900 not listening) — whatever served it originally likely died with the manual terminal session that started it, since it was never a persistent service. Firewall was NOT the issue (`5900/tcp ALLOW Anywhere` already open); logged UFW blocks were UDP probe packets from Johnson's phone, irrelevant to the actual TCP VNC protocol.
