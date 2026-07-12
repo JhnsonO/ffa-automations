@@ -1,4 +1,17 @@
 
+## Clip Extractor / VNC saga — true root cause: cookies wiped during a Vultr disk-cleanup pass on 28 June (12 July 2026)
+
+**Confirmed via direct inspection:** root's live Cookies file (`/root/.config/chrome-ffa/Default/Cookies`) is schema-0/empty, mtime frozen at exactly **2026-06-28 21:31:58**, unchanged even after Johnson's fresh VNC login attempts tonight — the browser LOOKS logged in because the open tab is stale/cached, not because a real session exists on disk. **Johnson identified the actual trigger: a disk-space-clearing pass on the Vultr VM around that date almost certainly deleted/truncated the Cookies file along with genuine cache/log files** (it's indistinguishable from disposable cache data to a generic cleanup). Not a Google-side revocation — this explains the abrupt wipe far better (no partial/invalidated-cookie trace, just gone).
+
+**Also discovered (unrelated, pre-existing):** a root crontab entry already existed (`rsync -a /root/.config/chrome-ffa/ /home/runner/.config/chrome-ffa/ && chown ...`, ~every 15 min) built specifically to solve the same runner-read-permission problem `9cb3c6a`'s sync step addresses — redundant mechanisms now, both harmless to leave in place. Last seen firing 21:15/21:30 on 28 June in journalctl; not confirmed whether it's still active today (not re-checked, not urgent).
+
+**Outstanding action (Johnson, whenever convenient, no rush):** in the VNC session, hard-refresh or open a fresh tab to youtube.com (not the existing stale one) and complete a real sign-in as `footffa@gmail.com`. Once genuine cookies are written, both `9cb3c6a`'s workflow sync step and the pre-existing rsync cron will pick them up automatically — no further manual steps needed after that.
+
+**Recommendation for future VM disk cleanups:** exclude `~/.config/chrome-ffa` (both root's and any synced copies) from cache/disk-space sweeps — it holds live login state, not disposable cache.
+
+**All temporary diagnostic workflows from this investigation deleted** (`vnc-diagnose`, `vnc-authcheck`, `vnc-readonly`, `vnc-cookiecheck`). No permanent repo footprint from tonight's VNC/cookie troubleshooting beyond `9cb3c6a` and the earlier sheet_manager.py fixes.
+
+
 ## VNC password correction (12 July 2026)
 
 **Original password `ffa92762` (mixed letters+digits) was rejected on Johnson's device** — server log confirmed genuine `password check failed` on real connection attempts from his IP, ruling out any plumbing/path bug. Regenerated as all-digit to remove any mobile-keyboard autocapitalization risk. **Current password: `58869612`**, stored at `~/.vnc/passwd` on the VM (mtime 22:01 12 July), confirmed via read-only check to be what the live cron-respawned x11vnc instance is actually using.
