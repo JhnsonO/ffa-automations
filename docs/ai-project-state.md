@@ -1,4 +1,15 @@
 
+## Clip Extractor — root cause found + fixed: profile path/user mismatch, not credential expiry (12 July 2026, `9cb3c6a`)
+
+**Real root cause (via self-hosted diagnostic dispatch, since removed):** the workflow's `CHROME_PROFILE_PATH` pointed at `/home/runner/.config/chrome-ffa` — an empty, schema-0 SQLite shell (owned by `runner`, never had cookies). The actual live, logged-in-since-5-June Chrome session (still open on youtube.com) runs as `root` at `/root/.config/chrome-ffa`, unreadable by the `runner` user due to path/ownership mismatch — not because cookies expired. This was very likely wrong since initial setup, not a regression.
+
+**Fix @ `9cb3c6a`:** new step in `clip-extractor.yml`, "Sync live YouTube cookie profile", runs before Process pending clips. Confirmed the runner has passwordless sudo (`sudo -n test -r ...` succeeded). Step does `sudo cp` of `Local State` + `Default/Cookies(-journal)` from root's live profile into `$HOME/.cache/yt-chrome-sync`, `chown`s to `runner`, tightens perms. `CHROME_PROFILE_PATH` for the process step repointed at that synced copy. `continue-on-error: true` on the sync step so a sudo/copy hiccup falls back gracefully to the `_chrome_profile_usable()` check already shipped in `b3a7d62` — no change needed in `sheet_manager.py` for this. Runs every 6h, so the copy is always near-live; no manual cookie export/re-login required as long as the root Chrome session stays signed in.
+
+**Run `29209210035`: DISPATCHED — UNVERIFIED** (in_progress at both allowed polls, not failed — likely working through the 2-week backlog of pending clips). https://github.com/JhnsonO/ffa-automations/actions/runs/29209210035
+
+**Next:** check run 29209210035 outcome + sheet Status column (should show real downloads succeeding, not bot-check flags, if this worked) + Clips Tracker backfill from the `967aad9` reconcile pass. If bot-check flags still appear, the root Chrome session itself may have been logged out server-side — that would be the one scenario still requiring a manual re-login via the existing `yt-cookie-refresh.html` helper.
+
+
 ## Clip Extractor — tracker reconcile shipped; first fix run GREEN (12 July 2026, `967aad9`)
 
 **Run `29208205545` (post-fix verification) COMPLETED SUCCESS** — the b3a7d62/8c558e3 fixes executed cleanly end-to-end. Whether clips actually downloaded (cookies working) vs got classified error flags is not yet inspected — check the sheet Status column.
