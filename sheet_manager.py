@@ -349,16 +349,16 @@ def process_clips():
 
 def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
     """Process all Pending rows in one video tab."""
-    header_result = sheets_svc.spreadsheets().values().get(
+    header_result = _execute_with_backoff(sheets_svc.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"'{tab_name}'!A1:F6",
         valueRenderOption="FORMULA",
-    ).execute()
-    data_result = sheets_svc.spreadsheets().values().get(
+    ))
+    data_result = _execute_with_backoff(sheets_svc.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"'{tab_name}'!A1:F",
         valueRenderOption="FORMATTED_VALUE",
-    ).execute()
+    ))
     header_rows = header_result.get("values", [])
     rows = data_result.get("values", [])
     if len(rows) < 5:
@@ -420,6 +420,12 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
             _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, f"Error: {e}")
             continue
 
+        if end_s <= start_s:
+            msg = f"Error: end before start ({start_str} \u2192 {end_str}) \u2014 fix timestamps"
+            print(f"  \u26a0\ufe0f  Row {sheet_row}: {msg}")
+            _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, msg)
+            continue
+
         MAX_CLIP_SECONDS = 90  # 90 seconds max
         duration = end_s - start_s
         if duration > MAX_CLIP_SECONDS:
@@ -438,9 +444,12 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
 
             try:
                 _fetch_clip_section(yt_url, start_s, end_s, raw_path, cookie_args)
-            except subprocess.CalledProcessError as e:
-                print(f"  ❌ yt-dlp failed: {e}")
-                _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, "Error: download failed")
+            except Exception as e:
+                stamp = datetime.now(timezone.utc).strftime("%d %b %H:%M UTC")
+                reason = str(e) or "download failed"
+                print(f"  ❌ yt-dlp failed: {reason}")
+                _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5,
+                            f"Error: {reason} — last try {stamp}")
                 continue
 
             # Re-encode for iOS/CapCut compatibility
@@ -485,6 +494,29 @@ def _secs_to_hhmmss(secs: float) -> str:
     return f"{h:02d}:{m:02d}:{s:06.3f}"
 
 
+def _chrome_profile_usable(profile: str) -> bool:
+    """True if the Chrome profile has a readable cookie DB yt-dlp can extract from."""
+    import sqlite3
+    import glob
+    try:
+        candidates = glob.glob(os.path.join(profile, "Cookies")) + \
+                     glob.glob(os.path.join(profile, "*", "Cookies"))
+        for db in candidates:
+            try:
+                con = sqlite3.connect(f"file:{db}?mode=ro&immutable=1", uri=True)
+                ok = con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='meta'"
+                ).fetchone()
+                con.close()
+                if ok:
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
 def _get_cookie_args() -> list:
     """Return yt-dlp cookie args if available, else empty list.
     Priority: live Chrome profile (freshest) > cookies file > YOUTUBE_COOKIES env var
@@ -493,8 +525,10 @@ def _get_cookie_args() -> list:
     chrome_profile = os.environ.get("CHROME_PROFILE_PATH", "/root/.config/chrome-ffa").strip()
     try:
         if Path(chrome_profile).exists():
-            print(f"  Using live Chrome profile: {chrome_profile}")
-            return ["--cookies-from-browser", f"chrome:{chrome_profile}"]
+            if _chrome_profile_usable(chrome_profile):
+                print(f"  Using live Chrome profile: {chrome_profile}")
+                return ["--cookies-from-browser", f"chrome:{chrome_profile}"]
+            print(f"  Chrome profile at {chrome_profile} has no valid cookie DB — falling back")
     except PermissionError:
         print(f"  Chrome profile not accessible at {chrome_profile} — falling back")
 
@@ -540,17 +574,45 @@ def _fetch_clip_section(yt_url: str, start_s: float, end_s: float, out_path: Pat
 
     # Try without cookies first
     print(f"  Fetching section {section} (no cookies)...")
-    result = subprocess.run(base_cmd + [yt_url])
+    result = subprocess.run(base_cmd + [yt_url], capture_output=True, text=True)
     if result.returncode == 0 and out_path.exists():
         print("  ✅ Section download succeeded")
         return
+    _print_stderr_tail(result.stderr)
 
     # Fall back to cookies
     if cookie_args:
         print("  Retrying with cookies...")
-        subprocess.run(base_cmd + cookie_args + [yt_url], check=True)
-    else:
-        raise subprocess.CalledProcessError(result.returncode, base_cmd)
+        result2 = subprocess.run(base_cmd + cookie_args + [yt_url], capture_output=True, text=True)
+        if result2.returncode == 0 and out_path.exists():
+            print("  ✅ Section download succeeded (with cookies)")
+            return
+        _print_stderr_tail(result2.stderr)
+        raise RuntimeError(_classify_ytdlp_error(result2.stderr, result.stderr))
+    raise RuntimeError(_classify_ytdlp_error(result.stderr))
+
+
+def _print_stderr_tail(stderr: str, n: int = 3):
+    for line in (stderr or "").strip().splitlines()[-n:]:
+        print(f"    yt-dlp: {line}")
+
+
+def _classify_ytdlp_error(*stderrs) -> str:
+    """Turn yt-dlp stderr into a short human-readable failure reason for the sheet."""
+    s = " ".join(x or "" for x in stderrs)
+    if "Sign in to confirm" in s:
+        return "YouTube bot-check blocked download — cookies missing/expired"
+    if "no such table" in s:
+        return "runner cookie profile unreadable — needs refresh on VM"
+    if "Video unavailable" in s:
+        return "video unavailable (deleted or region-locked)"
+    if "Private video" in s:
+        return "video is private"
+    if "Requested format is not available" in s:
+        return "no 1080p+ format available"
+    if "HTTP Error 429" in s:
+        return "YouTube rate-limited the runner"
+    return "download failed"
 
 
 def _reencode_clip(raw_path: Path, out_path: Path):
@@ -568,6 +630,24 @@ def _reencode_clip(raw_path: Path, out_path: Path):
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
+
+
+def _execute_with_backoff(request, max_retries=5):
+    """Execute a Google API request, backing off on 429 rate limits."""
+    import time
+    from googleapiclient.errors import HttpError
+    delay = 15
+    for attempt in range(max_retries):
+        try:
+            return request.execute()
+        except HttpError as e:
+            if getattr(e.resp, "status", None) == 429 and attempt < max_retries - 1:
+                print(f"  Sheets rate limit hit — waiting {delay}s...")
+                time.sleep(delay)
+                delay = min(delay * 2, 120)
+            else:
+                raise
+
 
 def _extract_url(cell_value: str) -> str:
     """Extract a URL from a plain string or HYPERLINK formula."""
@@ -673,12 +753,12 @@ def _upload_to_drive(drive_svc, file_path: Path, folder_id: str, tags: str = "")
 def _write_cell(sheets_svc, spreadsheet_id, tab, row_1indexed, col_1indexed, value, raw=False):
     col_letter = chr(ord("A") + col_1indexed - 1)
     range_str  = f"'{tab}'!{col_letter}{row_1indexed}"
-    sheets_svc.spreadsheets().values().update(
+    _execute_with_backoff(sheets_svc.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
         range=range_str,
         valueInputOption="USER_ENTERED" if raw else "RAW",
         body={"values": [[value]]},
-    ).execute()
+    ))
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -872,7 +952,7 @@ def process_add_video(sheets_svc, drive_svc, spreadsheet_id):
 
 def ensure_clips_tracker_tab(sheets_svc, spreadsheet_id):
     """Create the Clips Tracker tab if it doesn't exist."""
-    meta = sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    meta = _execute_with_backoff(sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id))
     existing = [s["properties"]["title"] for s in meta["sheets"]]
     if CLIPS_TRACKER_TAB not in existing:
         sheets_svc.spreadsheets().batchUpdate(
@@ -893,22 +973,22 @@ def _append_to_clips_tracker(sheets_svc, spreadsheet_id, clip_name, session_name
     ensure_clips_tracker_tab(sheets_svc, spreadsheet_id)
 
     # Get current rows to determine next #
-    result = sheets_svc.spreadsheets().values().get(
+    result = _execute_with_backoff(sheets_svc.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"'{CLIPS_TRACKER_TAB}'!A:A",
-    ).execute()
+    ))
     existing_rows = result.get("values", [])
     next_num = len(existing_rows)  # header is row 1, so len gives next number
 
     drive_formula = f'=HYPERLINK("{drive_link}","▶ View Clip")' if drive_link else ""
 
-    sheets_svc.spreadsheets().values().append(
+    _execute_with_backoff(sheets_svc.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
         range=f"'{CLIPS_TRACKER_TAB}'!A:H",
         valueInputOption="USER_ENTERED",
         insertDataOption="INSERT_ROWS",
         body={"values": [[next_num, clip_name, session_name, tags, drive_formula, "", "", ""]]},
-    ).execute()
+    ))
 
 
 if __name__ == "__main__":
