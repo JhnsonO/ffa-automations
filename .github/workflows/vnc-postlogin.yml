@@ -1,0 +1,42 @@
+name: VNC Post-Login Check (temporary)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Check root's Cookies + WAL right now
+        run: |
+          echo "=== full Default dir listing (cookie-related) ==="
+          sudo ls -la /root/.config/chrome-ffa/Default/ | grep -i cook
+          echo ""
+          echo "=== main Cookies file magic ==="
+          sudo file /root/.config/chrome-ffa/Default/Cookies
+          echo ""
+          echo "=== mtime of main file ==="
+          sudo stat /root/.config/chrome-ffa/Default/Cookies | grep Modify
+          echo ""
+          echo "=== WAL file exists? size + mtime ==="
+          sudo ls -la /root/.config/chrome-ffa/Default/Cookies-wal 2>&1 || echo "no -wal file"
+          echo ""
+          echo "=== SHM file exists? ==="
+          sudo ls -la /root/.config/chrome-ffa/Default/Cookies-shm 2>&1 || echo "no -shm file"
+          echo ""
+          echo "=== row count including WAL (python sqlite3 handles WAL automatically if present alongside) ==="
+          sudo python3 - <<'PY'
+          import sqlite3
+          try:
+              con = sqlite3.connect("file:/root/.config/chrome-ffa/Default/Cookies?mode=ro", uri=True)
+              tabs = con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+              print("tables:", tabs)
+              if any(t[0]=='cookies' for t in tabs):
+                  total = con.execute("SELECT COUNT(*) FROM cookies").fetchone()[0]
+                  yt = con.execute("SELECT COUNT(*) FROM cookies WHERE host_key LIKE '%youtube%'").fetchone()[0]
+                  print(f"total={total} youtube={yt}")
+              con.close()
+          except Exception as e:
+              print("EXCEPTION:", repr(e))
+          PY
