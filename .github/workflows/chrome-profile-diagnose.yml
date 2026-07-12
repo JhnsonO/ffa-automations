@@ -40,3 +40,9 @@ jobs:
           echo ""
           echo "=== profile dir ownership/permissions ==="
           stat "$PROFILE" 2>&1 || true
+          echo ""
+          echo "=== can runner user read root's live profile via sudo (no password)? ==="
+          sudo -n test -r /root/.config/chrome-ffa/Default/Cookies && echo "YES — passwordless sudo read works" || echo "NO — sudo -n failed (no passwordless sudo, or file unreadable)"
+          echo ""
+          echo "=== whoami / groups ==="
+          whoami; id
