@@ -1,0 +1,54 @@
+name: Chrome Profile Diagnose 2 (temporary)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Inspect root's live Default dir for WAL/shm sidecars
+        run: |
+          echo "=== full listing of root Default dir (sudo) ==="
+          sudo ls -la /root/.config/chrome-ffa/Default/ 2>&1 | grep -i cookie
+          echo ""
+          echo "=== file magic on root's actual live Cookies (sudo) ==="
+          sudo file /root/.config/chrome-ffa/Default/Cookies 2>&1
+          [ -f "/root/.config/chrome-ffa/Default/Cookies-wal" ] && sudo file /root/.config/chrome-ffa/Default/Cookies-wal 2>&1 && sudo ls -la /root/.config/chrome-ffa/Default/Cookies-wal
+          [ -f "/root/.config/chrome-ffa/Default/Cookies-shm" ] && sudo ls -la /root/.config/chrome-ffa/Default/Cookies-shm
+
+      - name: Copy full Cookies set including WAL/shm, then inspect with python sqlite3
+        run: |
+          DST="$HOME/.cache/yt-chrome-sync2"
+          rm -rf "$DST"; mkdir -p "$DST/Default"
+          sudo cp "/root/.config/chrome-ffa/Local State" "$DST/Local State"
+          sudo cp /root/.config/chrome-ffa/Default/Cookies "$DST/Default/Cookies"
+          sudo cp /root/.config/chrome-ffa/Default/Cookies-journal "$DST/Default/Cookies-journal" 2>/dev/null || true
+          sudo cp /root/.config/chrome-ffa/Default/Cookies-wal "$DST/Default/Cookies-wal" 2>/dev/null || true
+          sudo cp /root/.config/chrome-ffa/Default/Cookies-shm "$DST/Default/Cookies-shm" 2>/dev/null || true
+          sudo chown -R "$(id -u):$(id -g)" "$DST"
+          chmod -R u+rw "$DST"
+          ls -la "$DST/Default"
+          python3 - <<'PY'
+          import sqlite3, traceback
+          path = __import__("os").path.expanduser("~/.cache/yt-chrome-sync2/Default/Cookies")
+          try:
+              con = sqlite3.connect(path)
+              tables = con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+              print("tables:", tables)
+              if any(t[0] == 'cookies' for t in tables):
+                  n = con.execute("SELECT COUNT(*) FROM cookies").fetchone()
+                  print("cookie row count:", n)
+                  yt = con.execute("SELECT COUNT(*) FROM cookies WHERE host_key LIKE '%youtube%'").fetchone()
+                  print("youtube cookie count:", yt)
+              con.close()
+          except Exception as e:
+              print("EXCEPTION:", repr(e))
+              traceback.print_exc()
+          PY
