@@ -1,4 +1,17 @@
 
+## Clip Extractor — corrected diagnosis: session genuinely revoked ~28 June, not just a path bug (12 July 2026, run 29209210035 cancelled by Johnson)
+
+**9cb3c6a's path/sync fix is correct and stays** — verified the sync step runs and copies successfully every time. But the "no valid cookie DB" check still failed after sync, so root's *actual* live file (not the copy) was inspected directly via sudo: it is **itself** a 4096-byte, schema-0, empty SQLite shell, last written **28 June 21:31 UTC** — identical state to the old broken runner-owned copy. No `-wal`/`-shm` sidecars exist either (checked; not a WAL-mode red herring).
+
+**Revised root cause:** the Chrome window has been sitting on youtube.com since 5 June looking alive, but the session itself was invalidated — almost certainly Google revoking it, plausibly triggered by the sustained bot-flagged automated traffic once the outage began. 28 June lines up closely with when the run history's failure streak actually starts. The path/ownership bug (`b3a7d62`/`9cb3c6a`) was real and worth fixing, but is not what caused the two-week outage by itself — the session dying is.
+
+**No further code fix possible here** — a live authenticated browser is required at least once to re-establish a session; this cannot be routed around programmatically. Johnson needs to reopen the existing Chrome window on the Vultr VM (however he originally accessed it — VNC/remote desktop) and log into YouTube again **in that same window/profile** (not a new one). Once live, the `9cb3c6a` sync step picks up fresh cookies automatically on the next scheduled run — no manual export/paste needed, and this was the one-time exception to "built the VM so I wouldn't have to do this," not a recurring requirement.
+
+**Run `29209210035` was cancelled by Johnson mid-run** (still showing bot-check on both Chrome-profile and secret-cookie-file paths — consistent with this diagnosis, secret cookies are stale too).
+
+**Next:** Johnson re-authenticates the VM's Chrome session; then dispatch clip-extractor.yml and verify real downloads succeed + tracker backfills. If a fresh login still gets bot-checked immediately, the VM's IP itself may need rotating — not yet a confirmed issue, no evidence for it either way.
+
+
 ## Clip Extractor — root cause found + fixed: profile path/user mismatch, not credential expiry (12 July 2026, `9cb3c6a`)
 
 **Real root cause (via self-hosted diagnostic dispatch, since removed):** the workflow's `CHROME_PROFILE_PATH` pointed at `/home/runner/.config/chrome-ffa` — an empty, schema-0 SQLite shell (owned by `runner`, never had cookies). The actual live, logged-in-since-5-June Chrome session (still open on youtube.com) runs as `root` at `/root/.config/chrome-ffa`, unreadable by the `runner` user due to path/ownership mismatch — not because cookies expired. This was very likely wrong since initial setup, not a regression.
