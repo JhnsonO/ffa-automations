@@ -1,4 +1,17 @@
 
+## Clip Extractor — tracker reconcile shipped; first fix run GREEN (12 July 2026, `967aad9`)
+
+**Run `29208205545` (post-fix verification) COMPLETED SUCCESS** — the b3a7d62/8c558e3 fixes executed cleanly end-to-end. Whether clips actually downloaded (cookies working) vs got classified error flags is not yet inspected — check the sheet Status column.
+
+**Clips Tracker root cause:** rows only appended after full clip success (so 2 weeks of nothing was expected), plus a real gap — per-clip append ran AFTER the Done/link writes, so 429 mid-run crashes left Done clips missing from the tracker; numbering used len(col A) and breaks on manual edits.
+
+**Fix @ `967aad9` (Claude-authored, Johnson chose link-match):** per-clip `_append_to_clips_tracker` removed, replaced with `_reconcile_clips_tracker()` at end of every process-clips run — 1 tracker read (FORMULA render) + 1 batchGet across all video tabs; any row with a Drive link absent from the tracker (matched by URL) is backfilled in one append; numbering = max existing # + 1. Special tabs (Add Video, Clips Tracker) now explicitly excluded from processing. Mock-tested: backfill, dedupe vs manual/renamed rows, plain-URL links, numbering.
+
+**Run `29208745479`: DISPATCHED — UNVERIFIED** (reconcile + backfill exercise). https://github.com/JhnsonO/ffa-automations/actions/runs/29208745479
+
+**Next:** inspect run 29208745479 log tail ("Tracker reconcile: N missing row(s) backfilled") + Johnson eyeballs the tracker tab. Cookie-staleness question from previous section still open pending sheet inspection.
+
+
 ## Clip Extractor — failure diagnosis + fix shipped (12 July 2026, `b3a7d62`/`8c558e3`)
 
 **Diagnosis (runs inspected 28 June–12 July):** extractor produced zero clips for ~2 weeks. Every yt-dlp download failed: (1) cookie-less attempt hits YouTube bot-check (Vultr IP flagged); (2) cookie fallback dead — Chrome profile at `/home/runner/.config/chrome-ffa` has unreadable cookie DB (`no such table: meta`), and the workflow's `yt_cookies.txt` was never read by the script (env not passed); (3) poison row `Third_miss` (Thursday 4th June tab) has reversed timestamps 01:01:41→00:01:02, negative duration bypassed the 90s guard, retried every run; (4) accumulated per-tab reads tripped Sheets 60-reads/min quota → unhandled 429 killed runs mid-scan (only difference between red and green runs). Separate 28–30 June phase: checkout EACCES on stale .git refs on VM, self-cleared.
