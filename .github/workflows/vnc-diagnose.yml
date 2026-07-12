@@ -8,39 +8,59 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 10
     steps:
-      - name: Check VNC process and listening ports
+      - name: Start x11vnc against existing display :99 + install watchdog
         run: |
-          echo "=== VNC-related processes ==="
-          ps aux | grep -i vnc | grep -v grep || echo "no vnc process found"
+          echo "=== checking for existing vnc password file ==="
+          PASSWD=""
+          for f in "$HOME/.vnc/passwd" "/root/.vnc/passwd"; do
+            if sudo test -r "$f"; then
+              echo "found existing passwd file: $f"
+              PASSWD="$f"
+              break
+            fi
+          done
+
+          mkdir -p "$HOME/.vnc"
+          if [ -z "$PASSWD" ]; then
+            NEWPASS="ffa$(date +%s | tail -c 6)"
+            x11vnc -storepasswd "$NEWPASS" "$HOME/.vnc/passwd"
+            PASSWD="$HOME/.vnc/passwd"
+            echo "NEW_VNC_PASSWORD=$NEWPASS"
+          else
+            # copy root-owned passwd file to a runner-readable path if needed
+            if [ "$PASSWD" != "$HOME/.vnc/passwd" ]; then
+              sudo cp "$PASSWD" "$HOME/.vnc/passwd"
+              sudo chown "$(id -u):$(id -g)" "$HOME/.vnc/passwd"
+              PASSWD="$HOME/.vnc/passwd"
+            fi
+            echo "reusing existing password file"
+          fi
+
+          cat > "$HOME/x11vnc_watchdog.sh" <<'SCRIPT'
+          if ! pgrep -f "x11vnc.*-display :99" > /dev/null; then
+            /usr/bin/x11vnc -display :99 -forever -shared -rfbport 5900 \
+              -rfbauth "$HOME/.vnc/passwd" -bg -o "$HOME/.x11vnc.log" -noxdamage
+          fi
+          SCRIPT
+          chmod +x "$HOME/x11vnc_watchdog.sh"
+          echo "--- watchdog script content ---"
+          cat "$HOME/x11vnc_watchdog.sh"
+
+          ( crontab -l 2>/dev/null | grep -v x11vnc_watchdog.sh ; \
+            echo "* * * * * bash $HOME/x11vnc_watchdog.sh" ; \
+            echo "@reboot bash $HOME/x11vnc_watchdog.sh" ) | crontab -
+
+          echo "=== starting now ==="
+          bash "$HOME/x11vnc_watchdog.sh"
+          sleep 2
+          ss -tlnp 2>/dev/null | grep 5900 || sudo ss -tlnp | grep 5900
+          echo "=== watchdog installed, crontab: ==="
+          crontab -l
+
+      - name: Verify listening + firewall state
+        run: |
+          echo "=== what's listening on 5900 now ==="
+          sudo ss -tlnp | grep 5900 || echo "still nothing listening on 5900"
           echo ""
-          echo "=== what's listening on 5900 ==="
-          sudo ss -tlnp | grep 5900 || echo "nothing listening on 5900"
-          echo ""
-          echo "=== all listening TCP ports (context) ==="
-          sudo ss -tlnp
-          echo ""
-          echo "=== ufw status ==="
-          sudo ufw status verbose 2>&1 || echo "ufw not available/active"
-          echo ""
-          echo "=== recent ufw log hits on 5900 (if logging enabled) ==="
-          sudo grep -h "DPT=5900" /var/log/ufw.log 2>/dev/null | tail -20 || echo "no ufw log or no 5900 entries"
-          echo ""
-          echo "=== systemd vnc-related services ==="
-          systemctl list-units --type=service --all 2>/dev/null | grep -i vnc || echo "no systemd vnc service found"
-          echo ""
-          echo "=== X server processes ==="
-          ps aux | grep -iE "Xorg|Xvfb|Xtightvnc|Xvnc" | grep -v grep || echo "no X server process found"
-          echo ""
-          echo "=== is x11vnc installed? ==="
-          which x11vnc 2>&1 || echo "x11vnc not on PATH"
-          echo ""
-          echo "=== is tigervnc/vncserver installed? ==="
-          which vncserver tigervncserver 2>&1 || echo "no vncserver binary found"
-          echo ""
-          echo "=== DISPLAY sockets in /tmp/.X11-unix ==="
-          ls -la /tmp/.X11-unix/ 2>&1 || echo "no X11 unix sockets found"
-          echo ""
-          echo "=== chrome process DISPLAY env ==="
-          for p in $(pgrep -f "user-data-dir=/root/.config/chrome-ffa" | head -3); do
-            sudo tr '\0' '\n' < /proc/$p/environ 2>/dev/null | grep "^DISPLAY="
-          done | sort -u
+          echo "=== ufw status (should already allow 5900/tcp) ==="
+          sudo ufw status | grep 5900
