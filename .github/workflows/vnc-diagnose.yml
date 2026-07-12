@@ -1,0 +1,29 @@
+name: VNC Diagnose (temporary)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Check VNC process and listening ports
+        run: |
+          echo "=== VNC-related processes ==="
+          ps aux | grep -i vnc | grep -v grep || echo "no vnc process found"
+          echo ""
+          echo "=== what's listening on 5900 ==="
+          sudo ss -tlnp | grep 5900 || echo "nothing listening on 5900"
+          echo ""
+          echo "=== all listening TCP ports (context) ==="
+          sudo ss -tlnp
+          echo ""
+          echo "=== ufw status ==="
+          sudo ufw status verbose 2>&1 || echo "ufw not available/active"
+          echo ""
+          echo "=== recent ufw log hits on 5900 (if logging enabled) ==="
+          sudo grep -h "DPT=5900" /var/log/ufw.log 2>/dev/null | tail -20 || echo "no ufw log or no 5900 entries"
+          echo ""
+          echo "=== systemd vnc-related services ==="
+          systemctl list-units --type=service --all 2>/dev/null | grep -i vnc || echo "no systemd vnc service found"
