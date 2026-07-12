@@ -54,3 +54,22 @@ jobs:
           echo ""
           echo "=== chrome version vs when profile was created ==="
           google-chrome --version
+          echo ""
+          echo "=== immutable file attribute check ==="
+          sudo lsattr /root/.config/chrome-ffa/Default/Cookies 2>&1 || echo "lsattr unavailable"
+          echo ""
+          echo "=== does the live chrome process (pid 3808) have Cookies open for writing? ==="
+          sudo ls -la /proc/3808/fd 2>&1 | grep -i cooki || echo "Cookies file not found among open fds for pid 3808"
+          echo ""
+          echo "=== disk space on root's filesystem ==="
+          df -h /root
+          echo ""
+          echo "=== chrome managed policy files (could disable cookie persistence) ==="
+          sudo ls -la /etc/opt/chrome/policies/managed/ 2>&1 || echo "no managed policy dir"
+          sudo cat /etc/opt/chrome/policies/managed/*.json 2>&1 || echo "no policy json files"
+          echo ""
+          echo "=== chrome flags file / any --incognito or --guest in real full cmdline ==="
+          sudo tr '\0' '\n' < /proc/3808/cmdline 2>&1
+          echo ""
+          echo "=== any chrome crash/restart evidence around 28 June in journal ==="
+          sudo journalctl --since "2026-06-28 21:00" --until "2026-06-28 22:00" 2>&1 | grep -i chrome | head -20 || echo "no journal access or no matches"
