@@ -56,6 +56,7 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           CHROME_PROFILE_PATH: /home/runner/.config/chrome-ffa
+          YOUTUBE_COOKIES_FILE: ${{ github.workspace }}/yt_cookies.txt
         run: python -u sheet_manager.py process-clips
 
       - name: Clean up tmp after run
