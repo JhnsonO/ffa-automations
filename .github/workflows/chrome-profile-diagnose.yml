@@ -1,0 +1,42 @@
+name: Chrome Profile Diagnose (temporary)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Inspect chrome-ffa profile
+        run: |
+          PROFILE="/home/runner/.config/chrome-ffa"
+          echo "=== profile path exists? ==="
+          [ -d "$PROFILE" ] && echo "yes: $PROFILE" || echo "NO — path missing"
+          echo ""
+          echo "=== top-level contents ==="
+          ls -la "$PROFILE" 2>&1 || true
+          echo ""
+          echo "=== Default/ contents (if present) ==="
+          ls -la "$PROFILE/Default" 2>&1 || true
+          echo ""
+          echo "=== find any file named Cookies ==="
+          find "$PROFILE" -iname "Cookies*" -exec ls -la {} \; 2>&1 || true
+          echo ""
+          echo "=== sqlite3 integrity + schema on each Cookies file found ==="
+          for f in $(find "$PROFILE" -iname "Cookies" 2>/dev/null); do
+            echo "--- $f ---"
+            file "$f" 2>&1 || true
+            sqlite3 "$f" ".tables" 2>&1 || echo "sqlite3 open failed on $f"
+            sqlite3 "$f" "PRAGMA integrity_check;" 2>&1 || true
+          done
+          echo ""
+          echo "=== is any chrome process running / holding a lock? ==="
+          ps aux | grep -i chrom | grep -v grep || echo "no chrome process running"
+          lsof "$PROFILE" 2>&1 | head -20 || echo "lsof unavailable or no open handles"
+          echo ""
+          echo "=== installed chrome/chromium version ==="
+          google-chrome --version 2>&1 || chromium --version 2>&1 || chromium-browser --version 2>&1 || echo "no chrome binary found on PATH"
+          echo ""
+          echo "=== profile dir ownership/permissions ==="
+          stat "$PROFILE" 2>&1 || true
