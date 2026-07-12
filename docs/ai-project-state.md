@@ -1,4 +1,15 @@
 
+## Clip Extractor — failure diagnosis + fix shipped (12 July 2026, `b3a7d62`/`8c558e3`)
+
+**Diagnosis (runs inspected 28 June–12 July):** extractor produced zero clips for ~2 weeks. Every yt-dlp download failed: (1) cookie-less attempt hits YouTube bot-check (Vultr IP flagged); (2) cookie fallback dead — Chrome profile at `/home/runner/.config/chrome-ffa` has unreadable cookie DB (`no such table: meta`), and the workflow's `yt_cookies.txt` was never read by the script (env not passed); (3) poison row `Third_miss` (Thursday 4th June tab) has reversed timestamps 01:01:41→00:01:02, negative duration bypassed the 90s guard, retried every run; (4) accumulated per-tab reads tripped Sheets 60-reads/min quota → unhandled 429 killed runs mid-scan (only difference between red and green runs). Separate 28–30 June phase: checkout EACCES on stale .git refs on VM, self-cleared.
+
+**Fix shipped to main (Claude-authored per Johnson's explicit "no codex" instruction):** `sheet_manager.py` @ `b3a7d62` — classified failure reasons written to Status col with last-try timestamp (bot-check / cookie-profile-unreadable / unavailable / private / no-1080p / rate-limited), `end<=start` validation before download, `_execute_with_backoff` (429 exponential backoff) on all process-clips-path Sheets calls, `_chrome_profile_usable()` sqlite check gates the chrome cookie source. `.github/workflows/clip-extractor.yml` @ `8c558e3` — one line: `YOUTUBE_COOKIES_FILE` env passed to process step (fixes dead cookie fallback). Retry semantics unchanged: rows retry while Link empty, so backlog self-redoes once downloads work.
+
+**Verification run `29208205545`: DISPATCHED — UNVERIFIED** (in_progress at last poll). https://github.com/JhnsonO/ffa-automations/actions/runs/29208205545
+
+**Open risks:** (1) `YOUTUBE_COOKIES` secret may itself be stale — if the run still shows bot-check flags in the sheet, secret needs refresh; (2) Chrome profile on Vultr VM needs manual repair/refresh regardless; (3) `Third_miss` timestamps must be corrected in the sheet by a human — it will now flag "end before start" instead of failing silently.
+
+
 ## Flatcam — lens strength + venue mask RESOLVED (9 July 2026, later still, `5d335a2`/`6d7d3f9`)
 
 **Correction strength confirmed by Johnson: raw (0.0), deferred not final.** `flatcam/lens_profiles.json` MSV profile fixed: `distortion_correction_strength: 0.0`, `calibration_status: "deferred"`. Note: live `main` had drifted to `f90d967`'s `strength=1.0/fov=170`, self-described in its own commit/notes as "visually_tuned" — this was a live contradiction against this state file's own record of Johnson rejecting that render as over-corrected. Resolved in favour of this file's human-verified record; `f90d967`'s self-assessment was wrong. Flag for future sessions: don't trust a commit's own notes over Johnson's actual recorded verdict when they conflict.
