@@ -1,4 +1,21 @@
 
+## Clip Extractor cookie saga — FINAL root cause confirmed, fix proposed, awaiting go (12 July 2026)
+
+**Definitive finding:** root's live Chrome process (pid alive since 5 June, `/root/.config/chrome-ffa`) has a permanently broken on-disk cookie persistence, NOT a stale-login problem. Evidence: `Safe Browsing Cookies` file in the same Default/ dir updated **today 22:23** (Chrome is alive and actively writing files), but the actual `Cookies` file (site logins) has not changed by a single byte since **2026-06-28 21:31:58** — through multiple fresh VNC logins tonight. Johnson identified the trigger: a Vultr disk-space-clearing pass around that date almost certainly deleted the Cookies file while Chrome held it open; Chrome has been holding a dead/orphaned file handle ever since and can never re-establish persistence without a process restart. No further diagnostic needed — this is conclusive.
+
+**Why every workaround attempted tonight failed:** `9cb3c6a`'s sync step and the pre-existing root rsync cron both correctly copy whatever is in the Cookies file — but the source itself never receives new writes, so both faithfully sync an empty shell forever, regardless of login state.
+
+**Fix proposed to Johnson, NOT YET EXECUTED (needs explicit go, kills the current Chrome session):**
+1. Kill the current broken root Chrome process; delete the dead Cookies file.
+2. Install a cron watchdog (same self-healing pattern as the x11vnc watchdog already running) that keeps Chrome alive on display `:99` with the `chrome-ffa` profile, plus a remote-debug port — giving a second, disk-independent way to pull live cookies from browser memory in future (immune to another disk wipe).
+3. Chrome relaunches fresh on Johnson's VNC screen within ~1 minute; a clean process will persist cookies normally.
+4. **Johnson logs in one more time** — last time needed, since persistence will then actually function; `9cb3c6a` sync + existing rsync cron pick it up automatically from then on.
+
+**Immediate next action when resumed:** get Johnson's go, then execute step 1–2 above (new workflow dispatch to kill+relaunch Chrome via cron, mirroring the x11vnc watchdog installation pattern from earlier this session), confirm Chrome comes back up on :99, have Johnson log in once, then dispatch clip-extractor and verify real downloads succeed (Status column shows real "Done" links, not bot-check text) and Clips Tracker backfills per `967aad9`.
+
+**All temporary diagnostic workflows from tonight deleted** (vnc-diagnose, vnc-authcheck, vnc-readonly, vnc-cookiecheck, vnc-postlogin). VNC access itself (x11vnc on :99, cron watchdog, password `58869612`) is confirmed working and self-healing independently of the Chrome cookie issue — that part is fully resolved.
+
+
 ## Clip Extractor / VNC saga — true root cause: cookies wiped during a Vultr disk-cleanup pass on 28 June (12 July 2026)
 
 **Confirmed via direct inspection:** root's live Cookies file (`/root/.config/chrome-ffa/Default/Cookies`) is schema-0/empty, mtime frozen at exactly **2026-06-28 21:31:58**, unchanged even after Johnson's fresh VNC login attempts tonight — the browser LOOKS logged in because the open tab is stale/cached, not because a real session exists on disk. **Johnson identified the actual trigger: a disk-space-clearing pass on the Vultr VM around that date almost certainly deleted/truncated the Cookies file along with genuine cache/log files** (it's indistinguishable from disposable cache data to a generic cleanup). Not a Google-side revocation — this explains the abrupt wipe far better (no partial/invalidated-cookie trace, just gone).
