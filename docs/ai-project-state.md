@@ -1,5 +1,26 @@
 
-## Clip Extractor cookie saga — FINAL root cause confirmed, fix proposed, awaiting go (12 July 2026)
+## Clip Extractor cookie saga — RESOLVED: Chrome restarted, cookies persisting again (13 July 2026)
+
+**Gate cleared — Johnson gave the go and re-logged in.** The dead root Chrome process was killed and relaunched fresh on Xvfb `:99` with the `chrome-ffa` profile via a new self-healing cron watchdog; Johnson signed into YouTube once via VNC. Cookie persistence is now confirmed working.
+
+**Verification (conclusive):** root's `/root/.config/chrome-ffa/Default/Cookies` is now **36864 bytes, mtime 2026-07-13 15:54:59** (written at Johnson's fresh login) — versus the dead 4096-byte schema-0 shell frozen at 2026-06-28 21:31:58 that caused the two-week outage. The old file was backed up to `Cookies.broken.<ts>` before relaunch. Chrome confirmed alive via remote-debug port (`Chrome/149.0.7827.53` on `http://localhost:9222`).
+
+**Root cause of the failed first relaunch attempt (fixed):** Chrome refuses to run as root without `--no-sandbox` (`zygote_host_impl_linux.cc:101`). The original long-lived process had it; the watchdog now includes `--no-sandbox --disable-dev-shm-usage`.
+
+**Watchdog now installed on the VM (persistent, VM-side state — no repo footprint):**
+- Script: `/root/chrome_ffa_watchdog.sh` (relaunches Chrome on `:99`, profile `/root/.config/chrome-ffa`, `--no-sandbox`, remote-debug port 9222, opens youtube.com; no-ops if already running; clears stale `Singleton*` locks; inherits Xvfb `:99` auth if any).
+- Root crontab: `* * * * *` + `@reboot sleep 25` → same self-healing pattern as the x11vnc watchdog. If Chrome ever dies again, check `crontab -l` / `/tmp/chrome_ffa_watchdog.cron.log` before rebuilding.
+- Xvfb `:99` runs as root: `Xvfb :99 -screen 0 1280x800x24` (untouched since 5 June).
+- The remote-debug port also gives a disk-independent way to pull live cookies from browser memory in future (immune to another disk wipe).
+
+**Temp workflows used for this and then deleted** (`chrome-relaunch.yml`, `cookie-check.yml`) — no permanent repo footprint; all persistent state is VM-side (script + crontab).
+
+**Clip-extractor: DISPATCHED — UNVERIFIED** (run `29264421618`, https://github.com/JhnsonO/ffa-automations/actions/runs/29264421618). Working through the ~2-week pending-clip backlog. **Next:** inspect that run + the FFA Clips sheet Status column for real "Done" links (not bot-check text) and confirm the Clips Tracker backfill from `967aad9`. If a fresh login still bot-checks, the Vultr IP itself may need rotating (no evidence for that yet).
+
+**Superseded below:** the 12 July "awaiting go" / "session revoked" / earlier root-cause sections are historical — the disk-cleanup-broke-persistence diagnosis in them is correct, but their "not yet executed / needs manual re-login" status is now done.
+
+
+## Clip Extractor cookie saga — [SUPERSEDED 13 July, see top section] fix proposed, awaiting go (12 July 2026)
 
 **Definitive finding:** root's live Chrome process (pid alive since 5 June, `/root/.config/chrome-ffa`) has a permanently broken on-disk cookie persistence, NOT a stale-login problem. Evidence: `Safe Browsing Cookies` file in the same Default/ dir updated **today 22:23** (Chrome is alive and actively writing files), but the actual `Cookies` file (site logins) has not changed by a single byte since **2026-06-28 21:31:58** — through multiple fresh VNC logins tonight. Johnson identified the trigger: a Vultr disk-space-clearing pass around that date almost certainly deleted the Cookies file while Chrome held it open; Chrome has been holding a dead/orphaned file handle ever since and can never re-establish persistence without a process restart. No further diagnostic needed — this is conclusive.
 
