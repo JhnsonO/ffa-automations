@@ -41,6 +41,7 @@ import sys
 import re
 import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -405,6 +406,7 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
     cookie_args = _get_cookie_args()
 
     processed = 0
+    consecutive_botchecks = 0
     for i in pending_indices:
         row = clip_rows[i]
         sheet_row = i + 6
@@ -453,6 +455,15 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
                 print(f"  ❌ yt-dlp failed: {reason}")
                 _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5,
                             f"Error: {reason} — last try {stamp}")
+                time.sleep(4)
+                if "bot-check" in reason:
+                    consecutive_botchecks += 1
+                    if consecutive_botchecks >= 5:
+                        print(f"  Stopping early: {consecutive_botchecks} consecutive bot-checks, "
+                              f"likely IP-throttled — remaining clips will retry next scheduled run")
+                        break
+                else:
+                    consecutive_botchecks = 0
                 continue
 
             # Re-encode for iOS/CapCut compatibility
@@ -461,6 +472,8 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
             except subprocess.CalledProcessError as e:
                 print(f"  ❌ ffmpeg re-encode failed: {e}")
                 _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, "Error: encode failed")
+                time.sleep(4)
+                consecutive_botchecks = 0
                 continue
 
             # Upload to Drive
@@ -471,6 +484,8 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
             except Exception as e:
                 print(f"  ❌ Drive upload failed: {e}")
                 _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, "Error: upload failed")
+                time.sleep(4)
+                consecutive_botchecks = 0
                 continue
 
         # Write Done + link back to sheet
@@ -480,6 +495,8 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
 
         print(f"  ✅ Done: {safe_name}")
         processed += 1
+        consecutive_botchecks = 0
+        time.sleep(4)
 
     return processed
 
@@ -553,8 +570,9 @@ def _get_cookie_args() -> list:
 def _fetch_clip_section(yt_url: str, start_s: float, end_s: float, out_path: Path, cookie_args: list):
     """
     Use yt-dlp --download-sections to fetch only the clip timestamp range.
-    Tries without cookies first (works for public videos on clean IPs),
-    falls back to cookies if that fails.
+    Goes straight to cookies when cookie_args is available (halves request
+    volume vs a no-cookie-then-cookie retry). Falls back to a no-cookie
+    attempt only when no cookies are configured (public videos only).
     """
     section = f"*{_secs_to_hhmmss(start_s)}-{_secs_to_hhmmss(end_s)}"
     fmt = (
@@ -570,25 +588,29 @@ def _fetch_clip_section(yt_url: str, start_s: float, end_s: float, out_path: Pat
         "-o", str(out_path),
         "--no-playlist", "--no-progress",
         "--force-keyframes-at-cuts",
+        "--sleep-requests", "2",
+        "--sleep-interval", "3",
+        "--max-sleep-interval", "8",
     ]
 
-    # Try without cookies first
+    # We have working cookies (confirmed 13 July) — go straight to cookies
+    # on every call to halve request volume. No-cookie path is fallback only
+    # when cookie_args is empty (public videos only).
+    if cookie_args:
+        print("  Fetching section {} (with cookies)...".format(section))
+        result = subprocess.run(base_cmd + cookie_args + [yt_url], capture_output=True, text=True)
+        if result.returncode == 0 and out_path.exists():
+            print("  ✅ Section download succeeded (with cookies)")
+            return
+        _print_stderr_tail(result.stderr)
+        raise RuntimeError(_classify_ytdlp_error(result.stderr))
+
     print(f"  Fetching section {section} (no cookies)...")
     result = subprocess.run(base_cmd + [yt_url], capture_output=True, text=True)
     if result.returncode == 0 and out_path.exists():
         print("  ✅ Section download succeeded")
         return
     _print_stderr_tail(result.stderr)
-
-    # Fall back to cookies
-    if cookie_args:
-        print("  Retrying with cookies...")
-        result2 = subprocess.run(base_cmd + cookie_args + [yt_url], capture_output=True, text=True)
-        if result2.returncode == 0 and out_path.exists():
-            print("  ✅ Section download succeeded (with cookies)")
-            return
-        _print_stderr_tail(result2.stderr)
-        raise RuntimeError(_classify_ytdlp_error(result2.stderr, result.stderr))
     raise RuntimeError(_classify_ytdlp_error(result.stderr))
 
 
