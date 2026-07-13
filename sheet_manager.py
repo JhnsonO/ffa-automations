@@ -341,8 +341,9 @@ def process_clips():
     ]
 
     total_processed = 0
+    botcheck_state = {"count": 0, "tripped": False}
     for tab in tab_names:
-        processed = _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab)
+        processed = _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab, botcheck_state)
         total_processed += processed
 
     backfilled = _reconcile_clips_tracker(sheets_svc, spreadsheet_id, tab_names)
@@ -351,8 +352,12 @@ def process_clips():
           f"{backfilled} tracker row(s) backfilled, across {len(tab_names)} tab(s).")
 
 
-def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
+def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name, botcheck_state):
     """Process all Pending rows in one video tab."""
+    if botcheck_state.get("tripped"):
+        print(f"  [{tab_name}] Skipping — bot-check circuit breaker already tripped this run")
+        return 0
+
     header_result = _execute_with_backoff(sheets_svc.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"'{tab_name}'!A1:F6",
@@ -406,7 +411,6 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
     cookie_args = _get_cookie_args()
 
     processed = 0
-    consecutive_botchecks = 0
     for i in pending_indices:
         row = clip_rows[i]
         sheet_row = i + 6
@@ -457,13 +461,15 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
                             f"Error: {reason} — last try {stamp}")
                 time.sleep(4)
                 if "bot-check" in reason:
-                    consecutive_botchecks += 1
-                    if consecutive_botchecks >= 5:
-                        print(f"  Stopping early: {consecutive_botchecks} consecutive bot-checks, "
-                              f"likely IP-throttled — remaining clips will retry next scheduled run")
+                    botcheck_state["count"] += 1
+                    if botcheck_state["count"] >= 5:
+                        botcheck_state["tripped"] = True
+                        print(f"  Stopping early: {botcheck_state['count']} consecutive bot-checks "
+                              f"this run, likely IP-throttled — remaining clips and remaining tabs "
+                              f"will retry next scheduled run")
                         break
                 else:
-                    consecutive_botchecks = 0
+                    botcheck_state["count"] = 0
                 continue
 
             # Re-encode for iOS/CapCut compatibility
@@ -473,7 +479,7 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
                 print(f"  ❌ ffmpeg re-encode failed: {e}")
                 _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, "Error: encode failed")
                 time.sleep(4)
-                consecutive_botchecks = 0
+                botcheck_state["count"] = 0
                 continue
 
             # Upload to Drive
@@ -485,7 +491,7 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
                 print(f"  ❌ Drive upload failed: {e}")
                 _write_cell(sheets_svc, spreadsheet_id, tab_name, sheet_row, 5, "Error: upload failed")
                 time.sleep(4)
-                consecutive_botchecks = 0
+                botcheck_state["count"] = 0
                 continue
 
         # Write Done + link back to sheet
@@ -495,7 +501,7 @@ def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name):
 
         print(f"  ✅ Done: {safe_name}")
         processed += 1
-        consecutive_botchecks = 0
+        botcheck_state["count"] = 0
         time.sleep(4)
 
     return processed
