@@ -1,3 +1,16 @@
+## Clip Extractor — bot-check circuit breaker fixed to be run-scoped, not per-tab (13 July 2026, merge `3a9d595`)
+
+**Bug (found in a prior session):** `consecutive_botchecks` was a local variable inside `_process_tab()`, resetting to 0 at the start of every tab. In a real run touching 8 tabs the breaker tripped 8 separate times (5 failures each) instead of once — 44 wasted bot-check hits instead of ~5, defeating the purpose of backing off once IP-throttling is detected.
+
+**Fix @ `f780896` (Claude-authored, merged to main via `3a9d595`, feature branch `fix/botcheck-breaker-run-scoped` deleted after merge):** `sheet_manager.py` only. `process_clips()` now creates one `botcheck_state = {"count": 0, "tripped": False}` dict for the whole run and passes it into every `_process_tab()` call. `_process_tab()` takes `botcheck_state` as a new required param and, as its very first action (before any Sheets reads), returns 0 immediately if `tripped` is already True — so a tripped breaker skips all remaining tabs entirely, with zero further `_fetch_clip_section` calls. Inside the per-clip loop, all `consecutive_botchecks` reads/writes were replaced with `botcheck_state["count"]`/`botcheck_state["tripped"]`; hitting 5 sets `tripped = True` and prints one stop message, then `break`s the current tab loop as before. Untouched per spec: sheet-writing logic, Drive upload logic, `_reencode_clip`, credential handling, `_classify_ytdlp_error`, `MAX_CLIP_SECONDS`, cookies-first logic, sleep/throttle flags, the Processing/Link-empty self-heal pickup.
+
+**Diff verified before merge** via `compare/main...fix/botcheck-breaker-run-scoped`: exactly the expected 6 hunks in `sheet_manager.py`, no other files touched.
+
+**Verification run `29288376802`: DISPATCHED — UNVERIFIED.** https://github.com/JhnsonO/ffa-automations/actions/runs/29288376802 — still `in_progress` after 2 polls (poll budget exhausted this session). Head commit `3a9d595`.
+
+**Next:** once the run completes, pull the log and confirm the breaker message ("Stopping early: N consecutive bot-checks...") appears **at most once** across the whole run, and that any tabs after a trip log "Skipping — bot-check circuit breaker already tripped this run" with no clip-fetch attempts. If it never trips this run (i.e. no bot-checks occurred at all, e.g. cookies now valid per the 13 July Chrome fix above), that is inconclusive for this specific fix and does not confirm or deny the run-scoping — would need a run that actually hits bot-checks to fully verify.
+
+
 
 ## Clip Extractor cookie saga — RESOLVED: Chrome restarted, cookies persisting again (13 July 2026)
 
