@@ -12,54 +12,40 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 10
     steps:
-      - name: Inspect, clean, install watchdog, verify Chrome up
+      - name: Clean, install watchdog, verify Chrome up
         run: |
           set +e
-          echo "===== INSPECTION ====="
-          echo "-- Xvfb :99 --"
-          sudo -n ps -eo pid,user,args | grep -E "Xvfb.*:99" | grep -v grep
-          echo "-- existing chrome procs --"
-          sudo -n ps -eo pid,user,args | grep -Ei "chrome|chromium" | grep -v grep
-          CHROME=$(command -v google-chrome || command -v google-chrome-stable || command -v chromium-browser || command -v chromium)
-          echo "chrome binary: $CHROME"
-          echo "-- profile Default listing --"
-          sudo -n ls -la /root/.config/chrome-ffa/Default/ 2>/dev/null | grep -Ei "Cookies|Singleton|Preferences"
+          echo "===== KILL ANY DEAD/STRAY CHROME FOR THIS PROFILE ====="
+          sudo -n pkill -f "user-data-dir=/root/.config/chrome-ffa" 2>/dev/null; sleep 2
 
-          echo "===== WRITE WATCHDOG ====="
-          echo "IyEvdXNyL2Jpbi9lbnYgYmFzaAojIEtlZXBzIGEgaGVhZGZ1bCBDaHJvbWUgYWxpdmUgb24gWHZmYiA6OTkgd2l0aCB0aGUgY2hyb21lLWZmYSBwcm9maWxlLgojIFJ1bnMgYXMgcm9vdCBmcm9tIHJvb3QncyBjcm9udGFiIChvdXRzaWRlIGFueSBBY3Rpb25zIGpvYiB0cmVlLCBzbyBpdAojIHN1cnZpdmVzIHRoZSBydW5uZXIncyBlbmQtb2Ytam9iIG9ycGhhbiBjbGVhbnVwKS4KZXhwb3J0IERJU1BMQVk9Ojk5ClBST0ZJTEU9L3Jvb3QvLmNvbmZpZy9jaHJvbWUtZmZhCgojIEluaGVyaXQgdGhlIFh2ZmIgOjk5IGF1dGggZmlsZSBpZiBpdCB3YXMgc3RhcnRlZCB3aXRoIG9uZS4KWFZGQl9BUkdTPSQocHMgLWVvIGFyZ3MgfCBncmVwIC1FICJYdmZiLio6OTkiIHwgZ3JlcCAtdiBncmVwIHwgaGVhZCAtbjEpCkFVVEhGPSQoZWNobyAiJFhWRkJfQVJHUyIgfCBzZWQgLW4gJ3MvLiotYXV0aFs9IF1cKFteIF0qXCkuKi9cMS9wJykKWyAtbiAiJEFVVEhGIiBdICYmIGV4cG9ydCBYQVVUSE9SSVRZPSIkQVVUSEYiCgpDSFJPTUU9JChjb21tYW5kIC12IGdvb2dsZS1jaHJvbWUgfHwgY29tbWFuZCAtdiBnb29nbGUtY2hyb21lLXN0YWJsZSB8fCBjb21tYW5kIC12IGNocm9taXVtLWJyb3dzZXIgfHwgY29tbWFuZCAtdiBjaHJvbWl1bSkKWyAteiAiJENIUk9NRSIgXSAmJiBleGl0IDAKCiMgQWxyZWFkeSBydW5uaW5nIGZvciB0aGlzIHByb2ZpbGU/IE5vdGhpbmcgdG8gZG8uCnBncmVwIC1mICJ1c2VyLWRhdGEtZGlyPSRQUk9GSUxFIiA+L2Rldi9udWxsIDI+JjEgJiYgZXhpdCAwCgojIEJlc3QtZWZmb3J0OiBhbGxvdyBsb2NhbCByb290IGNvbm5lY3Rpb25zIHRvIHRoZSBkaXNwbGF5Lgp4aG9zdCArbG9jYWw6cm9vdCA+L2Rldi9udWxsIDI+JjEgfHwgdHJ1ZQoKIyBDbGVhciBzdGFsZSBzaW5nbGUtaW5zdGFuY2UgbG9ja3MgbGVmdCBieSBhIGhhcmQgY2xvc2UsIG9yIENocm9tZSByZWZ1c2VzIHRvIHN0YXJ0LgpybSAtZiAiJFBST0ZJTEUiL1NpbmdsZXRvbiogMj4vZGV2L251bGwKCm5vaHVwICIkQ0hST01FIiBcCiAgLS11c2VyLWRhdGEtZGlyPSIkUFJPRklMRSIgXAogIC0tcmVtb3RlLWRlYnVnZ2luZy1wb3J0PTkyMjIgXAogIC0tbm8tZmlyc3QtcnVuIC0tbm8tZGVmYXVsdC1icm93c2VyLWNoZWNrIFwKICAtLWRpc2FibGUtc2Vzc2lvbi1jcmFzaGVkLWJ1YmJsZSAtLWRpc2FibGUtaW5mb2JhcnMgXAogIC0tc3RhcnQtbWF4aW1pemVkIFwKICAiaHR0cHM6Ly93d3cueW91dHViZS5jb20iIFwKICA+L3RtcC9jaHJvbWVfZmZhLmxvZyAyPiYxICYK" | base64 -d | sudo -n tee /root/chrome_ffa_watchdog.sh >/dev/null
+          echo "===== WRITE CORRECTED WATCHDOG ====="
+          echo "IyEvdXNyL2Jpbi9lbnYgYmFzaAojIEtlZXBzIGEgaGVhZGZ1bCBDaHJvbWUgYWxpdmUgb24gWHZmYiA6OTkgd2l0aCB0aGUgY2hyb21lLWZmYSBwcm9maWxlLgojIFJ1bnMgYXMgcm9vdCBmcm9tIHJvb3QncyBjcm9udGFiIChvdXRzaWRlIGFueSBBY3Rpb25zIGpvYiB0cmVlKS4KZXhwb3J0IERJU1BMQVk9Ojk5ClBST0ZJTEU9L3Jvb3QvLmNvbmZpZy9jaHJvbWUtZmZhCgpYVkZCX0FSR1M9JChwcyAtZW8gYXJncyB8IGdyZXAgLUUgIlh2ZmIuKjo5OSIgfCBncmVwIC12IGdyZXAgfCBoZWFkIC1uMSkKQVVUSEY9JChlY2hvICIkWFZGQl9BUkdTIiB8IHNlZCAtbiAncy8uKi1hdXRoWz0gXVwoW14gXSpcKS4qL1wxL3AnKQpbIC1uICIkQVVUSEYiIF0gJiYgZXhwb3J0IFhBVVRIT1JJVFk9IiRBVVRIRiIKCkNIUk9NRT0kKGNvbW1hbmQgLXYgZ29vZ2xlLWNocm9tZSB8fCBjb21tYW5kIC12IGdvb2dsZS1jaHJvbWUtc3RhYmxlIHx8IGNvbW1hbmQgLXYgY2hyb21pdW0tYnJvd3NlciB8fCBjb21tYW5kIC12IGNocm9taXVtKQpbIC16ICIkQ0hST01FIiBdICYmIGV4aXQgMAoKcGdyZXAgLWYgInVzZXItZGF0YS1kaXI9JFBST0ZJTEUiID4vZGV2L251bGwgMj4mMSAmJiBleGl0IDAKCnhob3N0ICtsb2NhbDpyb290ID4vZGV2L251bGwgMj4mMSB8fCB0cnVlCnJtIC1mICIkUFJPRklMRSIvU2luZ2xldG9uKiAyPi9kZXYvbnVsbAoKbm9odXAgIiRDSFJPTUUiIFwKICAtLW5vLXNhbmRib3ggXAogIC0tZGlzYWJsZS1kZXYtc2htLXVzYWdlIFwKICAtLXVzZXItZGF0YS1kaXI9IiRQUk9GSUxFIiBcCiAgLS1yZW1vdGUtZGVidWdnaW5nLXBvcnQ9OTIyMiBcCiAgLS1uby1maXJzdC1ydW4gLS1uby1kZWZhdWx0LWJyb3dzZXItY2hlY2sgXAogIC0tZGlzYWJsZS1zZXNzaW9uLWNyYXNoZWQtYnViYmxlIC0tZGlzYWJsZS1pbmZvYmFycyBcCiAgLS1zdGFydC1tYXhpbWl6ZWQgXAogICJodHRwczovL3d3dy55b3V0dWJlLmNvbSIgXAogID4vdG1wL2Nocm9tZV9mZmEubG9nIDI+JjEgJgo=" | base64 -d | sudo -n tee /root/chrome_ffa_watchdog.sh >/dev/null
           sudo -n chmod +x /root/chrome_ffa_watchdog.sh
-          echo "written:"; sudo -n head -n 3 /root/chrome_ffa_watchdog.sh
+          sudo -n grep -c "no-sandbox" /root/chrome_ffa_watchdog.sh
 
-          echo "===== BACK UP DEAD COOKIES ====="
-          sudo -n bash -c 'f=/root/.config/chrome-ffa/Default/Cookies; if [ -f "$f" ]; then cp -a "$f" "${f}.broken.$(date +%s)" && echo "backed up $f"; else echo "no Cookies file present"; fi'
-
-          echo "===== INSTALL ROOT CRON WATCHDOG ====="
+          echo "===== (RE)INSTALL ROOT CRON WATCHDOG ====="
           sudo -n bash -c '
             tmp=$(mktemp)
             crontab -l 2>/dev/null | grep -v chrome_ffa_watchdog > "$tmp"
             echo "* * * * * /root/chrome_ffa_watchdog.sh >> /tmp/chrome_ffa_watchdog.cron.log 2>&1" >> "$tmp"
             echo "@reboot sleep 25 && /root/chrome_ffa_watchdog.sh >> /tmp/chrome_ffa_watchdog.cron.log 2>&1" >> "$tmp"
             crontab "$tmp" && rm -f "$tmp"
-            echo "installed cron lines:"; crontab -l | grep chrome_ffa_watchdog
+            crontab -l | grep chrome_ffa_watchdog
           '
 
-          echo "===== WAIT FOR CRON TO SPAWN CHROME (survives job cleanup) ====="
+          echo "===== KICK ONCE VIA CRON PATH + WAIT FOR REAL LIVENESS (debug port) ====="
           up=""
           for i in $(seq 1 80); do
             if sudo -n bash -c 'curl -s --max-time 2 http://localhost:9222/json/version' 2>/dev/null | grep -qi "Browser"; then up="port"; break; fi
-            if sudo -n pgrep -f "user-data-dir=/root/.config/chrome-ffa" >/dev/null 2>&1; then up="proc"; fi
             sleep 2
           done
 
           echo "===== VERIFICATION ====="
           echo "up=$up"
-          echo "-- chrome procs now --"
-          sudo -n ps -eo pid,user,etimes,args | grep -Ei "chrome" | grep -v grep | head
+          echo "-- chrome procs (with age) --"
+          sudo -n ps -eo pid,user,etimes,args | grep -Ei "google-chrome" | grep -v grep | head
           echo "-- debug endpoint --"
           sudo -n bash -c 'curl -s --max-time 3 http://localhost:9222/json/version' 2>/dev/null || echo "(no debug port response)"
           echo "-- launch log tail --"
           sudo -n tail -n 15 /tmp/chrome_ffa.log 2>/dev/null
-          echo "-- cron log tail --"
-          sudo -n tail -n 10 /tmp/chrome_ffa_watchdog.cron.log 2>/dev/null
-
-          if [ -n "$up" ]; then echo "RESULT: CHROME_UP"; else echo "RESULT: CHROME_NOT_CONFIRMED"; fi
+          if [ "$up" = "port" ]; then echo "RESULT: CHROME_UP_CONFIRMED"; else echo "RESULT: CHROME_NOT_CONFIRMED"; fi
