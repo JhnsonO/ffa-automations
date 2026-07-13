@@ -152,6 +152,7 @@ PENDING = "Pending"
 DONE    = "Done"
 ADD_VIDEO_TAB = "Add Video"
 CLIPS_TRACKER_TAB = "Clips Tracker"
+CLIP_ERRORS_TAB = "Clip Errors"
 
 
 def get_spreadsheet_id(sheets_svc):
@@ -332,13 +333,15 @@ def process_clips():
     sheets_svc, drive_svc = get_sheets_service()
     spreadsheet_id = get_spreadsheet_id(sheets_svc)
     ensure_clips_tracker_tab(sheets_svc, spreadsheet_id)
+    ensure_clip_errors_tab(sheets_svc, spreadsheet_id)
 
     meta = sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     tab_names = [
         s["properties"]["title"]
         for s in meta["sheets"]
-        if s["properties"]["title"] not in (INDEX_TAB, ADD_VIDEO_TAB, CLIPS_TRACKER_TAB)
+        if s["properties"]["title"] not in (INDEX_TAB, ADD_VIDEO_TAB, CLIPS_TRACKER_TAB, CLIP_ERRORS_TAB)
     ]
+    tab_gids = {s["properties"]["title"]: s["properties"]["sheetId"] for s in meta["sheets"]}
 
     total_processed = 0
     botcheck_state = {"count": 0, "tripped": False}
@@ -347,9 +350,11 @@ def process_clips():
         total_processed += processed
 
     backfilled = _reconcile_clips_tracker(sheets_svc, spreadsheet_id, tab_names)
+    error_count = _reconcile_clip_errors(sheets_svc, spreadsheet_id, tab_names, tab_gids)
 
     print(f"\nprocess-clips complete. {total_processed} clip(s) processed, "
-          f"{backfilled} tracker row(s) backfilled, across {len(tab_names)} tab(s).")
+          f"{backfilled} tracker row(s) backfilled, {error_count} error row(s) in "
+          f"'{CLIP_ERRORS_TAB}', across {len(tab_names)} tab(s).")
 
 
 def _process_tab(sheets_svc, drive_svc, spreadsheet_id, tab_name, botcheck_state):
@@ -1053,6 +1058,75 @@ def _reconcile_clips_tracker(sheets_svc, spreadsheet_id, tab_names) -> int:
         ))
         print(f"  Tracker reconcile: {len(new_rows)} missing row(s) backfilled")
     return len(new_rows)
+
+
+def ensure_clip_errors_tab(sheets_svc, spreadsheet_id):
+    """Create the Clip Errors tab if it doesn't exist."""
+    meta = _execute_with_backoff(sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id))
+    existing = [s["properties"]["title"] for s in meta["sheets"]]
+    if CLIP_ERRORS_TAB not in existing:
+        sheets_svc.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": CLIP_ERRORS_TAB, "index": 1}}}]},
+        ).execute()
+        sheets_svc.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{CLIP_ERRORS_TAB}'!A1:F1",
+            valueInputOption="USER_ENTERED",
+            body={"values": [["Video", "Row", "Start", "End", "Name", "Status"]]},
+        ).execute()
+        print(f"Created '{CLIP_ERRORS_TAB}' tab")
+
+
+def _reconcile_clip_errors(sheets_svc, spreadsheet_id, tab_names, tab_gids) -> int:
+    """Rebuild the Clip Errors tab from scratch every process-clips run.
+
+    One row per clip currently showing an Error:/Skipped: status in any video
+    tab, with a link back to that exact row in its source tab (same
+    #gid=... pattern as the Index tab, plus a range jump to the row).
+    Full overwrite each run — simplest way to stay accurate as clips get
+    fixed/retried, no incremental bookkeeping needed. 1 batchGet + 1 clear +
+    1 write per process-clips pass.
+    """
+    ensure_clip_errors_tab(sheets_svc, spreadsheet_id)
+
+    rows = []
+    if tab_names:
+        batch = _execute_with_backoff(sheets_svc.spreadsheets().values().batchGet(
+            spreadsheetId=spreadsheet_id,
+            ranges=[f"'{t}'!A6:E" for t in tab_names],
+            valueRenderOption="FORMATTED_VALUE",
+        ))
+        for tab, vr in zip(tab_names, batch.get("valueRanges", [])):
+            gid = tab_gids.get(tab)
+            for i, row in enumerate(vr.get("values", [])):
+                status = str(row[4]).strip() if len(row) > 4 else ""
+                if not (status.startswith("Error:") or status.startswith("Skipped:")):
+                    continue
+                sheet_row = i + 6
+                start = row[0] if len(row) > 0 else ""
+                end   = row[1] if len(row) > 1 else ""
+                name  = row[2] if len(row) > 2 else ""
+                if gid is not None:
+                    video_formula = f'=HYPERLINK("#gid={gid}&range=A{sheet_row}","{tab}")'
+                else:
+                    video_formula = tab
+                rows.append([video_formula, sheet_row, start, end, name, status])
+
+    _execute_with_backoff(sheets_svc.spreadsheets().values().clear(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{CLIP_ERRORS_TAB}'!A2:F",
+        body={},
+    ))
+    if rows:
+        _execute_with_backoff(sheets_svc.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{CLIP_ERRORS_TAB}'!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": rows},
+        ))
+    print(f"  Clip Errors: {len(rows)} error row(s) found across {len(tab_names)} tab(s)")
+    return len(rows)
 
 
 if __name__ == "__main__":
