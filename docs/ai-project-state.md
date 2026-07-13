@@ -1,3 +1,18 @@
+## Clip Extractor — new "Clip Errors" tab: cross-tab error index (13 July 2026, merge `835cb9c`)
+
+**Why:** Johnson spotted scattered false-positive errors across tabs (e.g. a 10s clip on the Monday Camera B tab wrongly flagged `Skipped: clip too long (46.4 mins)`) and wanted one place to see every clip currently in an error state instead of hunting tab by tab. This ticket only builds the index — it does NOT fix the underlying false-positive duration/parse bug, which is a separate, not-yet-started ticket.
+
+**Fix @ `c3754f7` (Claude-authored, merged to main via `835cb9c`, feature branch `feat/clip-errors-tab` deleted after merge):** `sheet_manager.py` only, additive.
+- New `CLIP_ERRORS_TAB = "Clip Errors"` constant, excluded from the video-tab loop alongside Index/Add Video/Clips Tracker.
+- `ensure_clip_errors_tab()` — same create-if-missing pattern as `ensure_clips_tracker_tab()`; header `Video | Row | Start | End | Name | Status`.
+- `_reconcile_clip_errors(sheets_svc, spreadsheet_id, tab_names, tab_gids)` — runs at the end of every `process_clips()` pass (1 batchGet across all video tabs' `A6:E` + 1 clear + 1 write). Full overwrite each run rather than incremental, so it always reflects current sheet state as clips get fixed/retried. Any row with Status starting `Error:` or `Skipped:` gets a row here, with a `HYPERLINK("#gid={gid}&range=A{row}", tab_name)` formula that jumps straight to the offending row in its source tab (same `#gid=` pattern the Index tab already uses, extended with `&range=` for a direct row jump).
+- `process_clips()` now builds a `tab_gids` map from the same `meta` call it already makes (no extra API cost) and calls the new reconcile function after the Clips Tracker one; completion log line now also reports error-row count.
+- Nothing else touched — diff verified clean before merge (additive only, no changes to sheet-writing, Drive, encode, credentials, or bot-check logic).
+
+**Not yet dispatched for verification** — the earlier clip-extractor run (`29288376802`, from the bot-check breaker fix) was still `in_progress` at merge time, so no test dispatch was queued behind it to avoid delaying that run's own verification. This will self-verify on the next natural `process_clips()` run (scheduled or manual) since the reconcile now runs every pass — check the "Clip Errors" tab exists with correct rows/links next time either run is inspected.
+
+**Next:** once a process-clips run completes with this code, confirm the Clip Errors tab was created, contains one row per current Error/Skipped clip, and each row's link correctly jumps to the right tab+row.
+
 ## Clip Extractor — bot-check circuit breaker fixed to be run-scoped, not per-tab (13 July 2026, merge `3a9d595`)
 
 **Bug (found in a prior session):** `consecutive_botchecks` was a local variable inside `_process_tab()`, resetting to 0 at the start of every tab. In a real run touching 8 tabs the breaker tripped 8 separate times (5 failures each) instead of once — 44 wasted bot-check hits instead of ~5, defeating the purpose of backing off once IP-throttling is detected.
