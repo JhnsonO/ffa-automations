@@ -141,28 +141,77 @@ def list_inbox_clips(drive, inbox_id):
     return sorted(results, key=lambda f: f["name"])
 
 
-def extract_prefix(filename):
+SESSION_GAP_SECONDS = 1800  # 30 min gap between clips starts a new session
+
+
+def parse_clip_datetime(filename):
     """
-    Extract YYYY-MM-DD-HH prefix from XbotGo filename.
-    e.g. 2026-06-19-18-13-01_1781953815548.mp4 -> 2026-06-19-18
+    Parse the full YYYY-MM-DD-HH-MM-SS timestamp from an XbotGo filename.
+    e.g. 2026-06-19-18-13-01_1781953815548.mp4 -> datetime(2026,6,19,18,13,1)
+    Handles Drive's 'Copy of ' prefix.
     """
+    name = filename
+    if name.lower().startswith("copy of "):
+        name = name[len("copy of "):]
+    name = name[:-4] if name.lower().endswith(".mp4") else name
+    parts = name.split("-")
+    if len(parts) < 6:
+        return None
     try:
-        parts = filename.split("-")
-        if len(parts) >= 4:
-            return "-".join(parts[:4])
+        year, month, day, hour, minute = parts[0], parts[1], parts[2], parts[3], parts[4]
+        second = parts[5].split("_")[0]
+        return datetime.strptime(
+            f"{year}-{month}-{day} {hour}:{minute}:{second}", "%Y-%m-%d %H:%M:%S"
+        ).replace(tzinfo=timezone.utc)
     except Exception:
-        pass
-    return None
+        return None
+
+
+def session_key(dt):
+    """Stable, second-precision session identifier derived from a clip's start time."""
+    return dt.strftime("%Y-%m-%d-%H%M%S")
+
+
+def cluster_into_sessions(clips):
+    """
+    Group clips by recording continuity, not clock hour. A new session starts
+    whenever the gap to the previous clip's start time exceeds
+    SESSION_GAP_SECONDS. This keeps a session that runs past the top of the
+    hour in a single group instead of splitting it.
+    Returns: dict[session_key] -> list of clips, in start-time order.
+    """
+    dated = []
+    for clip in clips:
+        dt = parse_clip_datetime(clip["name"])
+        if dt is None:
+            log.warning(f"Could not parse timestamp from filename: {clip['name']}")
+            continue
+        dated.append((dt, clip))
+    dated.sort(key=lambda x: x[0])
+
+    groups: dict[str, list] = {}
+    current_key = None
+    prev_dt = None
+    for dt, clip in dated:
+        if current_key is None or (dt - prev_dt).total_seconds() > SESSION_GAP_SECONDS:
+            current_key = session_key(dt)
+        groups.setdefault(current_key, []).append(clip)
+        prev_dt = dt
+    return groups
 
 
 # ── GitHub dispatch ───────────────────────────────────────────────────────────
 
-def dispatch_concat(group_prefix):
+def dispatch_concat(group_prefix, clip_names):
     token = os.environ.get("GH_PAT", "")
     repo  = os.environ.get("REPO", "")
     payload = json.dumps({
         "ref": "main",
-        "inputs": {"group_prefix": group_prefix, "force": "false"}
+        "inputs": {
+            "group_prefix": group_prefix,
+            "force": "false",
+            "clip_names": ",".join(clip_names),
+        }
     }).encode()
     req = urllib.request.Request(
         f"https://api.github.com/repos/{repo}/actions/workflows/xbotgo-concat.yml/dispatches",
@@ -186,16 +235,10 @@ def run():
     clips = list_inbox_clips(drive, inbox_id)
     log.info(f"Found {len(clips)} MP4(s) in Inbox")
 
-    # Group by session prefix
-    groups: dict[str, list] = {}
-    for clip in clips:
-        prefix = extract_prefix(clip["name"])
-        if prefix:
-            groups.setdefault(prefix, []).append(clip)
-        else:
-            log.warning(f"Could not extract prefix from filename: {clip['name']}")
-
-    log.info(f"Groups found: {list(groups.keys())}")
+    # Group by actual session (gap-based clustering), not clock hour —
+    # keeps sessions that run past the top of the hour in one group.
+    groups = cluster_into_sessions(clips)
+    log.info(f"Session groups found: {list(groups.keys())}")
 
     now = datetime.now(timezone.utc)
 
@@ -232,7 +275,7 @@ def run():
 
         if elapsed >= STABILITY_SECONDS:
             log.info(f"  READY — stable for {elapsed/60:.0f} min, dispatching concat")
-            dispatch_concat(prefix)
+            dispatch_concat(prefix, [c["name"] for c in group_clips])
             delete_scan_state(con, prefix)
         else:
             log.info(f"  STABLE — waiting {remaining/60:.0f} more min before dispatch")
