@@ -29,6 +29,7 @@ YT_SCOPES = [
 ]
 
 STABILITY_SECONDS = 3600  # 1 hour — file count must be stable this long before processing
+ARCHIVE_RETENTION_DAYS = 5  # how long archived source clips are kept before permanent deletion
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,6 +57,14 @@ def init_db():
             youtube_id   TEXT,
             uploaded_at  TEXT,
             file_count   INTEGER
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS xbotgo_archive (
+            file_id      TEXT PRIMARY KEY,
+            filename     TEXT,
+            group_prefix TEXT,
+            archived_at  TEXT
         )
     """)
     con.commit()
@@ -103,6 +112,33 @@ def get_drive_service():
             log.error("YouTube/Drive token invalid and cannot be refreshed non-interactively")
             sys.exit(1)
     return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def delete_drive_file(drive, file_id, name):
+    try:
+        drive.files().delete(fileId=file_id, supportsAllDrives=True).execute()
+        log.info(f"  Permanently deleted from Archive: {name}")
+    except Exception as e:
+        log.warning(f"  Could not delete {name} from Archive: {e}")
+
+
+def cleanup_old_archives(con, drive):
+    """Permanently delete clips that have sat in XbotGo/Archive/ longer than
+    ARCHIVE_RETENTION_DAYS."""
+    now = datetime.now(timezone.utc)
+    rows = con.execute("SELECT file_id, filename, archived_at FROM xbotgo_archive").fetchall()
+    if not rows:
+        return
+    log.info(f"Checking {len(rows)} archived clip(s) for cleanup...")
+    for file_id, filename, archived_at_str in rows:
+        archived_at = datetime.fromisoformat(archived_at_str)
+        age_days = (now - archived_at).total_seconds() / 86400
+        if age_days >= ARCHIVE_RETENTION_DAYS:
+            delete_drive_file(drive, file_id, filename)
+            con.execute("DELETE FROM xbotgo_archive WHERE file_id=?", (file_id,))
+            con.commit()
+        else:
+            log.info(f"  Keeping {filename} — {age_days:.1f}/{ARCHIVE_RETENTION_DAYS} days")
 
 
 def find_or_create_folder(drive, name, parent_id):
@@ -289,6 +325,7 @@ def run():
             delete_scan_state(con, tracked_prefix)
 
     log.info("Scanner run complete")
+    cleanup_old_archives(con, drive)
     con.close()
 
 
