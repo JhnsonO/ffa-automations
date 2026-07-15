@@ -17,6 +17,11 @@ on:
         required: false
         default: 'false'
         type: string
+      clip_names:
+        description: 'Comma-separated exact filenames for this session (set by scanner). Leave blank for manual prefix-match runs.'
+        required: false
+        default: ''
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -88,6 +93,7 @@ jobs:
           GROUP_PREFIX: ${{ github.event.inputs.group_prefix }}
           FORCE: ${{ github.event.inputs.force }}
           SKIP_DUPLICATE: ${{ github.event.inputs.skip_duplicate }}
+          CLIP_NAMES: ${{ github.event.inputs.clip_names }}
           GH_PAT: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
           ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
