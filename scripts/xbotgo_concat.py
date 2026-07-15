@@ -91,8 +91,24 @@ def init_db():
             file_count   INTEGER
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS xbotgo_archive (
+            file_id      TEXT PRIMARY KEY,
+            filename     TEXT,
+            group_prefix TEXT,
+            archived_at  TEXT
+        )
+    """)
     con.commit()
     return con
+
+
+def record_archived(con, file_id, filename, group_prefix):
+    con.execute(
+        "INSERT OR REPLACE INTO xbotgo_archive (file_id, filename, group_prefix, archived_at) VALUES (?,?,?,?)",
+        (file_id, filename, group_prefix, datetime.now(timezone.utc).isoformat()),
+    )
+    con.commit()
 
 
 def mark_uploaded(con, group_prefix, filename, youtube_id, file_count):
@@ -205,6 +221,22 @@ def upload_to_drive(drive, local_path, parent_id, filename):
     uploaded = drive.files().create(body=file_meta, media_body=media, fields="id").execute()
     log.info(f"Drive upload complete: {filename} -> {uploaded['id']}")
     return uploaded["id"]
+
+
+def archive_drive_file(drive, file_id, name, from_parent_id, archive_id):
+    try:
+        drive.files().update(
+            fileId=file_id,
+            addParents=archive_id,
+            removeParents=from_parent_id,
+            fields="id,parents",
+            supportsAllDrives=True,
+        ).execute()
+        log.info(f"Archived (moved to XbotGo/Archive/): {name}")
+        return True
+    except Exception as e:
+        log.warning(f"Could not archive {name}: {e}")
+        return False
 
 
 def delete_drive_file(drive, file_id, name):
@@ -396,6 +428,7 @@ def run():
     root_id  = get_xbotgo_root(drive)
     inbox_id = find_or_create_folder(drive, "Inbox", root_id)
     done_id  = find_or_create_folder(drive, "Done", root_id)
+    archive_id = find_or_create_folder(drive, "Archive", root_id)
 
     # List ALL clips in Inbox, then filter by prefix in Python
     all_clips = list_all_inbox_clips(drive, inbox_id)
@@ -465,10 +498,13 @@ def run():
     mark_uploaded(con, db_key, output_name, yt_id, len(clips))
     log.info(f"Logged to xbotgo.db: {db_key}")
 
-    # Clean up source clips from Drive Inbox
-    log.info("Cleaning up source clips from Drive Inbox...")
+    # Move source clips to Drive Archive/ instead of deleting — kept there
+    # for ARCHIVE_RETENTION_DAYS (cleaned up by the scanner) in case this
+    # upload needs to be redone.
+    log.info("Archiving source clips (XbotGo/Inbox/ -> XbotGo/Archive/)...")
     for clip in clips:
-        delete_drive_file(drive, clip["id"], clip["name"])
+        if archive_drive_file(drive, clip["id"], clip["name"], inbox_id, archive_id):
+            record_archived(con, clip["id"], clip["name"], group_prefix)
 
     # Clean up local work files
     for p in local_clips:
