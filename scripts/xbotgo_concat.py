@@ -149,6 +149,27 @@ def list_all_inbox_clips(drive, inbox_id):
     return sorted(mp4s, key=lambda f: f["name"])
 
 
+def filter_clips_by_names(all_clips, clip_names):
+    """
+    Filter clips to the exact set of filenames dispatched for this session.
+    Tolerates Drive's 'Copy of ' prefix on either side of the comparison.
+    """
+    wanted = {n.strip() for n in clip_names if n.strip()}
+    matched = [c for c in all_clips if c["name"] in wanted]
+    matched_names = {c["name"] for c in matched}
+    missing = wanted - matched_names
+    if missing:
+        for c in all_clips:
+            if c["name"] in matched_names:
+                continue
+            stripped = c["name"][8:] if c["name"].lower().startswith("copy of ") else c["name"]
+            if stripped in missing:
+                matched.append(c)
+                matched_names.add(c["name"])
+    log.info(f"Exact clip_names matched {len(matched)}/{len(wanted)} requested clips")
+    return matched
+
+
 def filter_clips_by_prefix(all_clips, group_prefix):
     """
     Filter clips whose filename contains group_prefix.
@@ -341,6 +362,7 @@ def send_alert(subject, body):
 
 def run():
     group_prefix   = os.environ.get("GROUP_PREFIX", "").strip()
+    clip_names_raw = os.environ.get("CLIP_NAMES", "").strip()
     force          = os.environ.get("FORCE", "false").strip().lower() == "true"
     skip_duplicate = os.environ.get("SKIP_DUPLICATE", "false").strip().lower() == "true"
 
@@ -377,7 +399,12 @@ def run():
 
     # List ALL clips in Inbox, then filter by prefix in Python
     all_clips = list_all_inbox_clips(drive, inbox_id)
-    clips = filter_clips_by_prefix(all_clips, group_prefix)
+    if clip_names_raw:
+        clips = filter_clips_by_names(all_clips, clip_names_raw.split(","))
+    else:
+        # Manual/force dispatch without an explicit clip list — fall back
+        # to prefix-substring matching against Inbox.
+        clips = filter_clips_by_prefix(all_clips, group_prefix)
 
     if not clips:
         log.error(f"No clips found in Inbox matching prefix '{group_prefix}'")
