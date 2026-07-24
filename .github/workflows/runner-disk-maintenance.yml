@@ -1,0 +1,110 @@
+name: Vultr runner disk maintenance
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: vultr-ffa-disk-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintain:
+    name: Safe Safe Browsing cleanup on Vultr runner
+    runs-on: self-hosted
+    timeout-minutes: 5
+
+    steps:
+      - name: Safely remove Chrome Safe Browsing cache when idle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "$(id -un)" != "runner" ]; then
+            echo "Refusing to run: expected user runner, got $(id -un)."
+            exit 1
+          fi
+
+          if [ "${HOME}" != "/home/runner" ]; then
+            echo "Refusing to run: expected HOME=/home/runner, got HOME=${HOME}."
+            exit 1
+          fi
+
+          safe_browsing_path="$HOME/.config/chrome-ffa/Safe Browsing"
+          summary_file="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          deletion_status="skipped"
+          skip_reason="Safe Browsing directory did not exist"
+          before_free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
+          before_free_human="$(df -h / | awk 'NR==2 {print $4}')"
+          before_size_kib=""
+          before_size_human="not present"
+          after_size_kib=""
+          after_free_kib=""
+          after_free_human=""
+          removed_human="not measurable"
+
+          echo "Disk usage before cleanup:"
+          df -h /
+
+          if [ -e "$safe_browsing_path" ]; then
+            before_size_kib="$(du -sk "$safe_browsing_path" | awk '{print $1}')"
+            before_size_human="$(du -sh "$safe_browsing_path" | awk '{print $1}')"
+            echo "Safe Browsing size before cleanup: $before_size_human"
+          else
+            echo "Safe Browsing directory does not exist; nothing to size before cleanup."
+          fi
+
+          browser_processes="$(pgrep -u runner -af '(^|/)(chrome|chromium)( |$)|playwright' || true)"
+          if [ -n "$browser_processes" ]; then
+            echo "Skipping cleanup because runner-owned Chrome, Chromium, or Playwright process is active:"
+            printf '%s\n' "$browser_processes"
+            skip_reason="runner-owned browser process active"
+          elif [ -e "$safe_browsing_path" ]; then
+            echo "No runner-owned Chrome, Chromium, or Playwright process found."
+            echo "Deleting only: $safe_browsing_path"
+            rm -rf -- "$HOME/.config/chrome-ffa/Safe Browsing"
+            deletion_status="deleted"
+            skip_reason=""
+          else
+            echo "No runner-owned Chrome, Chromium, or Playwright process found."
+            echo "Safe Browsing directory not present; no deletion needed."
+          fi
+
+          sync
+
+          if [ -e "$safe_browsing_path" ]; then
+            after_size_kib="$(du -sk "$safe_browsing_path" | awk '{print $1}')"
+          fi
+
+          after_free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
+          after_free_human="$(df -h / | awk 'NR==2 {print $4}')"
+
+          if [ -n "$before_size_kib" ] && [ -z "$after_size_kib" ]; then
+            removed_human="$(awk -v kib="$before_size_kib" 'BEGIN {printf "%.1f MiB", kib / 1024}')"
+          elif [ -n "$before_size_kib" ] && [ -n "$after_size_kib" ]; then
+            removed_human="$(awk -v before="$before_size_kib" -v after="$after_size_kib" 'BEGIN {delta = before - after; if (delta < 0) delta = 0; printf "%.1f MiB", delta / 1024}')"
+          fi
+
+          echo "Disk usage after cleanup:"
+          df -h /
+
+          {
+            echo "## Vultr runner disk maintenance"
+            echo
+            echo "- Free space before: ${before_free_human}"
+            echo "- Free space after: ${after_free_human}"
+            echo "- Deletion status: ${deletion_status}"
+            if [ -n "$skip_reason" ]; then
+              echo "- Skip reason: ${skip_reason}"
+            fi
+            echo "- Safe Browsing size before: ${before_size_human}"
+            echo "- Size removed: ${removed_human}"
+            echo "- Only deletion target: /home/runner/.config/chrome-ffa/Safe Browsing"
+          } >> "$summary_file"
+
+          minimum_free_kib=$((10 * 1024 * 1024))
+          if [ "$after_free_kib" -lt "$minimum_free_kib" ]; then
+            echo "Less than 10 GiB remains free after safe cleanup; free space after cleanup was ${after_free_human}."
+            exit 1
+          fi
