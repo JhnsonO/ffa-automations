@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: gopro-upload-${{ github.event.inputs.media_id || 'manual' }}
+  group: gopro-upload
   cancel-in-progress: false
 
 jobs:
