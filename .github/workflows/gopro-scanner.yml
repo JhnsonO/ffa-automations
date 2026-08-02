@@ -11,11 +11,12 @@ on:
         default: '2'
         type: string
       runner:
-        description: 'Runner to use (fallback: ubuntu-latest when vultr-ffa is down)'
+        description: 'Runner override (auto = self-hosted if vultr-ffa online, else ubuntu-latest)'
         required: false
-        default: 'self-hosted'
+        default: 'auto'
         type: choice
         options:
+          - auto
           - self-hosted
           - ubuntu-latest
 
@@ -30,9 +31,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  check-runner:
+    name: Check vultr-ffa availability
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      runner: ${{ steps.check.outputs.runner }}
+    steps:
+      - name: Decide which runner to use
+        id: check
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+          FORCED: ${{ github.event.inputs.runner }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request
+
+          token = os.environ["GH_PAT"]
+          repo = os.environ["REPO"]
+          forced = os.environ.get("FORCED", "")
+
+          if forced and forced != "auto":
+              chosen = forced
+              print(f"Runner forced via dispatch input: {chosen}")
+          else:
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/actions/runners",
+                  headers={"Authorization": f"token {token}"}
+              )
+              with urllib.request.urlopen(req) as r:
+                  runners = json.load(r).get("runners", [])
+              vultr = next((x for x in runners if x["name"] == "vultr-ffa"), None)
+              status = vultr["status"] if vultr else "missing"
+              chosen = "self-hosted" if status == "online" else "ubuntu-latest"
+              print(f"vultr-ffa status: {status} -> using runner: {chosen}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"runner={chosen}\n")
+          PY
+
   scan:
     name: Scan GoPro Cloud for New Videos
-    runs-on: ${{ inputs.runner || 'self-hosted' }}
+    needs: check-runner
+    runs-on: ${{ needs.check-runner.outputs.runner }}
     timeout-minutes: 30
 
     steps:
