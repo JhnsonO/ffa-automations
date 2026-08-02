@@ -247,3 +247,14 @@ Built directly by Claude per Johnson's explicit routing override for this ticket
 **Current live impact:** `runner-failsafe.yml` is active in production (hourly cron) and is currently looping — cancelling and redispatching a scanner run every hour with no effect. It is not causing damage (no compute cost, no data risk) but is not fixing the backlog either. Backlog as of this session: still 0 successful GoPro Upload runs since 27 Jul 02:01 UTC.
 
 **Not yet started:** Clip Extractor and XbotGo pipelines have no failsafe — assessed non-portable to `ubuntu-latest` (Clip Extractor needs the VM's live Chrome cookie profile; XbotGo needs local SQLite `xbotgo.db`) and were intentionally excluded from this ticket's scope.
+
+
+## Runner failsafe consolidated (2 Aug 2026) — loop fixed, real blocker found
+
+**Merged to main** `319edac3` (branch `fix/consolidate-runner-fallback`, built directly, not Codex): `gopro-scanner.yml` restructured into two jobs in one file — `check-runner` (always `ubuntu-latest`, checks `vultr-ffa` status via API, outputs the target runner) → `scan` (`needs: check-runner`, `runs-on: ${{ needs.check-runner.outputs.runner }}`). Standalone `runner-failsafe.yml` deleted (logic absorbed). `workflow_dispatch` `runner` input changed to `auto`/`self-hosted`/`ubuntu-latest` (was `self-hosted`/`ubuntu-latest`).
+
+**Confirmed working:** dispatch `30750571938` — both jobs `completed`/`success` on `ubuntu-latest`, no more cancel-loop (previous two-file design self-cancelled every hour, see prior section above — 8+ failed loop iterations before this fix).
+
+**New blocker found, unresolved:** the scan itself failed cleanly with `401 Unauthorized` from GoPro's API — cookies expired (unsurprising after a week with no successful scan to refresh them). Cookie refresh happens via `cookie-refresh.yml`, which is **also `runs-on: self-hosted`** (needs a live browser login, same category of VM-dependency as Clip Extractor's Chrome profile — not portable to GitHub-hosted without storing GoPro login credentials in Actions secrets and building a headless-login flow, which is a materially bigger, credential-sensitive task not yet scoped or approved).
+
+**Net effect:** the GitHub-hosted fallback is now structurally correct, but the GoPro pipeline (scan → upload) cannot fully recover until either (a) `vultr-ffa` comes back online and successfully refreshes cookies, or (b) Johnson explicitly approves scoping a cookie-refresh fallback (bigger, credential-sensitive ticket). Backlog as of this session: still 0 successful GoPro Upload runs since 27 Jul 02:01 UTC.
