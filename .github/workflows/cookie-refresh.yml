@@ -20,9 +20,44 @@ concurrency:
 
 jobs:
 
+  check-runner:
+    name: Check vultr-ffa availability
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      runner: ${{ steps.check.outputs.runner }}
+    steps:
+      - name: Decide which runner to use
+        id: check
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request
+
+          token = os.environ["GH_PAT"]
+          repo = os.environ["REPO"]
+
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/runners",
+              headers={"Authorization": f"token {token}"}
+          )
+          with urllib.request.urlopen(req) as r:
+              runners = json.load(r).get("runners", [])
+          vultr = next((x for x in runners if x["name"] == "vultr-ffa"), None)
+          status = vultr["status"] if vultr else "missing"
+          chosen = "self-hosted" if status == "online" else "ubuntu-latest"
+          print(f"vultr-ffa status: {status} -> using runner: {chosen}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"runner={chosen}\n")
+          PY
+
   cookie-refresh:
-    name: Refresh GoPro Cookies (VM)
-    runs-on: self-hosted
+    name: Refresh GoPro Cookies
+    needs: check-runner
+    runs-on: ${{ needs.check-runner.outputs.runner }}
     timeout-minutes: 30
 
     steps:
