@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OEV — Prototype build</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0D1317; --panel:#141D23; --panel-2:#1A252C; --line:#25333C;
+  --ink:#E6EDF0; --muted:#8296A1; --dim:#5D6F7A;
+  --hw:#E8A33D; --sw:#6BA8D8; --gate:#E8DE3D;
+  --ok:#7FC08A; --danger:#D8756B;
+  --display:'Space Grotesk',system-ui,sans-serif;
+  --body:'IBM Plex Sans',system-ui,sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);
+  font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1120px;margin:0 auto;padding:0 22px}
+a{color:inherit}
+
+.mast{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 0 0;flex-wrap:wrap}
+.mark{font-family:var(--display);font-weight:700;font-size:20px;letter-spacing:.14em}
+.mark span{color:var(--hw)}
+.stamp{font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.09em}
+.stamp a{color:var(--sw);text-decoration:none}
+.stamp a:hover{text-decoration:underline}
+
+.hero{padding:42px 0 4px}
+.kicker{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--hw);margin:0 0 18px}
+h1{font-family:var(--display);font-weight:700;font-size:clamp(30px,6.2vw,56px);
+  line-height:1.03;letter-spacing:-.02em;margin:0 0 20px;max-width:16ch}
+h1 em{font-style:normal;color:var(--muted)}
+.sub{font-size:clamp(15px,2.2vw,18px);color:var(--muted);max-width:54ch;margin:0}
+
+.fov{margin:34px 0 0}
+.fov svg{width:100%;height:auto;display:block}
+.cone{opacity:0;transform-origin:400px 420px;animation:sweep .9s cubic-bezier(.2,.7,.3,1) forwards}
+.cone-l{animation-delay:.15s}.cone-r{animation-delay:.3s}
+.wedge{opacity:0;animation:fade .7s ease forwards .95s}
+.diagLabel{font-family:var(--mono);font-size:13px;fill:var(--dim);letter-spacing:.06em}
+.diagLabel.hi{fill:var(--sw)}.diagLabel.amber{fill:var(--hw)}
+@keyframes sweep{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:scale(1)}}
+@keyframes fade{to{opacity:1}}
+
+.north{margin:30px 0 0;padding:22px 24px;border:1px solid var(--line);
+  border-left:3px solid var(--hw);background:var(--panel);border-radius:3px}
+.north .lab{font-family:var(--mono);font-size:11px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--hw);display:block;margin-bottom:9px}
+.north p{margin:0;font-size:clamp(16px,2.3vw,20px);font-weight:500;line-height:1.4}
+.north .cond{color:var(--muted);font-size:14px;margin-top:10px;font-weight:400}
+
+section{padding:58px 0 0}
+.shead{display:flex;align-items:baseline;gap:14px;margin:0 0 6px;flex-wrap:wrap}
+.snum{font-family:var(--mono);font-size:12px;color:var(--hw);letter-spacing:.1em}
+h2{font-family:var(--display);font-weight:700;font-size:clamp(21px,3.5vw,30px);letter-spacing:-.01em;margin:0}
+.sdek{color:var(--muted);font-size:15px;margin:0 0 24px;max-width:60ch}
+
+.overall{border:1px solid var(--line);background:var(--panel);border-radius:3px;padding:18px 22px;margin:0 0 26px}
+.overall .top{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.overall .n{font-family:var(--display);font-weight:700;font-size:26px}
+.overall .n small{font-family:var(--mono);font-size:12px;color:var(--dim);font-weight:400;letter-spacing:.08em}
+.overall .open{font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.08em}
+.bar{height:6px;background:var(--panel-2);border-radius:3px;overflow:hidden;display:flex}
+.bar i{display:block;height:100%;background:var(--ok);transition:width .6s ease}
+
+.months{display:grid;gap:12px;grid-template-columns:repeat(6,1fr)}
+.mcol{background:var(--panel);border:1px solid var(--line);border-radius:3px;
+  padding:12px 11px 13px;display:flex;flex-direction:column;gap:9px;min-height:150px}
+.mcol.active{border-color:var(--hw)}
+.mcol .mh{display:flex;flex-direction:column;gap:3px}
+.mcol .code{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;color:var(--dim)}
+.mcol.active .code{color:var(--hw)}
+.mcol .name{font-size:12.5px;font-weight:600;line-height:1.25}
+.pbar{height:3px;background:var(--panel-2);border-radius:2px;overflow:hidden}
+.pbar i{display:block;height:100%;background:var(--ok)}
+.cnt{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.06em}
+.tasks{display:flex;flex-direction:column;gap:5px;margin-top:2px}
+.task{display:flex;gap:7px;align-items:flex-start;font-size:11.5px;line-height:1.3;
+  color:#B9C8D0;text-decoration:none;padding:5px 6px;border-radius:2px;
+  background:var(--panel-2);border-left:2px solid var(--line);transition:background .15s}
+.task:hover{background:#22303A}
+.task.t-hw{border-left-color:var(--hw)}
+.task.t-sw{border-left-color:var(--sw)}
+.task.t-gate{border-left-color:var(--gate)}
+.task.done{opacity:.42;text-decoration:line-through}
+.task .st{font-family:var(--mono);font-size:9px;flex:none;padding-top:1px;color:var(--dim)}
+.task.wip{background:rgba(155,216,107,.09)}
+.task.blocked{background:rgba(216,117,107,.1)}
+
+.legend{display:flex;gap:18px;flex-wrap:wrap;margin:22px 0 0}
+.leg{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted)}
+.dot{width:9px;height:9px;border-radius:2px;flex:none}
+.d-hw{background:var(--hw)}.d-sw{background:var(--sw)}.d-gate{background:var(--gate)}
+
+.loading{font-family:var(--mono);font-size:12px;color:var(--dim);padding:26px 0;letter-spacing:.08em}
+.errbox{border:1px solid var(--danger);background:rgba(216,117,107,.08);
+  padding:16px 18px;border-radius:3px;font-size:14px;color:#E4B5AF}
+.errbox a{color:#E4B5AF}
+
+.dec{border-top:1px solid var(--line)}
+.dec-item{border-bottom:1px solid var(--line);padding:18px 0;display:grid;grid-template-columns:30px 1fr;gap:16px}
+.dec-item .n{font-family:var(--mono);font-size:11px;color:var(--dim);padding-top:3px}
+.dec-item h4{font-family:var(--body);font-weight:600;font-size:16px;margin:0 0 5px}
+.dec-item p{margin:0;font-size:14.5px;color:var(--muted)}
+
+.risk{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:3px;overflow:hidden}
+.risk div{padding:14px 18px;border-bottom:1px solid var(--line);font-size:14.5px}
+.risk div:nth-child(odd){background:var(--panel);font-weight:500}
+.risk div:nth-child(even){background:var(--panel-2);color:var(--muted)}
+.risk div:nth-last-child(-n+2){border-bottom:0}
+.risk .rh{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--dim);font-weight:400;background:var(--bg)!important}
+
+footer{margin-top:64px;border-top:1px solid var(--line);padding:24px 0 58px;
+  display:flex;gap:18px;justify-content:space-between;flex-wrap:wrap}
+footer p{margin:0;font-family:var(--mono);font-size:11.5px;color:var(--dim);letter-spacing:.05em}
+footer a{color:var(--sw);text-decoration:none}
+
+.rv{opacity:0;transform:translateY(14px);transition:opacity .55s ease,transform .55s ease}
+.rv.in{opacity:1;transform:none}
+
+@media (max-width:980px){.months{grid-template-columns:repeat(3,1fr)}}
+@media (max-width:620px){
+  .months{grid-template-columns:repeat(2,1fr);gap:9px}
+  .risk{grid-template-columns:1fr}
+  .risk div:nth-child(odd){padding-bottom:2px;border-bottom:0}
+  .risk div:nth-child(even){padding-top:4px}
+  .risk .rh{display:none}
+}
+@media (max-width:420px){.months{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){
+  *,*::before{animation-duration:.01ms!important;transition-duration:.01ms!important}
+  .cone,.wedge{opacity:1}.rv{opacity:1;transform:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="mast">
+    <div class="mark">OEV<span>.</span></div>
+    <div class="stamp">Live from GitHub issues · <a href="https://github.com/users/JhnsonO/projects/2" target="_blank" rel="noopener">board</a> · <a href="https://github.com/JhnsonO/ffa-automations/issues?q=is%3Aissue+label%3Aoev" target="_blank" rel="noopener">issues</a></div>
+  </div>
+
+  <header class="hero">
+    <p class="kicker">Panoramic match camera</p>
+    <h1>Two lenses. One picture. <em>Nobody touching it.</em></h1>
+    <p class="sub">Two fixed camera modules record a match and upload it. Stitching, tracking and the follow-cam view all happen in the cloud. The camera stays dumb on purpose.</p>
+  </header>
+
+  <div class="fov">
+    <svg viewBox="0 0 800 510" role="img" aria-label="Two cameras angled 90 degrees apart, each with a 120 degree field of view, creating a 30 degree overlap in the middle.">
+      <path class="cone cone-l" d="M400,420 L110.2,497.6 A300,300 0 0,1 322.4,130.2 Z" fill="#6BA8D8" fill-opacity=".13" stroke="#6BA8D8" stroke-opacity=".38"/>
+      <path class="cone cone-r" d="M400,420 L477.6,130.2 A300,300 0 0,1 689.8,497.6 Z" fill="#6BA8D8" fill-opacity=".13" stroke="#6BA8D8" stroke-opacity=".38"/>
+      <path class="wedge" d="M400,420 L322.4,130.2 A300,300 0 0,1 477.6,130.2 Z" fill="#E8A33D" fill-opacity=".2" stroke="#E8A33D" stroke-opacity=".7" stroke-width="1.2"/>
+      <g class="wedge">
+        <rect x="358" y="404" width="34" height="17" rx="2" fill="#E6EDF0" transform="rotate(-45 375 412)"/>
+        <rect x="408" y="404" width="34" height="17" rx="2" fill="#E6EDF0" transform="rotate(45 425 412)"/>
+      </g>
+      <text class="diagLabel amber wedge" x="400" y="196" text-anchor="middle">30° overlap</text>
+      <text class="diagLabel wedge" x="400" y="220" text-anchor="middle" font-size="11">this is what gets stitched</text>
+      <text class="diagLabel hi cone cone-l" x="168" y="330">120° FOV</text>
+      <text class="diagLabel hi cone cone-r" x="560" y="330">120° FOV</text>
+      <text class="diagLabel wedge" x="400" y="464" text-anchor="middle">90° between cameras · fixed, forever</text>
+    </svg>
+  </div>
+
+  <div class="north rv">
+    <span class="lab">Target — end of January 2027</span>
+    <p>The camera sits at a match, records, and a stitched panoramic video appears online. Zero manual steps.</p>
+    <p class="cond">Solo build · ~10+ hrs/week · gates matter more than dates</p>
+  </div>
+
+  <section>
+    <div class="shead"><span class="snum">01</span><h2>Build status</h2></div>
+    <p class="sdek">Every task below is a GitHub issue. Close it there and it updates here — this page reads the repo live, so there's nothing to keep in sync by hand.</p>
+    <div id="board"><p class="loading">Fetching issues…</p></div>
+    <div class="legend">
+      <span class="leg"><i class="dot d-hw"></i>Hardware</span>
+      <span class="leg"><i class="dot d-sw"></i>Software</span>
+      <span class="leg"><i class="dot d-gate"></i>Gate — must pass to proceed</span>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><span class="snum">02</span><h2>Settled — stop relitigating these</h2></div>
+    <p class="sdek">Decisions already made, with the reasoning attached so they stay made.</p>
+    <div class="dec">
+      <div class="dec-item rv"><span class="n">01</span><div>
+        <h4>The cameras do the encoding, not the Pi</h4>
+        <p>Camera modules with their own encoder chips hand the Pi finished files. This deletes the Pi 5 missing-encoder problem entirely and puts 4K back on the table. The Pi only orchestrates and uploads.</p></div></div>
+      <div class="dec-item rv"><span class="n">02</span><div>
+        <h4>Bare camera boards, not boxed cameras</h4>
+        <p>Retail bulk is weatherproof casing and night-vision LEDs that aren't needed. The boards are a few cm across — housing size is set by battery and mount, not electronics.</p></div></div>
+      <div class="dec-item rv"><span class="n">03</span><div>
+        <h4>Fixed angle is a feature, not a compromise</h4>
+        <p>Bolted at one angle means calibrating once instead of every shoot — a large part of why past calibration was weak. It also removes the failure where two loose cameras die at different times.</p></div></div>
+      <div class="dec-item rv"><span class="n">04</span><div>
+        <h4>90° carries over only if the field of view matches</h4>
+        <p>That figure comes from the GoPro Hero 10's ~120° horizontal FOV, giving ~30° overlap. Different lens, different angle. Housing v1 gets ±2° of adjustment as cheap insurance.</p></div></div>
+      <div class="dec-item rv"><span class="n">05</span><div>
+        <h4>reco is the reference, never the product</h4>
+        <p>AGPLv3 — shipping it forces open-sourcing everything built on it. Fine for private testing right through prototype. Its modules (stitch / calibrate / detect / autocam) double as the task list for the eventual clean rewrite.</p></div></div>
+      <div class="dec-item rv"><span class="n">06</span><div>
+        <h4>Don't build video sync</h4>
+        <p>reco already aligns the two streams using audio, and works without a shared clock. One less thing to build.</p></div></div>
+      <div class="dec-item rv"><span class="n">07</span><div>
+        <h4>Run it by hand on Vast.ai until M4</h4>
+        <p>SSH in and run — faster to iterate than push-wait-check. When it does get automated, it's a self-hosted GitHub runner on the Vast box, not hand-rolled SSH. Hand-rolled SSH is exactly what sank the Lambda attempt.</p></div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><span class="snum">03</span><h2>What could sink it</h2></div>
+    <p class="sdek">&nbsp;</p>
+    <div class="risk">
+      <div class="rh">Risk</div><div class="rh">Mitigation</div>
+      <div>Two 4K files per match is a lot to upload</div><div>Measure in M3, not M5. Fall back to wifi-on-return or lower bitrate.</div>
+      <div>reco's stitch quality has a ceiling</div><div>The M1 gate exists to find that out before anything else is committed.</div>
+      <div>Hardware costs and timelines overrun</div><div>Off-the-shelf parts only until the loop works. No tooling spend.</div>
+      <div>Solo capacity against everything else</div><div>Gates matter more than dates. Slip the date, never skip the gate.</div>
+      <div>Sync drift across a 90-minute capture</div><div>Measured in M5. A shared hardware trigger is the fallback if audio alignment can't absorb it.</div>
+      <div>AGPL contamination</div><div>reco stays testing-only. Nothing ships until the rewrite.</div>
+    </div>
+  </section>
+
+  <footer>
+    <p>JhnsonO/ffa-automations · <a href="https://github.com/users/JhnsonO/projects/2" target="_blank" rel="noopener">project board</a></p>
+    <p id="fetched">—</p>
+  </footer>
+</div>
+
+<script>
+const REPO='JhnsonO/ffa-automations';
+const MONTHS=[
+  {k:'m1',code:'M1 · AUG',name:'Parts + first stitch'},
+  {k:'m2',code:'M2 · SEP',name:'Test rig + camera validation'},
+  {k:'m3',code:'M3 · OCT',name:'Housing + auto-upload'},
+  {k:'m4',code:'M4 · NOV',name:'Close the loop'},
+  {k:'m5',code:'M5 · DEC',name:'Field trials'},
+  {k:'m6',code:'M6 · JAN',name:'Quality verdict'}
+];
+const ACTIVE='m1';
+
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function short(t){return t.replace(/^\[OEV M\d\]\s*/,'').replace(/^GATE:\s*/,'');}
+
+function reveal(){
+  const io=new IntersectionObserver(es=>es.forEach(e=>{
+    if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}
+  }),{threshold:.12});
+  document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+}
+
+async function load(){
+  const board=document.getElementById('board');
+  let issues=[];
+  try{
+    for(let page=1;page<=3;page++){
+      const r=await fetch('https://api.github.com/repos/'+REPO+'/issues?labels=oev&state=all&per_page=100&page='+page);
+      if(!r.ok) throw new Error('GitHub returned '+r.status);
+      const b=await r.json();
+      issues=issues.concat(b.filter(i=>!i.pull_request));
+      if(b.length<100) break;
+    }
+  }catch(e){
+    board.innerHTML='<div class="errbox">Couldn\u2019t reach GitHub just now \u2014 '+esc(e.message)+
+      '. The board is always current: <a href="https://github.com/users/JhnsonO/projects/2" target="_blank" rel="noopener">open it directly</a>.</div>';
+    reveal();
+    return;
+  }
+
+  const done=issues.filter(i=>i.state==='closed').length;
+  const pct=issues.length?Math.round(done/issues.length*100):0;
+
+  let html='<div class="overall"><div class="top">'+
+    '<span class="n">'+pct+'%<small> &nbsp;'+done+' of '+issues.length+' done</small></span>'+
+    '<span class="open">'+(issues.length-done)+' open</span></div>'+
+    '<div class="bar"><i style="width:'+pct+'%"></i></div></div><div class="months">';
+
+  MONTHS.forEach(m=>{
+    const list=issues.filter(i=>i.labels.some(l=>l.name===m.k));
+    const d=list.filter(i=>i.state==='closed').length;
+    const p=list.length?Math.round(d/list.length*100):0;
+    html+='<div class="mcol'+(m.k===ACTIVE?' active':'')+'"><div class="mh">'+
+      '<span class="code">'+m.code+'</span><span class="name">'+esc(m.name)+'</span></div>'+
+      '<div class="pbar"><i style="width:'+p+'%"></i></div>'+
+      '<span class="cnt">'+d+'/'+list.length+' done</span><div class="tasks">';
+    list.slice().sort(function(a,b){
+      const g=x=>x.labels.some(l=>l.name==='gate')?1:0;
+      return g(a)-g(b)||a.number-b.number;
+    }).forEach(i=>{
+      const names=i.labels.map(l=>l.name);
+      const t=names.indexOf('gate')>-1?'gate':names.indexOf('track:hardware')>-1?'hw':'sw';
+      const cls=['task','t-'+t];
+      if(i.state==='closed') cls.push('done');
+      else if(names.indexOf('status:blocked')>-1) cls.push('blocked');
+      else if(names.indexOf('status:in-progress')>-1) cls.push('wip');
+      const mk=i.state==='closed'?'\u2713':names.indexOf('status:blocked')>-1?'!':
+               names.indexOf('status:in-progress')>-1?'\u25B8':'\u25CB';
+      html+='<a class="'+cls.join(' ')+'" href="'+i.html_url+'" target="_blank" rel="noopener">'+
+        '<span class="st">'+mk+'</span><span>'+esc(short(i.title))+'</span></a>';
+    });
+    html+='</div></div>';
+  });
+
+  board.innerHTML=html+'</div>';
+  document.getElementById('fetched').textContent='Live \u00b7 fetched '+
+    new Date().toLocaleString('en-GB',{dateStyle:'medium',timeStyle:'short'});
+  reveal();
+}
+load();
+</script>
+</body>
+</html>
