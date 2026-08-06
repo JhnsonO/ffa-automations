@@ -319,37 +319,93 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           python3 - <<'PY'
-          import os, json, base64, urllib.request
+          import os, json, base64, sqlite3, time, urllib.request, urllib.error
           from pathlib import Path
 
           db_path = Path("uploaded.db")
           if not db_path.exists():
               print("No uploaded.db — skipping")
-              exit(0)
+              raise SystemExit(0)
 
           token = os.environ["GH_PAT"]
           repo = os.environ["REPO"]
-          encoded = base64.b64encode(db_path.read_bytes()).decode()
+          api = f"https://api.github.com/repos/{repo}/contents/uploaded.db"
 
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/contents/uploaded.db?ref=main",
-              headers={"Authorization": f"token {token}"}
-          )
-          with urllib.request.urlopen(req) as r:
-              current_sha = json.load(r)["sha"]
+          def rows_of(path):
+              """Return {table: {pk: full_row}} for both tracked tables."""
+              out = {}
+              con = sqlite3.connect(str(path))
+              con.row_factory = sqlite3.Row
+              for table, pk in (("uploads", "media_id"), ("failed_uploads", "media_id")):
+                  try:
+                      cur = con.execute(f"SELECT * FROM {table}")
+                      out[table] = {r[pk]: dict(r) for r in cur.fetchall()}
+                  except sqlite3.Error:
+                      out[table] = {}
+              con.close()
+              return out
 
-          payload = json.dumps({
-              "message": "chore: update uploaded.db [skip ci]",
-              "content": encoded,
-              "sha": current_sha,
-              "branch": "main"
-          }).encode()
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/contents/uploaded.db",
-              data=payload, method="PUT",
-              headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
-          )
-          with urllib.request.urlopen(req) as r:
-              result = json.load(r)
-          print(f"uploaded.db committed: {result['commit']['sha']}")
+          local = rows_of(db_path)
+
+          for attempt in range(1, 6):
+              # 1. Fetch whatever is on main right now
+              req = urllib.request.Request(api + "?ref=main",
+                                           headers={"Authorization": f"token {token}"})
+              with urllib.request.urlopen(req) as r:
+                  meta = json.load(r)
+              current_sha = meta["sha"]
+
+              remote_path = Path("remote_uploaded.db")
+              remote_path.write_bytes(base64.b64decode(meta["content"]))
+
+              # 2. Merge OUR rows into the REMOTE db (remote is the base, so
+              #    rows other runs added while we were uploading are preserved)
+              con = sqlite3.connect(str(remote_path))
+              remote = rows_of(remote_path)
+              added = 0
+              for table in ("uploads", "failed_uploads"):
+                  for pk, row in local.get(table, {}).items():
+                      if pk in remote.get(table, {}):
+                          continue
+                      cols = ",".join(row.keys())
+                      marks = ",".join("?" * len(row))
+                      try:
+                          con.execute(
+                              f"INSERT OR IGNORE INTO {table} ({cols}) VALUES ({marks})",
+                              tuple(row.values()),
+                          )
+                          added += 1
+                      except sqlite3.Error as e:
+                          print(f"WARNING: could not merge {table}/{pk}: {e}")
+              con.commit()
+              con.close()
+
+              if added == 0:
+                  print("Nothing new to merge — main already has our rows")
+                  raise SystemExit(0)
+
+              # 3. Write merged db back, guarded by the sha we just read
+              payload = json.dumps({
+                  "message": "chore: update uploaded.db [skip ci]",
+                  "content": base64.b64encode(remote_path.read_bytes()).decode(),
+                  "sha": current_sha,
+                  "branch": "main",
+              }).encode()
+              req = urllib.request.Request(api, data=payload, method="PUT",
+                  headers={"Authorization": f"token {token}",
+                           "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req) as r:
+                      result = json.load(r)
+                  print(f"uploaded.db committed ({added} row(s) merged): {result['commit']['sha']}")
+                  raise SystemExit(0)
+              except urllib.error.HTTPError as e:
+                  if e.code == 409:
+                      wait = 2 ** attempt
+                      print(f"Conflict — main moved under us. Retry {attempt}/5 in {wait}s")
+                      time.sleep(wait)
+                      continue
+                  raise
+
+          raise SystemExit("ERROR: could not commit uploaded.db after 5 attempts")
           PY
