@@ -207,7 +207,7 @@ jobs:
           # Retry loop: fetch fresh SHA immediately before each PUT attempt
           for attempt in range(5):
               if attempt > 0:
-                  time.sleep(3)
+                  time.sleep(2 ** attempt)  # exponential backoff — matches uploaded.db commit pattern
               file_resp = json.loads(urllib.request.urlopen(urllib.request.Request(
                   f"https://api.github.com/repos/{repo}/contents/youtube_token.json",
                   headers={"Authorization": f"token {gh_token}"}
