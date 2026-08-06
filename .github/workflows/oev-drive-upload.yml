@@ -1,0 +1,102 @@
+name: OEV — Upload GoPro Session to Drive
+
+on:
+  workflow_dispatch:
+    inputs:
+      media_id:
+        description: 'GoPro media ID to upload'
+        required: false
+        default: ''
+        type: string
+      gopro_filename:
+        description: 'Optional: exact GoPro filename to upload manually, e.g. GX010130.MP4'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oev-drive-upload-${{ github.event.inputs.media_id || github.event.inputs.gopro_filename || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Upload OEV Reshoot to Drive (GitHub Runner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests google-auth google-auth-oauthlib google-api-python-client
+
+      - name: Write Drive/YouTube OAuth credentials
+        run: |
+          echo '${{ secrets.YOUTUBE_CREDENTIALS }}' > youtube_credentials.json
+          echo '${{ secrets.YOUTUBE_TOKEN }}' > youtube_token.json
+
+      - name: Write GoPro cookies from secret
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          cookies = os.environ.get("GOPRO_COOKIES", "{}").strip() or "{}"
+          Path("gopro_cookies.json").write_text(cookies)
+          print("GoPro cookies written from secret")
+          PY
+
+      - name: Validate GoPro cookies
+        id: validate_cookies
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request
+          import gopro_uploader as u
+
+          try:
+              session = u.make_session(u.load_cookies_from_file())
+              u.gopro_get(session, "/media/search", params={"fields": "id", "per_page": 1, "page": 1, "type": "Video"})
+              print("GoPro cookies are valid")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("cookies_valid=true\n")
+          except Exception as e:
+              print(f"GoPro cookies invalid: {e}")
+              print("Dispatching cookie refresh — re-run this workflow after refresh completes")
+              token = os.environ["GH_PAT"]
+              repo = os.environ["REPO"]
+              payload = json.dumps({
+                  "ref": "main",
+                  "inputs": {"run_cookie_refresh": "true"}
+              }).encode()
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/actions/workflows/cookie-refresh.yml/dispatches",
+                  data=payload, method="POST",
+                  headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
+              )
+              urllib.request.urlopen(req)
+              print("Cookie refresh dispatched — exiting cleanly")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("cookies_valid=false\n")
+          PY
+
+      - name: Upload to OEV Drive folder
+        if: steps.validate_cookies.outputs.cookies_valid == 'true'
+        env:
+          MEDIA_ID_OVERRIDE: ${{ github.event.inputs.media_id || '' }}
+          MANUAL_GOPRO_FILENAME: ${{ github.event.inputs.gopro_filename || '' }}
+        run: python3 oev_drive_uploader.py
