@@ -22,6 +22,11 @@ log = logging.getLogger("oev_drive_uploader")
 
 OEV_DRIVE_FOLDER_ID = "18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ"
 
+# Prefer the mounted Block Storage volume on vultr-ffa (plenty of room for
+# full 4K sessions). Falls back to the repo's default downloads/ dir on
+# GitHub-hosted runners where that mount doesn't exist.
+OEV_DOWNLOAD_DIR = Path("/mnt/oevdata") if Path("/mnt/oevdata").is_dir() else gu.DOWNLOAD_DIR
+
 MEDIA_ID_OVERRIDE = (os.environ.get("MEDIA_ID_OVERRIDE") or "").strip()
 MANUAL_GOPRO_FILENAME = (os.environ.get("MANUAL_GOPRO_FILENAME") or "").strip()
 
@@ -77,7 +82,7 @@ def process_item(session, drive_svc, item) -> bool:
     if not dl_url:
         log.error(f"No download URL for {filename}")
         return False
-    dest = gu.DOWNLOAD_DIR / filename
+    dest = OEV_DOWNLOAD_DIR / filename
     if not gu.download_video(dl_url, dest):
         log.error(f"Download failed for {filename}")
         return False
