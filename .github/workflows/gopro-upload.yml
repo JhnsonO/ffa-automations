@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: gopro-upload
+  group: gopro-upload-${{ github.event.inputs.media_id || github.event.inputs.gopro_filename || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -124,8 +124,55 @@ jobs:
                   f.write("cookies_valid=false\n")
           PY
 
+      - name: Check media not already uploaded
+        id: dedupe
+        env:
+          MEDIA_ID: ${{ github.event.inputs.media_id || '' }}
+        run: |
+          python3 - <<'PY'
+          import os, sqlite3
+          from pathlib import Path
+
+          media_id = os.environ.get("MEDIA_ID", "").strip()
+          out = os.environ["GITHUB_OUTPUT"]
+
+          if not media_id:
+              print("No media_id input (manual/filename run) — skipping dedupe check")
+              with open(out, "a") as f:
+                  f.write("already_uploaded=false\n")
+              raise SystemExit(0)
+
+          db = Path("uploaded.db")
+          if not db.exists() or db.stat().st_size == 0:
+              print("uploaded.db missing/empty — proceeding")
+              with open(out, "a") as f:
+                  f.write("already_uploaded=false\n")
+              raise SystemExit(0)
+
+          try:
+              con = sqlite3.connect(str(db))
+              row = con.execute(
+                  "SELECT youtube_id FROM uploads WHERE media_id=?", (media_id,)
+              ).fetchone()
+              con.close()
+          except Exception as e:
+              print(f"WARNING: could not read uploaded.db: {e} — proceeding")
+              with open(out, "a") as f:
+                  f.write("already_uploaded=false\n")
+              raise SystemExit(0)
+
+          if row:
+              print(f"ALREADY UPLOADED: {media_id} -> youtube_id={row[0]} — skipping upload")
+              with open(out, "a") as f:
+                  f.write("already_uploaded=true\n")
+          else:
+              print(f"Not yet uploaded: {media_id} — proceeding")
+              with open(out, "a") as f:
+                  f.write("already_uploaded=false\n")
+          PY
+
       - name: Run uploader
-        if: steps.validate_cookies.outputs.cookies_valid == 'true'
+        if: steps.validate_cookies.outputs.cookies_valid == 'true' && steps.dedupe.outputs.already_uploaded != 'true'
         id: run_upload
         env:
           MEDIA_ID_OVERRIDE: ${{ github.event.inputs.media_id || '' }}
