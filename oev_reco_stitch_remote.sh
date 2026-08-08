@@ -37,7 +37,9 @@ echo "=== Installing system deps ===" | tee -a env.log
 stdbuf -oL -eL apt-get update 2>&1 | tee -a env.log
 stdbuf -oL -eL apt-get install -y --no-install-recommends \
   git build-essential pkg-config libssl-dev cmake clang \
-  mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg 2>&1 | tee -a env.log
+  mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg \
+  libavutil-dev libavcodec-dev libavformat-dev libswscale-dev \
+  libavdevice-dev libavfilter-dev libswresample-dev 2>&1 | tee -a env.log
 
 echo "=== Installing Rust toolchain ===" | tee -a env.log
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | stdbuf -oL -eL sh -s -- -y --default-toolchain stable 2>&1 | tee -a env.log
