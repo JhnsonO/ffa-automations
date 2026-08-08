@@ -258,3 +258,29 @@ Built directly by Claude per Johnson's explicit routing override for this ticket
 **New blocker found, unresolved:** the scan itself failed cleanly with `401 Unauthorized` from GoPro's API — cookies expired (unsurprising after a week with no successful scan to refresh them). Cookie refresh happens via `cookie-refresh.yml`, which is **also `runs-on: self-hosted`** (needs a live browser login, same category of VM-dependency as Clip Extractor's Chrome profile — not portable to GitHub-hosted without storing GoPro login credentials in Actions secrets and building a headless-login flow, which is a materially bigger, credential-sensitive task not yet scoped or approved).
 
 **Net effect:** the GitHub-hosted fallback is now structurally correct, but the GoPro pipeline (scan → upload) cannot fully recover until either (a) `vultr-ffa` comes back online and successfully refreshes cookies, or (b) Johnson explicitly approves scoping a cookie-refresh fallback (bigger, credential-sensitive ticket). Backlog as of this session: still 0 successful GoPro Upload runs since 27 Jul 02:01 UTC.
+
+## OEV — GoPro Cloud → Drive uploader + trim pipeline (6–8 Aug 2026)
+
+**New files, merged to main:**
+- `oev_drive_uploader.py` (`3dac978993`, updated `9f1866253e`) — downloads a GoPro Cloud video by `media_id` or exact filename, uploads directly to OEV Drive folder (`18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ`), skips if same-named file already present. Reuses `gopro_uploader.py`'s auth/download helpers via import, no duplication. No YouTube step, no `uploaded.db`. Downloads to `/mnt/oevdata` when present, falls back to `gu.DOWNLOAD_DIR` otherwise.
+- `.github/workflows/oev-drive-upload.yml` (`340c17bb64`, switched to self-hosted `c42ef2d7d9`) — `workflow_dispatch` with `media_id`/`gopro_filename` inputs, `runs-on: [self-hosted, vultr]`. Same GoPro-cookie-validate/refresh-dispatch pattern as `gopro-upload.yml`.
+- `oev_trim_clip.py` (`147c1a5694`) + `.github/workflows/oev-trim-clip.yml` (`4f14e6b903`) — pulls a named clip already in the OEV Drive folder, `ffmpeg -ss <offset> -t <duration> -c copy` trim (defaults 10:00 offset / 45s duration), uploads trimmed result to a `Trimmed/` subfolder (auto-created) inside the OEV Drive folder. Runs on `vultr-ffa`, scratch space `/mnt/oevdata`.
+- `.github/workflows/cookie-refresh.yml` fix (`9762ddb209`): YouTube-token commit retry changed from flat 3s×5 to exponential backoff (`2**attempt`, matches the proven `uploaded.db` pattern) — was 409-conflicting on every single run since 20 Jun due to high commit volume on `main`. Not yet verified against a live cookie-refresh run.
+
+**Infra:** `vultr-ffa` had only 7.3G free on its 52G root disk (cause not fully diagnosed — `_work`, chrome profile, downloads dirs didn't account for the ~42G used). Attached a pre-existing 40GB Vultr Block Storage volume (region-matched to `vultr-ffa`, Atlanta) instead of debugging further: partitioned (`vdb1`, GPT), `mkfs.ext4`, mounted at `/mnt/oevdata`, `UUID=346edaa2-8b9d-4807-9cba-4d26811adc25` in `/etc/fstab`, owned `runner:runner`. Second identical 40GB volume still sits unattached/spare.
+
+**Context:** this work happened during a live GitHub Actions platform incident (started 6 Aug ~15:22 UTC) — hosted-runner (`ubuntu-latest`) jobs were stuck `queued` with zero jobs assigned. Switching the OEV workflows to the self-hosted `vultr-ffa` runner successfully bypassed it, since self-hosted runner dispatch went through even while hosted-runner assignment was stuck.
+
+**Verified runs — uploads (`oev-drive-upload.yml`):**
+- `GX010197.MP4` — Aylestone. First attempt (`31128612979`) stuck in GitHub's hosted-runner queue (platform incident), abandoned. Retry on `vultr-ffa` (`31129084980`) failed — `/mnt/oevdata` was `root`-owned, `runner` user got permission denied. Fixed with `chown -R runner:runner /mnt/oevdata`. Redispatch (`31129133117`) succeeded.
+- `GX010198.MP4`, `GX010175.MP4` — Aylestone. Both succeeded first try (`31150601739`, `31150604634`), post permission fix.
+- `GX010173.MP4` — Aylestone, the pair to `GX010197`. Never went through this uploader (only `GX010197` was dispatched from that pair, per explicit "try 1 for now"), but was confirmed already present in the OEV Drive folder when the trim workflow ran against it (see below) — uploaded some other way, not tracked here.
+
+**Verified runs — trims (`oev-trim-clip.yml`), all 10:00 offset / 45s duration, all `completed success`:**
+`GX010197.MP4` → `31270018554`, `GX010173.MP4` → `31270020775`, `GX010198.MP4` → `31270022821`, `GX010175.MP4` → `31270024820`. Output: `trimmed_GX0101xx.MP4` × 4 in `Trimmed/` subfolder of the OEV Drive folder. **Not yet visually reviewed by Johnson.**
+
+**Known factor, venue-specific (not a general OEV rig issue):** at St Margaret's, one camera faces the sun and the other faces away, causing independent auto-exposure mismatch between the two feeds — this was the likely cause of the earlier weak `reco calibrate` match quality (8–19 features/frame) on that footage. Aylestone reshoots (this session's 4 files) don't have this issue per Johnson. Not yet a formal repo issue; worth filing when someone picks up rig/exposure work, with fixed-exposure (Protune) or preprocessing histogram-matching as candidate fixes.
+
+**Decision this session:** `reco calibrate` (CPU, AKAZE-based, no GPU dependency per repo's own architecture docs) and `reco stitch` (GPU-first, `wgpu` rendering engine) will be run together on Vast.ai rather than splitting calibrate off onto `vultr-ffa`/GitHub-hosted — explicit call to avoid pipeline complexity, even though calibrate alone could run without GPU.
+
+**Next:** Vast.ai `reco calibrate` + `reco stitch` on the four trimmed clips (two Aylestone pairs: `GX010197`+`GX010173`, `GX010198`+`GX010175`) — M1 gate is one stitched clip good enough to show a prospective customer.
