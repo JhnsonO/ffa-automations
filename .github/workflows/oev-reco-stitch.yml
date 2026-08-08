@@ -1,0 +1,386 @@
+name: OEV — Reco Calibrate + Stitch (Vast.ai GPU)
+
+on:
+  workflow_dispatch:
+    inputs:
+      left_clip:
+        description: 'Exact filename in OEV Drive Trimmed/ folder (left/first camera)'
+        required: false
+        default: 'trimmed_GX010197.MP4'
+        type: string
+      right_clip:
+        description: 'Exact filename in OEV Drive Trimmed/ folder (right/second camera)'
+        required: false
+        default: 'trimmed_GX010173.MP4'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  reco-stitch:
+    name: Reco Calibrate + Stitch (Vast.ai)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Generate SSH key pair
+        run: |
+          pip install -q cryptography
+          python3 -u - << 'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+          key = Ed25519PrivateKey.generate()
+          priv = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
+          pub = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+          with open('/tmp/vastai_key', 'wb') as f: f.write(priv)
+          with open('/tmp/vastai_key.pub', 'wb') as f: f.write(pub + b' ffa-oev-stitch\n')
+          os.chmod('/tmp/vastai_key', 0o600)
+          PY
+
+      # Vast.ai lifecycle mechanics (launch-retry, offer selection loop,
+      # delete_instance with 3-endpoint fallback) copied verbatim from
+      # playcam-poc.yml per CLAUDE.md. Only the offer query below is
+      # adapted: reco calibrate/stitch is far lighter than YOLO, so GPU
+      # RAM / CPU thresholds are relaxed, but a GPU is still required
+      # for reco stitch's wgpu renderer.
+      - name: Launch reliable Vast.ai GPU instance
+        id: launch
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 -u - << 'PY'
+          import os, json, time, urllib.request, urllib.parse, sys
+
+          api_key = os.environ['VAST_API_KEY']
+          base = 'https://console.vast.ai/api/v0'
+          cloud = 'https://cloud.vast.ai/api/v1'
+          headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json', 'Accept': 'application/json'}
+          pub_key = open('/tmp/vastai_key.pub').read().strip()
+
+          def request(method, url, data=None, timeout=25):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  return json.loads(r.read())
+
+          def delete_instance(instance_id):
+              last_exc = None
+              for ep in (f'{base}/instances/{instance_id}/',
+                         f'https://cloud.vast.ai/api/v0/instances/{instance_id}/',
+                         f'{cloud}/instances/{instance_id}/'):
+                  try:
+                      request('DELETE', ep, timeout=15)
+                      return
+                  except Exception as exc:
+                      last_exc = exc
+              print(f'Cleanup warning for {instance_id}: all endpoints failed, last error: {last_exc}')
+
+          request('POST', f'{base}/ssh/', {'ssh_key': pub_key})
+
+          query = {
+              'verified': {'eq': True},
+              'rentable': {'eq': True},
+              'reliability': {'gte': 0.98},
+              'gpu_ram': {'gte': 4096},
+              'num_gpus': {'gte': 1},
+              'cpu_cores': {'gte': 8},
+              'cpu_ram': {'gte': 8192},
+              'disk_space': {'gte': 40},
+              'inet_down': {'gte': 200},
+          }
+          bundles = request('GET', f'{base}/bundles/?' + urllib.parse.urlencode({'q': json.dumps(query)}))
+          offers = bundles.get('offers', [])
+          bad_cpu = ('E5-', 'E3-', 'Opteron', 'Xeon W3', 'Xeon X5')
+          offers = [o for o in offers if not any(x in (o.get('cpu_name') or '') for x in bad_cpu)]
+          # Blackwell (RTX 50-series, sm_120) untested against this image/toolchain -
+          # excluded per the same caution as playcam-poc.yml until verified.
+          bad_gpu = ('RTX 5090', 'RTX 5080', 'RTX 5070', 'RTX 5060', 'RTX 5050')
+          offers = [o for o in offers if not any(x in (o.get('gpu_name') or '') for x in bad_gpu)]
+          offers.sort(key=lambda o: float(o.get('dph_total', 999)))
+          if not offers:
+              print('ERROR: No reliable GPU offers matched the OEV reco-stitch requirements', file=sys.stderr)
+              sys.exit(1)
+
+          print(f'Found {len(offers)} eligible offers; trying up to 5 cheapest reliable offers.')
+          selected = None
+          for index, offer in enumerate(offers[:5], start=1):
+              offer_id = offer['id']
+              print('Trying offer %s (%s/5): gpu=%s vram=%sMB reliability=%s cpu=%s $%s/hr' % (
+                  offer_id, index, offer.get('gpu_name', 'unknown'), offer.get('gpu_ram', '?'),
+                  offer.get('reliability', '?'), offer.get('cpu_name', 'unknown'), offer.get('dph_total', '?')))
+              try:
+                  result = request('PUT', f'{base}/asks/{offer_id}/', {
+                      'client_id': 'me',
+                      'image': 'pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime',
+                      'disk': 40,
+                      'onstart': '',
+                      'runtype': 'ssh',
+                      'ssh_key': pub_key,
+                      'env': {},
+                  })
+              except Exception as exc:
+                  print(f'Launch request failed for offer {offer_id}: {exc}')
+                  continue
+              instance_id = result.get('new_contract')
+              if not instance_id:
+                  print(f'Offer {offer_id} did not return an instance: {result}')
+                  continue
+
+              for attempt in range(30):
+                  time.sleep(10)
+                  try:
+                      instances = request('GET', f'{cloud}/instances/')
+                      inst = next((x for x in instances.get('instances', []) if x.get('id') == instance_id), None)
+                  except Exception as exc:
+                      print(f'  [{attempt + 1}/30] status lookup failed: {exc}')
+                      continue
+                  if not inst:
+                      print(f'  [{attempt + 1}/30] instance not listed yet')
+                      continue
+                  status = inst.get('actual_status', '?')
+                  ip = inst.get('ssh_host') or inst.get('public_ipaddr')
+                  port = inst.get('ssh_port', 22)
+                  print(f'  [{attempt + 1}/30] status={status} ip={ip} port={port}')
+                  if status == 'running' and ip:
+                      selected = (instance_id, ip, port, offer)
+                      break
+                  if status in ('error', 'failed', 'stopped'):
+                      break
+              if selected:
+                  break
+              print(f'Offer {offer_id} did not become usable; terminating instance {instance_id} and trying next.')
+              delete_instance(instance_id)
+
+          if not selected:
+              print('ERROR: None of the first five reliable GPU offers became ready', file=sys.stderr)
+              sys.exit(1)
+          instance_id, ip, port, offer = selected
+          print(f'Selected ready instance: id={instance_id} gpu={offer.get("gpu_name")} vram={offer.get("gpu_ram")}MB reliability={offer.get("reliability")} ip={ip}:{port}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'instance_id={instance_id}\nip={ip}\nport={port}\n')
+          PY
+
+      - name: Wait for SSH
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          for i in $(seq 1 18); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 -i /tmp/vastai_key -p "$PORT" "root@$IP" 'echo OK' 2>/dev/null | grep -q OK; then
+              echo 'SSH ready'; exit 0
+            fi
+            echo "SSH not ready ($i/18)"; sleep 5
+          done
+          echo 'ERROR: SSH never came up'; exit 1
+
+      - name: Resolve clip file IDs in OEV Drive Trimmed/ folder
+        id: resolve
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          LEFT_CLIP: ${{ github.event.inputs.left_clip }}
+          RIGHT_CLIP: ${{ github.event.inputs.right_clip }}
+        run: |
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -u - << 'PY'
+          import json, os, urllib.request as req, urllib.parse
+
+          OEV_DRIVE_FOLDER_ID = "18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ"
+
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          payload = json.dumps({
+              'client_id': token_data.get('client_id') or creds_data['installed']['client_id'],
+              'client_secret': token_data.get('client_secret') or creds_data['installed']['client_secret'],
+              'refresh_token': token_data['refresh_token'],
+              'grant_type': 'refresh_token',
+          }).encode()
+          resp = req.urlopen(req.Request('https://oauth2.googleapis.com/token', data=payload,
+                                          headers={'Content-Type': 'application/json'}, method='POST'))
+          token = json.loads(resp.read())
+          if 'access_token' not in token:
+              raise RuntimeError(f'Token refresh failed: {token}')
+          access_token = token['access_token']
+          open('/tmp/drive_token.txt', 'w').write(access_token)
+
+          def find_in_trimmed(filename):
+              # Locate the Trimmed/ subfolder, then the file within it.
+              q = f"name='Trimmed' and '{OEV_DRIVE_FOLDER_ID}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'"
+              url = 'https://www.googleapis.com/drive/v3/files?' + urllib.parse.urlencode({
+                  'q': q, 'fields': 'files(id)', 'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'})
+              r = req.urlopen(req.Request(url, headers={'Authorization': f'Bearer {access_token}'}))
+              folders = json.loads(r.read()).get('files', [])
+              if not folders:
+                  raise RuntimeError('Trimmed/ subfolder not found in OEV Drive folder')
+              trimmed_id = folders[0]['id']
+
+              q = f"name='{filename}' and '{trimmed_id}' in parents and trashed=false"
+              url = 'https://www.googleapis.com/drive/v3/files?' + urllib.parse.urlencode({
+                  'q': q, 'fields': 'files(id,name)', 'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'})
+              r = req.urlopen(req.Request(url, headers={'Authorization': f'Bearer {access_token}'}))
+              files = json.loads(r.read()).get('files', [])
+              if not files:
+                  raise RuntimeError(f'{filename} not found in Trimmed/ folder')
+              return files[0]['id']
+
+          left_id = find_in_trimmed(os.environ['LEFT_CLIP'])
+          right_id = find_in_trimmed(os.environ['RIGHT_CLIP'])
+          print(f'left_clip_id={left_id}')
+          print(f'right_clip_id={right_id}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'left_id={left_id}\nright_id={right_id}\n')
+          PY
+
+      - name: Download clip pair to instance
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          LEFT_ID: ${{ steps.resolve.outputs.left_id }}
+          RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          $SSH "apt-get update -qq && apt-get install -y -qq --no-install-recommends aria2 > /dev/null; mkdir -p /tmp/oev_run"
+          $SSH "aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=left.mp4 'https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media' 2>&1 | tail -5"
+          $SSH "aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=right.mp4 'https://www.googleapis.com/drive/v3/files/$RIGHT_ID?alt=media' 2>&1 | tail -5"
+          $SSH "ls -la /tmp/oev_run/"
+
+      - name: Upload + run reco calibrate/stitch script
+        id: run_reco
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP oev_reco_stitch_remote.sh root@$IP:/tmp/oev_run/
+          $SSH "chmod +x /tmp/oev_run/oev_reco_stitch_remote.sh"
+          # Do not fail the step on non-zero exit — logs must still be
+          # pulled back below even if a stage failed partway through.
+          $SSH "stdbuf -oL -eL /tmp/oev_run/oev_reco_stitch_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Pull back logs + outputs
+        if: always()
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          mkdir -p reco_artifacts
+          $SCP "root@$IP:/tmp/oev_run/env.log" reco_artifacts/ || echo 'env.log missing'
+          $SCP "root@$IP:/tmp/oev_run/build.log" reco_artifacts/ || echo 'build.log missing'
+          $SCP "root@$IP:/tmp/oev_run/calibrate.log" reco_artifacts/ || echo 'calibrate.log missing'
+          $SCP "root@$IP:/tmp/oev_run/stitch.log" reco_artifacts/ || echo 'stitch.log missing'
+          $SCP "root@$IP:/tmp/oev_run/match.json" reco_artifacts/ || echo 'match.json missing (calibrate did not complete)'
+          $SCP "root@$IP:/tmp/oev_run/panorama.mp4" reco_artifacts/ || echo 'panorama.mp4 missing (stitch did not complete)'
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-reco-stitch-${{ github.run_id }}
+          path: reco_artifacts/
+          retention-days: 14
+
+      - name: Upload stitched result to OEV Drive Stitched/ folder
+        if: hashFiles('reco_artifacts/panorama.mp4') != ''
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          LEFT_CLIP: ${{ github.event.inputs.left_clip }}
+        run: |
+          pip install -q google-auth google-auth-oauthlib google-api-python-client
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -u - << 'PY'
+          import json, sys
+          sys.path.insert(0, '.')
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+          import os
+
+          OEV_DRIVE_FOLDER_ID = "18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ"
+
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          creds = Credentials(
+              token=None,
+              refresh_token=token_data['refresh_token'],
+              token_uri=token_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
+              client_id=token_data.get('client_id') or creds_data['installed']['client_id'],
+              client_secret=token_data.get('client_secret') or creds_data['installed']['client_secret'],
+          )
+          drive = build('drive', 'v3', credentials=creds)
+
+          res = drive.files().list(
+              q=f"name='Stitched' and '{OEV_DRIVE_FOLDER_ID}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+              fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True,
+          ).execute()
+          files = res.get('files', [])
+          if files:
+              stitched_id = files[0]['id']
+          else:
+              folder = drive.files().create(
+                  body={'name': 'Stitched', 'mimeType': 'application/vnd.google-apps.folder', 'parents': [OEV_DRIVE_FOLDER_ID]},
+                  fields='id',
+              ).execute()
+              stitched_id = folder['id']
+
+          left_clip = os.environ['LEFT_CLIP']
+          out_name = f"stitched_{left_clip}"
+          media = MediaFileUpload('reco_artifacts/panorama.mp4', mimetype='video/mp4', resumable=True)
+          uploaded = drive.files().create(
+              body={'name': out_name, 'parents': [stitched_id]},
+              media_body=media, fields='id', supportsAllDrives=True,
+          ).execute()
+          print(f"Uploaded: {out_name} -> https://drive.google.com/file/d/{uploaded['id']}")
+
+          if os.path.exists('reco_artifacts/match.json'):
+              media = MediaFileUpload('reco_artifacts/match.json', mimetype='application/json', resumable=False)
+              uploaded = drive.files().create(
+                  body={'name': f"match_{left_clip}.json", 'parents': [stitched_id]},
+                  media_body=media, fields='id', supportsAllDrives=True,
+              ).execute()
+              print(f"Uploaded: match_{left_clip}.json -> https://drive.google.com/file/d/{uploaded['id']}")
+          PY
+
+      - name: Terminate Vast.ai instance
+        if: always()
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+          INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error
+          instance_id = os.environ.get('INSTANCE_ID', '')
+          if not instance_id:
+              print('No instance ID'); raise SystemExit(0)
+
+          headers = {'Authorization': f"Bearer {os.environ['VAST_API_KEY']}", 'Content-Type': 'application/json'}
+          endpoints = [
+              f'https://console.vast.ai/api/v0/instances/{instance_id}/',
+              f'https://cloud.vast.ai/api/v0/instances/{instance_id}/',
+              f'https://cloud.vast.ai/api/v1/instances/{instance_id}/',
+          ]
+          done = False
+          for url in endpoints:
+              req = urllib.request.Request(url, method='DELETE', headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      print(f'Instance {instance_id} terminated OK via {url}: {r.read().decode()[:200]}')
+                  done = True
+                  break
+              except urllib.error.HTTPError as exc:
+                  print(f'  {url} -> HTTP {exc.code}: {exc.read().decode(errors="replace")[:200]}')
+              except Exception as exc:
+                  print(f'  {url} -> error: {exc}')
+          if not done:
+              print(f'::error::Instance {instance_id} may still be RUNNING — check https://cloud.vast.ai/instances manually')
+          PY
