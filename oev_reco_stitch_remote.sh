@@ -5,6 +5,10 @@
 #
 # Every stage writes its own log file so a failure at any point leaves
 # an inspectable artifact behind, rather than a single opaque pass/fail.
+# All long-running commands are piped through `tee -a` (not `>>`) so
+# output streams live to the SSH/Actions log AND is captured reliably —
+# a plain `>>` redirect can be lost if the session ends before the
+# buffer flushes, which is what happened on the first run of this script.
 #
 # Expects, in /tmp/oev_run/:
 #   left.mp4, right.mp4   (the clip pair, already downloaded)
@@ -27,16 +31,16 @@ echo "=== env.log: toolchain + GPU info ===" | tee env.log
   echo "--- rustc/cargo (pre-install check) ---"
   rustc --version 2>&1 || echo "rustc not yet installed"
   cargo --version 2>&1 || echo "cargo not yet installed"
-} >> env.log 2>&1
+} 2>&1 | tee -a env.log
 
 echo "=== Installing system deps ===" | tee -a env.log
-stdbuf -oL -eL apt-get update >> env.log 2>&1
+stdbuf -oL -eL apt-get update 2>&1 | tee -a env.log
 stdbuf -oL -eL apt-get install -y --no-install-recommends \
   git build-essential pkg-config libssl-dev cmake clang \
-  mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg >> env.log 2>&1
+  mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg 2>&1 | tee -a env.log
 
 echo "=== Installing Rust toolchain ===" | tee -a env.log
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | stdbuf -oL -eL sh -s -- -y --default-toolchain stable >> env.log 2>&1
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | stdbuf -oL -eL sh -s -- -y --default-toolchain stable 2>&1 | tee -a env.log
 source "$HOME/.cargo/env"
 {
   echo "--- rustc/cargo (post-install) ---"
@@ -44,29 +48,35 @@ source "$HOME/.cargo/env"
   cargo --version
   echo "--- vulkaninfo summary ---"
   vulkaninfo --summary 2>&1 | head -30 || echo "vulkaninfo failed"
-} >> env.log 2>&1
+} 2>&1 | tee -a env.log
 
 echo "=== build.log: cloning + building reco-cli ===" | tee build.log
-if ! git clone --depth 1 https://github.com/reco-project/video-stitcher.git /tmp/reco-src >> build.log 2>&1; then
-  echo "FATAL: git clone failed, see build.log" | tee -a build.log
+git clone --depth 1 https://github.com/reco-project/video-stitcher.git /tmp/reco-src 2>&1 | tee -a build.log
+clone_rc=${PIPESTATUS[0]}
+if [ "$clone_rc" -ne 0 ]; then
+  echo "FATAL: git clone failed (exit $clone_rc), see build.log" | tee -a build.log
   exit 1
 fi
 cd /tmp/reco-src
-if ! stdbuf -oL -eL cargo build --release -p reco-cli -v >> build.log 2>&1; then
-  echo "FATAL: cargo build failed, see build.log" | tee -a build.log
+stdbuf -oL -eL cargo build --release -p reco-cli -v 2>&1 | tee -a /tmp/oev_run/build.log
+build_rc=${PIPESTATUS[0]}
+if [ "$build_rc" -ne 0 ]; then
+  echo "FATAL: cargo build failed (exit $build_rc), see build.log" | tee -a /tmp/oev_run/build.log
   exit 1
 fi
 RECO_BIN="/tmp/reco-src/target/release/reco"
 if [ ! -x "$RECO_BIN" ]; then
-  echo "FATAL: build reported success but binary not found at $RECO_BIN" | tee -a build.log
+  echo "FATAL: build reported success but binary not found at $RECO_BIN" | tee -a /tmp/oev_run/build.log
   exit 1
 fi
-echo "Build OK: $RECO_BIN" | tee -a build.log
+echo "Build OK: $RECO_BIN" | tee -a /tmp/oev_run/build.log
 cd /tmp/oev_run
 
 echo "=== calibrate.log: reco calibrate ===" | tee calibrate.log
-if ! stdbuf -oL -eL "$RECO_BIN" calibrate left.mp4 right.mp4 -o match.json >> calibrate.log 2>&1; then
-  echo "FATAL: reco calibrate failed, see calibrate.log" | tee -a calibrate.log
+stdbuf -oL -eL "$RECO_BIN" calibrate left.mp4 right.mp4 -o match.json 2>&1 | tee -a calibrate.log
+calibrate_rc=${PIPESTATUS[0]}
+if [ "$calibrate_rc" -ne 0 ]; then
+  echo "FATAL: reco calibrate failed (exit $calibrate_rc), see calibrate.log" | tee -a calibrate.log
   exit 2
 fi
 if [ ! -f match.json ]; then
@@ -76,8 +86,10 @@ fi
 echo "Calibrate OK: match.json written" | tee -a calibrate.log
 
 echo "=== stitch.log: reco stitch ===" | tee stitch.log
-if ! stdbuf -oL -eL "$RECO_BIN" stitch left.mp4 right.mp4 -c match.json -o panorama.mp4 >> stitch.log 2>&1; then
-  echo "FATAL: reco stitch failed, see stitch.log (match.json is still valid, calibration succeeded)" | tee -a stitch.log
+stdbuf -oL -eL "$RECO_BIN" stitch left.mp4 right.mp4 -c match.json -o panorama.mp4 2>&1 | tee -a stitch.log
+stitch_rc=${PIPESTATUS[0]}
+if [ "$stitch_rc" -ne 0 ]; then
+  echo "FATAL: reco stitch failed (exit $stitch_rc), see stitch.log (match.json is still valid, calibration succeeded)" | tee -a stitch.log
   exit 3
 fi
 if [ ! -f panorama.mp4 ]; then
