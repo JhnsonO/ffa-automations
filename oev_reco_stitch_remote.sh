@@ -46,7 +46,16 @@ echo "=== Installing CUDA runtime (plain ubuntu image has no CUDA libs by defaul
   wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -O /tmp/cuda-keyring.deb \
     && dpkg -i /tmp/cuda-keyring.deb \
     && apt-get update \
-    && apt-get install -y --no-install-recommends cuda-runtime-12-4 \
+    && ( apt-get install -y --no-install-recommends cuda-runtime \
+         || { echo "unversioned cuda-runtime not found, searching repo for a versioned package..."; \
+              CUDA_PKG=$(apt-cache search '^cuda-runtime-[0-9]' | sort -V | tail -1 | awk '{print $1}'); \
+              if [ -n "$CUDA_PKG" ]; then \
+                echo "Found: $CUDA_PKG"; \
+                apt-get install -y --no-install-recommends "$CUDA_PKG"; \
+              else \
+                echo "No cuda-runtime-* package found in repo either"; \
+                exit 1; \
+              fi; } ) \
     || echo "CUDA runtime install failed — see above for the actual error"
 } 2>&1 | tee -a env.log
 
