@@ -1,0 +1,54 @@
+name: OEV — Trim Clip in Drive
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_filename:
+        description: 'Exact filename already in the OEV Drive folder, e.g. GX010197.MP4'
+        required: true
+        type: string
+      trim_offset:
+        description: 'ffmpeg -ss offset'
+        required: false
+        default: '00:10:00'
+        type: string
+      trim_duration:
+        description: 'ffmpeg -t duration'
+        required: false
+        default: '00:00:45'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  trim:
+    name: Trim OEV Clip (vultr-ffa)
+    runs-on: [self-hosted, vultr]
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests google-auth google-auth-oauthlib google-api-python-client
+
+      - name: Write Drive OAuth credentials
+        run: |
+          echo '${{ secrets.YOUTUBE_CREDENTIALS }}' > youtube_credentials.json
+          echo '${{ secrets.YOUTUBE_TOKEN }}' > youtube_token.json
+
+      - name: Trim and upload
+        env:
+          SOURCE_FILENAME: ${{ github.event.inputs.source_filename }}
+          TRIM_OFFSET: ${{ github.event.inputs.trim_offset }}
+          TRIM_DURATION: ${{ github.event.inputs.trim_duration }}
+        run: python3 oev_trim_clip.py
