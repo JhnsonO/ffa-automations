@@ -116,7 +116,7 @@ jobs:
               try:
                   result = request('PUT', f'{base}/asks/{offer_id}/', {
                       'client_id': 'me',
-                      'image': 'pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime',
+                      'image': 'nvidia/cuda:12.4.1-devel-ubuntu24.04',
                       'disk': 40,
                       'onstart': '',
                       'runtype': 'ssh',
