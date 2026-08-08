@@ -36,10 +36,19 @@ echo "=== env.log: toolchain + GPU info ===" | tee env.log
 echo "=== Installing system deps ===" | tee -a env.log
 stdbuf -oL -eL apt-get update 2>&1 | tee -a env.log
 stdbuf -oL -eL apt-get install -y --no-install-recommends \
-  git build-essential pkg-config libssl-dev cmake clang \
+  git build-essential pkg-config libssl-dev cmake clang ca-certificates wget \
   mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg \
   libavutil-dev libavcodec-dev libavformat-dev libswscale-dev \
   libavdevice-dev libavfilter-dev libswresample-dev 2>&1 | tee -a env.log
+
+echo "=== Installing CUDA runtime (plain ubuntu image has no CUDA libs by default) ===" | tee -a env.log
+{
+  wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -O /tmp/cuda-keyring.deb \
+    && dpkg -i /tmp/cuda-keyring.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends cuda-runtime-12-4 \
+    || echo "CUDA runtime install failed — see above for the actual error"
+} 2>&1 | tee -a env.log
 
 echo "=== Installing Rust toolchain ===" | tee -a env.log
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | stdbuf -oL -eL sh -s -- -y --default-toolchain stable 2>&1 | tee -a env.log
