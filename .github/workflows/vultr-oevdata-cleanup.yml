@@ -1,0 +1,27 @@
+name: OEV — Clean /mnt/oevdata scratch volume
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    name: Clean oevdata scratch (vultr-ffa)
+    runs-on: [self-hosted, vultr]
+    timeout-minutes: 15
+
+    steps:
+      - name: Disk usage before
+        run: |
+          df -h /mnt/oevdata
+          echo "---"
+          ls -lah /mnt/oevdata || true
+
+      - name: Remove leftover scratch files
+        run: |
+          find /mnt/oevdata -maxdepth 1 -type f -name '*.MP4' -print -delete
+
+      - name: Disk usage after
+        run: df -h /mnt/oevdata
