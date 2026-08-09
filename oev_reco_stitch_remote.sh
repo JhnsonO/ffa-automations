@@ -24,6 +24,67 @@
 set -uo pipefail
 cd /tmp/oev_run
 
+# --- GitHub Release blob cache (no-op throughout if GH_TOKEN is unset) ---
+# Used to cache two things across runs, keyed so a stale cache can never be
+# served silently:
+#   1. The generic CUDA runtime .debs (~1.1GB) - these are pinned to
+#      whatever version our script resolves (cuda-runtime, or the latest
+#      cuda-runtime-N), NOT to the host's GPU driver, so they're identical
+#      run to run until NVIDIA ships a new CUDA release.
+#   2. The compiled reco-cli binary, keyed by the exact git SHA of
+#      reco-project/video-stitcher - a source change naturally produces a
+#      new cache key rather than serving a stale binary.
+# The host-specific libnvidia-gl/-compute driver extraction below is
+# deliberately NOT cached - see docs/ai-project-state.md for why baking in
+# a fixed driver version previously caused the exact class of bug that took
+# 8+ debug cycles to fix.
+GH_TOKEN="${GH_TOKEN:-}"
+GH_CACHE_REPO="JhnsonO/ffa-automations"
+GH_CACHE_TAG="oev-build-cache"
+
+gh_cache_release_id() {
+  [ -z "$GH_TOKEN" ] && return 1
+  curl -s -H "Authorization: token $GH_TOKEN" \
+    "https://api.github.com/repos/$GH_CACHE_REPO/releases/tags/$GH_CACHE_TAG" \
+    | jq -r 'if .id then .id else empty end'
+}
+
+gh_cache_release_id_or_create() {
+  local id
+  id=$(gh_cache_release_id)
+  if [ -n "$id" ]; then echo "$id"; return 0; fi
+  curl -s -X POST -H "Authorization: token $GH_TOKEN" -H "Content-Type: application/json" \
+    "https://api.github.com/repos/$GH_CACHE_REPO/releases" \
+    -d "{\"tag_name\":\"$GH_CACHE_TAG\",\"name\":\"OEV build cache (auto-managed)\",\"body\":\"Binary/package cache for oev-reco-stitch.yml. Safe to delete - will be recreated on the next run.\",\"prerelease\":true}" \
+    | jq -r '.id // empty'
+}
+
+gh_cache_download() {
+  local release_id="$1" name="$2" outpath="$3" asset_id
+  asset_id=$(curl -s -H "Authorization: token $GH_TOKEN" \
+    "https://api.github.com/repos/$GH_CACHE_REPO/releases/$release_id/assets" \
+    | jq -r --arg n "$name" '.[] | select(.name==$n) | .id')
+  [ -z "$asset_id" ] && return 1
+  curl -sL -H "Authorization: token $GH_TOKEN" -H "Accept: application/octet-stream" \
+    "https://api.github.com/repos/$GH_CACHE_REPO/releases/assets/$asset_id" -o "$outpath"
+  [ -s "$outpath" ]
+}
+
+gh_cache_upload() {
+  local release_id="$1" filepath="$2" name="$3" existing_id
+  [ -z "$release_id" ] && { echo "no release id, skipping cache upload of $name"; return 1; }
+  existing_id=$(curl -s -H "Authorization: token $GH_TOKEN" \
+    "https://api.github.com/repos/$GH_CACHE_REPO/releases/$release_id/assets" \
+    | jq -r --arg n "$name" '.[] | select(.name==$n) | .id')
+  if [ -n "$existing_id" ]; then
+    curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
+      "https://api.github.com/repos/$GH_CACHE_REPO/releases/assets/$existing_id" > /dev/null
+  fi
+  curl -s -X POST -H "Authorization: token $GH_TOKEN" -H "Content-Type: application/gzip" \
+    --data-binary @"$filepath" \
+    "https://uploads.github.com/repos/$GH_CACHE_REPO/releases/$release_id/assets?name=$name" > /dev/null
+}
+
 echo "=== env.log: toolchain + GPU info ===" | tee env.log
 {
   echo "--- nvidia-smi ---"
@@ -36,7 +97,7 @@ echo "=== env.log: toolchain + GPU info ===" | tee env.log
 echo "=== Installing system deps ===" | tee -a env.log
 stdbuf -oL -eL apt-get update 2>&1 | tee -a env.log
 stdbuf -oL -eL apt-get install -y --no-install-recommends \
-  git build-essential pkg-config libssl-dev cmake clang ca-certificates wget \
+  git build-essential pkg-config libssl-dev cmake clang ca-certificates wget jq \
   mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg \
   libavutil-dev libavcodec-dev libavformat-dev libswscale-dev \
   libavdevice-dev libavfilter-dev libswresample-dev 2>&1 | tee -a env.log
@@ -45,19 +106,45 @@ echo "=== Installing CUDA runtime (plain ubuntu image has no CUDA libs by defaul
 {
   wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -O /tmp/cuda-keyring.deb \
     && dpkg -i /tmp/cuda-keyring.deb \
-    && apt-get update \
-    && ( apt-get install -y --no-install-recommends cuda-runtime \
-         || { echo "unversioned cuda-runtime not found, searching repo for a versioned package..."; \
-              CUDA_PKG=$(apt-cache search '^cuda-runtime-[0-9]' | sort -V | tail -1 | awk '{print $1}'); \
-              if [ -n "$CUDA_PKG" ]; then \
-                echo "Found: $CUDA_PKG"; \
-                apt-get install -y --no-install-recommends "$CUDA_PKG"; \
-              else \
-                echo "No cuda-runtime-* package found in repo either"; \
-                exit 1; \
-              fi; } ) \
-    || echo "CUDA runtime install failed — see above for the actual error"
+    && apt-get update
 } 2>&1 | tee -a env.log
+
+CUDA_CACHE_ASSET="cuda-runtime-debs.tar.gz"
+cuda_cache_hit=0
+if [ -n "$GH_TOKEN" ]; then
+  CUDA_RELEASE_ID=$(gh_cache_release_id)
+  if [ -n "$CUDA_RELEASE_ID" ] && gh_cache_download "$CUDA_RELEASE_ID" "$CUDA_CACHE_ASSET" /tmp/cuda-runtime-debs.tar.gz; then
+    echo "CUDA runtime cache HIT ($CUDA_CACHE_ASSET) — installing from cached .debs, skipping ~1.1GB download" | tee -a env.log
+    mkdir -p /tmp/cuda-cache && tar -xzf /tmp/cuda-runtime-debs.tar.gz -C /tmp/cuda-cache
+    { dpkg -i /tmp/cuda-cache/*.deb || apt-get install -f -y; } 2>&1 | tee -a env.log
+    cuda_cache_hit=1
+  fi
+fi
+if [ "$cuda_cache_hit" -eq 0 ]; then
+  echo "CUDA runtime cache MISS (or no GH_TOKEN) — installing via apt" | tee -a env.log
+  mkdir -p /tmp/cuda-cache
+  {
+    ( apt-get install -y --no-install-recommends --download-only -o "Dir::Cache::Archives=/tmp/cuda-cache" cuda-runtime \
+        || { echo "unversioned cuda-runtime not found, searching repo for a versioned package..."; \
+             CUDA_PKG=$(apt-cache search '^cuda-runtime-[0-9]' | sort -V | tail -1 | awk '{print $1}'); \
+             if [ -n "$CUDA_PKG" ]; then \
+               echo "Found: $CUDA_PKG"; \
+               apt-get install -y --no-install-recommends --download-only -o "Dir::Cache::Archives=/tmp/cuda-cache" "$CUDA_PKG"; \
+             else \
+               echo "No cuda-runtime-* package found in repo either"; \
+               exit 1; \
+             fi; } ) \
+      && { dpkg -i /tmp/cuda-cache/*.deb || apt-get install -f -y; } \
+      || echo "CUDA runtime install failed — see above for the actual error"
+  } 2>&1 | tee -a env.log
+  if [ -n "$GH_TOKEN" ] && ls /tmp/cuda-cache/*.deb >/dev/null 2>&1; then
+    echo "Caching downloaded CUDA runtime .debs for next run..." | tee -a env.log
+    tar -czf /tmp/cuda-runtime-debs.tar.gz -C /tmp/cuda-cache .
+    CUDA_RELEASE_ID=$(gh_cache_release_id_or_create)
+    gh_cache_upload "$CUDA_RELEASE_ID" /tmp/cuda-runtime-debs.tar.gz "$CUDA_CACHE_ASSET" 2>&1 | tee -a env.log \
+      || echo "CUDA runtime cache upload failed (non-fatal)" | tee -a env.log
+  fi
+fi
 
 echo "=== GPU/Vulkan diagnostic dump ===" | tee -a env.log
 {
@@ -148,22 +235,46 @@ if [ "$clone_rc" -ne 0 ]; then
   exit 1
 fi
 cd /tmp/reco-src
-# Hard wall-clock cap on the whole build (deps fetch + compile). Prior successful
-# builds completed in ~10 min; 20 min gives headroom for a normal run while still
-# aborting a stalled/slow-network host well before it burns an hour.
-timeout 1200 stdbuf -oL -eL cargo build --release -p reco-cli -v 2>&1 | tee -a /tmp/oev_run/build.log
-build_rc=${PIPESTATUS[0]}
-if [ "$build_rc" -eq 124 ]; then
-  echo "FATAL: cargo build timed out after 20min (likely slow-network host), see build.log" | tee -a /tmp/oev_run/build.log
-  exit 1
-elif [ "$build_rc" -ne 0 ]; then
-  echo "FATAL: cargo build failed (exit $build_rc), see build.log" | tee -a /tmp/oev_run/build.log
-  exit 1
-fi
+RECO_SHA=$(git rev-parse HEAD)
+echo "reco-project/video-stitcher HEAD: $RECO_SHA" | tee -a build.log
 RECO_BIN="/tmp/reco-src/target/release/reco"
-if [ ! -x "$RECO_BIN" ]; then
-  echo "FATAL: build reported success but binary not found at $RECO_BIN" | tee -a /tmp/oev_run/build.log
-  exit 1
+BIN_CACHE_ASSET="reco-cli-${RECO_SHA}.tar.gz"
+bin_cache_hit=0
+if [ -n "$GH_TOKEN" ]; then
+  BIN_RELEASE_ID=$(gh_cache_release_id)
+  if [ -n "$BIN_RELEASE_ID" ] && gh_cache_download "$BIN_RELEASE_ID" "$BIN_CACHE_ASSET" /tmp/reco-cli-cache.tar.gz; then
+    echo "reco-cli binary cache HIT ($BIN_CACHE_ASSET) — skipping cargo build" | tee -a build.log
+    mkdir -p "$(dirname "$RECO_BIN")"
+    tar -xzf /tmp/reco-cli-cache.tar.gz -C "$(dirname "$RECO_BIN")"
+    chmod +x "$RECO_BIN"
+    bin_cache_hit=1
+  fi
+fi
+if [ "$bin_cache_hit" -eq 0 ]; then
+  echo "reco-cli binary cache MISS ($BIN_CACHE_ASSET, or no GH_TOKEN) — building from source" | tee -a build.log
+  # Hard wall-clock cap on the whole build (deps fetch + compile). Prior successful
+  # builds completed in ~10 min; 20 min gives headroom for a normal run while still
+  # aborting a stalled/slow-network host well before it burns an hour.
+  timeout 1200 stdbuf -oL -eL cargo build --release -p reco-cli -v 2>&1 | tee -a /tmp/oev_run/build.log
+  build_rc=${PIPESTATUS[0]}
+  if [ "$build_rc" -eq 124 ]; then
+    echo "FATAL: cargo build timed out after 20min (likely slow-network host), see build.log" | tee -a /tmp/oev_run/build.log
+    exit 1
+  elif [ "$build_rc" -ne 0 ]; then
+    echo "FATAL: cargo build failed (exit $build_rc), see build.log" | tee -a /tmp/oev_run/build.log
+    exit 1
+  fi
+  if [ ! -x "$RECO_BIN" ]; then
+    echo "FATAL: build reported success but binary not found at $RECO_BIN" | tee -a /tmp/oev_run/build.log
+    exit 1
+  fi
+  if [ -n "$GH_TOKEN" ]; then
+    echo "Caching compiled reco-cli binary for next run..." | tee -a build.log
+    tar -czf /tmp/reco-cli-cache.tar.gz -C "$(dirname "$RECO_BIN")" "$(basename "$RECO_BIN")"
+    BIN_RELEASE_ID=$(gh_cache_release_id_or_create)
+    gh_cache_upload "$BIN_RELEASE_ID" /tmp/reco-cli-cache.tar.gz "$BIN_CACHE_ASSET" 2>&1 | tee -a build.log \
+      || echo "reco-cli binary cache upload failed (non-fatal)" | tee -a build.log
+  fi
 fi
 echo "Build OK: $RECO_BIN" | tee -a /tmp/oev_run/build.log
 echo "--- reco stitch --help (checking for a software/CPU fallback flag) ---" | tee -a /tmp/oev_run/build.log
