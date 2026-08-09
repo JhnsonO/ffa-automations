@@ -13,6 +13,41 @@ on:
         required: false
         default: 'trimmed_GX010173.MP4'
         type: string
+      yaw_span_deg:
+        description: 'Cylindrical yaw span in degrees (blank = reco default 180)'
+        required: false
+        default: ''
+        type: string
+      vertical_fov_deg:
+        description: 'Cylindrical vertical FOV in degrees (blank = reco default 70)'
+        required: false
+        default: ''
+        type: string
+      yaw_center_deg:
+        description: 'Cylindrical center yaw in degrees, can be negative (blank = reco default 0)'
+        required: false
+        default: ''
+        type: string
+      out_width:
+        description: 'Output width in pixels'
+        required: false
+        default: '7680'
+        type: string
+      out_height:
+        description: 'Output height in pixels'
+        required: false
+        default: '1080'
+        type: string
+      max_frames:
+        description: 'Cap output frame count for a short preview (blank = full clip)'
+        required: false
+        default: ''
+        type: string
+      run_label:
+        description: 'Short label appended to the Stitched/ Drive filename (e.g. ref146, wide155)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -260,6 +295,12 @@ jobs:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          YAW_SPAN_DEG: ${{ github.event.inputs.yaw_span_deg }}
+          VERTICAL_FOV_DEG: ${{ github.event.inputs.vertical_fov_deg }}
+          YAW_CENTER_DEG: ${{ github.event.inputs.yaw_center_deg }}
+          OUT_WIDTH: ${{ github.event.inputs.out_width }}
+          OUT_HEIGHT: ${{ github.event.inputs.out_height }}
+          MAX_FRAMES: ${{ github.event.inputs.max_frames }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
@@ -271,7 +312,7 @@ jobs:
           # withheld. Do not fail the step on non-zero exit — logs must
           # still be pulled back below even if a stage failed partway
           # through.
-          $SSH "GH_TOKEN='$GH_TOKEN' stdbuf -oL -eL /tmp/oev_run/oev_reco_stitch_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
+          $SSH "GH_TOKEN='$GH_TOKEN' YAW_SPAN_DEG='$YAW_SPAN_DEG' VERTICAL_FOV_DEG='$VERTICAL_FOV_DEG' YAW_CENTER_DEG='$YAW_CENTER_DEG' OUT_WIDTH='$OUT_WIDTH' OUT_HEIGHT='$OUT_HEIGHT' MAX_FRAMES='$MAX_FRAMES' stdbuf -oL -eL /tmp/oev_run/oev_reco_stitch_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
 
       - name: Pull back logs + outputs
         if: always()
@@ -302,6 +343,7 @@ jobs:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
           LEFT_CLIP: ${{ github.event.inputs.left_clip }}
+          RUN_LABEL: ${{ github.event.inputs.run_label }}
         run: |
           pip install -q google-auth google-auth-oauthlib google-api-python-client
           echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
@@ -342,7 +384,8 @@ jobs:
               stitched_id = folder['id']
 
           left_clip = os.environ['LEFT_CLIP']
-          out_name = f"stitched_{left_clip}"
+          run_label = os.environ.get('RUN_LABEL', '')
+          out_name = f"stitched_{left_clip}" + (f"_{run_label}" if run_label else "")
           media = MediaFileUpload('reco_artifacts/panorama.mp4', mimetype='video/mp4', resumable=True)
           uploaded = drive.files().create(
               body={'name': out_name, 'parents': [stitched_id]},
