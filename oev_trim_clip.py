@@ -78,52 +78,58 @@ def run():
         raise SystemExit(1)
 
     src_path = SCRATCH_DIR / SOURCE_FILENAME
-    log.info(f"Downloading {SOURCE_FILENAME} from Drive to {src_path}")
-    download_from_drive(drive_svc, src_meta["id"], src_path)
-
     trimmed_name = f"trimmed_{SOURCE_FILENAME}"
     trimmed_path = SCRATCH_DIR / trimmed_name
-    log.info(f"Trimming {SOURCE_FILENAME}: offset={OFFSET} duration={DURATION}")
 
-    # GoPro files carry a codec-less `tmcd` timecode track alongside the
-    # `gpmd` GPMF telemetry track. `-map 0` pulls both in, but the mp4 muxer
-    # can't write a container tag for tmcd's codec (`none`), which aborts
-    # the whole write. Exclude tmcd specifically (by tag, not by hardcoded
-    # index, since stream order can vary) while keeping gpmd for lens
-    # auto-detect.
-    probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "stream=index,codec_tag_string,codec_type",
-         "-of", "csv=p=0", str(src_path)],
-        capture_output=True, text=True,
-    )
-    excluded_indices = [
-        parts[0] for line in probe.stdout.strip().splitlines()
-        if len(parts := line.split(",")) >= 3 and parts[2] == "data" and parts[1] == "tmcd"
-    ]
-    if excluded_indices:
-        log.info(f"Excluding tmcd stream(s) from map: {excluded_indices}")
+    # Scratch files on /mnt/oevdata must be cleaned up even on failure —
+    # previously they were only unlinked after a full success, so any
+    # failed run (disk full, ffmpeg error, Drive error, etc.) orphaned
+    # its source/trimmed file and slowly filled the 40GB volume.
+    try:
+        log.info(f"Downloading {SOURCE_FILENAME} from Drive to {src_path}")
+        download_from_drive(drive_svc, src_meta["id"], src_path)
 
-    ffmpeg_cmd = ["ffmpeg", "-y", "-ss", OFFSET, "-i", str(src_path), "-t", DURATION, "-map", "0"]
-    for idx in excluded_indices:
-        ffmpeg_cmd += ["-map", f"-0:{idx}"]
-    ffmpeg_cmd += ["-c", "copy", "-copy_unknown", str(trimmed_path)]
+        log.info(f"Trimming {SOURCE_FILENAME}: offset={OFFSET} duration={DURATION}")
 
-    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        log.error(f"ffmpeg failed:\n{result.stderr[-2000:]}")
-        raise SystemExit(1)
+        # GoPro files carry a codec-less `tmcd` timecode track alongside the
+        # `gpmd` GPMF telemetry track. `-map 0` pulls both in, but the mp4 muxer
+        # can't write a container tag for tmcd's codec (`none`), which aborts
+        # the whole write. Exclude tmcd specifically (by tag, not by hardcoded
+        # index, since stream order can vary) while keeping gpmd for lens
+        # auto-detect.
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=index,codec_tag_string,codec_type",
+             "-of", "csv=p=0", str(src_path)],
+            capture_output=True, text=True,
+        )
+        excluded_indices = [
+            parts[0] for line in probe.stdout.strip().splitlines()
+            if len(parts := line.split(",")) >= 3 and parts[2] == "data" and parts[1] == "tmcd"
+        ]
+        if excluded_indices:
+            log.info(f"Excluding tmcd stream(s) from map: {excluded_indices}")
 
-    trimmed_folder_id = get_or_create_trimmed_folder(drive_svc)
-    log.info(f"Uploading {trimmed_name} to OEV Drive Trimmed/ folder")
-    media = gu.MediaFileUpload(str(trimmed_path), mimetype="video/mp4", resumable=True)
-    uploaded = drive_svc.files().create(
-        body={"name": trimmed_name, "parents": [trimmed_folder_id]},
-        media_body=media, fields="id", supportsAllDrives=True,
-    ).execute()
-    log.info(f"Done: {trimmed_name} -> https://drive.google.com/file/d/{uploaded['id']}")
+        ffmpeg_cmd = ["ffmpeg", "-y", "-ss", OFFSET, "-i", str(src_path), "-t", DURATION, "-map", "0"]
+        for idx in excluded_indices:
+            ffmpeg_cmd += ["-map", f"-0:{idx}"]
+        ffmpeg_cmd += ["-c", "copy", "-copy_unknown", str(trimmed_path)]
 
-    src_path.unlink(missing_ok=True)
-    trimmed_path.unlink(missing_ok=True)
+        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            log.error(f"ffmpeg failed:\n{result.stderr[-2000:]}")
+            raise SystemExit(1)
+
+        trimmed_folder_id = get_or_create_trimmed_folder(drive_svc)
+        log.info(f"Uploading {trimmed_name} to OEV Drive Trimmed/ folder")
+        media = gu.MediaFileUpload(str(trimmed_path), mimetype="video/mp4", resumable=True)
+        uploaded = drive_svc.files().create(
+            body={"name": trimmed_name, "parents": [trimmed_folder_id]},
+            media_body=media, fields="id", supportsAllDrives=True,
+        ).execute()
+        log.info(f"Done: {trimmed_name} -> https://drive.google.com/file/d/{uploaded['id']}")
+    finally:
+        src_path.unlink(missing_ok=True)
+        trimmed_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
