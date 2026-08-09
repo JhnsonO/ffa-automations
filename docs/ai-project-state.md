@@ -430,10 +430,24 @@ Diff verified against `main` before merge: exactly 1 file, 32 additions, 0 delet
 - Script now `curl`s that profile directly from `raw.githubusercontent.com` into `/tmp/oev_run/hero10_wide_16by9.json` on the Vast.ai host at calibrate time (no binary/JSON asset added to the repo — smallest safe diff), then passes it via `--left-profile`/`--right-profile` to `reco calibrate` (same profile both sides — same camera/mode both cameras).
 - **UNVERIFIED** — needs a stitch run against the already-trimmed pair (`trimmed_GX010197.MP4`/`trimmed_GX010173.MP4`) to confirm calibrate picks up the pinned profile (log should show no "falling back to GENERIC" warning) and that the seam/edges in `panorama.mp4` look correct.
 
+**Verification run `31323968907`: DISPATCHED — UNVERIFIED at time of build-cache work below.** https://github.com/JhnsonO/ffa-automations/actions/runs/31323968907 — head commit `5710bff` (pinned lens profile, before the cache changes below). Inputs: `left_clip=trimmed_GX010197.MP4`, `right_clip=trimmed_GX010173.MP4`. Was still `in_progress` on the CUDA-runtime apt-install step (~20+ min in — same step now cached, see below) last checked.
+
+## Build cache (CUDA runtime + reco-cli binary) — 9 Aug 2026
+
+**Implemented @ `b635545` (`oev_reco_stitch_remote.sh`) + `4a17c6d` (`.github/workflows/oev-reco-stitch.yml`), Claude-authored direct build, explicit routing override (user: "Do it directly"). Diff verified: 139/28 and 9/4 lines respectively, both purely additive/scoped to the intended change.**
+
+Two things now cached across runs in a GitHub Release (`JhnsonO/ffa-automations`, tag `oev-build-cache`, auto-created on first upload):
+1. **Generic CUDA runtime `.deb`s (~1.1GB, `cuda-runtime-debs.tar.gz`)** — this bundle is pinned to whatever version the script resolves (`cuda-runtime`, or the latest `cuda-runtime-N` found in NVIDIA's repo), **not** to the host's GPU driver, so it's identical run-to-run until NVIDIA ships a new CUDA release. Confirmed via the two apt-get lines: this is a separate install from the host-specific `libnvidia-gl-<DRIVER_VER>`/`libnvidia-compute-<DRIVER_VER>` extraction a few steps later, which **remains uncached and dynamic** per prior explicit decision (baking in a fixed driver version previously caused the exact bug class that took 8+ debug cycles to fix).
+2. **Compiled `reco-cli` binary**, keyed by the exact git SHA of `reco-project/video-stitcher` HEAD at clone time (`reco-cli-<sha>.tar.gz`) — a source change naturally produces a new cache key, so a stale binary can never be served silently.
+
+Mechanics: plain `curl` + `jq` against the GitHub REST API (release lookup/create, asset list/download/delete-then-upload) — no `gh` CLI needed. `GH_TOKEN` (mapped from `secrets.GITHUB_TOKEN` in the workflow, `contents: write` permission now granted at the workflow level) is forwarded into the SSH session; every caching code path is a no-op if `GH_TOKEN` is unset, so the script degrades gracefully to always-build/always-install if the token is ever missing.
+
+**UNVERIFIED** — no run has exercised this code yet. Cache will be empty on the first run after this change (guaranteed miss → builds + populates cache normally), so the real test is whether the **second** run after this shows `cache HIT` in `env.log`/`build.log` and skips the download/build.
+
 **Next (fresh chat — mandatory bootstrap: read `CLAUDE.md` + this file first):**
-1. Dispatch `oev-reco-stitch.yml` on `trimmed_GX010197.MP4`/`trimmed_GX010173.MP4` to verify the `5710bff` pinned-profile fix. Check `calibrate.log` for no Mobius-fallback warning, then Johnson visual check on `panorama.mp4`.
-2. Once seam/edges look correct: Johnson visual sign-off on `GX010197`/`GX010173`, then repeat on `GX010198`/`GX010175` as a repeatability check = M1 gate cleared.
-3. Confirm whether HyperSmooth was on during filming (Johnson to check) — OFF required per the tool's own doc comment.
-4. When Johnson gives the go: implement `reco-cli` binary caching (GitHub Release or similar, keyed by git SHA of `reco-project/video-stitcher`) to skip the ~10 min build on cache hit. Do NOT cache CUDA runtime/driver libraries — keep those dynamic per-host.
+1. Dispatch `oev-reco-stitch.yml` on `trimmed_GX010197.MP4`/`trimmed_GX010173.MP4` (now carries both the `5710bff` pinned-profile fix and the `b635545`/`4a17c6d` build cache). Check `calibrate.log` for no Mobius-fallback warning, then Johnson visual check on `panorama.mp4` — this is the real verification of the lens-profile fix, still outstanding from the previous session.
+2. On this same run, confirm `env.log`/`build.log` show cache MISS + successful population (first run — expected). Dispatch a second run afterward to confirm cache HIT and a shorter run time.
+3. Once seam/edges look correct: Johnson visual sign-off on `GX010197`/`GX010173`, then repeat on `GX010198`/`GX010175` as a repeatability check = M1 gate cleared.
+4. Confirm whether HyperSmooth was on during filming (Johnson to check) — OFF required per the tool's own doc comment.
 5. Deferred, lower priority: real-GPU Vulkan rendering still broken (`libnvidia-gpucomp.so` version mismatch, 580.178.04 vs host 580.159.03) — works but slower via CPU fallback, not a blocker for M1.
 6. Worth a quick check sometime: does `reco stitch` have an output-resolution flag, or is 1080p output a hard ceiling regardless of 4K input?
