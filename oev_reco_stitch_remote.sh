@@ -312,8 +312,19 @@ fi
 echo "Calibrate OK: match.json written" | tee -a calibrate.log
 
 echo "=== stitch.log: reco stitch ===" | tee -a stitch.log
-stdbuf -oL -eL "$RECO_BIN" stitch left.mp4 right.mp4 -c match.json -o panorama.mp4 \
-  --width 7680 --height 1080 --no-zero-copy --projection cylindrical-stereo 2>&1 | tee -a stitch.log
+# Cylindrical FOV/resolution knobs are optional env vars (set by
+# oev-reco-stitch.yml workflow_dispatch inputs); blank = reco-cli default
+# for that flag. See docs/ai-project-state.md for the M1 gap-artifact
+# finding that motivated exposing these instead of hardcoding 7680x1080.
+STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o panorama.mp4
+  --width "${OUT_WIDTH:-7680}" --height "${OUT_HEIGHT:-1080}"
+  --no-zero-copy --projection cylindrical-stereo)
+[ -n "${YAW_SPAN_DEG:-}" ] && STITCH_ARGS+=(--yaw-span-deg "$YAW_SPAN_DEG")
+[ -n "${VERTICAL_FOV_DEG:-}" ] && STITCH_ARGS+=(--vertical-fov-deg "$VERTICAL_FOV_DEG")
+[ -n "${YAW_CENTER_DEG:-}" ] && STITCH_ARGS+=(--yaw-center-deg "$YAW_CENTER_DEG")
+[ -n "${MAX_FRAMES:-}" ] && STITCH_ARGS+=(--max-frames "$MAX_FRAMES")
+echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch.log
+stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
 stitch_rc=${PIPESTATUS[0]}
 if [ "$stitch_rc" -ne 0 ]; then
   echo "FATAL: reco stitch failed (exit $stitch_rc), see stitch.log (match.json is still valid, calibration succeeded)" | tee -a stitch.log
