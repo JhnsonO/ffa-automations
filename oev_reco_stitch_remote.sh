@@ -59,6 +59,38 @@ echo "=== Installing CUDA runtime (plain ubuntu image has no CUDA libs by defaul
     || echo "CUDA runtime install failed — see above for the actual error"
 } 2>&1 | tee -a env.log
 
+echo "=== GPU/Vulkan diagnostic dump ===" | tee -a env.log
+{
+  echo "--- NVIDIA env vars seen by container init (PID 1) ---"
+  cat /proc/1/environ | tr '\0' '\n' | grep -i NVIDIA || echo "no NVIDIA env vars found in container init env"
+  echo "--- /dev/nvidia* device nodes ---"
+  ls -la /dev/nvidia* 2>&1 || echo "no /dev/nvidia* device nodes found"
+  echo "--- Vulkan ICD manifest dirs ---"
+  ls -la /usr/share/vulkan/icd.d/ /etc/vulkan/icd.d/ 2>&1 || echo "no vulkan icd.d dirs found"
+  echo "--- libGLX_nvidia.so search ---"
+  find / -iname "libGLX_nvidia.so*" 2>/dev/null || echo "libGLX_nvidia.so not found anywhere on filesystem"
+} 2>&1 | tee -a env.log
+
+echo "=== Installing matching NVIDIA GL/Vulkan userspace libs (candidate fix for llvmpipe fallback) ===" | tee -a env.log
+{
+  GL_PKG=$(apt-cache search '^libnvidia-gl-[0-9]' | sort -V | tail -1 | awk '{print $1}')
+  if [ -n "$GL_PKG" ]; then
+    echo "Found: $GL_PKG"
+    apt-get install -y --no-install-recommends "$GL_PKG" \
+      && echo "Installed $GL_PKG" \
+      || echo "libnvidia-gl install failed — see above for the actual error"
+    DECODE_VER=$(echo "$GL_PKG" | grep -oE '[0-9]+$')
+    if [ -n "$DECODE_VER" ]; then
+      DECODE_PKG="libnvidia-decode-${DECODE_VER}"
+      apt-get install -y --no-install-recommends "$DECODE_PKG" \
+        && echo "Installed $DECODE_PKG" \
+        || echo "no matching $DECODE_PKG available, or install failed — see above"
+    fi
+  else
+    echo "No libnvidia-gl-* package found in repo — cannot install matching GL/Vulkan userspace libs"
+  fi
+} 2>&1 | tee -a env.log
+
 echo "=== Installing Rust toolchain ===" | tee -a env.log
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | stdbuf -oL -eL sh -s -- -y --default-toolchain stable 2>&1 | tee -a env.log
 source "$HOME/.cargo/env"
