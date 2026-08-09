@@ -136,6 +136,11 @@ source "$HOME/.cargo/env"
 } 2>&1 | tee -a env.log
 
 echo "=== build.log: cloning + building reco-cli ===" | tee build.log
+# Fail-fast network config: a genuinely bad host (slow route to crates.io/GitHub)
+# should abort quickly rather than burn 30-60+ min retrying — cheaper to let the
+# workflow redispatch onto a different Vast.ai offer than to wait it out here.
+export CARGO_NET_RETRY=2
+export CARGO_HTTP_TIMEOUT=15
 git clone --depth 1 https://github.com/reco-project/video-stitcher.git /tmp/reco-src 2>&1 | tee -a build.log
 clone_rc=${PIPESTATUS[0]}
 if [ "$clone_rc" -ne 0 ]; then
@@ -143,9 +148,15 @@ if [ "$clone_rc" -ne 0 ]; then
   exit 1
 fi
 cd /tmp/reco-src
-stdbuf -oL -eL cargo build --release -p reco-cli -v 2>&1 | tee -a /tmp/oev_run/build.log
+# Hard wall-clock cap on the whole build (deps fetch + compile). Prior successful
+# builds completed in ~10 min; 20 min gives headroom for a normal run while still
+# aborting a stalled/slow-network host well before it burns an hour.
+timeout 1200 stdbuf -oL -eL cargo build --release -p reco-cli -v 2>&1 | tee -a /tmp/oev_run/build.log
 build_rc=${PIPESTATUS[0]}
-if [ "$build_rc" -ne 0 ]; then
+if [ "$build_rc" -eq 124 ]; then
+  echo "FATAL: cargo build timed out after 20min (likely slow-network host), see build.log" | tee -a /tmp/oev_run/build.log
+  exit 1
+elif [ "$build_rc" -ne 0 ]; then
   echo "FATAL: cargo build failed (exit $build_rc), see build.log" | tee -a /tmp/oev_run/build.log
   exit 1
 fi
