@@ -85,7 +85,8 @@ def run():
     trimmed_path = SCRATCH_DIR / trimmed_name
     log.info(f"Trimming {SOURCE_FILENAME}: offset={OFFSET} duration={DURATION}")
     result = subprocess.run(
-        ["ffmpeg", "-y", "-ss", OFFSET, "-i", str(src_path), "-t", DURATION, "-c", "copy", str(trimmed_path)],
+        ["ffmpeg", "-y", "-ss", OFFSET, "-i", str(src_path), "-t", DURATION,
+         "-map", "0", "-c", "copy", "-copy_unknown", str(trimmed_path)],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
