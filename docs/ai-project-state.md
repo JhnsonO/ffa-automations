@@ -380,3 +380,36 @@ Diff verified against `main` before merge: exactly 1 file, 32 additions, 0 delet
 3. Once seam/edges look correct: Johnson visual sign-off on `GX010197`/`GX010173`, then repeat on second pair (`GX010198`/`GX010175`) as a repeatability check = M1 gate cleared.
 4. Confirm whether HyperSmooth was on during filming (Johnson to check) — OFF is required per the tool's own doc comment.
 5. Deferred, lower priority: real-GPU Vulkan rendering is still broken (stuck on `llvmpipe`/CPU) — works but slower. Investigate only if speed becomes a real constraint; not a blocker for M1.
+
+---
+
+## Session update — 9 Aug 2026
+
+**Re-trim of GX010197/GX010173 (to exercise the `85aaf03` GPMF fix) surfaced a new bug: `-map 0` also pulls in the GoPro `tmcd` timecode track (`codec_type: data`, `codec_name: none`), which the mp4 muxer can't write a tag for — aborts the whole header write before `gpmd` is ever copied.** Confirmed via ffmpeg stderr on runs `31312612675`/`31314072064`: `Could not find tag for codec none in stream #2, codec not currently supported in container`.
+
+**Fix attempt 1 (`46acf02`, merged): CSV-based tmcd exclusion — BROKEN, confirmed by test.** Parsed `ffprobe -of csv=p=0` output by column position to detect and exclude the tmcd stream. Re-run (`31314072064`) showed `excluded_indices` stayed empty (no "Excluding tmcd" log line, ffmpeg still mapped all 4 streams, same failure as before). Root cause of the parse failure not fully diagnosed — moved straight to a more robust approach rather than debugging CSV parsing further.
+
+**Fix attempt 2 (`3a7f2d8`, merged): JSON-based tmcd exclusion — NOT YET VERIFIED.** Switched `ffprobe` to `-of json` + `json.loads()` keyed lookup (`codec_type`/`codec_tag_string`), eliminating column-order ambiguity. Also now logs ffprobe failures/non-JSON output explicitly instead of silently falling through to zero exclusions. No run has exercised this code yet.
+
+**Separate, unrelated issue found and fixed: `/mnt/oevdata` (40GB scratch volume) filled up (27GB used, 11GB free) with orphaned source downloads from failed runs**, since `oev_trim_clip.py` only unlinked `src_path`/`trimmed_path` on full success. This caused one run (`31312611858`) to fail with `OSError: No space left on device` during download — unrelated to the tmcd bug.
+- Added `.github/workflows/vultr-oevdata-cleanup.yml` (manual dispatch, clears `*.MP4` at `/mnt/oevdata` root) — run once (`31313979394`), confirmed 27GB → 24KB used.
+- `oev_trim_clip.py` (part of `46acf02`): wrapped download/trim/upload in `try/finally` so scratch files are cleaned up on any failure going forward, not just success.
+
+**Run history this session (chronological):**
+- `31312611858` (GX010197, pre-fix code) — failure, disk full (stale infra issue, not code)
+- `31312612675` (GX010173, pre-fix code) — failure, tmcd bug (this is what surfaced the bug)
+- `31313455134`/`31313455968` — cancelled (superseded by cleanup reordering)
+- `31313979394` (cleanup workflow) — success, freed 27GB
+- `31314072064` (GX010197, `46acf02` CSV-fix) — failure, tmcd bug persisted (CSV parsing didn't detect the stream)
+- `31314072874` (GX010173, `46acf02` CSV-fix) — status not confirmed at session end (was `in_progress`, not polled further)
+
+**Debug budget (3 cycles) reached this session — stopping here per protocol.**
+
+**Next (fresh chat — mandatory bootstrap: read `CLAUDE.md` + this file first):**
+1. Re-run `oev-trim-clip.yml` on `GX010197`/`GX010173` against `3a7f2d8` (JSON-based tmcd detection). Check the job log for either "Excluding tmcd stream(s) from map: [...]" or "No tmcd stream detected to exclude" — this tells us definitively whether detection now works, without needing to reverse-engineer ffmpeg's own error output.
+2. If detection still fails: the log will now show ffprobe's actual output/error (added in `3a7f2d8`), which should make the real cause obvious — check that before writing another patch blind.
+3. If trim succeeds: re-run `oev-reco-stitch.yml` on the freshly-trimmed pair. Check `calibrate.log` — does lens auto-detect now find a real GoPro Hero 10 profile instead of falling back to Mobius?
+4. If auto-detect still fails after a clean trim: fall back to manual `--left-profile`/`--right-profile` (Hero 10, Wide mode) — need to find the exact profile filename in the embedded lens database (`reco calibrate --help` or a lens-listing command, not yet checked).
+5. Once seam/edges look correct: Johnson visual sign-off on `GX010197`/`GX010173`, then repeat on `GX010198`/`GX010175` as a repeatability check = M1 gate cleared.
+6. Confirm whether HyperSmooth was on during filming (Johnson to check) — OFF required per the tool's own doc comment.
+7. Deferred, lower priority: real-GPU Vulkan rendering still broken (stuck on `llvmpipe`/CPU) — works but slower, not a blocker for M1.
