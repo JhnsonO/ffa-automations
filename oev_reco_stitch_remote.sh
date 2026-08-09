@@ -228,7 +228,7 @@ echo "=== build.log: cloning + building reco-cli ===" | tee build.log
 # workflow redispatch onto a different Vast.ai offer than to wait it out here.
 export CARGO_NET_RETRY=2
 export CARGO_HTTP_TIMEOUT=15
-git clone --depth 1 https://github.com/reco-project/video-stitcher.git /tmp/reco-src 2>&1 | tee -a build.log
+git clone --depth 1 https://github.com/JhnsonO/video-stitcher.git /tmp/reco-src 2>&1 | tee -a build.log
 clone_rc=${PIPESTATUS[0]}
 if [ "$clone_rc" -ne 0 ]; then
   echo "FATAL: git clone failed (exit $clone_rc), see build.log" | tee -a build.log
@@ -236,7 +236,7 @@ if [ "$clone_rc" -ne 0 ]; then
 fi
 cd /tmp/reco-src
 RECO_SHA=$(git rev-parse HEAD)
-echo "reco-project/video-stitcher HEAD: $RECO_SHA" | tee -a build.log
+echo "JhnsonO/video-stitcher HEAD: $RECO_SHA" | tee -a build.log
 RECO_BIN="/tmp/reco-src/target/release/reco"
 BIN_CACHE_ASSET="reco-cli-${RECO_SHA}.tar.gz"
 bin_cache_hit=0
@@ -313,7 +313,7 @@ echo "Calibrate OK: match.json written" | tee -a calibrate.log
 
 echo "=== stitch.log: reco stitch ===" | tee -a stitch.log
 stdbuf -oL -eL "$RECO_BIN" stitch left.mp4 right.mp4 -c match.json -o panorama.mp4 \
-  --width 7680 --height 1080 --no-zero-copy 2>&1 | tee -a stitch.log
+  --width 7680 --height 1080 --no-zero-copy --projection cylindrical-stereo 2>&1 | tee -a stitch.log
 stitch_rc=${PIPESTATUS[0]}
 if [ "$stitch_rc" -ne 0 ]; then
   echo "FATAL: reco stitch failed (exit $stitch_rc), see stitch.log (match.json is still valid, calibration succeeded)" | tee -a stitch.log
