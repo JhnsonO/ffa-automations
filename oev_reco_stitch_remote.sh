@@ -171,7 +171,24 @@ echo "--- reco stitch --help (checking for a software/CPU fallback flag) ---" | 
 cd /tmp/oev_run
 
 echo "=== calibrate.log: reco calibrate ===" | tee calibrate.log
-stdbuf -oL -eL "$RECO_BIN" calibrate left.mp4 right.mp4 -o match.json 2>&1 | tee -a calibrate.log
+# Lens auto-detect matches by camera-model string from GPMF telemetry, which
+# GoPro doesn't always expose in a form reco recognizes; when it can't match,
+# it silently falls back to a generic Mobius 4K profile with the wrong
+# distortion model (confirmed via calibrate.log on run 31322462730 -
+# see docs/ai-project-state.md). Both cameras are GoPro Hero 10, Wide mode,
+# so pin the correct Gyroflow profile explicitly instead of relying on
+# auto-detect.
+LENS_PROFILE_URL="https://raw.githubusercontent.com/gyroflow/lens_profiles/main/GoPro/GoPro_HERO10%20Black_Wide_16by9.json"
+echo "Downloading lens profile: $LENS_PROFILE_URL" | tee -a calibrate.log
+curl -fsSL "$LENS_PROFILE_URL" -o hero10_wide_16by9.json
+if [ ! -s hero10_wide_16by9.json ]; then
+  echo "FATAL: failed to download lens profile from $LENS_PROFILE_URL" | tee -a calibrate.log
+  exit 2
+fi
+stdbuf -oL -eL "$RECO_BIN" calibrate left.mp4 right.mp4 \
+  --left-profile hero10_wide_16by9.json \
+  --right-profile hero10_wide_16by9.json \
+  -o match.json 2>&1 | tee -a calibrate.log
 calibrate_rc=${PIPESTATUS[0]}
 if [ "$calibrate_rc" -ne 0 ]; then
   echo "FATAL: reco calibrate failed (exit $calibrate_rc), see calibrate.log" | tee -a calibrate.log
