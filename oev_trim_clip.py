@@ -7,6 +7,7 @@ Reuses Drive auth from gopro_uploader.py (same OAuth token, drive scope).
 """
 
 import io
+import json
 import logging
 import os
 import subprocess
@@ -99,15 +100,26 @@ def run():
         # auto-detect.
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "stream=index,codec_tag_string,codec_type",
-             "-of", "csv=p=0", str(src_path)],
+             "-of", "json", str(src_path)],
             capture_output=True, text=True,
         )
-        excluded_indices = [
-            parts[0] for line in probe.stdout.strip().splitlines()
-            if len(parts := line.split(",")) >= 3 and parts[2] == "data" and parts[1] == "tmcd"
-        ]
+        excluded_indices = []
+        if probe.returncode != 0:
+            log.warning(f"ffprobe failed (rc={probe.returncode}), proceeding without tmcd exclusion:\n{probe.stderr[-500:]}")
+        else:
+            try:
+                streams = json.loads(probe.stdout).get("streams", [])
+            except json.JSONDecodeError:
+                log.warning(f"ffprobe returned non-JSON output, proceeding without tmcd exclusion:\n{probe.stdout[:500]}")
+                streams = []
+            excluded_indices = [
+                str(s["index"]) for s in streams
+                if s.get("codec_type") == "data" and s.get("codec_tag_string") == "tmcd"
+            ]
         if excluded_indices:
             log.info(f"Excluding tmcd stream(s) from map: {excluded_indices}")
+        else:
+            log.info("No tmcd stream detected to exclude")
 
         ffmpeg_cmd = ["ffmpeg", "-y", "-ss", OFFSET, "-i", str(src_path), "-t", DURATION, "-map", "0"]
         for idx in excluded_indices:
