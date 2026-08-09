@@ -311,15 +311,9 @@ if [ ! -f match.json ]; then
 fi
 echo "Calibrate OK: match.json written" | tee -a calibrate.log
 
-echo "=== Writing trajectory CSV (fixed zero-wedge viewport) ===" | tee -a stitch.log
-cat > trajectory.csv << 'EOF'
-frame,yaw,pitch,fov
-0,0.0,0.0,58
-EOF
-
 echo "=== stitch.log: reco stitch ===" | tee -a stitch.log
 stdbuf -oL -eL "$RECO_BIN" stitch left.mp4 right.mp4 -c match.json -o panorama.mp4 \
-  --trajectory trajectory.csv --width 3840 --height 1440 --no-zero-copy 2>&1 | tee -a stitch.log
+  --width 7680 --height 1080 --no-zero-copy 2>&1 | tee -a stitch.log
 stitch_rc=${PIPESTATUS[0]}
 if [ "$stitch_rc" -ne 0 ]; then
   echo "FATAL: reco stitch failed (exit $stitch_rc), see stitch.log (match.json is still valid, calibration succeeded)" | tee -a stitch.log
