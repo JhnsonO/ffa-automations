@@ -121,7 +121,10 @@ jobs:
                       'onstart': '',
                       'runtype': 'ssh',
                       'ssh_key': pub_key,
-                      'env': {},
+                      'env': {
+                          'NVIDIA_VISIBLE_DEVICES': 'all',
+                          'NVIDIA_DRIVER_CAPABILITIES': 'all',
+                      },
                   })
               except Exception as exc:
                   print(f'Launch request failed for offer {offer_id}: {exc}')
