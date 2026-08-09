@@ -15,7 +15,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   reco-stitch:
@@ -259,14 +259,19 @@ jobs:
         env:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           $SCP oev_reco_stitch_remote.sh root@$IP:/tmp/oev_run/
           $SSH "chmod +x /tmp/oev_run/oev_reco_stitch_remote.sh"
-          # Do not fail the step on non-zero exit — logs must still be
-          # pulled back below even if a stage failed partway through.
-          $SSH "stdbuf -oL -eL /tmp/oev_run/oev_reco_stitch_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
+          # GH_TOKEN enables the reco-cli binary + CUDA runtime caching in
+          # the remote script (GitHub Release blob cache); it's a no-op
+          # there if unset, so this stays safe even if the token is ever
+          # withheld. Do not fail the step on non-zero exit — logs must
+          # still be pulled back below even if a stage failed partway
+          # through.
+          $SSH "GH_TOKEN='$GH_TOKEN' stdbuf -oL -eL /tmp/oev_run/oev_reco_stitch_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
 
       - name: Pull back logs + outputs
         if: always()
