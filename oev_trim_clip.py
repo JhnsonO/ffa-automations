@@ -84,11 +84,31 @@ def run():
     trimmed_name = f"trimmed_{SOURCE_FILENAME}"
     trimmed_path = SCRATCH_DIR / trimmed_name
     log.info(f"Trimming {SOURCE_FILENAME}: offset={OFFSET} duration={DURATION}")
-    result = subprocess.run(
-        ["ffmpeg", "-y", "-ss", OFFSET, "-i", str(src_path), "-t", DURATION,
-         "-map", "0", "-c", "copy", "-copy_unknown", str(trimmed_path)],
+
+    # GoPro files carry a codec-less `tmcd` timecode track alongside the
+    # `gpmd` GPMF telemetry track. `-map 0` pulls both in, but the mp4 muxer
+    # can't write a container tag for tmcd's codec (`none`), which aborts
+    # the whole write. Exclude tmcd specifically (by tag, not by hardcoded
+    # index, since stream order can vary) while keeping gpmd for lens
+    # auto-detect.
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream=index,codec_tag_string,codec_type",
+         "-of", "csv=p=0", str(src_path)],
         capture_output=True, text=True,
     )
+    excluded_indices = [
+        parts[0] for line in probe.stdout.strip().splitlines()
+        if len(parts := line.split(",")) >= 3 and parts[2] == "data" and parts[1] == "tmcd"
+    ]
+    if excluded_indices:
+        log.info(f"Excluding tmcd stream(s) from map: {excluded_indices}")
+
+    ffmpeg_cmd = ["ffmpeg", "-y", "-ss", OFFSET, "-i", str(src_path), "-t", DURATION, "-map", "0"]
+    for idx in excluded_indices:
+        ffmpeg_cmd += ["-map", f"-0:{idx}"]
+    ffmpeg_cmd += ["-c", "copy", "-copy_unknown", str(trimmed_path)]
+
+    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
     if result.returncode != 0:
         log.error(f"ffmpeg failed:\n{result.stderr[-2000:]}")
         raise SystemExit(1)
