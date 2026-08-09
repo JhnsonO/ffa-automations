@@ -78,23 +78,49 @@ echo "=== Refreshing dynamic linker cache (Vast bind-mounts NVIDIA libs post-boo
   vulkaninfo --summary 2>&1 | head -30 || echo "vulkaninfo still failed after ldconfig"
 } 2>&1 | tee -a env.log
 
-echo "=== Installing matching NVIDIA GL/Vulkan userspace libs (candidate fix for llvmpipe fallback) ===" | tee -a env.log
+echo "=== Diagnosing + fixing missing NVIDIA driver helper libraries ===" | tee -a env.log
 {
-  GL_PKG=$(apt-cache search '^libnvidia-gl-[0-9]' | sort -V | tail -1 | awk '{print $1}')
-  if [ -n "$GL_PKG" ]; then
-    echo "Found: $GL_PKG"
-    apt-get install -y --no-install-recommends "$GL_PKG" \
-      && echo "Installed $GL_PKG" \
-      || echo "libnvidia-gl install failed — see above for the actual error"
-    DECODE_VER=$(echo "$GL_PKG" | grep -oE '[0-9]+$')
-    if [ -n "$DECODE_VER" ]; then
-      DECODE_PKG="libnvidia-decode-${DECODE_VER}"
-      apt-get install -y --no-install-recommends "$DECODE_PKG" \
-        && echo "Installed $DECODE_PKG" \
-        || echo "no matching $DECODE_PKG available, or install failed — see above"
+  # Vast bind-mounts libGLX_nvidia.so directly rather than using the
+  # nvidia-container-toolkit hook (confirmed: NVIDIA_VISIBLE_DEVICES reads
+  # back as 'void' inside the container). The earlier apt-get-install
+  # approach failed with dpkg "Invalid cross-device link" errors — dpkg's
+  # atomic-replace-via-hardlink logic doesn't work across Vast's bind
+  # mounts. apt-get download + dpkg-deb -x sidesteps dpkg's install
+  # machinery entirely and just extracts the .deb's file contents.
+  NVIDIA_LIB=$(find /usr/lib/x86_64-linux-gnu /usr/lib -iname "libGLX_nvidia.so.*.*.*" 2>/dev/null | head -1)
+  echo "NVIDIA_LIB=${NVIDIA_LIB:-not found}"
+  if [ -n "$NVIDIA_LIB" ]; then
+    echo "--- ldd on $NVIDIA_LIB (before fix) ---"
+    ldd "$NVIDIA_LIB" 2>&1 || echo "ldd failed to run"
+    DRIVER_VER=$(basename "$NVIDIA_LIB" | grep -oE '[0-9]+' | head -1)
+    echo "Detected driver series: ${DRIVER_VER:-unknown}"
+    if [ -n "$DRIVER_VER" ]; then
+      mkdir -p /tmp/nvidia-extract && cd /tmp/nvidia-extract
+      for PKG in "libnvidia-gl-${DRIVER_VER}" "libnvidia-compute-${DRIVER_VER}"; do
+        echo "Downloading $PKG..."
+        apt-get download "$PKG" 2>&1 || echo "$PKG not available or download failed"
+      done
+      echo "Downloaded $(ls -1 *.deb 2>/dev/null | wc -l) .deb file(s)"
+      for DEB in *.deb; do
+        [ -f "$DEB" ] || continue
+        echo "Extracting $DEB via dpkg-deb -x..."
+        dpkg-deb -x "$DEB" /tmp/nvidia-extract/root 2>&1 || echo "extraction failed for $DEB"
+      done
+      if [ -d /tmp/nvidia-extract/root/usr/lib/x86_64-linux-gnu ]; then
+        echo "Copying extracted .so files into /usr/lib/x86_64-linux-gnu/ ..."
+        cp -av /tmp/nvidia-extract/root/usr/lib/x86_64-linux-gnu/*.so* /usr/lib/x86_64-linux-gnu/ 2>&1 || echo "copy step found nothing to copy"
+      else
+        echo "No extracted library directory found — nothing to copy"
+      fi
+      cd /tmp/oev_run
+      ldconfig
+      echo "--- ldd on $NVIDIA_LIB (after fix) ---"
+      ldd "$NVIDIA_LIB" 2>&1 || echo "ldd failed to run"
+      echo "--- vulkaninfo summary (after manual extract) ---"
+      vulkaninfo --summary 2>&1 | head -30 || echo "vulkaninfo still failed after manual extract"
     fi
   else
-    echo "No libnvidia-gl-* package found in repo — cannot install matching GL/Vulkan userspace libs"
+    echo "No libGLX_nvidia.so.<version> file found — cannot diagnose further"
   fi
 } 2>&1 | tee -a env.log
 
@@ -129,6 +155,8 @@ if [ ! -x "$RECO_BIN" ]; then
   exit 1
 fi
 echo "Build OK: $RECO_BIN" | tee -a /tmp/oev_run/build.log
+echo "--- reco stitch --help (checking for a software/CPU fallback flag) ---" | tee -a /tmp/oev_run/build.log
+"$RECO_BIN" stitch --help 2>&1 | tee -a /tmp/oev_run/build.log || echo "reco stitch --help failed" | tee -a /tmp/oev_run/build.log
 cd /tmp/oev_run
 
 echo "=== calibrate.log: reco calibrate ===" | tee calibrate.log
