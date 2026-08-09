@@ -405,11 +405,30 @@ Diff verified against `main` before merge: exactly 1 file, 32 additions, 0 delet
 
 **Debug budget (3 cycles) reached this session — stopping here per protocol.**
 
+---
+
+## Session update — 9 Aug 2026, later session
+
+**JSON-based tmcd fix (`3a7f2d8`) CONFIRMED WORKING.** Re-ran `oev-trim-clip.yml` against `main` (head `9cb2ecc` at dispatch time): runs `31314897953`, `31314901933`, `31314908439` all `completed success`, all three logged `Excluding tmcd stream(s) from map: ['2']`. (Three runs not two — an early `gh.sh dispatch` call reported HTTP 400 but the request went through anyway, so `GX010197` was trimmed twice; harmless duplicate, no cleanup needed.) `docs/ai-project-state.md` updated same session via `9cb2ecc` is now superseded by this section for the tmcd-fix status.
+
+**`oev-reco-stitch.yml` run `31319038358` on the freshly-trimmed pair: FAILED — network stall, not a code/GPU defect.** Launch, SSH, downloads, system-deps, CUDA-runtime install, and NVIDIA driver-library extraction all succeeded as in prior runs (same `libnvidia-gpucomp.so.580.178.04` vs host driver `580.159.03` Vulkan mismatch persists — still not blocking, unchanged from before). Rust toolchain install alone took ~20 min (normally fast) — first sign of a bad-network host. Then `cargo build`'s `av1-avif`/`avif-sample-images` submodule fetch took 16+ min, followed by ~30 min of `argmin` crate download retries against crates.io, all failing with `[28] Timeout was reached (Operation too slow. Less than 10 bytes/sec transferred)`, until cargo gave up after exhausting retries. Instance CPU sat at 0.06% the whole time (confirmed via Vast.ai console) — idle on network I/O, not compute. Total instance time ≈67 min, cost ≈16¢. No code or dependency defect; this specific Vast.ai host had a bad route to crates.io/GitHub.
+
+**Fix @ `012c4dd` (Claude-authored direct build, explicit routing override, pushed directly to main — not Codex): fail-fast network handling.** `oev_reco_stitch_remote.sh` only, purely additive (diff verified: 4 hunks, nothing else touched). Sets `CARGO_NET_RETRY=2` / `CARGO_HTTP_TIMEOUT=15` before the build, and wraps `cargo build` in `timeout 1200` (20 min) with a distinct `FATAL: cargo build timed out after 20min (likely slow-network host)` message on exit 124, separate from the existing generic build-failure message. Rationale: prior successful builds finished in ~10 min, so 20 min gives headroom for a normal run while capping a stalled host at ~20 min instead of 60+. On timeout, the run fails and can be cheaply redispatched onto a different Vast.ai offer rather than waiting out a bad host.
+
+**Verification run `31322462730`: DISPATCHED — UNVERIFIED.** https://github.com/JhnsonO/ffa-automations/actions/runs/31322462730 — head commit `012c4dd`. Inputs: `left_clip=trimmed_GX010197.MP4`, `right_clip=trimmed_GX010173.MP4`. Status at session end: `in_progress`, not polled to completion.
+
+**New fact worth carrying forward:** the one successful stitch (`31308807543`) confirmed via direct `ffprobe` on the downloaded `panorama.mp4` — output is **1920×1080 @ ~59.94fps**, despite both camera inputs being 4K. Frame rate is preserved; **resolution is downscaled to 1080p**, not combined into a wider 4K+ frame as might be assumed. Not yet checked whether `reco stitch` has an output-resolution flag (`reco stitch --help` not yet run) or whether 1080p is a hard ceiling of the current render path.
+
+**Cost/speed estimate (from the one successful run, single data point):** CPU-fallback (`llvmpipe`) render speed measured at 43.5 fps for 4K60 source. Extrapolated: ~83 min of pure stitch time per 1 hour of 60fps footage, plus ~10 min fixed build overhead (build now cached-adjacent via the fail-fast fix, not literally cached) → roughly 1.5–1.7 hours of Vast.ai instance time per 1 hour of stitched footage at current (CPU-fallback) speed. Real-GPU Vulkan rendering remains unresolved and would likely be faster, but no measured number exists for it.
+
+**Not yet done, deferred (Johnson's explicit "not now, maybe in an hour"):** binary-caching the compiled `reco-cli` build (e.g. to a GitHub Release, keyed by git SHA) to skip the ~10 min `cargo build` on every run. Explicitly NOT extending this to the CUDA runtime/driver library steps — those must stay dynamic since they need to match whatever Vast.ai host is assigned per-run; caching a fixed driver version risks reintroducing the exact class of bug that took 8+ cycles to fix.
+
 **Next (fresh chat — mandatory bootstrap: read `CLAUDE.md` + this file first):**
-1. Re-run `oev-trim-clip.yml` on `GX010197`/`GX010173` against `3a7f2d8` (JSON-based tmcd detection). Check the job log for either "Excluding tmcd stream(s) from map: [...]" or "No tmcd stream detected to exclude" — this tells us definitively whether detection now works, without needing to reverse-engineer ffmpeg's own error output.
-2. If detection still fails: the log will now show ffprobe's actual output/error (added in `3a7f2d8`), which should make the real cause obvious — check that before writing another patch blind.
-3. If trim succeeds: re-run `oev-reco-stitch.yml` on the freshly-trimmed pair. Check `calibrate.log` — does lens auto-detect now find a real GoPro Hero 10 profile instead of falling back to Mobius?
-4. If auto-detect still fails after a clean trim: fall back to manual `--left-profile`/`--right-profile` (Hero 10, Wide mode) — need to find the exact profile filename in the embedded lens database (`reco calibrate --help` or a lens-listing command, not yet checked).
-5. Once seam/edges look correct: Johnson visual sign-off on `GX010197`/`GX010173`, then repeat on `GX010198`/`GX010175` as a repeatability check = M1 gate cleared.
-6. Confirm whether HyperSmooth was on during filming (Johnson to check) — OFF required per the tool's own doc comment.
-7. Deferred, lower priority: real-GPU Vulkan rendering still broken (stuck on `llvmpipe`/CPU) — works but slower, not a blocker for M1.
+1. Check run `31322462730` outcome. If it succeeded: check `calibrate.log` — does lens auto-detect now find a real GoPro Hero 10 profile instead of falling back to Mobius (the original reason this whole tmcd/GPMF chain was started)?
+2. If it failed again on a network stall (exit 124 / timeout message): this is host bad-luck, not a defect — redispatch again, no further code change needed unless it recurs repeatedly.
+3. If auto-detect still fails after a clean trim: fall back to manual `--left-profile`/`--right-profile` (Hero 10, Wide mode) — need to find the exact profile filename in the embedded lens database (`reco calibrate --help` or a lens-listing command, not yet checked).
+4. Once seam/edges look correct: Johnson visual sign-off on `GX010197`/`GX010173`, then repeat on `GX010198`/`GX010175` as a repeatability check = M1 gate cleared.
+5. Confirm whether HyperSmooth was on during filming (Johnson to check) — OFF required per the tool's own doc comment.
+6. When Johnson gives the go: implement `reco-cli` binary caching (GitHub Release or similar, keyed by git SHA of `reco-project/video-stitcher`) to skip the ~10 min build on cache hit. Do NOT cache CUDA runtime/driver libraries — keep those dynamic per-host.
+7. Deferred, lower priority: real-GPU Vulkan rendering still broken (`libnvidia-gpucomp.so` version mismatch, 580.178.04 vs host 580.159.03) — works but slower via CPU fallback, not a blocker for M1.
+8. Worth a quick check sometime: does `reco stitch` have an output-resolution flag, or is 1080p output a hard ceiling regardless of 4K input?
