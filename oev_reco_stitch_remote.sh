@@ -71,6 +71,13 @@ echo "=== GPU/Vulkan diagnostic dump ===" | tee -a env.log
   find / -iname "libGLX_nvidia.so*" 2>/dev/null || echo "libGLX_nvidia.so not found anywhere on filesystem"
 } 2>&1 | tee -a env.log
 
+echo "=== Refreshing dynamic linker cache (Vast bind-mounts NVIDIA libs post-boot; ldconfig may never have run) ===" | tee -a env.log
+{
+  ldconfig
+  echo "--- vulkaninfo summary (post-ldconfig) ---"
+  vulkaninfo --summary 2>&1 | head -30 || echo "vulkaninfo still failed after ldconfig"
+} 2>&1 | tee -a env.log
+
 echo "=== Installing matching NVIDIA GL/Vulkan userspace libs (candidate fix for llvmpipe fallback) ===" | tee -a env.log
 {
   GL_PKG=$(apt-cache search '^libnvidia-gl-[0-9]' | sort -V | tail -1 | awk '{print $1}')
