@@ -291,9 +291,11 @@ jobs:
               print(f'ERROR: None of the first {MAX_OFFERS_TRIED} reliable GPU offers passed launch + SSH + GPU-health preflight', file=sys.stderr)
               sys.exit(1)
           instance_id, ip, port, offer = selected
-          print(f'Selected ready instance: id={instance_id} gpu={offer.get("gpu_name")} vram={offer.get("gpu_ram")}MB reliability={offer.get("reliability")} ip={ip}:{port}')
+          print(f'Selected ready instance: id={instance_id} offer={offer_id} gpu={offer.get("gpu_name")} vram={offer.get("gpu_ram")}MB reliability={offer.get("reliability")} preflight_gpu={pf_gpu_model} preflight_driver={pf_driver} ip={ip}:{port}')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f'instance_id={instance_id}\nip={ip}\nport={port}\n')
+              f.write(f'offer_id={offer_id}\nreliability={offer.get("reliability", "unknown")}\n')
+              f.write(f'preflight_gpu_model={pf_gpu_model}\npreflight_driver_version={pf_driver}\n')
           PY
 
       - name: Wait for SSH
@@ -414,15 +416,34 @@ jobs:
         env:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
+          INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
+          OFFER_ID: ${{ steps.launch.outputs.offer_id }}
+          RELIABILITY: ${{ steps.launch.outputs.reliability }}
+          PREFLIGHT_GPU_MODEL: ${{ steps.launch.outputs.preflight_gpu_model }}
+          PREFLIGHT_DRIVER_VERSION: ${{ steps.launch.outputs.preflight_driver_version }}
         run: |
           SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           mkdir -p reco_artifacts
+          # Selected-host metadata, so a later "performance was weird" report
+          # can be correlated back to the exact Vast offer/instance that
+          # passed preflight for this run.
+          cat > reco_artifacts/run_metadata.txt <<EOF
+          instance_id=$INSTANCE_ID
+          offer_id=$OFFER_ID
+          reliability=$RELIABILITY
+          preflight_gpu_model=$PREFLIGHT_GPU_MODEL
+          preflight_driver_version=$PREFLIGHT_DRIVER_VERSION
+          ip=$IP
+          port=$PORT
+          EOF
+          cat reco_artifacts/run_metadata.txt
           $SCP "root@$IP:/tmp/oev_run/env.log" reco_artifacts/ || echo 'env.log missing'
           $SCP "root@$IP:/tmp/oev_run/build.log" reco_artifacts/ || echo 'build.log missing'
           $SCP "root@$IP:/tmp/oev_run/calibrate.log" reco_artifacts/ || echo 'calibrate.log missing'
           $SCP "root@$IP:/tmp/oev_run/stitch.log" reco_artifacts/ || echo 'stitch.log missing'
           $SCP "root@$IP:/tmp/oev_run/match.json" reco_artifacts/ || echo 'match.json missing (calibrate did not complete)'
           $SCP "root@$IP:/tmp/oev_run/panorama.mp4" reco_artifacts/ || echo 'panorama.mp4 missing (stitch did not complete)'
+
 
       - name: Upload run artifacts
         if: always()
