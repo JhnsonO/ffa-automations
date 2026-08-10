@@ -330,6 +330,77 @@ else
   echo "WARNING: libEGL_nvidia.so.0 not found on this host -- leaving Vulkan on the default (GLX) config, expect llvmpipe fallback as before" | tee -a env.log
 fi
 
+echo "=== CUDA driver-API-only diagnostic (bypasses libcudart entirely -- tests whether cuda-runtime install is even relevant) ===" | tee -a env.log
+{
+  echo "--- ldconfig -p: libcuda / libnvcuvid / libnvidia-encode ---"
+  ldconfig -p | grep -E 'libcuda|libnvcuvid|libnvidia-encode' || echo "none of libcuda/libnvcuvid/libnvidia-encode found in ldconfig cache"
+
+  echo "--- readlink -f on libcuda.so.1 / libnvcuvid.so.1 / libnvidia-encode.so.1 ---"
+  for LIB in libcuda.so.1 libnvcuvid.so.1 libnvidia-encode.so.1; do
+    FOUND=$(find /usr/lib/x86_64-linux-gnu /usr/lib -iname "$LIB" 2>/dev/null | head -1)
+    if [ -n "$FOUND" ]; then
+      echo "$LIB -> $(readlink -f "$FOUND")"
+    else
+      echo "$LIB -> NOT FOUND"
+    fi
+  done
+
+  echo "--- Bare CUDA driver API probe via dlopen(libcuda.so.1) -- NOT libcudart, no runtime dependency ---"
+  python3 - <<'PYEOF' 2>&1 || echo "python3 CUDA driver API probe failed to run"
+import ctypes, sys
+try:
+    lib = ctypes.CDLL("libcuda.so.1")
+except OSError as e:
+    print(f"dlopen libcuda.so.1: FAILED -- {e}")
+    sys.exit(0)
+print("dlopen libcuda.so.1: SUCCESS")
+
+rc = lib.cuInit(0)
+print(f"cuInit(0) -> CUresult {rc}")
+if rc != 0:
+    print("Stopping probe here -- cuInit failed, further calls would be meaningless")
+    sys.exit(0)
+
+count = ctypes.c_int(0)
+rc = lib.cuDeviceGetCount(ctypes.byref(count))
+print(f"cuDeviceGetCount -> CUresult {rc}, count={count.value}")
+if rc == 0 and count.value > 0:
+    dev = ctypes.c_int(0)
+    rc = lib.cuDeviceGet(ctypes.byref(dev), 0)
+    print(f"cuDeviceGet(0) -> CUresult {rc}, handle={dev.value}")
+    if rc == 0:
+        name_buf = ctypes.create_string_buffer(256)
+        rc = lib.cuDeviceGetName(name_buf, 256, dev)
+        print(f"cuDeviceGetName -> CUresult {rc}, name={name_buf.value.decode(errors='replace')}")
+PYEOF
+
+  echo "--- ffmpeg -hwaccels ---"
+  ffmpeg -hwaccels 2>&1
+
+  echo "--- ffmpeg -decoders | grep -i cuvid ---"
+  ffmpeg -decoders 2>&1 | grep -i cuvid || echo "no cuvid decoders listed"
+
+  echo "--- ffmpeg -encoders | grep -i nvenc ---"
+  ffmpeg -encoders 2>&1 | grep -i nvenc || echo "no nvenc encoders listed"
+
+  echo "--- Minimal direct decode test: ffmpeg -hwaccel cuda -hwaccel_output_format cuda ---"
+  TEST_INPUT=""
+  [ -f /tmp/oev_run/left.mp4 ] && TEST_INPUT=/tmp/oev_run/left.mp4
+  [ -z "$TEST_INPUT" ] && [ -f /tmp/oev_run/right.mp4 ] && TEST_INPUT=/tmp/oev_run/right.mp4
+  if [ -n "$TEST_INPUT" ]; then
+    echo "Using input: $TEST_INPUT"
+    ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i "$TEST_INPUT" -frames:v 30 -f null - 2>&1 | tail -40
+  else
+    echo "Neither left.mp4 nor right.mp4 found on disk (clip download may have failed/flaked this run) -- skipping direct decode test"
+  fi
+
+  echo "--- Device exposure re-check ---"
+  echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+  echo "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-<unset>}"
+  ls -la /dev/nvidia* 2>&1 || echo "no /dev/nvidia* nodes"
+  nvidia-smi -L 2>&1 || echo "nvidia-smi -L failed"
+} 2>&1 | tee -a env.log
+
 if [ "${DIAG_ONLY:-0}" = "1" ]; then
   echo "=== DIAG_ONLY=1: stopping after GPU/Vulkan diagnostics, skipping build/calibrate/stitch entirely ===" | tee -a env.log
   exit 0
