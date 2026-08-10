@@ -566,3 +566,23 @@ Mechanics: plain `curl` + `jq` against the GitHub REST API (release lookup/creat
 2. Repeatability check on the second clip pair (`GX010198`/`GX010175`) at the same config, if required before formally clearing M1.
 3. Quality/bitrate pass once M1 is signed off, then start the follow-cam/tracking track in parallel (per Johnson's prior direction).
 4. If the `exit 139`/`llvmpipe` anomaly recurs: investigate the workflow's exit-code handling and/or why that host didn't get real GPU access.
+
+## 2026-08-10 session (cont. 2): GPU issue root-caused — NOT an anomaly, affects every run including the approved M1 config
+
+**Correction to prior entry:** the `llvmpipe` fallback noted as a one-off anomaly on run `31355736849` is not an anomaly — confirmed via job logs that the approved M1 run (`31360135030`) *also* ran entirely on `llvmpipe` (software Vulkan), not real GPU. Every run checked this session used software rendering. The M1 framing/geometry sign-off is unaffected (framing is correct regardless of render backend), but no run to date has verified GPU-accelerated rendering actually works.
+
+**Bug #1 (fixed, confirmed): version-glob mismatch in `oev_reco_stitch_remote.sh`.** The GPU diagnostic/fix block's `find` glob (`libGLX_nvidia.so.*.*.*`, expects 3 dot-segments) never matched real driver filenames like `libGLX_nvidia.so.570.144` or `.580.65.06` (2 segments) — so the block always hit "NVIDIA_LIB=not found" and bailed before running `ldd`, meaning **no run has ever actually diagnosed the real blocker until this session**. Fixed on branch `fix/oev-glx-glob-diag` (commit `a430de7`): glob changed to `libGLX_nvidia.so.[0-9]*.[0-9]*`. Confirmed working — `ldd` now runs successfully.
+
+**Bug #2 (found, NOT fixed): NVIDIA userspace library version mismatch.** With bug #1 fixed, `ldd` reveals the real blocker: Vast bind-mounts the host's actual driver lib (`libGLX_nvidia.so.580.65.06` on this host — driver version varies per-host/offer). The script's fallback fix (`apt-get download libnvidia-gl-580` / `libnvidia-compute-580`) pulls whatever NVIDIA's apt repo currently serves as "580.x" — which is the latest patch (`580.178.04`), not the host's exact version. Result: extracted `libnvidia-glcore.so` now needs `libnvidia-gpucomp.so.580.178.04`, which doesn't exist anywhere (host only has `580.65.06` components). Vulkan ICD load still fails → `llvmpipe` fallback persists. CUDA fails separately for the same root shape (`cuInit` → `CUDA_ERROR_COMPAT_NOT_SUPPORTED_ON_DEVICE` — installed CUDA toolkit doesn't match host driver either).
+
+**Real fix needed (not yet attempted):** apt only serves the latest patch per major driver series, so exact-version matching isn't available that way. Options: (a) search more broadly across Vast's own bind-mounted paths for an already-present, correctly-versioned `libnvidia-gpucomp.so` (Vast mounts *some* driver components directly — worth checking if this one is just in an unsearched path rather than genuinely absent); (b) fetch the exact `.run` driver installer from NVIDIA's driver archive by detected version and extract userspace libs from that instead of apt. This is a version-pinning problem, not a missing-package problem — likely needs a debug session with live SSH access (Opus-level) rather than blind script edits.
+
+**Cost this session:** 3 dispatches on `fix/oev-glx-glob-diag` — 2 hit Vast.ai SSH flakes (clean terminations, negligible cost, unrelated to the fix), 1 succeeded and produced the above diagnosis. Total spend: low (a few cents).
+
+**Do not merge `fix/oev-glx-glob-diag` to main yet** — it's a correct and useful diagnostic fix (keep it) but doesn't resolve GPU acceleration on its own. Full-length M1 sign-off stitch can still proceed on CPU/llvmpipe if Johnson wants to unblock M1 now — it'll just be slower per-run; the GPU fix is a separate, still-open track.
+
+**Next (fresh chat — mandatory bootstrap: read `CLAUDE.md` + this file first):**
+1. GPU fix: live-SSH debug session to find/pin the correct-version NVIDIA userspace libs (see Bug #2 above). Opus-level — architecture/version-pinning problem, not a quick script edit.
+2. Decide: dispatch the uncapped M1 sign-off stitch now on CPU/llvmpipe (slower, works today) vs. wait for the GPU fix (faster once solved, timeline uncertain).
+3. Once GPU or M1-sign-off path is chosen: repeatability check on `GX010198`/`GX010175` if required.
+4. Orthogonal, can run in parallel any time: VR180/spherical-video metadata injection on existing CPU-rendered output, to make panorama viewable/pannable on YouTube.
