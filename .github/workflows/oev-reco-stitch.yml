@@ -99,7 +99,7 @@ jobs:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
         run: |
           python3 -u - << 'PY'
-          import os, json, time, urllib.request, urllib.parse, sys
+          import os, json, time, urllib.request, urllib.parse, sys, subprocess
 
           api_key = os.environ['VAST_API_KEY']
           base = 'https://console.vast.ai/api/v0'
@@ -151,12 +151,14 @@ jobs:
               print('ERROR: No reliable GPU offers matched the OEV reco-stitch requirements', file=sys.stderr)
               sys.exit(1)
 
-          print(f'Found {len(offers)} eligible offers; trying up to 5 cheapest reliable offers.')
+          print(f'Found {len(offers)} eligible offers; trying up to 8 cheapest reliable offers (raised from 5 -- GPU-health preflight adds a new rejection reason beyond SSH-never-up).')
           selected = None
-          for index, offer in enumerate(offers[:5], start=1):
+          MAX_OFFERS_TRIED = 8
+          for index, offer in enumerate(offers[:MAX_OFFERS_TRIED], start=1):
               offer_id = offer['id']
-              print('Trying offer %s (%s/5): gpu=%s vram=%sMB reliability=%s cpu=%s $%s/hr' % (
-                  offer_id, index, offer.get('gpu_name', 'unknown'), offer.get('gpu_ram', '?'),
+              reached_running = None
+              print('Trying offer %s (%s/%s): gpu=%s vram=%sMB reliability=%s cpu=%s $%s/hr' % (
+                  offer_id, index, MAX_OFFERS_TRIED, offer.get('gpu_name', 'unknown'), offer.get('gpu_ram', '?'),
                   offer.get('reliability', '?'), offer.get('cpu_name', 'unknown'), offer.get('dph_total', '?')))
               try:
                   result = request('PUT', f'{base}/asks/{offer_id}/', {
@@ -195,17 +197,98 @@ jobs:
                   port = inst.get('ssh_port', 22)
                   print(f'  [{attempt + 1}/30] status={status} ip={ip} port={port}')
                   if status == 'running' and ip:
-                      selected = (instance_id, ip, port, offer)
+                      reached_running = (ip, port)
                       break
                   if status in ('error', 'failed', 'stopped'):
                       break
-              if selected:
-                  break
-              print(f'Offer {offer_id} did not become usable; terminating instance {instance_id} and trying next.')
-              delete_instance(instance_id)
+
+              if not reached_running:
+                  print(f'Offer {offer_id} never reached running state; terminating instance {instance_id} and trying next.')
+                  delete_instance(instance_id)
+                  continue
+              ip, port = reached_running
+
+              # --- SSH readiness (folded in here, ahead of acceptance, rather
+              # than as a separate later step -- an offer isn't "selected"
+              # until we've actually confirmed we can reach it) ---
+              ssh_ready = False
+              for attempt in range(18):
+                  try:
+                      r = subprocess.run(
+                          ['ssh', '-i', '/tmp/vastai_key', '-p', str(port),
+                           '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
+                           f'root@{ip}', 'echo OK'],
+                          capture_output=True, timeout=15, text=True)
+                      if 'OK' in r.stdout:
+                          ssh_ready = True
+                          break
+                  except Exception:
+                      pass
+                  time.sleep(5)
+              if not ssh_ready:
+                  print(f'Offer {offer_id}: SSH never came up; terminating instance {instance_id} and trying next.')
+                  delete_instance(instance_id)
+                  continue
+
+              # --- GPU-health preflight: reject bad hosts BEFORE any clip
+              # download, Rust build, calibrate, or stitch work. Vast host
+              # GPU-passthrough completeness is inconsistent (confirmed
+              # across multiple prior dispatches -- see
+              # docs/ai-project-state.md); this catches a bad host in
+              # ~1 minute instead of 10+. ---
+              try:
+                  subprocess.run(
+                      ['scp', '-i', '/tmp/vastai_key', '-P', str(port),
+                       '-o', 'StrictHostKeyChecking=no',
+                       'oev_gpu_preflight.sh', f'root@{ip}:/tmp/oev_gpu_preflight.sh'],
+                      capture_output=True, timeout=30, text=True, check=True)
+                  subprocess.run(
+                      ['ssh', '-i', '/tmp/vastai_key', '-p', str(port),
+                       '-o', 'StrictHostKeyChecking=no',
+                       f'root@{ip}', 'chmod +x /tmp/oev_gpu_preflight.sh'],
+                      capture_output=True, timeout=15, text=True, check=True)
+                  preflight = subprocess.run(
+                      ['ssh', '-i', '/tmp/vastai_key', '-p', str(port),
+                       '-o', 'StrictHostKeyChecking=no', '-o', 'ServerAliveInterval=15',
+                       f'root@{ip}', 'stdbuf -oL -eL /tmp/oev_gpu_preflight.sh'],
+                      capture_output=True, timeout=180, text=True)
+                  preflight_out = preflight.stdout
+              except Exception as exc:
+                  print(f'Offer {offer_id}: preflight execution failed to run at all: {exc}')
+                  preflight_out = ''
+
+              def _pf(field, text=preflight_out):
+                  for line in text.splitlines():
+                      if line.startswith(field + '='):
+                          return line.split('=', 1)[1]
+                  return 'unknown'
+
+              pf_gpu_model = _pf('PREFLIGHT_GPU_MODEL')
+              pf_driver = _pf('PREFLIGHT_DRIVER_VERSION')
+              pf_vulkan = _pf('PREFLIGHT_VULKAN')
+              pf_cuda = _pf('PREFLIGHT_CUDA_INIT')
+              pf_nvdec = _pf('PREFLIGHT_NVDEC')
+              pf_result = _pf('PREFLIGHT_RESULT')
+
+              print('Preflight offer=%s reliability=%s gpu_model=%s driver=%s vulkan=%s cuda_init=%s nvdec=%s -> %s' % (
+                  offer_id, offer.get('reliability', '?'), pf_gpu_model, pf_driver,
+                  pf_vulkan, pf_cuda, pf_nvdec, pf_result))
+
+              if pf_result != 'PASS':
+                  failed_checks = [name for name, val in
+                                    (('vulkan', pf_vulkan), ('cuda_init', pf_cuda), ('nvdec', pf_nvdec))
+                                    if val != 'PASS']
+                  print(f'Offer {offer_id} FAILED GPU-health preflight (failed checks: {failed_checks or ["unknown/no-output"]}); '
+                        f'terminating instance {instance_id} and trying next offer.')
+                  delete_instance(instance_id)
+                  continue
+
+              print(f'Offer {offer_id} PASSED GPU-health preflight (gpu={pf_gpu_model}, driver={pf_driver}).')
+              selected = (instance_id, ip, port, offer)
+              break
 
           if not selected:
-              print('ERROR: None of the first five reliable GPU offers became ready', file=sys.stderr)
+              print(f'ERROR: None of the first {MAX_OFFERS_TRIED} reliable GPU offers passed launch + SSH + GPU-health preflight', file=sys.stderr)
               sys.exit(1)
           instance_id, ip, port, offer = selected
           print(f'Selected ready instance: id={instance_id} gpu={offer.get("gpu_name")} vram={offer.get("gpu_ram")}MB reliability={offer.get("reliability")} ip={ip}:{port}')
