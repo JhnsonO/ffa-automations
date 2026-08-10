@@ -189,6 +189,79 @@ echo "=== Refreshing dynamic linker cache (Vast bind-mounts NVIDIA libs post-boo
   done 2>&1
 } 2>&1 | tee -a env.log
 
+echo "=== Deep ICD-loader diagnostic (pristine stack, no extraction has run yet) ===" | tee -a env.log
+{
+  echo "--- nvidia_icd.json (exact library_path field) ---"
+  for f in /usr/share/vulkan/icd.d/nvidia_icd.json /etc/vulkan/icd.d/nvidia_icd.json; do
+    if [ -f "$f" ]; then
+      echo "-- $f --"
+      cat "$f"
+      LIBPATH=$(grep -oE '"library_path"\s*:\s*"[^"]*"' "$f" | sed -E 's/.*"([^"]+)"$/\1/')
+      echo "Parsed library_path: ${LIBPATH:-none}"
+    fi
+  done
+
+  echo "--- readlink -f on every NVIDIA ICD lib/symlink involved ---"
+  for f in /usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0 /usr/lib/libGLX_nvidia.so.0 \
+           $(find / -iname "libGLX_nvidia.so*" 2>/dev/null); do
+    [ -e "$f" ] && echo "$f -> $(readlink -f "$f")"
+  done | sort -u
+
+  RESOLVED_LIB=$(readlink -f /usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0 2>/dev/null || find / -iname "libGLX_nvidia.so.0" 2>/dev/null | head -1)
+  echo "Resolved target for symbol/dlopen checks: ${RESOLVED_LIB:-none found}"
+
+  if [ -n "$RESOLVED_LIB" ] && [ -e "$RESOLVED_LIB" ]; then
+    echo "--- readelf -Ws | grep vk_icdGetInstanceProcAddr / vkCreateInstance ---"
+    (readelf -Ws "$RESOLVED_LIB" 2>&1 | grep -iE 'vk_icdGetInstanceProcAddr|vkCreateInstance') \
+      || echo "readelf found neither symbol (or readelf unavailable)"
+    echo "--- objdump -T fallback (in case readelf output above was empty) ---"
+    (objdump -T "$RESOLVED_LIB" 2>&1 | grep -iE 'vk_icdGetInstanceProcAddr|vkCreateInstance') \
+      || echo "objdump found neither symbol (or objdump unavailable)"
+
+    echo "--- dlopen + dlsym check via python3 ctypes (does the ICD lib load, does the entrypoint resolve?) ---"
+    python3 - "$RESOLVED_LIB" <<'PYEOF' 2>&1 || echo "python3 dlopen check failed to run"
+import ctypes, sys
+path = sys.argv[1]
+try:
+    lib = ctypes.CDLL(path, mode=ctypes.RTLD_NOW)
+    print(f"dlopen({path}) with RTLD_NOW: SUCCESS")
+except OSError as e:
+    print(f"dlopen({path}) with RTLD_NOW: FAILED -- {e}")
+    sys.exit(0)
+for sym in ("vk_icdGetInstanceProcAddr", "vkCreateInstance"):
+    try:
+        addr = ctypes.cast(getattr(lib, sym), ctypes.c_void_p).value
+        print(f"dlsym {sym}: resolved at {hex(addr) if addr else addr}")
+    except AttributeError as e:
+        print(f"dlsym {sym}: FAILED -- {e}")
+PYEOF
+  else
+    echo "No resolved libGLX_nvidia.so.0 target -- skipping symbol/dlopen checks"
+  fi
+
+  echo "--- LD_DEBUG=libs vulkaninfo --summary (filtered to the NVIDIA/vulkan lib lines only) ---"
+  LD_DEBUG=libs vulkaninfo --summary 2>&1 \
+    | grep -iE 'nvidia|vulkan|glx|error|cannot|fail' \
+    | head -150 \
+    || echo "LD_DEBUG run produced no matching lines or failed to run"
+
+  echo "--- /dev/nvidia* and /dev/dri/* device exposure ---"
+  ls -la /dev/nvidia* 2>&1 || echo "no /dev/nvidia* nodes"
+  ls -la /dev/dri/* 2>&1 || echo "no /dev/dri nodes"
+
+  echo "--- Full NVIDIA-relevant env vars seen by this shell and by PID 1 ---"
+  echo "This shell:"
+  env | grep -iE 'NVIDIA|CUDA|VULKAN|DISPLAY|XDG' || echo "  none set in this shell"
+  echo "PID 1 (container init):"
+  cat /proc/1/environ 2>/dev/null | tr '\0' '\n' | grep -iE 'NVIDIA|CUDA|VULKAN|DISPLAY|XDG' || echo "  none found in PID 1 environ"
+  echo "Note: NVIDIA_VISIBLE_DEVICES=void at PID 1 despite working nvidia-smi + present device nodes is expected under Vast's direct bind-mount model (no nvidia-container-toolkit hook) -- included here as context, not assumed to be the cause of the Vulkan failure."
+} 2>&1 | tee -a env.log
+
+if [ "${DIAG_ONLY:-0}" = "1" ]; then
+  echo "=== DIAG_ONLY=1: stopping after GPU/Vulkan diagnostics, skipping build/calibrate/stitch entirely ===" | tee -a env.log
+  exit 0
+fi
+
 echo "=== Diagnosing NVIDIA driver helper libraries (extract only what's actually missing) ===" | tee -a env.log
 {
   # Vast bind-mounts libGLX_nvidia.so directly rather than using the
