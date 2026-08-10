@@ -307,7 +307,15 @@ jobs:
                       preflight_out += f'\n(preflight script exit code: {preflight.returncode})'
               except subprocess.TimeoutExpired as exc:
                   print(f'Offer {offer_id}: preflight execution TIMED OUT after 180s')
-                  preflight_out = (exc.stdout or '') + '\n--- stderr ---\n' + (exc.stderr or '') + '\n(timed out after 180s)'
+                  # exc.stdout/exc.stderr are always bytes on a timeout, even
+                  # with text=True on the run() call -- decoding only happens
+                  # on a *successful* completion. Confirmed root cause of a
+                  # real crash (2026-08-10, run 31397771578): plain str
+                  # concatenation raised TypeError and killed the whole
+                  # launch step before instance cleanup could run.
+                  out = exc.stdout.decode(errors='replace') if isinstance(exc.stdout, bytes) else (exc.stdout or '')
+                  err = exc.stderr.decode(errors='replace') if isinstance(exc.stderr, bytes) else (exc.stderr or '')
+                  preflight_out = out + '\n--- stderr ---\n' + err + '\n(timed out after 180s)'
               except Exception as exc:
                   print(f'Offer {offer_id}: preflight execution failed to run at all: {exc}')
                   preflight_out = ''
