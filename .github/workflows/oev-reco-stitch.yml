@@ -127,10 +127,18 @@ jobs:
 
           request('POST', f'{base}/ssh/', {'ssh_key': pub_key})
 
+          # Known-good machine preference list, populated manually from past
+          # "CANDIDATE KNOWN-GOOD" log lines (machine_id + driver logged
+          # whenever an offer passes full GPU-health preflight). Empty is
+          # valid -- it just means the normal pool is used with no
+          # preference tier. Preference only; preflight remains mandatory
+          # for every offer regardless of machine_id.
+          KNOWN_GOOD_MACHINE_IDS = []
+
           query = {
               'verified': {'eq': True},
               'rentable': {'eq': True},
-              'reliability': {'gte': 0.98},
+              'reliability': {'gte': 0.995},
               'gpu_ram': {'gte': 4096},
               'num_gpus': {'gte': 1},
               'cpu_cores': {'gte': 8},
@@ -152,10 +160,19 @@ jobs:
           # cost to exclude for now -- see docs/ai-project-state.md.
           bad_gpu = ('RTX 5090', 'RTX 5080', 'RTX 5070', 'RTX 5060', 'RTX 5050', 'RTX PRO')
           offers = [o for o in offers if not any(x in (o.get('gpu_name') or '') for x in bad_gpu)]
-          offers.sort(key=lambda o: float(o.get('dph_total', 999)))
+          # Rank known-good machines first (cheapest-first within tier), then
+          # the remaining eligible pool (cheapest-first). Preference only --
+          # does not bypass preflight or any resource/reliability filter above.
+          known_good = [o for o in offers if o.get('machine_id') in KNOWN_GOOD_MACHINE_IDS]
+          rest = [o for o in offers if o.get('machine_id') not in KNOWN_GOOD_MACHINE_IDS]
+          known_good.sort(key=lambda o: float(o.get('dph_total', 999)))
+          rest.sort(key=lambda o: float(o.get('dph_total', 999)))
+          offers = known_good + rest
           if not offers:
               print('ERROR: No reliable GPU offers matched the OEV reco-stitch requirements', file=sys.stderr)
               sys.exit(1)
+          if known_good:
+              print(f'{len(known_good)} known-good machine(s) have matching offers -- trying these first.')
 
           print(f'Found {len(offers)} eligible offers; trying up to 15 cheapest reliable offers (raised from 8 -- RTX PRO/Blackwell now filtered out at the query level, so this budget is a safety net on top of a smarter pool, not a brute-force fallback).')
           selected = None
@@ -163,9 +180,10 @@ jobs:
           for index, offer in enumerate(offers[:MAX_OFFERS_TRIED], start=1):
               offer_id = offer['id']
               reached_running = None
-              print('Trying offer %s (%s/%s): gpu=%s vram=%sMB reliability=%s cpu=%s $%s/hr' % (
-                  offer_id, index, MAX_OFFERS_TRIED, offer.get('gpu_name', 'unknown'), offer.get('gpu_ram', '?'),
-                  offer.get('reliability', '?'), offer.get('cpu_name', 'unknown'), offer.get('dph_total', '?')))
+              print('Trying offer %s (%s/%s): machine_id=%s gpu=%s vram=%sMB reliability=%s cpu=%s $%s/hr%s' % (
+                  offer_id, index, MAX_OFFERS_TRIED, offer.get('machine_id', '?'), offer.get('gpu_name', 'unknown'), offer.get('gpu_ram', '?'),
+                  offer.get('reliability', '?'), offer.get('cpu_name', 'unknown'), offer.get('dph_total', '?'),
+                  ' [KNOWN-GOOD]' if offer.get('machine_id') in KNOWN_GOOD_MACHINE_IDS else ''))
               try:
                   result = request('PUT', f'{base}/asks/{offer_id}/', {
                       'client_id': 'me',
@@ -283,8 +301,8 @@ jobs:
               pf_nvdec = _pf('PREFLIGHT_NVDEC')
               pf_result = _pf('PREFLIGHT_RESULT')
 
-              print('Preflight offer=%s reliability=%s gpu_model=%s driver=%s vulkan=%s cuda_init=%s nvdec=%s -> %s' % (
-                  offer_id, offer.get('reliability', '?'), pf_gpu_model, pf_driver,
+              print('Preflight offer=%s machine_id=%s reliability=%s gpu_model=%s driver=%s vulkan=%s cuda_init=%s nvdec=%s -> %s' % (
+                  offer_id, offer.get('machine_id', '?'), offer.get('reliability', '?'), pf_gpu_model, pf_driver,
                   pf_vulkan, pf_cuda, pf_nvdec, pf_result))
               print(f'--- Full preflight output for offer {offer_id} (for failure diagnosis / driver-correlation tracking) ---')
               print(preflight_out if preflight_out else '(no output captured)')
@@ -300,6 +318,7 @@ jobs:
                   continue
 
               print(f'Offer {offer_id} PASSED GPU-health preflight (gpu={pf_gpu_model}, driver={pf_driver}).')
+              print(f'CANDIDATE KNOWN-GOOD: machine_id={offer.get("machine_id")} driver={pf_driver} gpu={pf_gpu_model} offer={offer_id}')
               selected = (instance_id, ip, port, offer)
               break
 
@@ -307,10 +326,10 @@ jobs:
               print(f'ERROR: None of the first {MAX_OFFERS_TRIED} reliable GPU offers passed launch + SSH + GPU-health preflight', file=sys.stderr)
               sys.exit(1)
           instance_id, ip, port, offer = selected
-          print(f'Selected ready instance: id={instance_id} offer={offer_id} gpu={offer.get("gpu_name")} vram={offer.get("gpu_ram")}MB reliability={offer.get("reliability")} preflight_gpu={pf_gpu_model} preflight_driver={pf_driver} ip={ip}:{port}')
+          print(f'Selected ready instance: id={instance_id} offer={offer_id} machine_id={offer.get("machine_id")} gpu={offer.get("gpu_name")} vram={offer.get("gpu_ram")}MB reliability={offer.get("reliability")} preflight_gpu={pf_gpu_model} preflight_driver={pf_driver} ip={ip}:{port}')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f'instance_id={instance_id}\nip={ip}\nport={port}\n')
-              f.write(f'offer_id={offer_id}\nreliability={offer.get("reliability", "unknown")}\n')
+              f.write(f'offer_id={offer_id}\nmachine_id={offer.get("machine_id", "unknown")}\nreliability={offer.get("reliability", "unknown")}\n')
               f.write(f'preflight_gpu_model={pf_gpu_model}\npreflight_driver_version={pf_driver}\n')
           PY
 
@@ -434,6 +453,7 @@ jobs:
           PORT: ${{ steps.launch.outputs.port }}
           INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
           OFFER_ID: ${{ steps.launch.outputs.offer_id }}
+          MACHINE_ID: ${{ steps.launch.outputs.machine_id }}
           RELIABILITY: ${{ steps.launch.outputs.reliability }}
           PREFLIGHT_GPU_MODEL: ${{ steps.launch.outputs.preflight_gpu_model }}
           PREFLIGHT_DRIVER_VERSION: ${{ steps.launch.outputs.preflight_driver_version }}
@@ -446,6 +466,7 @@ jobs:
           cat > reco_artifacts/run_metadata.txt <<EOF
           instance_id=$INSTANCE_ID
           offer_id=$OFFER_ID
+          machine_id=$MACHINE_ID
           reliability=$RELIABILITY
           preflight_gpu_model=$PREFLIGHT_GPU_MODEL
           preflight_driver_version=$PREFLIGHT_DRIVER_VERSION
