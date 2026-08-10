@@ -28,6 +28,11 @@ on:
         required: false
         default: ''
         type: string
+      pitch_center_deg:
+        description: 'Cylindrical center pitch in degrees, can be negative (blank = reco default 0). Negative tilts view down.'
+        required: false
+        default: ''
+        type: string
       out_width:
         description: 'Output width in pixels'
         required: false
@@ -298,6 +303,7 @@ jobs:
           YAW_SPAN_DEG: ${{ github.event.inputs.yaw_span_deg }}
           VERTICAL_FOV_DEG: ${{ github.event.inputs.vertical_fov_deg }}
           YAW_CENTER_DEG: ${{ github.event.inputs.yaw_center_deg }}
+          PITCH_CENTER_DEG: ${{ github.event.inputs.pitch_center_deg }}
           OUT_WIDTH: ${{ github.event.inputs.out_width }}
           OUT_HEIGHT: ${{ github.event.inputs.out_height }}
           MAX_FRAMES: ${{ github.event.inputs.max_frames }}
@@ -312,7 +318,7 @@ jobs:
           # withheld. Do not fail the step on non-zero exit — logs must
           # still be pulled back below even if a stage failed partway
           # through.
-          $SSH "GH_TOKEN='$GH_TOKEN' YAW_SPAN_DEG='$YAW_SPAN_DEG' VERTICAL_FOV_DEG='$VERTICAL_FOV_DEG' YAW_CENTER_DEG='$YAW_CENTER_DEG' OUT_WIDTH='$OUT_WIDTH' OUT_HEIGHT='$OUT_HEIGHT' MAX_FRAMES='$MAX_FRAMES' stdbuf -oL -eL /tmp/oev_run/oev_reco_stitch_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
+          $SSH "GH_TOKEN='$GH_TOKEN' YAW_SPAN_DEG='$YAW_SPAN_DEG' VERTICAL_FOV_DEG='$VERTICAL_FOV_DEG' YAW_CENTER_DEG='$YAW_CENTER_DEG' PITCH_CENTER_DEG='$PITCH_CENTER_DEG' OUT_WIDTH='$OUT_WIDTH' OUT_HEIGHT='$OUT_HEIGHT' MAX_FRAMES='$MAX_FRAMES' stdbuf -oL -eL /tmp/oev_run/oev_reco_stitch_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
 
       - name: Pull back logs + outputs
         if: always()
