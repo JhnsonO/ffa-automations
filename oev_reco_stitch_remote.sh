@@ -220,10 +220,10 @@ echo "=== Deep ICD-loader diagnostic (pristine stack, no extraction has run yet)
 
     echo "--- dlopen + dlsym check via python3 ctypes (does the ICD lib load, does the entrypoint resolve?) ---"
     python3 - "$RESOLVED_LIB" <<'PYEOF' 2>&1 || echo "python3 dlopen check failed to run"
-import ctypes, sys
+import ctypes, ctypes.util, os, sys
 path = sys.argv[1]
 try:
-    lib = ctypes.CDLL(path, mode=ctypes.RTLD_NOW)
+    lib = ctypes.CDLL(path, mode=os.RTLD_NOW)
     print(f"dlopen({path}) with RTLD_NOW: SUCCESS")
 except OSError as e:
     print(f"dlopen({path}) with RTLD_NOW: FAILED -- {e}")
@@ -255,6 +255,46 @@ PYEOF
   echo "PID 1 (container init):"
   cat /proc/1/environ 2>/dev/null | tr '\0' '\n' | grep -iE 'NVIDIA|CUDA|VULKAN|DISPLAY|XDG' || echo "  none found in PID 1 environ"
   echo "Note: NVIDIA_VISIBLE_DEVICES=void at PID 1 despite working nvidia-smi + present device nodes is expected under Vast's direct bind-mount model (no nvidia-container-toolkit hook) -- included here as context, not assumed to be the cause of the Vulkan failure."
+} 2>&1 | tee -a env.log
+
+echo "=== EGL-ICD test (NVIDIA docs: headless/no-X11 environments should use libEGL_nvidia.so.0, not libGLX_nvidia.so.0) ===" | tee -a env.log
+{
+  # Read-only probe: does NOT touch any system file. Builds a temp ICD
+  # manifest pointing at the EGL-frontend NVIDIA Vulkan ICD instead of the
+  # GLX-frontend one, and points the loader at ONLY that file via
+  # VK_DRIVER_FILES (falls back to VK_ICD_FILENAMES for older loaders --
+  # harmless to set both since a loader that understands VK_DRIVER_FILES
+  # ignores VK_ICD_FILENAMES when both are present).
+  EGL_LIB=$(find /usr/lib/x86_64-linux-gnu /usr/lib -iname "libEGL_nvidia.so.*" 2>/dev/null | grep -v '\.so\.0$' | head -1)
+  EGL_LIB_SONAME=$(find /usr/lib/x86_64-linux-gnu /usr/lib -iname "libEGL_nvidia.so.0" 2>/dev/null | head -1)
+  echo "libEGL_nvidia.so.<version> found: ${EGL_LIB:-NOT FOUND}"
+  echo "libEGL_nvidia.so.0 (SONAME symlink) found: ${EGL_LIB_SONAME:-NOT FOUND}"
+
+  if [ -n "$EGL_LIB" ] || [ -n "$EGL_LIB_SONAME" ]; then
+    CHECK_LIB="${EGL_LIB:-$EGL_LIB_SONAME}"
+    echo "--- ldd on $CHECK_LIB ---"
+    ldd "$CHECK_LIB" 2>&1
+
+    TMP_ICD=/tmp/nvidia_egl_icd_test.json
+    cat > "$TMP_ICD" <<JSONEOF
+{
+    "file_format_version" : "1.0.1",
+    "ICD": {
+        "library_path": "libEGL_nvidia.so.0",
+        "api_version" : "1.4.312"
+    }
+}
+JSONEOF
+    echo "--- temp ICD manifest ($TMP_ICD) ---"
+    cat "$TMP_ICD"
+
+    echo "--- vulkaninfo --summary, VK_DRIVER_FILES pointed ONLY at $TMP_ICD (system manifest untouched) ---"
+    VK_LOADER_DEBUG=all VK_DRIVER_FILES="$TMP_ICD" VK_ICD_FILENAMES="$TMP_ICD" vulkaninfo --summary 2>&1 | tail -80
+
+    rm -f "$TMP_ICD"
+  else
+    echo "No libEGL_nvidia.so.* found on this host at all -- EGL ICD frontend is not installed/mounted here, cannot test this theory on this host."
+  fi
 } 2>&1 | tee -a env.log
 
 if [ "${DIAG_ONLY:-0}" = "1" ]; then
