@@ -586,3 +586,32 @@ Mechanics: plain `curl` + `jq` against the GitHub REST API (release lookup/creat
 2. Decide: dispatch the uncapped M1 sign-off stitch now on CPU/llvmpipe (slower, works today) vs. wait for the GPU fix (faster once solved, timeline uncertain).
 3. Once GPU or M1-sign-off path is chosen: repeatability check on `GX010198`/`GX010175` if required.
 4. Orthogonal, can run in parallel any time: VR180/spherical-video metadata injection on existing CPU-rendered output, to make panorama viewable/pannable on YouTube.
+
+## 2026-08-10 session (cont. 3): GPU EGL fix shipped + preflight built; validation in progress
+
+**Bug #2 resolved via architecture change, not version-pinning:** rather than chasing exact NVIDIA userspace-lib version matches (prior entry's Bug #2), the fix moved the Vulkan ICD from GLX-based loading to EGL-based loading. Confirmed to work universally across 5+ hosts regardless of driver version — supersedes the version-pinning approach entirely. Production fix on `fix/oev-glx-glob-diag` @ `680d5be`.
+
+**GPU-health preflight added (`7e74ade`):** Vulkan check + bare CUDA driver-API check + NVDEC smoke test, folded into Vast.ai offer acceptance. Bad hosts are now auto-rejected/terminated before expensive work runs, rather than discovered after the fact.
+
+**NVENC confirmed structurally unfixable:** GeForce-in-container blocks NVENC; not a bug, not pursued further (consistent with existing NVENC-unusable-on-Vast.ai finding elsewhere in this doc).
+
+**CUDA-runtime `dpkg-deb -x` fix shelved:** unnecessary now that the EGL fix resolves Vulkan ICD loading directly.
+
+**RTX PRO/Blackwell excluded from offer pool (`6418af5`):** 2/2 tested hosts failed Vulkan preflight on Blackwell — excluded rather than debugged further.
+
+**Logging gap fixed (`8efa49c`, `6418af5`):** raw preflight output was previously discarded (only pass/fail retained); now full output lands in the Actions log per offer, and a `run_metadata.txt` (instance/offer/GPU/driver) is included in pulled-back artifacts.
+
+**Validation status:**
+- First pre-merge validation attempt: 0/8 offers passed — but confirmed this was the preflight correctly rejecting every bad host, not a bad host slipping through undetected.
+- Diagnostic dispatch `31388616000`: 1/1 pass, driver `550.144.03` — clean baseline captured.
+- Diagnostic dispatch `31390996988` (commit `6418af5`): **DISPATCHED — UNVERIFIED**, still `in_progress` as of this entry (checked once, in progress). Purpose: catch a `580.x`/`595.x` host for a real diff against the `550.144.03` baseline. https://github.com/JhnsonO/ffa-automations/actions/runs/31390996988
+
+**Driver correlation theory (not confirmed):** working drivers bracket a `580–595` suspected regression window (`550.x` and `610.x` confirmed working) — suggestive only, small n either side.
+
+**Branch `fix/oev-glx-glob-diag` still not merged to `main`.**
+
+**Next (fresh chat — mandatory bootstrap: read `CLAUDE.md` + this file first):**
+1. Check outcome of run `31390996988` (one more check only, per policy) — either result (pass or fail) is informative; stop investigating the driver-correlation question after this one either way.
+2. Regardless of that result: dispatch one real non-`diag_only` preview validation (300 frames, locked config `yaw_span=178°, vertical_fov=42°, yaw_center=-54°, pitch_center=-8°`) and confirm: calibrate+stitch both use real Vulkan GPU (not the preflight's synthetic test), source decode uses real NVDEC, output is a valid panorama, encode correctly falls back to `libx264`.
+3. Only after that passes: merge `fix/oev-glx-glob-diag` to `main`.
+4. Orthogonal, can run in parallel any time: VR180/spherical-video metadata injection on existing CPU-rendered output.
