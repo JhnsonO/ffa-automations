@@ -663,3 +663,37 @@ Mechanics: plain `curl` + `jq` against the GitHub REST API (release lookup/creat
 - Both NVDEC failures this run were on the same driver line (`580.126.09`) — could be a real driver-version correlation or coincidence at n=2; not enough evidence to act on yet, but exactly the kind of signal this preflight is designed to surface over time for a future blacklist/threshold decision.
 
 **Net state: GPU-health preflight is live on `fix/oev-glx-glob-diag`, working as intended.** Combined with the permanent EGL Vulkan fix, every future dispatch on this branch should land on a host with confirmed working Vulkan render + NVDEC decode before any expensive work begins. NVENC remains CPU/`libx264` on every host, by design (not tested, not a rejection criterion). Not yet merged to main.
+
+## 2026-08-10 session (cont.): pre-merge validation attempt failed (0/8 offers passed); driver-line correlation investigation in progress
+
+**First pre-merge full validation attempt (`8efa49c`, run `31386708368`, non-`diag_only`, 300-frame preview) FAILED at the launch step — all 8 budgeted offers rejected, none reached build/calibrate/stitch:**
+
+| # | GPU | Driver | Result |
+|---|---|---|---|
+| 1 | RTX 4070 Ti SUPER | 580.65.06 | NVDEC FAIL |
+| 2 | RTX 4080 | 580.126.09 | NVDEC FAIL |
+| 3 | RTX 4080S | — | SSH never came up (infra flake) |
+| 4 | RTX PRO 4000 Blackwell | 590.48.01 | Vulkan FAIL |
+| 5 | RTX 3090 | — | launch request 400 (offer expired) |
+| 6 | RTX PRO 4500 | — | preflight produced no parseable output (fails safe, rejected; cause not investigated — 1-off, possibly a slow/flaky host, ssh calls didn't raise so no exception path fired) |
+| 7 | RTX 4070S Ti | — | SSH never came up |
+| 8 | RTX 4080 | 595.58.03 | NVDEC FAIL |
+
+**Two candidate patterns emerged, prompting a correlation investigation before further brute-force retries (Johnson's direction):**
+- NVDEC had failed on every driver line tested except `610.43.02` (the one pass from the earlier preflight-validation run) — `580.65.06`, `580.126.09` (×2), `595.58.03` (×2) all failed.
+- RTX PRO/Blackwell had failed Vulkan 2/2 times (`595.58.03`, `590.48.01`), a distinct failure mode from every consumer RTX 30/40-series host (which all pass Vulkan cleanly).
+
+**Fixes applied before investigating further (`6418af5`):**
+1. `bad_gpu` exclusion list in the offer query extended to filter `'RTX PRO'` (Blackwell workstation line) entirely — 2/2 Vulkan failures, distinct signature, low cost to exclude.
+2. **Critical logging gap fixed:** the preflight previously only ever printed a parsed PASS/FAIL summary to the Actions log — the actual raw `ffmpeg`/`cuvid` error text from each attempt was generated on the remote host and then discarded, never captured anywhere. Now the full raw preflight output (stdout + stderr + exit code) is printed to the Actions log for every offer, pass or fail, so a real pass-vs-fail diff is possible going forward. This gap meant the original "580 vs 610" pattern was never actually diagnosed at the error-message level, only inferred from PASS/FAIL verdicts.
+3. `MAX_OFFERS_TRIED` raised from 8 to 15 — explicitly a safety net behind the smarter (Blackwell-filtered) pool, not a brute-force substitute for the filter, per Johnson's direction.
+
+**Diagnostic dispatch 1 with new logging (`31388616000`, `diag_only=true`):** only 1 offer needed — passed immediately on **`550.144.03`**, a driver line not seen before this session. Full raw output captured as a clean baseline (`deviceType=DISCRETE_GPU`, `cuInit`/`cuDeviceGetCount` both succeed, NVDEC reaches `frame=10` with `cuda(progressive)` pixel format, zero errors). This is useful but inconclusive on its own: it adds `550.144.03` to the known-good set alongside `610.43.02`, which weakens a simple "580+ fails" theory (550 < 580 numerically but passes) and instead points toward a **specific regression window in the `580–595` driver range** on Vast's images, bracketed by working `550.x` and `610.x` builds on either side — interesting but not yet confirmed with an actual failing sample under the new logging.
+
+**Diagnostic dispatch 2 (`31390996988`, `diag_only=true`) dispatched, result NOT YET KNOWN as of session end** — specifically hoping to land on a `580.x`/`595.x` host this time to get a real failing raw-output sample to diff against the `550.144.03` baseline above. **Per Johnson's direction: after this one more diagnostic result (pass or fail), stop investigating the correlation and proceed straight to the real non-`diag_only` merge-validation run regardless of outcome.**
+
+**Not yet done, blocking merge to main:**
+1. Check result of run `31390996988` (pass = weakens regression-window theory, fail = gives a real diff sample against the `550.144.03` baseline — either outcome is informative, per Johnson).
+2. Regardless of that result: dispatch ONE more real non-`diag_only` preview-length (300-frame) validation run at the locked M1 config (`178°/42°/-54°/-8°`) and confirm ALL of: calibrate uses real Vulkan GPU, stitch uses real Vulkan GPU, actual source decode uses NVDEC (not just the preflight's synthetic smoke test), output completes and is visually valid, encode falls back to `libx264` as expected (NVENC not required, confirmed structural limitation).
+3. Only after that real validation passes: merge `fix/oev-glx-glob-diag` to `main`.
+4. `run_metadata.txt` (instance_id, offer_id, reliability, preflight GPU/driver) is now written into the pulled-back artifacts on every run (`8efa49c`) — available for host correlation once the merge-validation run completes.
