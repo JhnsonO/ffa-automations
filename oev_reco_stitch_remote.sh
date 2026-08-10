@@ -109,6 +109,15 @@ echo "=== Installing CUDA runtime (plain ubuntu image has no CUDA libs by defaul
     && apt-get update
 } 2>&1 | tee -a env.log
 
+# Host driver's nvidia-smi "CUDA Version" is the *maximum* CUDA toolkit the
+# installed driver supports, not a version to match exactly. Installing a
+# newer toolkit than the driver supports fails at runtime (cuInit ->
+# CUDA_ERROR_COMPAT_NOT_SUPPORTED_ON_DEVICE) even though the install itself
+# succeeds. Pick the highest available cuda-runtime-X-Y package that does not
+# exceed this max, instead of always taking the newest package in the repo.
+HOST_CUDA_MAX=$(nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1)
+echo "Host driver max-supported CUDA version: ${HOST_CUDA_MAX:-unknown (nvidia-smi parse failed)}" | tee -a env.log
+
 CUDA_CACHE_ASSET="cuda-runtime-debs.tar.gz"
 cuda_cache_hit=0
 if [ -n "$GH_TOKEN" ]; then
@@ -125,13 +134,22 @@ if [ "$cuda_cache_hit" -eq 0 ]; then
   mkdir -p /tmp/cuda-cache
   {
     ( apt-get install -y --no-install-recommends --download-only -o "Dir::Cache::Archives=/tmp/cuda-cache" cuda-runtime \
-        || { echo "unversioned cuda-runtime not found, searching repo for a versioned package..."; \
-             CUDA_PKG=$(apt-cache search '^cuda-runtime-[0-9]' | sort -V | tail -1 | awk '{print $1}'); \
+        || { echo "unversioned cuda-runtime not found, searching repo for a compatible versioned package..."; \
+             if [ -n "$HOST_CUDA_MAX" ]; then \
+               CUDA_PKG=$(apt-cache search '^cuda-runtime-[0-9]' | awk '{print $1}' \
+                 | sed -E 's/cuda-runtime-([0-9]+)-([0-9]+)/\1.\2 &/' \
+                 | sort -V \
+                 | awk -v max="$HOST_CUDA_MAX" '{split(max,m,"."); split($1,v,"."); if ((v[1]<m[1]) || (v[1]==m[1] && v[2]<=m[2])) last=$2} END{print last}'); \
+               echo "Highest cuda-runtime-X-Y <= host max ($HOST_CUDA_MAX): ${CUDA_PKG:-none found}"; \
+             else \
+               echo "No host CUDA max known — falling back to newest available (pre-fix behavior)"; \
+               CUDA_PKG=$(apt-cache search '^cuda-runtime-[0-9]' | sort -V | tail -1 | awk '{print $1}'); \
+             fi; \
              if [ -n "$CUDA_PKG" ]; then \
-               echo "Found: $CUDA_PKG"; \
+               echo "Installing: $CUDA_PKG"; \
                apt-get install -y --no-install-recommends --download-only -o "Dir::Cache::Archives=/tmp/cuda-cache" "$CUDA_PKG"; \
              else \
-               echo "No cuda-runtime-* package found in repo either"; \
+               echo "No compatible cuda-runtime-* package found in repo"; \
                exit 1; \
              fi; } ) \
       && { dpkg -i /tmp/cuda-cache/*.deb || apt-get install -f -y; } \
@@ -161,50 +179,73 @@ echo "=== GPU/Vulkan diagnostic dump ===" | tee -a env.log
 echo "=== Refreshing dynamic linker cache (Vast bind-mounts NVIDIA libs post-boot; ldconfig may never have run) ===" | tee -a env.log
 {
   ldconfig
-  echo "--- vulkaninfo summary (post-ldconfig) ---"
+  echo "--- vulkaninfo summary (post-ldconfig, pristine stack) ---"
   vulkaninfo --summary 2>&1 | head -30 || echo "vulkaninfo still failed after ldconfig"
+  echo "--- vulkaninfo with VK_LOADER_DEBUG=all (isolating the real vkCreateInstance failure) ---"
+  VK_LOADER_DEBUG=all vulkaninfo --summary 2>&1 | tail -60 || echo "vulkaninfo (loader debug) failed"
+  echo "--- Vulkan ICD manifest contents ---"
+  for f in /usr/share/vulkan/icd.d/*.json /etc/vulkan/icd.d/*.json; do
+    [ -f "$f" ] && { echo "-- $f --"; cat "$f"; }
+  done 2>&1
 } 2>&1 | tee -a env.log
 
-echo "=== Diagnosing + fixing missing NVIDIA driver helper libraries ===" | tee -a env.log
+echo "=== Diagnosing NVIDIA driver helper libraries (extract only what's actually missing) ===" | tee -a env.log
 {
   # Vast bind-mounts libGLX_nvidia.so directly rather than using the
   # nvidia-container-toolkit hook (confirmed: NVIDIA_VISIBLE_DEVICES reads
-  # back as 'void' inside the container). The earlier apt-get-install
-  # approach failed with dpkg "Invalid cross-device link" errors — dpkg's
-  # atomic-replace-via-hardlink logic doesn't work across Vast's bind
-  # mounts. apt-get download + dpkg-deb -x sidesteps dpkg's install
-  # machinery entirely and just extracts the .deb's file contents.
+  # back as 'void' inside the container). Prior version of this script
+  # unconditionally downloaded the latest driver-series package and
+  # overwrote the entire NVIDIA lib set -- this DESTROYS an already-correct,
+  # exact-version-matched bind-mounted stack (confirmed: apt only serves the
+  # latest X.Y.Z patch for a series, not the host's exact patch version, so
+  # a blanket overwrite silently downgrades/upgrades libs that were already
+  # right and only breaks the version match). Fix: check what ldd actually
+  # reports missing first; only fetch + copy those specific missing files.
+  # Never overwrite an existing library file.
   NVIDIA_LIB=$(find /usr/lib/x86_64-linux-gnu /usr/lib -iname "libGLX_nvidia.so.[0-9]*.[0-9]*" 2>/dev/null | head -1)
   echo "NVIDIA_LIB=${NVIDIA_LIB:-not found}"
   if [ -n "$NVIDIA_LIB" ]; then
-    echo "--- ldd on $NVIDIA_LIB (before fix) ---"
-    ldd "$NVIDIA_LIB" 2>&1 || echo "ldd failed to run"
-    DRIVER_VER=$(basename "$NVIDIA_LIB" | grep -oE '[0-9]+' | head -1)
-    echo "Detected driver series: ${DRIVER_VER:-unknown}"
-    if [ -n "$DRIVER_VER" ]; then
-      mkdir -p /tmp/nvidia-extract && cd /tmp/nvidia-extract
-      for PKG in "libnvidia-gl-${DRIVER_VER}" "libnvidia-compute-${DRIVER_VER}"; do
-        echo "Downloading $PKG..."
-        apt-get download "$PKG" 2>&1 || echo "$PKG not available or download failed"
-      done
-      echo "Downloaded $(ls -1 *.deb 2>/dev/null | wc -l) .deb file(s)"
-      for DEB in *.deb; do
-        [ -f "$DEB" ] || continue
-        echo "Extracting $DEB via dpkg-deb -x..."
-        dpkg-deb -x "$DEB" /tmp/nvidia-extract/root 2>&1 || echo "extraction failed for $DEB"
-      done
-      if [ -d /tmp/nvidia-extract/root/usr/lib/x86_64-linux-gnu ]; then
-        echo "Copying extracted .so files into /usr/lib/x86_64-linux-gnu/ ..."
-        cp -av /tmp/nvidia-extract/root/usr/lib/x86_64-linux-gnu/*.so* /usr/lib/x86_64-linux-gnu/ 2>&1 || echo "copy step found nothing to copy"
+    echo "--- ldd on $NVIDIA_LIB (pristine, pre-fix) ---"
+    LDD_OUT=$(ldd "$NVIDIA_LIB" 2>&1)
+    echo "$LDD_OUT"
+    MISSING_LIBS=$(echo "$LDD_OUT" | awk '/not found/ {print $1}')
+    if [ -z "$MISSING_LIBS" ]; then
+      echo "All dependencies of $NVIDIA_LIB already resolve -- stack is complete, nothing to extract."
+    else
+      echo "Missing dependencies detected: $MISSING_LIBS"
+      DRIVER_VER=$(basename "$NVIDIA_LIB" | sed -E 's/^libGLX_nvidia\.so\.//')
+      echo "Exact host driver version: ${DRIVER_VER:-unknown}"
+      DRIVER_SERIES=$(echo "$DRIVER_VER" | grep -oE '^[0-9]+')
+      if [ -n "$DRIVER_SERIES" ]; then
+        mkdir -p /tmp/nvidia-extract && cd /tmp/nvidia-extract
+        for PKG in "libnvidia-gl-${DRIVER_SERIES}" "libnvidia-compute-${DRIVER_SERIES}"; do
+          echo "Downloading $PKG (series-level package, exact patch not available via apt)..."
+          apt-get download "$PKG" 2>&1 || echo "$PKG not available or download failed"
+        done
+        echo "Downloaded $(ls -1 *.deb 2>/dev/null | wc -l) .deb file(s)"
+        for DEB in *.deb; do
+          [ -f "$DEB" ] || continue
+          echo "Extracting $DEB via dpkg-deb -x..."
+          dpkg-deb -x "$DEB" /tmp/nvidia-extract/root 2>&1 || echo "extraction failed for $DEB"
+        done
+        COPIED=0
+        for MISSING in $MISSING_LIBS; do
+          SRC=$(find /tmp/nvidia-extract/root -iname "$MISSING" 2>/dev/null | head -1)
+          if [ -n "$SRC" ]; then
+            echo "Copying only the missing file: $SRC -> /usr/lib/x86_64-linux-gnu/$MISSING (does not touch present libs)"
+            cp -av "$SRC" "/usr/lib/x86_64-linux-gnu/$MISSING" 2>&1 && COPIED=$((COPIED+1))
+          else
+            echo "WARNING: $MISSING not found in extracted package either (series ${DRIVER_SERIES} apt package may not carry it) -- leaving unresolved"
+          fi
+        done
+        echo "Copied $COPIED of $(echo "$MISSING_LIBS" | wc -w) missing file(s). All pre-existing libs left untouched."
+        cd /tmp/oev_run
+        ldconfig
+        echo "--- ldd on $NVIDIA_LIB (after targeted fix) ---"
+        ldd "$NVIDIA_LIB" 2>&1 || echo "ldd failed to run"
       else
-        echo "No extracted library directory found — nothing to copy"
+        echo "Could not parse driver series from version '$DRIVER_VER' -- skipping extraction"
       fi
-      cd /tmp/oev_run
-      ldconfig
-      echo "--- ldd on $NVIDIA_LIB (after fix) ---"
-      ldd "$NVIDIA_LIB" 2>&1 || echo "ldd failed to run"
-      echo "--- vulkaninfo summary (after manual extract) ---"
-      vulkaninfo --summary 2>&1 | head -30 || echo "vulkaninfo still failed after manual extract"
     fi
   else
     echo "No libGLX_nvidia.so.<version> file found — cannot diagnose further"
