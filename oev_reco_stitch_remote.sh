@@ -297,6 +297,39 @@ JSONEOF
   fi
 } 2>&1 | tee -a env.log
 
+echo "=== Production fix: point Vulkan at the EGL ICD frontend for the rest of this run (build/calibrate/stitch) ===" | tee -a env.log
+# Confirmed root cause this session: the system default ICD
+# (/etc/vulkan/icd.d/nvidia_icd.json) points at libGLX_nvidia.so.0, which
+# pulls in GLX/Xorg-dependent init code (fails on the missing `ErrorF`
+# symbol in a headless container -> silent llvmpipe fallback). NVIDIA's own
+# docs say headless/no-X11 environments should use libEGL_nvidia.so.0
+# instead. Confirmed working via isolated read-only test earlier in this
+# script. This block makes that the ACTUAL config for the real
+# calibrate/stitch run below -- system manifest is still left untouched,
+# we just point the loader at our own manifest via env var. NOT wrapped in
+# a `{ } | tee` pipe (those run in a subshell in bash -- exports inside
+# would not survive to the calibrate/stitch commands later in this script).
+EGL_LIB_FOR_RUN=$(find /usr/lib/x86_64-linux-gnu /usr/lib -iname "libEGL_nvidia.so.0" 2>/dev/null | head -1)
+if [ -n "$EGL_LIB_FOR_RUN" ]; then
+  NVIDIA_EGL_ICD=/tmp/oev_run/nvidia_egl_icd.json
+  cat > "$NVIDIA_EGL_ICD" <<JSONEOF
+{
+    "file_format_version" : "1.0.1",
+    "ICD": {
+        "library_path": "libEGL_nvidia.so.0",
+        "api_version" : "1.4.312"
+    }
+}
+JSONEOF
+  export VK_DRIVER_FILES="$NVIDIA_EGL_ICD"
+  export VK_ICD_FILENAMES="$NVIDIA_EGL_ICD"
+  echo "libEGL_nvidia.so.0 found at $EGL_LIB_FOR_RUN -- VK_DRIVER_FILES/VK_ICD_FILENAMES now set to $NVIDIA_EGL_ICD for the remainder of this run" | tee -a env.log
+  echo "--- vulkaninfo --summary sanity check under the new config ---" | tee -a env.log
+  vulkaninfo --summary 2>&1 | grep -iE 'deviceName|deviceType|driverID' | tee -a env.log || echo "sanity check produced no device lines" | tee -a env.log
+else
+  echo "WARNING: libEGL_nvidia.so.0 not found on this host -- leaving Vulkan on the default (GLX) config, expect llvmpipe fallback as before" | tee -a env.log
+fi
+
 if [ "${DIAG_ONLY:-0}" = "1" ]; then
   echo "=== DIAG_ONLY=1: stopping after GPU/Vulkan diagnostics, skipping build/calibrate/stitch entirely ===" | tee -a env.log
   exit 0
@@ -472,7 +505,14 @@ echo "=== stitch.log: reco stitch ===" | tee -a stitch.log
 # finding that motivated exposing these instead of hardcoding 7680x1080.
 STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o panorama.mp4
   --width "${OUT_WIDTH:-7680}" --height "${OUT_HEIGHT:-1080}"
-  --no-zero-copy --projection cylindrical-stereo)
+  --projection cylindrical-stereo)
+# --no-zero-copy removed (was hardcoded here): per reco-cli --help, that flag
+# forces CPU video decode instead of GPU zero-copy/NVDEC, and exists only for
+# the AI-tracking path (ORT CPU detector needs raw frames without --model +
+# TensorRT). This workflow never passes --model, so it was silently forcing
+# CPU decode on every run regardless of GPU/Vulkan availability. Now that the
+# EGL ICD fix above gives real GPU access, letting zero-copy run by default
+# lets us actually confirm NVDEC decode, not just Vulkan render.
 [ -n "${YAW_SPAN_DEG:-}" ] && STITCH_ARGS+=(--yaw-span-deg "$YAW_SPAN_DEG")
 [ -n "${VERTICAL_FOV_DEG:-}" ] && STITCH_ARGS+=(--vertical-fov-deg "$VERTICAL_FOV_DEG")
 [ -n "${YAW_CENTER_DEG:-}" ] && STITCH_ARGS+=(--yaw-center-deg "$YAW_CENTER_DEG")
@@ -490,6 +530,16 @@ if [ ! -f panorama.mp4 ]; then
   exit 3
 fi
 echo "Stitch OK: panorama.mp4 written" | tee -a stitch.log
+
+echo "=== GPU usage summary (Vulkan render device + decode backend, from calibrate.log/stitch.log) ===" | tee -a env.log
+{
+  echo "--- Vulkan/GPU device selected (calibrate + stitch) ---"
+  grep -iE 'Selected GPU|deviceName|llvmpipe|RTX|GeForce' calibrate.log stitch.log 2>&1 || echo "no GPU-selection lines found"
+  echo "--- Decode backend / zero-copy status ---"
+  grep -iE 'zero-copy|decode_backend|NVDEC|cuvid|hwaccel' calibrate.log stitch.log 2>&1 || echo "no decode-backend lines found"
+  echo "--- Encoder used ---"
+  grep -iE 'encoder|libx264|nvenc|h264_nvenc' stitch.log 2>&1 || echo "no encoder lines found"
+} 2>&1 | tee -a env.log
 
 echo "=== All stages completed ==="
 
