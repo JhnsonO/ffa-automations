@@ -640,3 +640,26 @@ Mechanics: plain `curl` + `jq` against the GitHub REST API (release lookup/creat
 - **NVENC encode: confirmed structural, not a device-init symptom, not fixable from this codebase.** `OpenEncodeSessionEx failed: unsupported device (2)` recurs even with a fully healthy `cuInit`+enumerable device. This matches the well-known NVIDIA driver restriction on GeForce/consumer-tier cards in virtualized or containerized environments (concurrent-session cap and/or encode-engine exposure restrictions that don't apply to Quadro/RTX-Pro/datacenter cards) — Vast rents consumer GeForce hardware. The only known workaround is an unofficial patched driver (`nvidia-patch`), not appropriate on rented infrastructure. **Original project-history conclusion ("NVENC confirmed unusable on Vast.ai containers") stands, now with a more specific and better-evidenced mechanism.** Not pursued further.
 
 **Practical implication for the production fix:** stop treating decode/encode as something to engineer around in this script. The real remaining lever is a **preflight GPU-health check + reject/retry bad Vast instances** at dispatch time (e.g., confirm `cuInit` succeeds and NVDEC actually initializes before committing to the full build/calibrate/stitch run), rather than further CUDA-package surgery. Not yet implemented — proposed as the next concrete step, pending Johnson's go-ahead.
+
+## 2026-08-10 session (cont.): GPU-health preflight built and validated — bad hosts now auto-rejected before any expensive work
+
+**Built (`7e74ade`):** new file `oev_gpu_preflight.sh` — self-contained SSH-run health probe with no dependency on downloaded clips (generates its own tiny synthetic test clip for the NVDEC check). Tests, in order: (1) permanent EGL ICD fix + `vulkaninfo` reports a real `DISCRETE_GPU`, not `llvmpipe`; (2) bare CUDA driver API (`dlopen("libcuda.so.1")`, NOT libcudart) — `cuInit(0)` succeeds, `cuDeviceGetCount >= 1`; (3) `ffmpeg -hwaccel cuda -hwaccel_output_format cuda` decode of a self-generated synthetic clip succeeds. NVENC deliberately excluded from pass criteria (confirmed structural limitation, not a host-health signal — see above). Outputs six parseable `PREFLIGHT_*=` lines (GPU model, driver version, and PASS/FAIL per check + overall) always as the last lines of output regardless of where a check fails.
+
+**Wired into `.github/workflows/oev-reco-stitch.yml`'s offer-acceptance loop** (previously: accept first offer that reaches `running` + has an IP, full stop). Now, per offer: reach `running` → wait for SSH (folded in from what was a separate later step) → scp + run the preflight script → parse result → PASS: select and proceed; FAIL: log `offer_id`, `reliability`, reported GPU model/driver, and which specific check(s) failed, terminate that instance immediately, move to next offer. Offers-tried ceiling raised from 5 to 8 (new rejection reason added, more attempts budgeted accordingly). CUDA-runtime `dpkg-deb -x` extraction workaround was explicitly NOT added, per direction — shelved as unproven/unnecessary.
+
+**Validation run `31385066583`** (`diag_only=true`, so only the launch step's new logic was exercised against real Vast capacity): worked exactly as designed —
+
+| Offer | GPU | Driver | Vulkan | CUDA init | NVDEC | Verdict |
+|---|---|---|---|---|---|---|
+| 46128000 | RTX 4080 | 580.126.09 | PASS | PASS | FAIL | rejected, terminated |
+| 30245022 | RTX 3090 | 580.126.09 | PASS | PASS | FAIL | rejected, terminated |
+| 44949929 | RTX PRO 4000 Blackwell | 595.58.03 | FAIL | PASS | FAIL | rejected, terminated |
+| 45995255 | RTX 4070 Ti SUPER | 610.43.02 | PASS | PASS | PASS | **selected** |
+
+3 bad hosts auto-rejected and terminated with zero manual intervention; landed on a fully healthy 4th offer. Total preflight cost ≈6 min across 4 offers vs. discovering a bad host 10+ min into a real build/calibrate/stitch run.
+
+**New data points from this run, not yet acted on (small sample, noted for future pattern-watching):**
+- First observed Vulkan **FAIL** (not just NVDEC) — on an RTX PRO 4000 Blackwell host, driver `595.58.03`. The existing offer-query `bad_gpu` exclusion list only filters consumer RTX 50-series Blackwell cards, not RTX PRO Blackwell — worth revisiting if this recurs.
+- Both NVDEC failures this run were on the same driver line (`580.126.09`) — could be a real driver-version correlation or coincidence at n=2; not enough evidence to act on yet, but exactly the kind of signal this preflight is designed to surface over time for a future blacklist/threshold decision.
+
+**Net state: GPU-health preflight is live on `fix/oev-glx-glob-diag`, working as intended.** Combined with the permanent EGL Vulkan fix, every future dispatch on this branch should land on a host with confirmed working Vulkan render + NVDEC decode before any expensive work begins. NVENC remains CPU/`libx264` on every host, by design (not tested, not a rejection criterion). Not yet merged to main.
