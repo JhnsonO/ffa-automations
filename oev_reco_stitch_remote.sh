@@ -322,6 +322,7 @@ STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o panorama.mp4
 [ -n "${YAW_SPAN_DEG:-}" ] && STITCH_ARGS+=(--yaw-span-deg "$YAW_SPAN_DEG")
 [ -n "${VERTICAL_FOV_DEG:-}" ] && STITCH_ARGS+=(--vertical-fov-deg "$VERTICAL_FOV_DEG")
 [ -n "${YAW_CENTER_DEG:-}" ] && STITCH_ARGS+=(--yaw-center-deg "$YAW_CENTER_DEG")
+[ -n "${PITCH_CENTER_DEG:-}" ] && STITCH_ARGS+=(--pitch-center-deg "$PITCH_CENTER_DEG")
 [ -n "${MAX_FRAMES:-}" ] && STITCH_ARGS+=(--max-frames "$MAX_FRAMES")
 echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch.log
 stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
