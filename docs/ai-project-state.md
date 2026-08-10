@@ -656,3 +656,22 @@ Mechanics: plain `curl` + `jq` against the GitHub REST API (release lookup/creat
 1. Check outcome of run `31399426095`. If it fails again, this is diagnose→fix→dispatch cycle 2 -- do not reopen driver-correlation or selection-tiering (closed), only debug the actual new failure.
 2. If it passes: verify in logs -- real Vulkan device (not `llvmpipe`), real NVDEC decode (not CPU fallback), valid `panorama.mp4` (ffprobe dims/duration/codecs), `libx264` encode fallback as expected. If all confirmed, Johnson's direction is to call Vast/GPU infrastructure "production-ready enough for now" and stop tuning unless a production run surfaces a real problem.
 3. Orthogonal, can run in parallel any time: VR180/spherical-video metadata injection on existing CPU-rendered output.
+
+## 2026-08-10 session (cont. 6): M1 GPU sign-off PASSED — Vast/GPU infrastructure track closed for now
+
+**Run `31399426095`: SUCCESS.** Real 300-frame M1 sign-off preview from `main`, locked config `yaw_span=178°, vertical_fov=42°, yaw_center=-54°, pitch_center=-8°`. All four acceptance criteria confirmed from job logs:
+- Vulkan: `Selected GPU: NVIDIA GeForce RTX 4080 (Vulkan)` -- real GPU, not `llvmpipe`.
+- NVDEC: `left decoder: NVDEC (CUDA)` / `right decoder: NVDEC (CUDA)`, both 3840x2160 sources -- real hardware decode confirmed.
+- Encode: `h264_nvenc: No capable devices found` -> clean fallback to `libx264 (software)`, as expected (consistent with confirmed structural NVENC-on-Vast limitation).
+- Output: `Stitch OK: panorama.mp4 written`, 300/300 frames, 7680x1080, 24.2fps. Instance `47379398` (offer, machine_id=112749, RTX 4080, driver 595.71.05, normal pool -- neither known-good tier was exercised) cleaned up correctly.
+
+**Minor non-blocking observation:** log also shows `Force CPU decode: zero-copy disabled by --no-zero-copy` / session summary `Decode: CPU upload`, despite NVDEC hardware decode being confirmed on both streams. This is `reco-cli`'s zero-copy *pipeline* mode (GPU-resident frame path end-to-end) being off, distinct from whether NVDEC hardware did the decode (it did). Not a failure against any of the four sign-off criteria. Worth revisiting only if a future perf pass specifically targets zero-copy throughput.
+
+**Per Johnson's explicit direction: Vast/GPU selection infrastructure is now "production-ready enough for now." Stop tuning preflight, driver correlation, or offer selection unless a production run surfaces a real problem.**
+
+**Session totals:** `fix/oev-glx-glob-diag` + `feat/oev-known-good-selection` both merged to `main` (merge commit `cecf5dbd`). One real production bug found and fixed on `main` directly (`03169c8`, TimeoutExpired bytes/str crash -- also caused an orphaned Vast instance on the first attempt, run `31397771578`, manually terminated by Johnson). Known-good tiers seeded: `machine_id=7213` (cheap, RTX 3090, ~$0.35/hr), `machine_id=2750` (fallback, A100-SXM4-40GB, ~$1.19/hr) -- neither tier has been exercised by a passing run yet (all passes so far landed in the normal pool), so they remain unverified-in-practice but logically sound and diff-reviewed.
+
+**Next (fresh chat -- mandatory bootstrap: read `CLAUDE.md` + this file first):**
+1. GPU/selection infrastructure track is CLOSED. Do not resume driver-correlation, preflight tuning, or known-good list curation unless a real production run shows a concrete problem.
+2. Orthogonal, can run in parallel any time: VR180/spherical-video metadata injection on existing CPU-rendered output.
+3. Otherwise: next roadmap item per Johnson's prior direction is the follow-cam/tracking track, or a quality/bitrate pass on the OEV stitch output.
