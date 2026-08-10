@@ -1,0 +1,519 @@
+name: OEV — Detector Resolution A/B Test (Vast.ai GPU)
+
+on:
+  workflow_dispatch:
+    inputs:
+      left_clip:
+        description: 'Exact filename in OEV Drive Trimmed/ folder (left/first camera)'
+        required: false
+        default: 'trimmed_GX010197.MP4'
+        type: string
+      right_clip:
+        description: 'Exact filename in OEV Drive Trimmed/ folder (right/second camera)'
+        required: false
+        default: 'trimmed_GX010173.MP4'
+        type: string
+      start_sec:
+        description: 'Test window start, seconds into the clip (matches run 31427290826 640 baseline window)'
+        required: false
+        default: '7'
+        type: string
+      end_sec:
+        description: 'Test window end, seconds into the clip'
+        required: false
+        default: '27'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  detector-res-test:
+    name: Detector Resolution A/B Test (Vast.ai)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Generate SSH key pair
+        run: |
+          pip install -q cryptography
+          python3 -u - << 'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+          key = Ed25519PrivateKey.generate()
+          priv = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
+          pub = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+          with open('/tmp/vastai_key', 'wb') as f: f.write(priv)
+          with open('/tmp/vastai_key.pub', 'wb') as f: f.write(pub + b' ffa-oev-stitch\n')
+          os.chmod('/tmp/vastai_key', 0o600)
+          PY
+
+      # Vast.ai lifecycle mechanics (launch-retry, offer selection loop,
+      # delete_instance with 3-endpoint fallback) copied verbatim from
+      # playcam-poc.yml per CLAUDE.md. Only the offer query below is
+      # adapted: reco calibrate/stitch is far lighter than YOLO, so GPU
+      # RAM / CPU thresholds are relaxed, but a GPU is still required
+      # for reco stitch's wgpu renderer.
+      - name: Launch reliable Vast.ai GPU instance
+        id: launch
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        run: |
+          python3 -u - << 'PY'
+          import os, json, time, urllib.request, urllib.parse, sys, subprocess
+
+          api_key = os.environ['VAST_API_KEY']
+          base = 'https://console.vast.ai/api/v0'
+          cloud = 'https://cloud.vast.ai/api/v1'
+          headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json', 'Accept': 'application/json'}
+          pub_key = open('/tmp/vastai_key.pub').read().strip()
+
+          def request(method, url, data=None, timeout=25):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  return json.loads(r.read())
+
+          def delete_instance(instance_id):
+              last_exc = None
+              for ep in (f'{base}/instances/{instance_id}/',
+                         f'https://cloud.vast.ai/api/v0/instances/{instance_id}/',
+                         f'{cloud}/instances/{instance_id}/'):
+                  try:
+                      request('DELETE', ep, timeout=15)
+                      return
+                  except Exception as exc:
+                      last_exc = exc
+              print(f'Cleanup warning for {instance_id}: all endpoints failed, last error: {last_exc}')
+
+          request('POST', f'{base}/ssh/', {'ssh_key': pub_key})
+
+          # Known-good machine preference, tiered by price policy (2026-08-10,
+          # Johnson's direction): "known-good" means proven healthy, not
+          # automatically first-choice regardless of price. Populated
+          # manually from past "CANDIDATE KNOWN-GOOD" log lines.
+          #   'cheap'    -> tried before the normal pool (consumer-GPU-class
+          #                 price range, a cheap win if it's available).
+          #   'fallback' -> tried only after the normal pool is exhausted
+          #                 (proven reliable but priced above the cheap
+          #                 range, e.g. datacenter-class cards).
+          # Preference only in both tiers -- preflight remains mandatory
+          # regardless of machine_id or tier. Empty dict is valid; behavior
+          # then matches the normal pool with no preference tiers.
+          KNOWN_GOOD_MACHINES = {
+              7213: 'cheap',      # RTX 3090, ~$0.35/hr, confirmed PASS
+                                  # 2026-08-10 (run 31396647812) -- consumer-
+                                  # GPU-class price range, try first.
+              2750: 'fallback',  # A100-SXM4-40GB, $1.19/hr, confirmed PASS
+                                  # 2026-08-10 (run 31392655465) -- reliable,
+                                  # but priced well above the 4070/4080/4090
+                                  # class hosts this pool mostly returns, so
+                                  # fallback only, not preferred-first.
+          }
+
+          query = {
+              'verified': {'eq': True},
+              'rentable': {'eq': True},
+              'reliability': {'gte': 0.995},
+              'gpu_ram': {'gte': 4096},
+              'num_gpus': {'gte': 1},
+              'cpu_cores': {'gte': 8},
+              'cpu_ram': {'gte': 8192},
+              'disk_space': {'gte': 40},
+              'inet_down': {'gte': 200},
+          }
+          bundles = request('GET', f'{base}/bundles/?' + urllib.parse.urlencode({'q': json.dumps(query)}))
+          offers = bundles.get('offers', [])
+          bad_cpu = ('E5-', 'E3-', 'Opteron', 'Xeon W3', 'Xeon X5')
+          offers = [o for o in offers if not any(x in (o.get('cpu_name') or '') for x in bad_cpu)]
+          # Blackwell (RTX 50-series, sm_120) untested against this image/toolchain -
+          # excluded per the same caution as playcam-poc.yml until verified.
+          # RTX PRO (Blackwell workstation line -- RTX PRO 4000/4500/5000/6000)
+          # added 2026-08-10: failed the EGL Vulkan preflight check on 2/2
+          # attempts across two different driver builds (595.58.03, 590.48.01),
+          # a distinct failure mode from every consumer RTX 30/40-series host
+          # tested (which all pass Vulkan cleanly and only vary on NVDEC). Low
+          # cost to exclude for now -- see docs/ai-project-state.md.
+          bad_gpu = ('RTX 5090', 'RTX 5080', 'RTX 5070', 'RTX 5060', 'RTX 5050', 'RTX PRO')
+          offers = [o for o in offers if not any(x in (o.get('gpu_name') or '') for x in bad_gpu)]
+          # Three-tier ranking (Johnson's direction, 2026-08-10): cheap
+          # known-good first, then the normal high-reliability pool
+          # (preflight as-is), then expensive known-good only as a last
+          # resort if the normal pool keeps failing. Cheapest-first within
+          # each tier. Preference only -- does not bypass preflight or any
+          # resource/reliability filter above.
+          cheap_known_good = [o for o in offers if KNOWN_GOOD_MACHINES.get(o.get('machine_id')) == 'cheap']
+          fallback_known_good = [o for o in offers if KNOWN_GOOD_MACHINES.get(o.get('machine_id')) == 'fallback']
+          normal_pool = [o for o in offers if o.get('machine_id') not in KNOWN_GOOD_MACHINES]
+          cheap_known_good.sort(key=lambda o: float(o.get('dph_total', 999)))
+          normal_pool.sort(key=lambda o: float(o.get('dph_total', 999)))
+          fallback_known_good.sort(key=lambda o: float(o.get('dph_total', 999)))
+          offers = cheap_known_good + normal_pool + fallback_known_good
+          if not offers:
+              print('ERROR: No reliable GPU offers matched the OEV reco-stitch requirements', file=sys.stderr)
+              sys.exit(1)
+          if cheap_known_good:
+              print(f'{len(cheap_known_good)} cheap known-good machine(s) have matching offers -- trying these first.')
+          if fallback_known_good:
+              print(f'{len(fallback_known_good)} fallback known-good machine(s) available if the normal pool ({len(normal_pool)} offers) is exhausted.')
+
+          print(f'Found {len(offers)} eligible offers; trying up to 15 cheapest reliable offers (raised from 8 -- RTX PRO/Blackwell now filtered out at the query level, so this budget is a safety net on top of a smarter pool, not a brute-force fallback).')
+          selected = None
+          MAX_OFFERS_TRIED = 15
+          for index, offer in enumerate(offers[:MAX_OFFERS_TRIED], start=1):
+              offer_id = offer['id']
+              reached_running = None
+              tier = KNOWN_GOOD_MACHINES.get(offer.get('machine_id'))
+              tier_tag = f' [KNOWN-GOOD-{tier.upper()}]' if tier else ''
+              print('Trying offer %s (%s/%s): machine_id=%s gpu=%s vram=%sMB reliability=%s cpu=%s $%s/hr%s' % (
+                  offer_id, index, MAX_OFFERS_TRIED, offer.get('machine_id', '?'), offer.get('gpu_name', 'unknown'), offer.get('gpu_ram', '?'),
+                  offer.get('reliability', '?'), offer.get('cpu_name', 'unknown'), offer.get('dph_total', '?'),
+                  tier_tag))
+              try:
+                  result = request('PUT', f'{base}/asks/{offer_id}/', {
+                      'client_id': 'me',
+                      'image': 'ubuntu:24.04',
+                      'disk': 40,
+                      'onstart': '',
+                      'runtype': 'ssh',
+                      'ssh_key': pub_key,
+                      'env': {
+                          'NVIDIA_VISIBLE_DEVICES': 'all',
+                          'NVIDIA_DRIVER_CAPABILITIES': 'all',
+                      },
+                  })
+              except Exception as exc:
+                  print(f'Launch request failed for offer {offer_id}: {exc}')
+                  continue
+              instance_id = result.get('new_contract')
+              if not instance_id:
+                  print(f'Offer {offer_id} did not return an instance: {result}')
+                  continue
+
+              for attempt in range(30):
+                  time.sleep(10)
+                  try:
+                      instances = request('GET', f'{cloud}/instances/')
+                      inst = next((x for x in instances.get('instances', []) if x.get('id') == instance_id), None)
+                  except Exception as exc:
+                      print(f'  [{attempt + 1}/30] status lookup failed: {exc}')
+                      continue
+                  if not inst:
+                      print(f'  [{attempt + 1}/30] instance not listed yet')
+                      continue
+                  status = inst.get('actual_status', '?')
+                  ip = inst.get('ssh_host') or inst.get('public_ipaddr')
+                  port = inst.get('ssh_port', 22)
+                  print(f'  [{attempt + 1}/30] status={status} ip={ip} port={port}')
+                  if status == 'running' and ip:
+                      reached_running = (ip, port)
+                      break
+                  if status in ('error', 'failed', 'stopped'):
+                      break
+
+              if not reached_running:
+                  print(f'Offer {offer_id} never reached running state; terminating instance {instance_id} and trying next.')
+                  delete_instance(instance_id)
+                  continue
+              ip, port = reached_running
+
+              # --- SSH readiness (folded in here, ahead of acceptance, rather
+              # than as a separate later step -- an offer isn't "selected"
+              # until we've actually confirmed we can reach it) ---
+              ssh_ready = False
+              for attempt in range(18):
+                  try:
+                      r = subprocess.run(
+                          ['ssh', '-i', '/tmp/vastai_key', '-p', str(port),
+                           '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
+                           f'root@{ip}', 'echo OK'],
+                          capture_output=True, timeout=15, text=True)
+                      if 'OK' in r.stdout:
+                          ssh_ready = True
+                          break
+                  except Exception:
+                      pass
+                  time.sleep(5)
+              if not ssh_ready:
+                  print(f'Offer {offer_id}: SSH never came up; terminating instance {instance_id} and trying next.')
+                  delete_instance(instance_id)
+                  continue
+
+              # --- GPU-health preflight: reject bad hosts BEFORE any clip
+              # download, Rust build, calibrate, or stitch work. Vast host
+              # GPU-passthrough completeness is inconsistent (confirmed
+              # across multiple prior dispatches -- see
+              # docs/ai-project-state.md); this catches a bad host in
+              # ~1 minute instead of 10+. ---
+              try:
+                  subprocess.run(
+                      ['scp', '-i', '/tmp/vastai_key', '-P', str(port),
+                       '-o', 'StrictHostKeyChecking=no',
+                       'oev_gpu_preflight.sh', f'root@{ip}:/tmp/oev_gpu_preflight.sh'],
+                      capture_output=True, timeout=30, text=True, check=True)
+                  subprocess.run(
+                      ['ssh', '-i', '/tmp/vastai_key', '-p', str(port),
+                       '-o', 'StrictHostKeyChecking=no',
+                       f'root@{ip}', 'chmod +x /tmp/oev_gpu_preflight.sh'],
+                      capture_output=True, timeout=15, text=True, check=True)
+                  preflight = subprocess.run(
+                      ['ssh', '-i', '/tmp/vastai_key', '-p', str(port),
+                       '-o', 'StrictHostKeyChecking=no', '-o', 'ServerAliveInterval=15',
+                       f'root@{ip}', 'stdbuf -oL -eL /tmp/oev_gpu_preflight.sh'],
+                      capture_output=True, timeout=180, text=True)
+                  preflight_out = preflight.stdout
+                  if preflight.stderr:
+                      preflight_out += f'\n--- stderr ---\n{preflight.stderr}'
+                  if preflight.returncode != 0:
+                      preflight_out += f'\n(preflight script exit code: {preflight.returncode})'
+              except subprocess.TimeoutExpired as exc:
+                  print(f'Offer {offer_id}: preflight execution TIMED OUT after 180s')
+                  # exc.stdout/exc.stderr are always bytes on a timeout, even
+                  # with text=True on the run() call -- decoding only happens
+                  # on a *successful* completion. Confirmed root cause of a
+                  # real crash (2026-08-10, run 31397771578): plain str
+                  # concatenation raised TypeError and killed the whole
+                  # launch step before instance cleanup could run.
+                  out = exc.stdout.decode(errors='replace') if isinstance(exc.stdout, bytes) else (exc.stdout or '')
+                  err = exc.stderr.decode(errors='replace') if isinstance(exc.stderr, bytes) else (exc.stderr or '')
+                  preflight_out = out + '\n--- stderr ---\n' + err + '\n(timed out after 180s)'
+              except Exception as exc:
+                  print(f'Offer {offer_id}: preflight execution failed to run at all: {exc}')
+                  preflight_out = ''
+
+              def _pf(field, text=preflight_out):
+                  for line in text.splitlines():
+                      if line.startswith(field + '='):
+                          return line.split('=', 1)[1]
+                  return 'unknown'
+
+              pf_gpu_model = _pf('PREFLIGHT_GPU_MODEL')
+              pf_driver = _pf('PREFLIGHT_DRIVER_VERSION')
+              pf_vulkan = _pf('PREFLIGHT_VULKAN')
+              pf_cuda = _pf('PREFLIGHT_CUDA_INIT')
+              pf_nvdec = _pf('PREFLIGHT_NVDEC')
+              pf_result = _pf('PREFLIGHT_RESULT')
+
+              print('Preflight offer=%s machine_id=%s reliability=%s gpu_model=%s driver=%s vulkan=%s cuda_init=%s nvdec=%s -> %s' % (
+                  offer_id, offer.get('machine_id', '?'), offer.get('reliability', '?'), pf_gpu_model, pf_driver,
+                  pf_vulkan, pf_cuda, pf_nvdec, pf_result))
+              print(f'--- Full preflight output for offer {offer_id} (for failure diagnosis / driver-correlation tracking) ---')
+              print(preflight_out if preflight_out else '(no output captured)')
+              print(f'--- end preflight output for offer {offer_id} ---')
+
+              if pf_result != 'PASS':
+                  failed_checks = [name for name, val in
+                                    (('vulkan', pf_vulkan), ('cuda_init', pf_cuda), ('nvdec', pf_nvdec))
+                                    if val != 'PASS']
+                  print(f'Offer {offer_id} FAILED GPU-health preflight (failed checks: {failed_checks or ["unknown/no-output"]}); '
+                        f'terminating instance {instance_id} and trying next offer.')
+                  delete_instance(instance_id)
+                  continue
+
+              print(f'Offer {offer_id} PASSED GPU-health preflight (gpu={pf_gpu_model}, driver={pf_driver}).')
+              print(f'CANDIDATE KNOWN-GOOD: machine_id={offer.get("machine_id")} driver={pf_driver} gpu={pf_gpu_model} offer={offer_id}')
+              selected = (instance_id, ip, port, offer)
+              break
+
+          if not selected:
+              print(f'ERROR: None of the first {MAX_OFFERS_TRIED} reliable GPU offers passed launch + SSH + GPU-health preflight', file=sys.stderr)
+              sys.exit(1)
+          instance_id, ip, port, offer = selected
+          print(f'Selected ready instance: id={instance_id} offer={offer_id} machine_id={offer.get("machine_id")} gpu={offer.get("gpu_name")} vram={offer.get("gpu_ram")}MB reliability={offer.get("reliability")} preflight_gpu={pf_gpu_model} preflight_driver={pf_driver} ip={ip}:{port}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'instance_id={instance_id}\nip={ip}\nport={port}\n')
+              f.write(f'offer_id={offer_id}\nmachine_id={offer.get("machine_id", "unknown")}\nreliability={offer.get("reliability", "unknown")}\n')
+              f.write(f'preflight_gpu_model={pf_gpu_model}\npreflight_driver_version={pf_driver}\n')
+          PY
+
+      - name: Wait for SSH
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          for i in $(seq 1 18); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 -i /tmp/vastai_key -p "$PORT" "root@$IP" 'echo OK' 2>/dev/null | grep -q OK; then
+              echo 'SSH ready'; exit 0
+            fi
+            echo "SSH not ready ($i/18)"; sleep 5
+          done
+          echo 'ERROR: SSH never came up'; exit 1
+
+      - name: Resolve clip file IDs in OEV Drive Trimmed/ folder
+        id: resolve
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          LEFT_CLIP: ${{ github.event.inputs.left_clip }}
+          RIGHT_CLIP: ${{ github.event.inputs.right_clip }}
+        run: |
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -u - << 'PY'
+          import json, os, urllib.request as req, urllib.parse
+
+          OEV_DRIVE_FOLDER_ID = "18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ"
+
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          payload = json.dumps({
+              'client_id': token_data.get('client_id') or creds_data['installed']['client_id'],
+              'client_secret': token_data.get('client_secret') or creds_data['installed']['client_secret'],
+              'refresh_token': token_data['refresh_token'],
+              'grant_type': 'refresh_token',
+          }).encode()
+          resp = req.urlopen(req.Request('https://oauth2.googleapis.com/token', data=payload,
+                                          headers={'Content-Type': 'application/json'}, method='POST'))
+          token = json.loads(resp.read())
+          if 'access_token' not in token:
+              raise RuntimeError(f'Token refresh failed: {token}')
+          access_token = token['access_token']
+          open('/tmp/drive_token.txt', 'w').write(access_token)
+
+          def find_in_trimmed(filename):
+              # Locate the Trimmed/ subfolder, then the file within it.
+              q = f"name='Trimmed' and '{OEV_DRIVE_FOLDER_ID}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'"
+              url = 'https://www.googleapis.com/drive/v3/files?' + urllib.parse.urlencode({
+                  'q': q, 'fields': 'files(id)', 'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'})
+              r = req.urlopen(req.Request(url, headers={'Authorization': f'Bearer {access_token}'}))
+              folders = json.loads(r.read()).get('files', [])
+              if not folders:
+                  raise RuntimeError('Trimmed/ subfolder not found in OEV Drive folder')
+              trimmed_id = folders[0]['id']
+
+              q = f"name='{filename}' and '{trimmed_id}' in parents and trashed=false"
+              url = 'https://www.googleapis.com/drive/v3/files?' + urllib.parse.urlencode({
+                  'q': q, 'fields': 'files(id,name)', 'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'})
+              r = req.urlopen(req.Request(url, headers={'Authorization': f'Bearer {access_token}'}))
+              files = json.loads(r.read()).get('files', [])
+              if not files:
+                  raise RuntimeError(f'{filename} not found in Trimmed/ folder')
+              return files[0]['id']
+
+          left_id = find_in_trimmed(os.environ['LEFT_CLIP'])
+          right_id = find_in_trimmed(os.environ['RIGHT_CLIP'])
+          print(f'left_clip_id={left_id}')
+          print(f'right_clip_id={right_id}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'left_id={left_id}\nright_id={right_id}\n')
+          PY
+
+      - name: Download clip pair to instance
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          LEFT_ID: ${{ steps.resolve.outputs.left_id }}
+          RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          $SSH "apt-get update -qq && apt-get install -y -qq --no-install-recommends aria2 > /dev/null; mkdir -p /tmp/oev_run"
+          $SSH "aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=left.mp4 'https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media' 2>&1 | tail -5"
+          $SSH "aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=right.mp4 'https://www.googleapis.com/drive/v3/files/$RIGHT_ID?alt=media' 2>&1 | tail -5"
+          $SSH "ls -la /tmp/oev_run/"
+
+      - name: Upload + run detector resolution A/B test script
+        id: run_detector_test
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          START_SEC: ${{ github.event.inputs.start_sec }}
+          END_SEC: ${{ github.event.inputs.end_sec }}
+        run: |
+          SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP oev_detector_res_test_remote.sh root@$IP:/tmp/oev_run/
+          $SSH "chmod +x /tmp/oev_run/oev_detector_res_test_remote.sh"
+          # Do not fail the step on non-zero exit -- logs/partial outputs must
+          # still be pulled back below even if 1280 or 1920 failed partway.
+          $SSH "GH_TOKEN='$GH_TOKEN' START_SEC='$START_SEC' END_SEC='$END_SEC' stdbuf -oL -eL /tmp/oev_run/oev_detector_res_test_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Pull back logs + outputs
+        if: always()
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
+          OFFER_ID: ${{ steps.launch.outputs.offer_id }}
+          MACHINE_ID: ${{ steps.launch.outputs.machine_id }}
+          RELIABILITY: ${{ steps.launch.outputs.reliability }}
+          PREFLIGHT_GPU_MODEL: ${{ steps.launch.outputs.preflight_gpu_model }}
+          PREFLIGHT_DRIVER_VERSION: ${{ steps.launch.outputs.preflight_driver_version }}
+        run: |
+          SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          mkdir -p detector_test_artifacts
+          cat > detector_test_artifacts/run_metadata.txt <<META
+          instance_id=$INSTANCE_ID
+          offer_id=$OFFER_ID
+          machine_id=$MACHINE_ID
+          reliability=$RELIABILITY
+          preflight_gpu_model=$PREFLIGHT_GPU_MODEL
+          preflight_driver_version=$PREFLIGHT_DRIVER_VERSION
+          ip=$IP
+          port=$PORT
+          META
+          cat detector_test_artifacts/run_metadata.txt
+          for f in env.log build.log calibrate.log stitch_1280.log stitch_1920.log \
+                   timing_summary.txt match.json \
+                   events_1280.jsonl events_1920.jsonl \
+                   left_window.mp4 right_window.mp4; do
+            $SCP "root@$IP:/tmp/oev_run/$f" detector_test_artifacts/ || echo "$f missing"
+          done
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-detector-res-test-${{ github.run_id }}
+          path: detector_test_artifacts/
+          retention-days: 14
+
+      - name: Report outcome
+        if: always()
+        env:
+          REMOTE_EXIT: ${{ steps.run_detector_test.outputs.remote_exit }}
+        run: |
+          echo "Remote script exit code: ${REMOTE_EXIT:-unknown}"
+          echo "(1=env/build, 2=calibrate, 3=1280 export, 4=1920 export, 5=1280 stitch, 6=1920 stitch, 0=both resolutions completed)"
+          if [ "${REMOTE_EXIT:-1}" != "0" ]; then
+            echo "::warning::Detector A/B test did not fully complete (exit ${REMOTE_EXIT:-unknown}). Check timing_summary.txt / stitch_*.log in the artifact for whichever resolution(s) did complete before treating this as a total loss."
+          fi
+
+      - name: Terminate Vast.ai instance
+        if: always()
+        env:
+          VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+          INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error
+          instance_id = os.environ.get('INSTANCE_ID', '')
+          if not instance_id:
+              print('No instance ID'); raise SystemExit(0)
+
+          headers = {'Authorization': f"Bearer {os.environ['VAST_API_KEY']}", 'Content-Type': 'application/json'}
+          endpoints = [
+              f'https://console.vast.ai/api/v0/instances/{instance_id}/',
+              f'https://cloud.vast.ai/api/v0/instances/{instance_id}/',
+              f'https://cloud.vast.ai/api/v1/instances/{instance_id}/',
+          ]
+          done = False
+          for url in endpoints:
+              req = urllib.request.Request(url, method='DELETE', headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      print(f'Instance {instance_id} terminated OK via {url}: {r.read().decode()[:200]}')
+                  done = True
+                  break
+              except urllib.error.HTTPError as exc:
+                  print(f'  {url} -> HTTP {exc.code}: {exc.read().decode(errors="replace")[:200]}')
+              except Exception as exc:
+                  print(f'  {url} -> error: {exc}')
+          if not done:
+              print(f'::error::Instance {instance_id} may still be RUNNING — check https://cloud.vast.ai/instances manually')
+          PY
