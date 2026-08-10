@@ -144,16 +144,22 @@ jobs:
           offers = [o for o in offers if not any(x in (o.get('cpu_name') or '') for x in bad_cpu)]
           # Blackwell (RTX 50-series, sm_120) untested against this image/toolchain -
           # excluded per the same caution as playcam-poc.yml until verified.
-          bad_gpu = ('RTX 5090', 'RTX 5080', 'RTX 5070', 'RTX 5060', 'RTX 5050')
+          # RTX PRO (Blackwell workstation line -- RTX PRO 4000/4500/5000/6000)
+          # added 2026-08-10: failed the EGL Vulkan preflight check on 2/2
+          # attempts across two different driver builds (595.58.03, 590.48.01),
+          # a distinct failure mode from every consumer RTX 30/40-series host
+          # tested (which all pass Vulkan cleanly and only vary on NVDEC). Low
+          # cost to exclude for now -- see docs/ai-project-state.md.
+          bad_gpu = ('RTX 5090', 'RTX 5080', 'RTX 5070', 'RTX 5060', 'RTX 5050', 'RTX PRO')
           offers = [o for o in offers if not any(x in (o.get('gpu_name') or '') for x in bad_gpu)]
           offers.sort(key=lambda o: float(o.get('dph_total', 999)))
           if not offers:
               print('ERROR: No reliable GPU offers matched the OEV reco-stitch requirements', file=sys.stderr)
               sys.exit(1)
 
-          print(f'Found {len(offers)} eligible offers; trying up to 8 cheapest reliable offers (raised from 5 -- GPU-health preflight adds a new rejection reason beyond SSH-never-up).')
+          print(f'Found {len(offers)} eligible offers; trying up to 15 cheapest reliable offers (raised from 8 -- RTX PRO/Blackwell now filtered out at the query level, so this budget is a safety net on top of a smarter pool, not a brute-force fallback).')
           selected = None
-          MAX_OFFERS_TRIED = 8
+          MAX_OFFERS_TRIED = 15
           for index, offer in enumerate(offers[:MAX_OFFERS_TRIED], start=1):
               offer_id = offer['id']
               reached_running = None
@@ -253,6 +259,13 @@ jobs:
                        f'root@{ip}', 'stdbuf -oL -eL /tmp/oev_gpu_preflight.sh'],
                       capture_output=True, timeout=180, text=True)
                   preflight_out = preflight.stdout
+                  if preflight.stderr:
+                      preflight_out += f'\n--- stderr ---\n{preflight.stderr}'
+                  if preflight.returncode != 0:
+                      preflight_out += f'\n(preflight script exit code: {preflight.returncode})'
+              except subprocess.TimeoutExpired as exc:
+                  print(f'Offer {offer_id}: preflight execution TIMED OUT after 180s')
+                  preflight_out = (exc.stdout or '') + '\n--- stderr ---\n' + (exc.stderr or '') + '\n(timed out after 180s)'
               except Exception as exc:
                   print(f'Offer {offer_id}: preflight execution failed to run at all: {exc}')
                   preflight_out = ''
@@ -273,6 +286,9 @@ jobs:
               print('Preflight offer=%s reliability=%s gpu_model=%s driver=%s vulkan=%s cuda_init=%s nvdec=%s -> %s' % (
                   offer_id, offer.get('reliability', '?'), pf_gpu_model, pf_driver,
                   pf_vulkan, pf_cuda, pf_nvdec, pf_result))
+              print(f'--- Full preflight output for offer {offer_id} (for failure diagnosis / driver-correlation tracking) ---')
+              print(preflight_out if preflight_out else '(no output captured)')
+              print(f'--- end preflight output for offer {offer_id} ---')
 
               if pf_result != 'PASS':
                   failed_checks = [name for name, val in
