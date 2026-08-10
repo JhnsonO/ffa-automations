@@ -566,3 +566,17 @@ Mechanics: plain `curl` + `jq` against the GitHub REST API (release lookup/creat
 2. Repeatability check on the second clip pair (`GX010198`/`GX010175`) at the same config, if required before formally clearing M1.
 3. Quality/bitrate pass once M1 is signed off, then start the follow-cam/tracking track in parallel (per Johnson's prior direction).
 4. If the `exit 139`/`llvmpipe` anomaly recurs: investigate the workflow's exit-code handling and/or why that host didn't get real GPU access.
+
+## 2026-08-10 session (cont.): GPU-access diagnosis corrected by Johnson (manual log review, run 31363966159)
+
+**Prior session's diagnosis (glob-bug fix exposing an apt-version-mismatch root cause) is superseded.** Johnson reviewed the actual run log and branch script directly and found the extraction step itself is the fault, not a missing library:
+
+- **Host's matching-version libs are already present pre-extraction.** Before the apt/dpkg extraction runs, `ldd libGLX_nvidia.so.580.65.06` cleanly resolves `libnvidia-glcore.so.580.65.06`, `libnvidia-glsi.so.580.65.06`, and `libnvidia-gpucomp.so.580.65.06` — all exact-version matches already bind-mounted from the Vast host. No missing-library condition exists at this point.
+- **The extraction block itself introduces the mismatch.** It unconditionally downloads the latest 580-series package (`580.178.04`) from apt and overwrites `libGLX_nvidia.so.0`, `libcuda.so.1`, `libnvidia-ml.so.1`, etc. with that version — after which Vulkan starts requiring `libnvidia-gpucomp.so.580.178.04`, which doesn't exist, and fails. The script selects by driver series only, not exact host version.
+- **A genuine pre-existing Vulkan failure remains underneath.** With the correct, un-overwritten `580.65.06` stack in place, `vulkaninfo` still fails at `vkCreateInstance`. Removing the bad extraction step will not by itself fix Vulkan — it returns the system to this still-unexplained failure, which needs isolated diagnosis next.
+- **CUDA has a separate, distinct self-inflicted mismatch.** The script picks the CUDA toolkit version via `sort -V | tail -1` (always newest available), landing on CUDA 13.3 this run, while the `580.65.06` host driver reports CUDA 13.0 support. `cuInit` fails with `CUDA_ERROR_COMPAT_NOT_SUPPORTED_ON_DEVICE` as a direct result.
+- **Unresolved, not yet root-caused:** `NVIDIA_VISIBLE_DEVICES` is set to `all` in the launch request but reads back as `void` inside the container at PID 1. Device nodes and host driver libs are mounted regardless, so this is not confirmed as causal — noted for future reference only.
+
+**Corrected next direction:** do not pursue NVIDIA `.run`-installer extraction (previously proposed as option (b) — premature, host already has matching libs). Instead: (1) stop the extraction step from overwriting the already-correct host-matched driver libs, (2) pin CUDA toolkit selection to match the host driver's reported max-supported CUDA version instead of always taking newest, (3) re-run `vulkaninfo` diagnostics against the untouched, version-matched stack to isolate the real pre-existing Vulkan failure in isolation.
+
+**Branch state:** `fix/oev-glx-glob-diag` (`a430de7`) still not merged to main — glob-fix itself is correct and enabled this diagnosis, but does not fix GPU access on its own.
