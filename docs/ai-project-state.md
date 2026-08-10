@@ -639,3 +639,20 @@ Mechanics: plain `curl` + `jq` against the GitHub REST API (release lookup/creat
 2. If it passes: infrastructure work is done per Johnson's direction — no further Vast/selection/preflight tuning unless a production run surfaces a real problem.
 3. If it fails: this is a new debug cycle (budget resets in a fresh chat) — do not reopen the driver-correlation or selection-tiering questions, which are both closed per this session's findings.
 4. Orthogonal, can run in parallel any time: VR180/spherical-video metadata injection on existing CPU-rendered output.
+
+## 2026-08-10 session (cont. 5): first M1 sign-off attempt crashed on a real bug; fixed, re-dispatched
+
+**Run `31397771578` (first real M1 sign-off attempt) failed -- not a preflight rejection, a crash.** Offer `35580411` (RTX 3090, machine_id=78080) reached `running`, SSH came up, but the preflight script itself hung and hit its 180s timeout. The `except subprocess.TimeoutExpired` handler in the launch step had a real bug: `exc.stdout`/`exc.stderr` are always `bytes` on a timeout even when `text=True` was passed to `subprocess.run()` (decoding only happens on successful completion) -- the handler tried to concatenate `bytes` with `str` and raised `TypeError`, crashing the whole launch step (exit 1) instead of gracefully rejecting the offer and trying the next one.
+
+**Consequence:** because the crash happened before `instance_id` was written to `$GITHUB_OUTPUT`, the "Pull back logs" cleanup step ran with `INSTANCE_ID` empty and never attempted `delete_instance()` -- the Vast instance (offer `35580411`, `ssh8.vast.ai:17958`) was left running with no automated cleanup. **Manually terminated by Johnson.**
+
+**Fixed on `main` directly (commit `03169c8`):** the `TimeoutExpired` handler now checks `isinstance(exc.stdout, bytes)` and decodes before concatenating. Scoped to just this one except block -- diff-verified against main before push.
+
+**Re-dispatched:** run `31399426095`, same real 300-frame M1 sign-off config (`178°/42°/-54°/-8°`, `run_label=m1-signoff-preview-2`) from `main`. **DISPATCHED — UNVERIFIED.**
+
+**Debug budget:** 1 of 3 diagnose→fix→dispatch cycles used this chat.
+
+**Next (fresh chat if budget exhausted -- mandatory bootstrap: read `CLAUDE.md` + this file first):**
+1. Check outcome of run `31399426095`. If it fails again, this is diagnose→fix→dispatch cycle 2 -- do not reopen driver-correlation or selection-tiering (closed), only debug the actual new failure.
+2. If it passes: verify in logs -- real Vulkan device (not `llvmpipe`), real NVDEC decode (not CPU fallback), valid `panorama.mp4` (ffprobe dims/duration/codecs), `libx264` encode fallback as expected. If all confirmed, Johnson's direction is to call Vast/GPU infrastructure "production-ready enough for now" and stop tuning unless a production run surfaces a real problem.
+3. Orthogonal, can run in parallel any time: VR180/spherical-video metadata injection on existing CPU-rendered output.
