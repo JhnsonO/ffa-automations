@@ -174,7 +174,7 @@ echo "=== Diagnosing + fixing missing NVIDIA driver helper libraries ===" | tee 
   # atomic-replace-via-hardlink logic doesn't work across Vast's bind
   # mounts. apt-get download + dpkg-deb -x sidesteps dpkg's install
   # machinery entirely and just extracts the .deb's file contents.
-  NVIDIA_LIB=$(find /usr/lib/x86_64-linux-gnu /usr/lib -iname "libGLX_nvidia.so.*.*.*" 2>/dev/null | head -1)
+  NVIDIA_LIB=$(find /usr/lib/x86_64-linux-gnu /usr/lib -iname "libGLX_nvidia.so.[0-9]*.[0-9]*" 2>/dev/null | head -1)
   echo "NVIDIA_LIB=${NVIDIA_LIB:-not found}"
   if [ -n "$NVIDIA_LIB" ]; then
     echo "--- ldd on $NVIDIA_LIB (before fix) ---"
@@ -338,3 +338,4 @@ fi
 echo "Stitch OK: panorama.mp4 written" | tee -a stitch.log
 
 echo "=== All stages completed ==="
+
