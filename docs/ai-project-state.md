@@ -615,3 +615,27 @@ Mechanics: plain `curl` + `jq` against the GitHub REST API (release lookup/creat
 2. Regardless of that result: dispatch one real non-`diag_only` preview validation (300 frames, locked config `yaw_span=178°, vertical_fov=42°, yaw_center=-54°, pitch_center=-8°`) and confirm: calibrate+stitch both use real Vulkan GPU (not the preflight's synthetic test), source decode uses real NVDEC, output is a valid panorama, encode correctly falls back to `libx264`.
 3. Only after that passes: merge `fix/oev-glx-glob-diag` to `main`.
 4. Orthogonal, can run in parallel any time: VR180/spherical-video metadata injection on existing CPU-rendered output.
+
+## 2026-08-10 session (cont. 4): known-good tiered selection + merge to main; real M1 sign-off validation dispatched
+
+**Tiered known-good selection shipped (`feat/oev-known-good-selection`, on top of `fix/oev-glx-glob-diag`):** replaced flat known-good list with `KNOWN_GOOD_MACHINES` dict tagging each machine `'cheap'` (tried before the normal pool) or `'fallback'` (tried only if the normal pool is exhausted). Ranking: cheap known-good → normal ≥0.995-reliability pool (preflight as before) → fallback known-good, cheapest-first within each tier. Preflight remains mandatory for every tier, including known-good. No driver-version allow/block logic added (per explicit instruction). Reliability threshold raised 0.98 → 0.995 (live pool check: 38→29 eligible pre-session, no availability collapse). `machine_id` now logged on every offer/preflight/output line and in `run_metadata.txt`.
+
+**Seeded known-good machines (from this session's own diag runs):**
+- `machine_id=7213` → `'cheap'`, RTX 3090, ~$0.35/hr, confirmed PASS (run `31396647812`, driver `535.161.08`).
+- `machine_id=2750` → `'fallback'`, A100-SXM4-40GB, ~$1.19/hr, confirmed PASS (run `31392655465`, driver `580.82.09`).
+
+**Diag validation runs this session (all `diag_only`, empty→partial known-good list at time of run):**
+- `31388616000`: driver `550.144.03` → PASS (baseline).
+- `31390996988`: driver `595.71.05` → PASS. Breaks the suspected `580–595` driver regression-window theory (in-range driver passed clean) — confirms the earlier decision not to hard-block by driver line was correct. Theory retired, not pursued further per instruction.
+- `31392655465`: empty known-good list, normal-pool fallback path only. 12 offers tried (2 failed on `nvdec` specifically, Vulkan/CUDA otherwise clean) before `machine_id=2750` passed — this run is what surfaced 2750 as a fallback candidate.
+- `31396647812`: fallback-tier seeded but not yet exercised (normal pool passed on try 3, `machine_id=7213`, before reaching fallback) — surfaced 7213 as the cheap-tier candidate.
+
+**Both branches merged to `main` (commit `cecf5dbd`):** merge done as an explicit two-parent commit via the Git Data API (blob→tree→commit→ref), not a plain GitHub merge, because `docs/ai-project-state.md` conflicted (this file had been updated directly on `main` mid-session while the branches were in flight). Conflict resolved by keeping `main`'s current version of this doc and taking the three code files (`.github/workflows/oev-reco-stitch.yml`, `oev_gpu_preflight.sh`, `oev_reco_stitch_remote.sh`) verbatim from `feat/oev-known-good-selection`'s tip. Verified post-merge: workflow on `main` byte-matches the feat-branch tip; no doc content lost.
+
+**Real (non-`diag_only`) M1 sign-off validation dispatched from `main`:** run `31397771578`, 300-frame preview, locked config `yaw_span_deg=178, vertical_fov_deg=42, yaw_center_deg=-54, pitch_center_deg=-8`, `run_label=m1-signoff-preview`. **DISPATCHED — UNVERIFIED.** This is the actual acceptance check: confirm calibrate+stitch use real Vulkan GPU (not preflight's synthetic test), source decode uses real NVDEC, output is a valid panorama, encode correctly falls back to `libx264`. If this passes, Johnson's direction is to call Vast/GPU infrastructure "production-ready enough for now" and stop selection/preflight tuning unless production runs show a real problem.
+
+**Next (fresh chat — mandatory bootstrap: read `CLAUDE.md` + this file first):**
+1. Check outcome of run `31397771578` (one check only). Verify in the logs: real Vulkan device used (not `llvmpipe`), NVDEC decode confirmed (not CPU fallback), `panorama.mp4` valid (ffprobe dims/duration/codecs), encode backend is `libx264` as expected.
+2. If it passes: infrastructure work is done per Johnson's direction — no further Vast/selection/preflight tuning unless a production run surfaces a real problem.
+3. If it fails: this is a new debug cycle (budget resets in a fresh chat) — do not reopen the driver-correlation or selection-tiering questions, which are both closed per this session's findings.
+4. Orthogonal, can run in parallel any time: VR180/spherical-video metadata injection on existing CPU-rendered output.
