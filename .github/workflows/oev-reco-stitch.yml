@@ -127,13 +127,25 @@ jobs:
 
           request('POST', f'{base}/ssh/', {'ssh_key': pub_key})
 
-          # Known-good machine preference list, populated manually from past
-          # "CANDIDATE KNOWN-GOOD" log lines (machine_id + driver logged
-          # whenever an offer passes full GPU-health preflight). Empty is
-          # valid -- it just means the normal pool is used with no
-          # preference tier. Preference only; preflight remains mandatory
-          # for every offer regardless of machine_id.
-          KNOWN_GOOD_MACHINE_IDS = []
+          # Known-good machine preference, tiered by price policy (2026-08-10,
+          # Johnson's direction): "known-good" means proven healthy, not
+          # automatically first-choice regardless of price. Populated
+          # manually from past "CANDIDATE KNOWN-GOOD" log lines.
+          #   'cheap'    -> tried before the normal pool (consumer-GPU-class
+          #                 price range, a cheap win if it's available).
+          #   'fallback' -> tried only after the normal pool is exhausted
+          #                 (proven reliable but priced above the cheap
+          #                 range, e.g. datacenter-class cards).
+          # Preference only in both tiers -- preflight remains mandatory
+          # regardless of machine_id or tier. Empty dict is valid; behavior
+          # then matches the normal pool with no preference tiers.
+          KNOWN_GOOD_MACHINES = {
+              2750: 'fallback',  # A100-SXM4-40GB, $1.19/hr, confirmed PASS
+                                  # 2026-08-10 (run 31392655465) -- reliable,
+                                  # but priced well above the 4070/4080/4090
+                                  # class hosts this pool mostly returns, so
+                                  # fallback only, not preferred-first.
+          }
 
           query = {
               'verified': {'eq': True},
@@ -160,19 +172,26 @@ jobs:
           # cost to exclude for now -- see docs/ai-project-state.md.
           bad_gpu = ('RTX 5090', 'RTX 5080', 'RTX 5070', 'RTX 5060', 'RTX 5050', 'RTX PRO')
           offers = [o for o in offers if not any(x in (o.get('gpu_name') or '') for x in bad_gpu)]
-          # Rank known-good machines first (cheapest-first within tier), then
-          # the remaining eligible pool (cheapest-first). Preference only --
-          # does not bypass preflight or any resource/reliability filter above.
-          known_good = [o for o in offers if o.get('machine_id') in KNOWN_GOOD_MACHINE_IDS]
-          rest = [o for o in offers if o.get('machine_id') not in KNOWN_GOOD_MACHINE_IDS]
-          known_good.sort(key=lambda o: float(o.get('dph_total', 999)))
-          rest.sort(key=lambda o: float(o.get('dph_total', 999)))
-          offers = known_good + rest
+          # Three-tier ranking (Johnson's direction, 2026-08-10): cheap
+          # known-good first, then the normal high-reliability pool
+          # (preflight as-is), then expensive known-good only as a last
+          # resort if the normal pool keeps failing. Cheapest-first within
+          # each tier. Preference only -- does not bypass preflight or any
+          # resource/reliability filter above.
+          cheap_known_good = [o for o in offers if KNOWN_GOOD_MACHINES.get(o.get('machine_id')) == 'cheap']
+          fallback_known_good = [o for o in offers if KNOWN_GOOD_MACHINES.get(o.get('machine_id')) == 'fallback']
+          normal_pool = [o for o in offers if o.get('machine_id') not in KNOWN_GOOD_MACHINES]
+          cheap_known_good.sort(key=lambda o: float(o.get('dph_total', 999)))
+          normal_pool.sort(key=lambda o: float(o.get('dph_total', 999)))
+          fallback_known_good.sort(key=lambda o: float(o.get('dph_total', 999)))
+          offers = cheap_known_good + normal_pool + fallback_known_good
           if not offers:
               print('ERROR: No reliable GPU offers matched the OEV reco-stitch requirements', file=sys.stderr)
               sys.exit(1)
-          if known_good:
-              print(f'{len(known_good)} known-good machine(s) have matching offers -- trying these first.')
+          if cheap_known_good:
+              print(f'{len(cheap_known_good)} cheap known-good machine(s) have matching offers -- trying these first.')
+          if fallback_known_good:
+              print(f'{len(fallback_known_good)} fallback known-good machine(s) available if the normal pool ({len(normal_pool)} offers) is exhausted.')
 
           print(f'Found {len(offers)} eligible offers; trying up to 15 cheapest reliable offers (raised from 8 -- RTX PRO/Blackwell now filtered out at the query level, so this budget is a safety net on top of a smarter pool, not a brute-force fallback).')
           selected = None
@@ -180,10 +199,12 @@ jobs:
           for index, offer in enumerate(offers[:MAX_OFFERS_TRIED], start=1):
               offer_id = offer['id']
               reached_running = None
+              tier = KNOWN_GOOD_MACHINES.get(offer.get('machine_id'))
+              tier_tag = f' [KNOWN-GOOD-{tier.upper()}]' if tier else ''
               print('Trying offer %s (%s/%s): machine_id=%s gpu=%s vram=%sMB reliability=%s cpu=%s $%s/hr%s' % (
                   offer_id, index, MAX_OFFERS_TRIED, offer.get('machine_id', '?'), offer.get('gpu_name', 'unknown'), offer.get('gpu_ram', '?'),
                   offer.get('reliability', '?'), offer.get('cpu_name', 'unknown'), offer.get('dph_total', '?'),
-                  ' [KNOWN-GOOD]' if offer.get('machine_id') in KNOWN_GOOD_MACHINE_IDS else ''))
+                  tier_tag))
               try:
                   result = request('PUT', f'{base}/asks/{offer_id}/', {
                       'client_id': 'me',
