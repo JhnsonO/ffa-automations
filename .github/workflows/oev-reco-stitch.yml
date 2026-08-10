@@ -140,6 +140,9 @@ jobs:
           # regardless of machine_id or tier. Empty dict is valid; behavior
           # then matches the normal pool with no preference tiers.
           KNOWN_GOOD_MACHINES = {
+              7213: 'cheap',      # RTX 3090, ~$0.35/hr, confirmed PASS
+                                  # 2026-08-10 (run 31396647812) -- consumer-
+                                  # GPU-class price range, try first.
               2750: 'fallback',  # A100-SXM4-40GB, $1.19/hr, confirmed PASS
                                   # 2026-08-10 (run 31392655465) -- reliable,
                                   # but priced well above the 4070/4080/4090
