@@ -401,6 +401,24 @@ PYEOF
   nvidia-smi -L 2>&1 || echo "nvidia-smi -L failed"
 } 2>&1 | tee -a env.log
 
+echo "=== Minimal NVENC encode smoke test (tiny synthetic input, not the full stitch pipeline) ===" | tee -a env.log
+{
+  NVENC_OUT=/tmp/oev_run/nvenc_smoke_test.mp4
+  rm -f "$NVENC_OUT"
+  echo "--- ffmpeg -f lavfi testsrc2 -> h264_nvenc, 1s @ 1280x720 ---"
+  ffmpeg -y -f lavfi -i "testsrc2=size=1280x720:rate=30:duration=1" \
+    -c:v h264_nvenc -preset p4 "$NVENC_OUT" 2>&1
+  NVENC_RC=$?
+  echo "ffmpeg exit code: $NVENC_RC"
+  if [ -f "$NVENC_OUT" ]; then
+    echo "Output file: $(ls -la "$NVENC_OUT")"
+    echo "--- ffprobe on output (confirms it's a real decodable file, not a 0-byte stub) ---"
+    ffprobe -v error -show_entries stream=codec_name,width,height,nb_frames -of default=noprint_wrappers=1 "$NVENC_OUT" 2>&1 || echo "ffprobe failed"
+  else
+    echo "NVENC_OUT was never created"
+  fi
+} 2>&1 | tee -a env.log
+
 if [ "${DIAG_ONLY:-0}" = "1" ]; then
   echo "=== DIAG_ONLY=1: stopping after GPU/Vulkan diagnostics, skipping build/calibrate/stitch entirely ===" | tee -a env.log
   exit 0
