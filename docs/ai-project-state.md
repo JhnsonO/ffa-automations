@@ -1072,3 +1072,17 @@ No frozen file touched. `oev_reco_stitch_remote.sh`, all `video-stitcher` fork f
 **Blocker (not code, availability):** neither known-good machine (7213 RTX 3090 cheap, 2750 A100 40GB fallback) currently has a rentable offer on console.vast.ai. Johnson needs to either wait for one to become available, or manually validate a new machine and add it to `KNOWN_GOOD_MACHINES` in `oev-followcam-test.yml`.
 
 **Next action:** once 7213 or 2750 has a rentable offer (check console.vast.ai), redispatch `oev-followcam-test.yml` (`left_clip=GX010197.MP4`, `right_clip=GX010173.MP4`) on `main` (head `4661bcd`) — this will be the first real exercise of known-good-only selection + ORT-preflight-before-download together. No code changes needed unless a fresh error surfaces after a successful launch.
+
+## 2026-08-11 session (cont.): ORT preflight pip bug found + fixed; availability remains the blocker
+
+**Run `31531827387`: real bug found — first genuine exercise of the new ORT preflight check.** Offer found on machine 2750 (A100-SXM4-40GB, driver 580.82.09). vulkan/cuda_init/nvdec all `PASS`. New `ort_cuda` check `FAIL`: `FATAL: onnx import failed: No module named 'onnx'`. Root cause: `pip3 install` on Ubuntu 24.04 is blocked by PEP 668 (externally-managed-environment) without `--break-system-packages` — the install silently failed (script has no `set -e`), so the python check ran with nothing installed.
+
+**Fix (`e68a990`, single line, `oev_gpu_preflight.sh` only):** added `--break-system-packages` to the `pip3 install` call. This is debug cycle 1 of 3 for this continuation.
+
+**Redispatched:** run `31532316482`, head `e68a990`. **Result: clean fail-fast** — no rentable offer on either 7213 or 2750 at dispatch time; never reached preflight, so the pip fix itself is still unverified end-to-end. Not counted as a further debug cycle per the ticket's explicit instruction not to treat availability gaps as code problems.
+
+**Gate:** known-good-only selection is proven working (both real runs this session correctly refused to fall through to arbitrary hosts). The `e68a990` ORT-preflight pip fix is applied but not yet proven — needs one more run that actually reaches the preflight stage on 7213 or 2750.
+
+**Next action:** redispatch (`left_clip=GX010197.MP4`, `right_clip=GX010173.MP4`) on `main` (head `e68a990` or later) once either known-good machine has a rentable offer. Watch specifically for `PREFLIGHT_ORT_CUDA=PASS` in the launch step log. If it passes and the run proceeds past launch, continue standard verification: `segment.log`, remote script's own CUDA EP check (confirmatory), `field_roi`, acceptance, then Johnson's visual review of `followcam.mp4`.
+
+**First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
