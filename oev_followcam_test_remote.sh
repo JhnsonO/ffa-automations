@@ -203,8 +203,16 @@ echo "=== Installing CUDA runtime (plain ubuntu image has no CUDA libs by defaul
 
 HOST_CUDA_MAX=$(nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1)
 echo "Host driver max-supported CUDA version: ${HOST_CUDA_MAX:-unknown (nvidia-smi parse failed)}" | tee -a env.log
+HOST_CUDA_MAJOR="${HOST_CUDA_MAX%%.*}"
 
-CUDA_CACHE_ASSET="cuda-runtime-debs.tar.gz"
+# Run 31523236281 (2026-08-11): the cache asset name was fixed
+# ("cuda-runtime-debs.tar.gz") regardless of host CUDA capability, so a
+# 12.6-capped box's cached .debs got silently reused on a later
+# 13.2-capable box -- installing CUDA 12.6 (and breaking the
+# libcudnn9-cuda-13 dependency chain) on a host that could have had 13.
+# Key the cache asset by host CUDA major version so each capability tier
+# gets its own cache. ---
+CUDA_CACHE_ASSET="cuda-runtime-debs-cuda${HOST_CUDA_MAJOR:-unknown}.tar.gz"
 cuda_cache_hit=0
 if [ -n "$GH_TOKEN" ]; then
   CUDA_RELEASE_ID=$(gh_cache_release_id)
@@ -440,14 +448,21 @@ cd /tmp/oev_run
 # file-existence check. ---
 echo "=== Verifying CUDA execution provider can actually initialise (fail-fast) ===" | tee -a env.log
 source /tmp/yolo-venv/bin/activate
-# Pinned to a CUDA-12.x-targeting release, not latest: run 31516693534
-# proved the host driver caps CUDA at 12.6 (correctly, per the
-# HOST_CUDA_MAX detection above) and the latest onnxruntime-gpu (1.28.0)
-# hard-requires actual CUDA 13 system libs (libcublasLt.so.13), which a
-# 12.6-capped host will never have -- that's a stricter requirement than
-# what reco-cli's own bundled onnxruntime provider actually needs, so it
-# was a false-negative in this fail-fast check, not a real GPU problem.
-pip install -q "onnxruntime-gpu==1.20.1" 2>&1 | tee -a env.log
+# Version chosen dynamically from HOST_CUDA_MAX (set earlier in this
+# script, still in scope): 13.x hosts get latest (targets CUDA 13), 12.x
+# and older get a pinned CUDA-12.x-era release. Run 31523236281 showed
+# two mistakes here: (1) pip install with no pin grabs latest, which
+# needs actual CUDA 13 libs a 12.x-capped host will never have; (2) my
+# first attempted pin, 1.20.1, isn't a real published version (only
+# 1.20.0/1.20.2 exist) so pip installed nothing and left zero GPU
+# providers. Confirmed-real versions only, chosen by host capability.
+if [[ "$HOST_CUDA_MAJOR" == "13" ]]; then
+  ORT_GPU_PIN="onnxruntime-gpu"
+else
+  ORT_GPU_PIN="onnxruntime-gpu==1.20.2"
+fi
+echo "Installing $ORT_GPU_PIN (host CUDA major=${HOST_CUDA_MAJOR:-unknown})" | tee -a env.log
+pip install -q "$ORT_GPU_PIN" 2>&1 | tee -a env.log
 python3 - <<'PYEP' 2>&1 | tee -a env.log
 import sys
 try:
