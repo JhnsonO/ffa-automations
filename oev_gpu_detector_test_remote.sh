@@ -47,12 +47,12 @@
 #
 # Produces, in /tmp/oev_run/:
 #   env.log, build.log, calibrate.log
-#   stitch_${MODEL_RES}_cuda.log      - reco stitch output
+#   stitch_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.log      - reco stitch output
 #   gpu_util.log              - nvidia-smi sampled every 5s during the stitch run
 #   result_summary.txt        - CUDA EP status + confirmed input size + measured fps, in one place
 #   match.json, yolov8n_${MODEL_RES}.onnx
-#   events_${MODEL_RES}_cuda.jsonl
-#   followcam_${MODEL_RES}_cuda.mp4   (small, diagnostic only)
+#   events_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.jsonl
+#   followcam_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.mp4   (small, diagnostic only)
 #
 # Exit codes: 1=env/CUDA-runtime/build failure, 2=calibrate failure,
 # 3=YOLO export failure, 4=stitch failure.
@@ -67,6 +67,7 @@ END_SEC="${END_SEC:-27}"
 # controlled point per Johnson: is recall still climbing materially
 # beyond 1920, or has it plateaued while throughput keeps collapsing?
 MODEL_RES="${MODEL_RES:-2560}"
+DETECTION_INTERVAL="${DETECTION_INTERVAL:-1}"
 
 # --- GitHub Release blob cache. Shared cache repo/tag with the other
 # three scripts, but the reco-cli binary asset name is deliberately
@@ -355,18 +356,18 @@ if [ "$calibrate_rc" -ne 0 ] || [ ! -f match.json ]; then
 fi
 echo "Calibrate OK: match.json written" | tee -a calibrate.log
 
-echo "=== stitch_${MODEL_RES}_cuda.log: reco stitch, YOLOv8n @ ${MODEL_RES}, --features cuda build, --no-zero-copy (CPU decode, GPU inference if CUDA EP engages) ===" | tee stitch_${MODEL_RES}_cuda.log
-STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam_${MODEL_RES}_cuda.mp4
+echo "=== stitch_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.log: reco stitch, YOLOv8n @ ${MODEL_RES}, detection-interval ${DETECTION_INTERVAL}, --features cuda build, --no-zero-copy (CPU decode, GPU inference if CUDA EP engages) ===" | tee stitch_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.log
+STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.mp4
   --model yolov8n_${MODEL_RES}.onnx
   --tracking field
   --panner-preset broadcast
   --lookahead 1.5
-  --detection-interval 1
-  --events events_${MODEL_RES}_cuda.jsonl
+  --detection-interval "${DETECTION_INTERVAL}"
+  --events events_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.jsonl
   --no-zero-copy
   --start-time "$START_SEC" --end-time "$END_SEC"
   --width 640 --height 360)
-echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch_${MODEL_RES}_cuda.log
+echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.log
 
 # Independent confirmation the GPU was actually doing work, not just a
 # faster wall-clock number: sample nvidia-smi every 5s for the
@@ -374,25 +375,25 @@ echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch_${MODEL_RES}_cuda.log
 ( while true; do date -Iseconds; nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total --format=csv,noheader; sleep 5; done > gpu_util.log 2>&1 ) &
 GPU_SAMPLER_PID=$!
 
-stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch_${MODEL_RES}_cuda.log
+stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.log
 stitch_rc=${PIPESTATUS[0]}
 
 kill "$GPU_SAMPLER_PID" 2>/dev/null || true
 
 if [ "$stitch_rc" -ne 0 ]; then
-  echo "FATAL: reco stitch failed (exit $stitch_rc), see stitch_${MODEL_RES}_cuda.log" | tee -a stitch_${MODEL_RES}_cuda.log
+  echo "FATAL: reco stitch failed (exit $stitch_rc), see stitch_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.log" | tee -a stitch_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.log
   exit 4
 fi
-echo "Stitch OK: followcam_${MODEL_RES}_cuda.mp4 written" | tee -a stitch_${MODEL_RES}_cuda.log
+echo "Stitch OK: followcam_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.mp4 written" | tee -a stitch_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.log
 
 echo "=== result_summary.txt ===" | tee result_summary.txt
 {
   echo "--- CUDA execution provider status (from ort_session.rs AND ort's own internal EP-registration check) ---"
   echo "Prior run (31466295819) showed this builder-success line is NOT sufficient proof on its own --"
   echo "ort logs its own separate warning one line later if registration actually failed. Check both:"
-  grep -E "ORT: CUDA execution provider enabled|ORT: CUDA EP failed" stitch_${MODEL_RES}_cuda.log \
+  grep -E "ORT: CUDA execution provider enabled|ORT: CUDA EP failed" stitch_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.log \
     || echo "NEITHER log line found -- ort/cuda EP code path may not have been reached at all, check build.log for --features cuda"
-  FALLBACK_WARNING=$(grep -c "No execution providers from session options registered successfully" stitch_${MODEL_RES}_cuda.log || true)
+  FALLBACK_WARNING=$(grep -c "No execution providers from session options registered successfully" stitch_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.log || true)
   if [ "${FALLBACK_WARNING:-0}" -gt 0 ]; then
     echo "FALLBACK WARNING PRESENT ($FALLBACK_WARNING times) -- CUDA EP did NOT actually register. This alone fails the test regardless of speed."
   else
@@ -400,10 +401,10 @@ echo "=== result_summary.txt ===" | tee result_summary.txt
   fi
   echo ""
   echo "--- Confirmed loaded model (input size + conf_thresh) ---"
-  grep "CpuYoloDetector loaded" stitch_${MODEL_RES}_cuda.log || echo "WARNING: no 'CpuYoloDetector loaded' line found"
+  grep "CpuYoloDetector loaded" stitch_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.log || echo "WARNING: no 'CpuYoloDetector loaded' line found"
   echo ""
   echo "--- Measured throughput ---"
-  DONE_LINE=$(grep "^Done: " stitch_${MODEL_RES}_cuda.log || echo "")
+  DONE_LINE=$(grep "^Done: " stitch_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.log || echo "")
   echo "${DONE_LINE:-WARNING: no final Done: summary line found}"
   MEASURED_FPS=$(echo "$DONE_LINE" | grep -oE '\([0-9.]+ fps\)' | grep -oE '[0-9.]+' || echo "0")
   echo ""
@@ -441,5 +442,132 @@ echo "=== result_summary.txt ===" | tee result_summary.txt
     echo "FAIL: at least one condition not met -- do not treat this run as 'CUDA works'. fallback_warning_count=${FALLBACK_WARNING:-0}, sustained_util=$SUSTAINED ($SAMPLES_ABOVE_10/$TOTAL_SAMPLES), measured_fps=${MEASURED_FPS:-0}"
   fi
 } | tee -a result_summary.txt
+
+echo "=== detection-interval sweep metrics (fresh detections / longest gap / coast behaviour) ===" | tee -a result_summary.txt
+EVENTS_FILE="events_${MODEL_RES}_int${DETECTION_INTERVAL}_cuda.jsonl"
+if [ -f "$EVENTS_FILE" ]; then
+  python3 - "$EVENTS_FILE" "$START_SEC" "$END_SEC" << 'PYEOF' | tee -a result_summary.txt
+import json, sys
+
+events_path, start_sec, end_sec = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
+window_s = end_sec - start_sec
+
+rows = []
+with open(events_path) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+if not rows:
+    print("EVENTS PARSE: file present but no valid JSON lines found -- cannot compute sweep metrics.")
+    sys.exit(0)
+
+# Schema is not assumed -- inspect what's actually present before computing
+# anything, since this is the first time these events are being mined for
+# freshness/gap/coast stats rather than just existence checks.
+type_keys = [k for k in ("type", "event", "event_type", "kind") if k in rows[0]]
+type_field = type_keys[0] if type_keys else None
+distinct_types = sorted({r.get(type_field) for r in rows if type_field}) if type_field else []
+all_keys = sorted({k for r in rows for k in r.keys()})
+print(f"EVENTS SCHEMA: {len(rows)} lines, type_field={type_field!r}, distinct_types={distinct_types}, all_keys_seen={all_keys}")
+
+frame_keys = [k for k in ("frame", "frame_index", "frame_idx", "frame_number") if k in rows[0]]
+frame_field = frame_keys[0] if frame_keys else None
+
+detect_candidates = [t for t in distinct_types if t and "detect" in str(t).lower()]
+pan_candidates = [t for t in distinct_types if t and ("pan" in str(t).lower() or "decision" in str(t).lower())]
+
+if not type_field or not detect_candidates:
+    print("SCHEMA UNKNOWN: could not confidently identify a detection-event type from the fields above. "
+          "Fresh-detection/gap/coast metrics NOT computed this run -- report the schema line above back "
+          "for the parser to be corrected, rather than trusting a guessed field name.")
+    sys.exit(0)
+
+detect_type = detect_candidates[0]
+detect_rows = [r for r in rows if r.get(type_field) == detect_type]
+
+# "Fresh" detection = a detection event that actually carries a real
+# ball hit, not just a scheduled detector tick with nothing found.
+# Try common truthy-signal field names; fall back to "row exists" if
+# none present (flagged explicitly either way).
+hit_field = next((k for k in ("has_ball", "ball_found", "detected", "hit") if k in (detect_rows[0] if detect_rows else {})), None)
+if hit_field:
+    fresh_rows = [r for r in detect_rows if r.get(hit_field)]
+    print(f"Using hit_field={hit_field!r} to distinguish fresh ball hits from empty detector ticks.")
+else:
+    fresh_rows = detect_rows
+    print("No explicit ball-found field identified on detection events -- treating every "
+          "detection-type event as a fresh hit (may overcount if empty ticks are logged too; "
+          "verify against all_keys_seen above).")
+
+if frame_field:
+    fresh_frames = sorted({r[frame_field] for r in fresh_rows if frame_field in r})
+else:
+    # No frame index available -- fall back to event order as a proxy.
+    fresh_frames = list(range(len(fresh_rows)))
+    print("No frame index field identified -- using event order as a frame-index proxy for gap sizing "
+          "(gap-in-seconds below assumes uniform frame spacing across the window; treat as approximate).")
+
+total_events = len(rows)
+fresh_count = len(fresh_frames)
+print(f"fresh_detection_count {fresh_count}")
+
+if frame_field and fresh_frames:
+    # Estimate fps from frame indices actually observed across all rows, not assumed.
+    all_frame_vals = sorted({r[frame_field] for r in rows if frame_field in r})
+    est_total_frames = (max(all_frame_vals) - min(all_frame_vals) + 1) if len(all_frame_vals) > 1 else len(rows)
+else:
+    est_total_frames = None
+
+if est_total_frames:
+    est_fps = est_total_frames / window_s if window_s > 0 else 0
+    print(f"estimated_total_frames_in_window {est_total_frames}")
+    print(f"estimated_fresh_detection_rate_pct {100.0 * fresh_count / est_total_frames:.1f}")
+    fps_for_gap = est_fps
+else:
+    fps_for_gap = None
+    print("estimated_total_frames_in_window UNKNOWN (no usable frame index) -- rate/gap-in-seconds below are approximate")
+
+# Longest continuous gap between fresh detections
+if len(fresh_frames) >= 2:
+    gaps = [b - a for a, b in zip(fresh_frames, fresh_frames[1:])]
+    longest_gap_frames = max(gaps)
+    print(f"longest_gap_between_fresh_detections_frames {longest_gap_frames}")
+    if fps_for_gap:
+        print(f"longest_gap_between_fresh_detections_seconds {longest_gap_frames / fps_for_gap:.2f}")
+elif len(fresh_frames) == 1:
+    print("longest_gap_between_fresh_detections_frames N/A (only one fresh detection in window)")
+else:
+    print("longest_gap_between_fresh_detections_frames N/A (zero fresh detections in window)")
+
+# Coast/interpolated vs fresh-driven pan decisions, if the event stream
+# distinguishes them -- only attempted if a plausible event type exists.
+if pan_candidates:
+    pan_type = pan_candidates[0]
+    pan_rows = [r for r in rows if r.get(type_field) == pan_type]
+    coast_field = next((k for k in ("coasting", "coast", "interpolated", "is_coast", "source") if pan_rows and k in pan_rows[0]), None)
+    if coast_field:
+        if coast_field == "source":
+            coast_rows = [r for r in pan_rows if str(r.get("source", "")).lower() in ("coast", "coasting", "interpolated", "stale")]
+        else:
+            coast_rows = [r for r in pan_rows if r.get(coast_field)]
+        print(f"pan_decisions_total {len(pan_rows)}")
+        print(f"pan_decisions_from_coast_or_stale_position {len(coast_rows)}")
+        if pan_rows:
+            print(f"pan_decisions_coast_pct {100.0 * len(coast_rows) / len(pan_rows):.1f}")
+    else:
+        print(f"pan_decisions_total {len(pan_rows)} -- no coast/interpolated field identified on '{pan_type}' "
+              f"events (checked coasting/coast/interpolated/is_coast/source); cannot split fresh vs coasted.")
+else:
+    print("No pan/decision-type event identified in this stream -- coast-vs-fresh split not computed.")
+PYEOF
+else
+  echo "EVENTS FILE MISSING ($EVENTS_FILE) -- sweep metrics not computed for this run." | tee -a result_summary.txt
+fi
 
 echo "=== All stages completed ==="
