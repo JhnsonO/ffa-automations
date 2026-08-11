@@ -162,7 +162,7 @@ if [ -n "$HOST_CUDA_MAJOR" ] && [ "$HOST_CUDA_MAJOR" -ge 13 ] 2>/dev/null; then
 else
   ORT_GPU_PIN="onnxruntime-gpu==1.20.2"
 fi
-pip3 install -q --no-input onnx "$ORT_GPU_PIN" >/tmp/preflight_ort_install.log 2>&1
+pip3 install -q --no-input --break-system-packages onnx "$ORT_GPU_PIN" >/tmp/preflight_ort_install.log 2>&1
 ORT_OUT=$(python3 - <<'PYEOF' 2>&1
 import sys
 try:
