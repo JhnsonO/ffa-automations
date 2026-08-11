@@ -440,7 +440,14 @@ cd /tmp/oev_run
 # file-existence check. ---
 echo "=== Verifying CUDA execution provider can actually initialise (fail-fast) ===" | tee -a env.log
 source /tmp/yolo-venv/bin/activate
-pip install -q onnxruntime-gpu 2>&1 | tee -a env.log
+# Pinned to a CUDA-12.x-targeting release, not latest: run 31516693534
+# proved the host driver caps CUDA at 12.6 (correctly, per the
+# HOST_CUDA_MAX detection above) and the latest onnxruntime-gpu (1.28.0)
+# hard-requires actual CUDA 13 system libs (libcublasLt.so.13), which a
+# 12.6-capped host will never have -- that's a stricter requirement than
+# what reco-cli's own bundled onnxruntime provider actually needs, so it
+# was a false-negative in this fail-fast check, not a real GPU problem.
+pip install -q "onnxruntime-gpu==1.20.1" 2>&1 | tee -a env.log
 python3 - <<'PYEP' 2>&1 | tee -a env.log
 import sys
 try:
