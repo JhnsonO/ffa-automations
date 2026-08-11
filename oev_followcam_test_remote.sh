@@ -7,10 +7,15 @@
 # camera on our real HERO10 pair, using the normal l-shape/perspective
 # stitch path (NOT cylindrical-stereo).
 #
-# Deliberately uses --no-zero-copy (CPU decode + CPU ORT detection) to
-# remove the CUDA/TensorRT GPU-detector question entirely for this
-# first test -- Vulkan GPU is still required for the stitch render
-# itself (wgpu), just not for decode/detection this run.
+# Updated to use the proven GPU CUDA detector path (--features cuda +
+# cuDNN 9 + ORT_CUDA_VERSION=13, confirmed working in
+# oev_gpu_detector_test_remote.sh sessions 11/12/15) at 1920 YOLO
+# export resolution (confirmed the practical resolution ceiling --
+# 57.2% ball recall vs 7.2% at 640, session 9/10/14) -- both were
+# proven on a 20s diagnostic window only, this is the first run that
+# actually produces a real follow-cam clip with this combination.
+# Still --no-zero-copy (CPU decode, GPU inference only) -- decode/
+# zero-copy is a separate, still-unstarted track.
 #
 # Deliberately does NOT pass --allow-no-tracking: if Reco can't
 # initialize tracking, the run must fail loudly, not silently produce
@@ -66,6 +71,31 @@ gh_cache_download() {
   [ -s "$outpath" ]
 }
 
+gh_cache_release_id_or_create() {
+  local id
+  id=$(gh_cache_release_id)
+  if [ -n "$id" ]; then echo "$id"; return 0; fi
+  curl -s -X POST -H "Authorization: token $GH_TOKEN" -H "Content-Type: application/json" \
+    "https://api.github.com/repos/$GH_CACHE_REPO/releases" \
+    -d "{\"tag_name\":\"$GH_CACHE_TAG\",\"name\":\"OEV build cache (auto-managed)\",\"body\":\"Binary/package cache for OEV Vast.ai scripts. Safe to delete - will be recreated on the next run.\",\"prerelease\":true}" \
+    | jq -r '.id // empty'
+}
+
+gh_cache_upload() {
+  local release_id="$1" filepath="$2" name="$3" existing_id
+  [ -z "$release_id" ] && { echo "no release id, skipping cache upload of $name"; return 1; }
+  existing_id=$(curl -s -H "Authorization: token $GH_TOKEN" \
+    "https://api.github.com/repos/$GH_CACHE_REPO/releases/$release_id/assets" \
+    | jq -r --arg n "$name" '.[] | select(.name==$n) | .id')
+  if [ -n "$existing_id" ]; then
+    curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
+      "https://api.github.com/repos/$GH_CACHE_REPO/releases/assets/$existing_id" > /dev/null
+  fi
+  curl -s -X POST -H "Authorization: token $GH_TOKEN" -H "Content-Type: application/gzip" \
+    --data-binary @"$filepath" \
+    "https://uploads.github.com/repos/$GH_CACHE_REPO/releases/$release_id/assets?name=$name" > /dev/null
+}
+
 echo "=== env.log: toolchain + GPU info ===" | tee env.log
 {
   echo "--- nvidia-smi ---"
@@ -83,6 +113,93 @@ stdbuf -oL -eL apt-get install -y --no-install-recommends \
   libavutil-dev libavcodec-dev libavformat-dev libswscale-dev \
   libavdevice-dev libavfilter-dev libswresample-dev \
   python3 python3-pip python3-venv 2>&1 | tee -a env.log
+
+# --- CUDA runtime install (verbatim from oev_gpu_detector_test_remote.sh,
+# itself verbatim from oev_reco_stitch_remote.sh -- proven working in
+# sessions 11/12/15). Needed for real now: ort/cuda's execution
+# provider dlopens libcudart etc. at runtime. ---
+echo "=== Installing CUDA runtime (plain ubuntu image has no CUDA libs by default) ===" | tee -a env.log
+{
+  wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -O /tmp/cuda-keyring.deb \
+    && dpkg -i /tmp/cuda-keyring.deb \
+    && apt-get update
+} 2>&1 | tee -a env.log
+
+HOST_CUDA_MAX=$(nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1)
+echo "Host driver max-supported CUDA version: ${HOST_CUDA_MAX:-unknown (nvidia-smi parse failed)}" | tee -a env.log
+
+CUDA_CACHE_ASSET="cuda-runtime-debs.tar.gz"
+cuda_cache_hit=0
+if [ -n "$GH_TOKEN" ]; then
+  CUDA_RELEASE_ID=$(gh_cache_release_id)
+  if [ -n "$CUDA_RELEASE_ID" ] && gh_cache_download "$CUDA_RELEASE_ID" "$CUDA_CACHE_ASSET" /tmp/cuda-runtime-debs.tar.gz; then
+    echo "CUDA runtime cache HIT ($CUDA_CACHE_ASSET) — installing from cached .debs" | tee -a env.log
+    mkdir -p /tmp/cuda-cache && tar -xzf /tmp/cuda-runtime-debs.tar.gz -C /tmp/cuda-cache
+    { dpkg -i /tmp/cuda-cache/*.deb || apt-get install -f -y; } 2>&1 | tee -a env.log
+    cuda_cache_hit=1
+  fi
+fi
+if [ "$cuda_cache_hit" -eq 0 ]; then
+  echo "CUDA runtime cache MISS (or no GH_TOKEN) — installing via apt" | tee -a env.log
+  mkdir -p /tmp/cuda-cache
+  {
+    ( apt-get install -y --no-install-recommends --download-only -o "Dir::Cache::Archives=/tmp/cuda-cache" cuda-runtime \
+        || { echo "unversioned cuda-runtime not found, searching repo for a compatible versioned package..."; \
+             if [ -n "$HOST_CUDA_MAX" ]; then \
+               CUDA_PKG=$(apt-cache search '^cuda-runtime-[0-9]' | awk '{print $1}' \
+                 | sed -E 's/cuda-runtime-([0-9]+)-([0-9]+)/\1.\2 &/' \
+                 | sort -V \
+                 | awk -v max="$HOST_CUDA_MAX" '{split(max,m,"."); split($1,v,"."); if ((v[1]<m[1]) || (v[1]==m[1] && v[2]<=m[2])) last=$2} END{print last}'); \
+               echo "Highest cuda-runtime-X-Y <= host max ($HOST_CUDA_MAX): ${CUDA_PKG:-none found}"; \
+             else \
+               echo "No host CUDA max known — falling back to newest available"; \
+               CUDA_PKG=$(apt-cache search '^cuda-runtime-[0-9]' | sort -V | tail -1 | awk '{print $1}'); \
+             fi; \
+             if [ -n "$CUDA_PKG" ]; then \
+               echo "Installing: $CUDA_PKG"; \
+               apt-get install -y --no-install-recommends --download-only -o "Dir::Cache::Archives=/tmp/cuda-cache" "$CUDA_PKG"; \
+             else \
+               echo "No compatible cuda-runtime-* package found in repo"; \
+               exit 1; \
+             fi; } ) \
+      && { dpkg -i /tmp/cuda-cache/*.deb || apt-get install -f -y; } \
+      || echo "CUDA runtime install failed — see above for the actual error"
+  } 2>&1 | tee -a env.log
+  if [ -n "$GH_TOKEN" ] && ls /tmp/cuda-cache/*.deb >/dev/null 2>&1; then
+    echo "Caching downloaded CUDA runtime .debs for next run..." | tee -a env.log
+    tar -czf /tmp/cuda-runtime-debs.tar.gz -C /tmp/cuda-cache .
+    CUDA_RELEASE_ID=$(gh_cache_release_id_or_create)
+    gh_cache_upload "$CUDA_RELEASE_ID" /tmp/cuda-runtime-debs.tar.gz "$CUDA_CACHE_ASSET" 2>&1 | tee -a env.log \
+      || echo "CUDA runtime cache upload failed (non-fatal)" | tee -a env.log
+  fi
+fi
+ldconfig
+{
+  echo "--- libcudart / libcublas presence after install ---"
+  ldconfig -p | grep -iE 'libcudart|libcublas' || echo "WARNING: no libcudart/libcublas found after CUDA runtime install"
+} 2>&1 | tee -a env.log
+
+# --- cuDNN 9 (ort's CUDA EP requires it; cuda-runtime meta-package
+# does not include it -- root-caused in session 11). Package name for
+# CUDA 13.x on Ubuntu 24.04 via the NVIDIA apt repo is libcudnn9-cuda-13. ---
+echo "=== Installing cuDNN 9 (for CUDA 13) ===" | tee -a env.log
+{
+  apt-get install -y --no-install-recommends libcudnn9-cuda-13 \
+    || { echo "libcudnn9-cuda-13 not found, trying unversioned cudnn9-cuda-13 meta-package"; \
+         apt-get install -y --no-install-recommends cudnn9-cuda-13; }
+} 2>&1 | tee -a env.log
+ldconfig
+{
+  echo "--- libcudnn presence after install ---"
+  ldconfig -p | grep -i libcudnn || echo "FATAL-LOOKING: no libcudnn found after install attempt"
+} 2>&1 | tee -a env.log
+
+# ort's rc.12 release auto-detects CUDA version but can guess wrong --
+# force it explicitly since we know this instance: CUDA 13.2. Must be
+# set before cargo build (ort-sys's build script downloads/links the
+# matching prebuilt binary at build time).
+export ORT_CUDA_VERSION=13
+echo "ORT_CUDA_VERSION=$ORT_CUDA_VERSION (forced explicitly, not auto-detected)" | tee -a env.log
 
 # --- NVIDIA userspace Vulkan library extraction (EGL ICD fix) ---
 # Verbatim logic from oev_reco_stitch_remote.sh (fix a430de7/680d5be):
@@ -130,7 +247,7 @@ source "$HOME/.cargo/env"
   vulkaninfo --summary 2>&1 | head -30 || echo "vulkaninfo failed"
 } 2>&1 | tee -a env.log
 
-echo "=== Installing ultralytics + exporting YOLOv8n ONNX (NMS baked in) ===" | tee -a env.log
+echo "=== Installing ultralytics + exporting YOLOv8n ONNX at 1920 (NMS baked in, proven resolution per session 9/10/14) ===" | tee -a env.log
 # Proof-run only per Johnson's explicit direction: unpinned `pip install
 # ultralytics` is acceptable here, NOT for anything production/recurring.
 # reco-detect's ORT CPU backend requires an ONNX model with built-in NMS
@@ -140,7 +257,7 @@ echo "=== Installing ultralytics + exporting YOLOv8n ONNX (NMS baked in) ===" | 
 python3 -m venv /tmp/yolo-venv 2>&1 | tee -a env.log
 source /tmp/yolo-venv/bin/activate
 pip install -q ultralytics 2>&1 | tee -a env.log
-yolo export model=yolov8n.pt format=onnx nms=True 2>&1 | tee -a env.log
+yolo export model=yolov8n.pt format=onnx imgsz=1920 nms=True 2>&1 | tee -a env.log
 export_rc=${PIPESTATUS[0]}
 deactivate
 if [ "$export_rc" -ne 0 ] || [ ! -s /tmp/oev_run/yolov8n.onnx ]; then
@@ -149,10 +266,10 @@ if [ "$export_rc" -ne 0 ] || [ ! -s /tmp/oev_run/yolov8n.onnx ]; then
 fi
 echo "YOLO model ready: /tmp/oev_run/yolov8n.onnx ($(du -h /tmp/oev_run/yolov8n.onnx | cut -f1))" | tee -a env.log
 
-echo "=== build.log: cloning + building reco-cli ===" | tee build.log
-# Same fork, same default features (autocam + ort already on by default --
-# no --features flags needed for follow-cam, confirmed by reading
-# reco-cli/Cargo.toml and reco-autocam/Cargo.toml before this ticket).
+echo "=== build.log: cloning + building reco-cli (--features cuda) ===" | tee build.log
+# Same fork. Now built WITH --features cuda (default autocam,ort + cuda)
+# to get GPU-accelerated inference via ort's CUDA EP, per the proven
+# recipe from oev_gpu_detector_test_remote.sh (sessions 11/12/15).
 export CARGO_NET_RETRY=2
 export CARGO_HTTP_TIMEOUT=15
 git clone --depth 1 https://github.com/JhnsonO/video-stitcher.git /tmp/reco-src 2>&1 | tee -a build.log
@@ -165,12 +282,17 @@ cd /tmp/reco-src
 RECO_SHA=$(git rev-parse HEAD)
 echo "JhnsonO/video-stitcher HEAD: $RECO_SHA" | tee -a build.log
 RECO_BIN="/tmp/reco-src/target/release/reco"
-BIN_CACHE_ASSET="reco-cli-${RECO_SHA}.tar.gz"
+# Same cache key as oev_gpu_detector_test_remote.sh's cuda build
+# ("reco-cli-cuda13-<sha>") -- deliberately shared: a rebuild triggered
+# by either script benefits the other, since the binary is identical
+# for the same source SHA + ORT_CUDA_VERSION=13. Distinct from the
+# CPU-only "reco-cli-<sha>" key used by the M1 pipeline.
+BIN_CACHE_ASSET="reco-cli-cuda13-${RECO_SHA}.tar.gz"
 bin_cache_hit=0
 if [ -n "$GH_TOKEN" ]; then
   BIN_RELEASE_ID=$(gh_cache_release_id)
   if [ -n "$BIN_RELEASE_ID" ] && gh_cache_download "$BIN_RELEASE_ID" "$BIN_CACHE_ASSET" /tmp/reco-cli-cache.tar.gz; then
-    echo "reco-cli binary cache HIT ($BIN_CACHE_ASSET) — skipping cargo build" | tee -a build.log
+    echo "reco-cli (cuda) binary cache HIT ($BIN_CACHE_ASSET) — skipping cargo build" | tee -a build.log
     mkdir -p "$(dirname "$RECO_BIN")"
     tar -xzf /tmp/reco-cli-cache.tar.gz -C "$(dirname "$RECO_BIN")"
     chmod +x "$RECO_BIN"
@@ -178,24 +300,33 @@ if [ -n "$GH_TOKEN" ]; then
   fi
 fi
 if [ "$bin_cache_hit" -eq 0 ]; then
-  echo "reco-cli binary cache MISS ($BIN_CACHE_ASSET, or no GH_TOKEN) — building from source" | tee -a build.log
-  timeout 1200 stdbuf -oL -eL cargo build --release -p reco-cli -v 2>&1 | tee -a /tmp/oev_run/build.log
+  echo "reco-cli (cuda) binary cache MISS ($BIN_CACHE_ASSET, or no GH_TOKEN) — building from source" | tee -a build.log
+  timeout 1800 stdbuf -oL -eL cargo build --release -p reco-cli --features cuda -v 2>&1 | tee -a /tmp/oev_run/build.log
   build_rc=${PIPESTATUS[0]}
   if [ "$build_rc" -eq 124 ]; then
-    echo "FATAL: cargo build timed out after 20min (likely slow-network host), see build.log" | tee -a /tmp/oev_run/build.log
+    echo "FATAL: cargo build timed out after 30min (likely slow-network host), see build.log" | tee -a /tmp/oev_run/build.log
     exit 1
   elif [ "$build_rc" -ne 0 ]; then
-    echo "FATAL: cargo build failed (exit $build_rc), see build.log" | tee -a /tmp/oev_run/build.log
+    echo "FATAL: cargo build --features cuda failed (exit $build_rc), see build.log" | tee -a /tmp/oev_run/build.log
     exit 1
   fi
   if [ ! -x "$RECO_BIN" ]; then
     echo "FATAL: build reported success but binary not found at $RECO_BIN" | tee -a /tmp/oev_run/build.log
     exit 1
   fi
-  # Binary cache upload intentionally NOT duplicated here -- the M1
-  # pipeline's script already populates this cache key on its own runs,
-  # and this script only needs to consume it, not race an upload against
-  # a concurrent M1 run.
+  if [ -n "$GH_TOKEN" ]; then
+    # Cache the binary AND any companion shared libraries next to it
+    # (e.g. libonnxruntime_providers_shared.so) -- the cont.15 fix, so
+    # this script's own cache writes stay correct too, not just the
+    # detector-test script's.
+    RECO_BIN_DIR="$(dirname "$RECO_BIN")"
+    CACHE_SO_FILES=$(find "$RECO_BIN_DIR" -maxdepth 1 -name '*.so*' -printf '%f\n' 2>/dev/null)
+    echo "Caching reco-cli (cuda) binary + companion .so files for next run: $(basename "$RECO_BIN") $CACHE_SO_FILES" | tee -a /tmp/oev_run/build.log
+    tar -czf /tmp/reco-cli-cuda-cache.tar.gz -C "$RECO_BIN_DIR" "$(basename "$RECO_BIN")" $CACHE_SO_FILES
+    BIN_RELEASE_ID=$(gh_cache_release_id_or_create)
+    gh_cache_upload "$BIN_RELEASE_ID" /tmp/reco-cli-cuda-cache.tar.gz "$BIN_CACHE_ASSET" 2>&1 | tee -a /tmp/oev_run/build.log \
+      || echo "Binary cache upload failed (non-fatal)" | tee -a /tmp/oev_run/build.log
+  fi
 fi
 echo "Build OK: $RECO_BIN" | tee -a /tmp/oev_run/build.log
 cd /tmp/oev_run
@@ -227,12 +358,16 @@ if [ ! -f match.json ]; then
 fi
 echo "Calibrate OK: match.json written" | tee -a calibrate.log
 
-echo "=== stitch.log: reco stitch (field follow-cam, l-shape, no-zero-copy) ===" | tee stitch.log
+echo "=== stitch.log: reco stitch (field follow-cam, l-shape, --features cuda build, --no-zero-copy) ===" | tee stitch.log
 # Exact flag set agreed with Johnson: normal perspective (l-shape,
 # default) projection, NOT cylindrical -- follow-cam uses Reco's
 # standard virtual-camera path, panorama distortion is irrelevant here.
-# --no-zero-copy forces CPU decode + CPU ORT detection, removing the
-# CUDA/TensorRT GPU-detector question for this first proof run.
+# --no-zero-copy still forces CPU decode + CPU letterbox, but with
+# --features cuda + cuDNN + ORT_CUDA_VERSION=13 the YOLO inference
+# itself now runs on GPU (isolates "does GPU inference help" from the
+# separate, still out-of-scope NVDEC zero-copy question).
+# --detection-interval 1 (no frame-skipping -- that's a separate,
+# explicitly deferred optimisation track, not part of this ticket).
 # Deliberately NO --allow-no-tracking: a tracking-init failure must
 # fail this run loudly, not silently degrade to a static stitch.
 STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
@@ -331,12 +466,20 @@ if [ "$accept_rc" -ne 0 ]; then
 fi
 echo "Acceptance OK: AI tracking confirmed active with real detections + camera movement" | tee -a acceptance.log
 
-echo "=== GPU/decode summary (Vulkan render device; decode/detection forced CPU this run) ===" | tee -a env.log
+echo "=== GPU/decode summary (Vulkan render device; CUDA EP for detection, decode still CPU/--no-zero-copy) ===" | tee -a env.log
 {
   echo "--- Vulkan/GPU device selected (calibrate + stitch) ---"
   grep -iE 'Selected GPU|deviceName|llvmpipe|RTX|GeForce' calibrate.log stitch.log 2>&1 || echo "no GPU-selection lines found"
   echo "--- Decode backend / zero-copy status (expect CPU this run, --no-zero-copy) ---"
   grep -iE 'zero-copy|decode_backend|NVDEC|cuvid|hwaccel' calibrate.log stitch.log 2>&1 || echo "no decode-backend lines found"
+  echo "--- CUDA EP status (informational -- the acceptance gate above already requires real detections+movement regardless of backend, this just confirms whether they came from GPU or a silent CPU fallback) ---"
+  if grep -qE "No execution providers from session options registered successfully" stitch.log; then
+    echo "CUDA EP FALLBACK WARNING PRESENT -- detection almost certainly ran on CPU despite --features cuda build. Not fatal to this run (acceptance already passed on detection/movement), but treat 'proven GPU 1920' claims about THIS run's speed with caution."
+  elif grep -qE "ORT: CUDA execution provider enabled" stitch.log; then
+    echo "CUDA EP enabled log line found, no fallback warning -- detection likely ran on GPU."
+  else
+    echo "Neither CUDA EP log line found -- inconclusive, check build.log for whether --features cuda actually took effect."
+  fi
 } 2>&1 | tee -a env.log
 
 echo "=== All stages completed ==="
