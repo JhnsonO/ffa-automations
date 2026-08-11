@@ -114,6 +114,30 @@ stdbuf -oL -eL apt-get install -y --no-install-recommends \
   libavdevice-dev libavfilter-dev libswresample-dev \
   python3 python3-pip python3-venv 2>&1 | tee -a env.log
 
+# --- Random 15-20s test segment (Johnson's request, 2026-08-11): the
+# downloaded clip pair is the full ~45s trimmed clip; a random sub-window
+# is picked here (not hand-chosen) so this GPU-cache-verification test
+# isn't testing a cherry-picked "easy" moment. Purely a segment-length
+# change, not a panner/tracker/detector change -- left.mp4/right.mp4 are
+# overwritten in place so the rest of the script is unaffected. ---
+echo "=== Selecting random 15-20s test segment ===" | tee segment.log
+FULL_DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 left.mp4)
+FULL_DURATION_INT=$(printf '%.0f' "${FULL_DURATION:-0}")
+SEG_DURATION=$(( (RANDOM % 6) + 15 ))
+MAX_START=$(( FULL_DURATION_INT - SEG_DURATION ))
+if [ "$MAX_START" -lt 0 ]; then MAX_START=0; fi
+SEG_START=$(( RANDOM % (MAX_START + 1) ))
+echo "Full clip duration: ${FULL_DURATION_INT}s. Random segment: start=${SEG_START}s duration=${SEG_DURATION}s" | tee -a segment.log
+mv left.mp4 left_full.mp4
+mv right.mp4 right_full.mp4
+ffmpeg -y -ss "$SEG_START" -i left_full.mp4 -t "$SEG_DURATION" -c copy left.mp4 2>&1 | tee -a segment.log
+ffmpeg -y -ss "$SEG_START" -i right_full.mp4 -t "$SEG_DURATION" -c copy right.mp4 2>&1 | tee -a segment.log
+if [ ! -s left.mp4 ] || [ ! -s right.mp4 ]; then
+  echo "FATAL: random segment trim failed, left.mp4/right.mp4 missing/empty" | tee -a segment.log
+  exit 1
+fi
+echo "Segment trim OK: left.mp4/right.mp4 now ~${SEG_DURATION}s starting at ${SEG_START}s" | tee -a segment.log
+
 # --- CUDA runtime install (verbatim from oev_gpu_detector_test_remote.sh,
 # itself verbatim from oev_reco_stitch_remote.sh -- proven working in
 # sessions 11/12/15). Needed for real now: ort/cuda's execution
@@ -280,8 +304,15 @@ if [ "$clone_rc" -ne 0 ]; then
 fi
 cd /tmp/reco-src
 RECO_SHA=$(git rev-parse HEAD)
-echo "JhnsonO/video-stitcher HEAD: $RECO_SHA" | tee -a build.log
+echo "JhnsonO/video-stitcher HEAD: $RECO_SHA" | tee -a /tmp/oev_run/build.log
 RECO_BIN="/tmp/reco-src/target/release/reco"
+RECO_BIN_DIR="$(dirname "$RECO_BIN")"
+# CUDA execution provider's companion shared lib -- confirmed missing after
+# a cache-HIT in run 31494793310 (2026-08-11), causing a silent CPU
+# fallback (docs/ai-project-state.md cont.19/20). Hard-verified below
+# regardless of which path (cache-restore or fresh build) produced the
+# binary, so this can never recur silently.
+CUDA_SO_NAME="libonnxruntime_providers_shared.so"
 # Same cache key as oev_gpu_detector_test_remote.sh's cuda build
 # ("reco-cli-cuda13-<sha>") -- deliberately shared: a rebuild triggered
 # by either script benefits the other, since the binary is identical
@@ -292,15 +323,19 @@ bin_cache_hit=0
 if [ -n "$GH_TOKEN" ]; then
   BIN_RELEASE_ID=$(gh_cache_release_id)
   if [ -n "$BIN_RELEASE_ID" ] && gh_cache_download "$BIN_RELEASE_ID" "$BIN_CACHE_ASSET" /tmp/reco-cli-cache.tar.gz; then
-    echo "reco-cli (cuda) binary cache HIT ($BIN_CACHE_ASSET) — skipping cargo build" | tee -a build.log
-    mkdir -p "$(dirname "$RECO_BIN")"
-    tar -xzf /tmp/reco-cli-cache.tar.gz -C "$(dirname "$RECO_BIN")"
+    echo "reco-cli (cuda) binary cache HIT ($BIN_CACHE_ASSET) — skipping cargo build" | tee -a /tmp/oev_run/build.log
+    mkdir -p "$RECO_BIN_DIR"
+    tar -xzf /tmp/reco-cli-cache.tar.gz -C "$RECO_BIN_DIR"
     chmod +x "$RECO_BIN"
-    bin_cache_hit=1
+    if [ -f "$RECO_BIN_DIR/$CUDA_SO_NAME" ]; then
+      bin_cache_hit=1
+    else
+      echo "Cached binary is MISSING $CUDA_SO_NAME (stale/incomplete cache) — discarding cache, forcing a real build" | tee -a /tmp/oev_run/build.log
+    fi
   fi
 fi
 if [ "$bin_cache_hit" -eq 0 ]; then
-  echo "reco-cli (cuda) binary cache MISS ($BIN_CACHE_ASSET, or no GH_TOKEN) — building from source" | tee -a build.log
+  echo "reco-cli (cuda) binary cache MISS ($BIN_CACHE_ASSET, or no GH_TOKEN, or cache invalid) — building from source" | tee -a /tmp/oev_run/build.log
   timeout 1800 stdbuf -oL -eL cargo build --release -p reco-cli --features cuda -v 2>&1 | tee -a /tmp/oev_run/build.log
   build_rc=${PIPESTATUS[0]}
   if [ "$build_rc" -eq 124 ]; then
@@ -319,7 +354,6 @@ if [ "$bin_cache_hit" -eq 0 ]; then
     # (e.g. libonnxruntime_providers_shared.so) -- the cont.15 fix, so
     # this script's own cache writes stay correct too, not just the
     # detector-test script's.
-    RECO_BIN_DIR="$(dirname "$RECO_BIN")"
     CACHE_SO_FILES=$(find "$RECO_BIN_DIR" -maxdepth 1 -name '*.so*' -printf '%f\n' 2>/dev/null)
     echo "Caching reco-cli (cuda) binary + companion .so files for next run: $(basename "$RECO_BIN") $CACHE_SO_FILES" | tee -a /tmp/oev_run/build.log
     tar -czf /tmp/reco-cli-cuda-cache.tar.gz -C "$RECO_BIN_DIR" "$(basename "$RECO_BIN")" $CACHE_SO_FILES
@@ -328,7 +362,14 @@ if [ "$bin_cache_hit" -eq 0 ]; then
       || echo "Binary cache upload failed (non-fatal)" | tee -a /tmp/oev_run/build.log
   fi
 fi
-echo "Build OK: $RECO_BIN" | tee -a /tmp/oev_run/build.log
+# Hard verification regardless of path taken -- this is the actual guarantee
+# Johnson asked for: never silently proceed to stitch on a CPU-fallback
+# ONNXRuntime session.
+if [ ! -f "$RECO_BIN_DIR/$CUDA_SO_NAME" ]; then
+  echo "FATAL: $CUDA_SO_NAME missing next to $RECO_BIN after build/cache-restore -- would silently fall back to CPU. Aborting." | tee -a /tmp/oev_run/build.log
+  exit 1
+fi
+echo "Build OK: $RECO_BIN (CUDA provider companion lib confirmed present)" | tee -a /tmp/oev_run/build.log
 cd /tmp/oev_run
 
 echo "=== calibrate.log: reco calibrate ===" | tee calibrate.log
