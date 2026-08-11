@@ -25,6 +25,21 @@
 # nvidia-smi GPU utilization during the run, so a silent CPU fallback
 # can't be mistaken for a GPU result.
 #
+# RETEST (run 31466295819 diagnosis): the first attempt's "enabled"
+# log line was a false positive -- ort's own internal warning one line
+# later ("No execution providers from session options registered
+# successfully; may fall back to CPU") showed CUDA never actually
+# registered, and GPU utilization sat at ~0% almost the entire run.
+# Root cause: cuDNN was never installed (the `cuda-runtime` apt
+# meta-package does not include it, and ort's CUDA EP requires it).
+# This version adds libcudnn9-cuda-13 and forces ORT_CUDA_VERSION=13
+# explicitly (ort rc.12 ships both CUDA 12 and 13 prebuilt binaries
+# and can guess wrong when auto-detecting). The acceptance check below
+# is also tightened to require ALL THREE of: no fallback warning, GPU
+# utilization sustained (not just a brief blip), and throughput
+# materially above the 1.0 fps CPU baseline -- not just the presence
+# of the "enabled" log line.
+#
 # Expects, in /tmp/oev_run/:
 #   left.mp4, right.mp4   (the full clip pair, already downloaded)
 #
@@ -182,6 +197,33 @@ ldconfig
   ldconfig -p | grep -iE 'libcudart|libcublas' || echo "WARNING: no libcudart/libcublas found after CUDA runtime install"
 } 2>&1 | tee -a env.log
 
+# --- cuDNN 9 (missing in the previous run -- confirmed root cause of
+# the silent CUDA EP fallback: ort's CUDA EP requires cuDNN, and the
+# `cuda-runtime` apt meta-package does not include it). Package name
+# for CUDA 13.x on Ubuntu 24.04 via the NVIDIA apt repo (cuda-keyring,
+# already added above) is libcudnn9-cuda-13. ---
+echo "=== Installing cuDNN 9 (for CUDA 13) ===" | tee -a env.log
+{
+  apt-get install -y --no-install-recommends libcudnn9-cuda-13 \
+    || { echo "libcudnn9-cuda-13 not found, trying unversioned cudnn9-cuda-13 meta-package"; \
+         apt-get install -y --no-install-recommends cudnn9-cuda-13; }
+} 2>&1 | tee -a env.log
+ldconfig
+{
+  echo "--- libcudnn presence after install ---"
+  ldconfig -p | grep -i libcudnn || echo "FATAL-LOOKING: no libcudnn found after install attempt"
+} 2>&1 | tee -a env.log
+
+# ort's rc.12 release ships both CUDA 12 and CUDA 13 prebuilt binaries
+# and auto-detects which to use, but can guess wrong (esp. with only
+# one CUDA version installed, per ort's own docs). Force it explicitly
+# since we know exactly what's on this instance: CUDA 13.2. This must
+# be set before `cargo build` (ort-sys's build script downloads/links
+# the matching prebuilt binary at build time), and we also export it
+# for the stitch run itself in case anything re-checks it at runtime.
+export ORT_CUDA_VERSION=13
+echo "ORT_CUDA_VERSION=$ORT_CUDA_VERSION (forced explicitly, not auto-detected)" | tee -a env.log
+
 # --- NVIDIA userspace Vulkan library extraction (EGL ICD fix,
 # verbatim from the other scripts) -- Vulkan render (wgpu) still needs
 # this regardless of the detector backend. ---
@@ -240,11 +282,14 @@ cd /tmp/reco-src
 RECO_SHA=$(git rev-parse HEAD)
 echo "JhnsonO/video-stitcher HEAD: $RECO_SHA" | tee -a build.log
 RECO_BIN="/tmp/reco-src/target/release/reco"
-# Deliberately distinct cache key from the CPU-only scripts' "reco-cli-<sha>"
-# asset -- this binary has --features cuda baked in and must never be
-# silently reused by (or overwrite the cache for) the default-features
-# scripts.
-BIN_CACHE_ASSET="reco-cli-cuda-${RECO_SHA}.tar.gz"
+# Deliberately distinct cache key from BOTH the CPU-only scripts'
+# "reco-cli-<sha>" asset AND the previous cuda attempt's
+# "reco-cli-cuda-<sha>" asset (run 31466295819, built with
+# ORT_CUDA_VERSION unset/auto-detected). This run forces
+# ORT_CUDA_VERSION=13 explicitly per Johnson's instruction to remove
+# auto-detection ambiguity entirely -- reusing the old cuda cache here
+# would silently skip that and defeat the point of this retest.
+BIN_CACHE_ASSET="reco-cli-cuda13-${RECO_SHA}.tar.gz"
 bin_cache_hit=0
 if [ -n "$GH_TOKEN" ]; then
   BIN_RELEASE_ID=$(gh_cache_release_id)
@@ -329,21 +374,45 @@ echo "Stitch OK: followcam_1920_cuda.mp4 written" | tee -a stitch_1920_cuda.log
 
 echo "=== result_summary.txt ===" | tee result_summary.txt
 {
-  echo "--- CUDA execution provider status (from ort_session.rs log lines) ---"
+  echo "--- CUDA execution provider status (from ort_session.rs AND ort's own internal EP-registration check) ---"
+  echo "Prior run (31466295819) showed this builder-success line is NOT sufficient proof on its own --"
+  echo "ort logs its own separate warning one line later if registration actually failed. Check both:"
   grep -E "ORT: CUDA execution provider enabled|ORT: CUDA EP failed" stitch_1920_cuda.log \
     || echo "NEITHER log line found -- ort/cuda EP code path may not have been reached at all, check build.log for --features cuda"
+  FALLBACK_WARNING=$(grep -c "No execution providers from session options registered successfully" stitch_1920_cuda.log || true)
+  if [ "${FALLBACK_WARNING:-0}" -gt 0 ]; then
+    echo "FALLBACK WARNING PRESENT ($FALLBACK_WARNING times) -- CUDA EP did NOT actually register. This alone fails the test regardless of speed."
+  else
+    echo "No provider-registration fallback warning found -- EP registration signal is clean."
+  fi
   echo ""
   echo "--- Confirmed loaded model (input size + conf_thresh) ---"
   grep "CpuYoloDetector loaded" stitch_1920_cuda.log || echo "WARNING: no 'CpuYoloDetector loaded' line found"
   echo ""
   echo "--- Measured throughput ---"
-  grep "^Done: " stitch_1920_cuda.log || echo "WARNING: no final 'Done:' summary line found"
+  DONE_LINE=$(grep "^Done: " stitch_1920_cuda.log || echo "")
+  echo "${DONE_LINE:-WARNING: no final Done: summary line found}"
+  MEASURED_FPS=$(echo "$DONE_LINE" | grep -oE '\([0-9.]+ fps\)' | grep -oE '[0-9.]+' || echo "0")
   echo ""
-  echo "--- GPU utilization sample (peak values from gpu_util.log) ---"
+  echo "--- GPU utilization: full distribution, not just peak (prior run's 27% peak was a brief blip, not sustained) ---"
   if [ -f gpu_util.log ]; then
-    awk -F',' 'NR%2==0{gsub(/[^0-9.]/,"",$1); if ($1+0>max) max=$1+0} END{print "peak GPU utilization %:", max+0}' gpu_util.log 2>/dev/null || cat gpu_util.log | tail -5
+    UTIL_STATS=$(awk -F',' 'NR%2==0{gsub(/[^0-9.]/,"",$1); n++; sum+=$1+0; if($1+0>max)max=$1+0; if($1+0>10)above10++} END{if(n>0) printf "samples=%d mean=%.1f%% peak=%.1f%% samples_above_10pct=%d (%.0f%% of run)\n", n, sum/n, max, above10, 100*above10/n; else print "no samples"}' gpu_util.log)
+    echo "$UTIL_STATS"
+    SAMPLES_ABOVE_10=$(echo "$UTIL_STATS" | grep -oE 'samples_above_10pct=[0-9]+' | grep -oE '[0-9]+' || echo "0")
+    TOTAL_SAMPLES=$(echo "$UTIL_STATS" | grep -oE 'samples=[0-9]+' | grep -oE '[0-9]+' || echo "1")
   else
     echo "gpu_util.log missing"
+    SAMPLES_ABOVE_10=0
+    TOTAL_SAMPLES=1
+  fi
+  echo ""
+  echo "--- VERDICT (per Johnson's explicit acceptance bar: no fallback warning AND sustained GPU util AND throughput materially beats 1.0 fps CPU baseline) ---"
+  SUSTAINED=$([ "$TOTAL_SAMPLES" -gt 0 ] && [ $((SAMPLES_ABOVE_10 * 100 / TOTAL_SAMPLES)) -ge 50 ] && echo 1 || echo 0)
+  MATERIALLY_FASTER=$(awk -v fps="${MEASURED_FPS:-0}" 'BEGIN{print (fps > 2.0) ? 1 : 0}')
+  if [ "${FALLBACK_WARNING:-0}" -eq 0 ] && [ "$SUSTAINED" -eq 1 ] && [ "$MATERIALLY_FASTER" -eq 1 ]; then
+    echo "PASS: CUDA EP registered cleanly, GPU utilization sustained (>=50% of samples above 10%), measured ${MEASURED_FPS:-0} fps materially beats 1.0 fps CPU baseline."
+  else
+    echo "FAIL: at least one condition not met -- do not treat this run as 'CUDA works'. fallback_warning_count=${FALLBACK_WARNING:-0}, sustained_util=$SUSTAINED, measured_fps=${MEASURED_FPS:-0}"
   fi
 } | tee -a result_summary.txt
 
