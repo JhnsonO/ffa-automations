@@ -864,3 +864,13 @@ Recall 57.2% → 54.4% is flat/noise, not a climb — lands in Johnson's pre-sta
 3. Only after both: revisit session-8 FieldPanner tuning finding (`cluster_alpha`/`dead_zone_rad`) — stronger GPU-detected ball signal at 1920 may change how much tuning is even needed.
 
 Still deferred, unstarted: GPU-saturation investigation (14% mean util at 1920 — CPU preprocessing/copies/sequential L/R inference/ORT overhead unexamined), player dedup across camera overlap, TensorRT, new tracker architecture.
+
+## 2026-08-10 session (cont. 15): cache bug fixed — companion .so files now archived (merge `eac53f0`)
+
+**Changed:** `oev_gpu_detector_test_remote.sh` only, +9/-2, cache-write step in the cuda binary-cache block. On cache write, now archives every `*.so*` found alongside `$RECO_BIN` (e.g. `libonnxruntime_providers_shared.so`) in addition to the `reco` binary itself, instead of just the binary. Extraction side needed no change — it already untars everything present in the archive.
+
+**Verified:** diff reviewed by hand before merge — confirmed exactly this one hunk touched, nothing else in the 440-line script changed. Not dispatched/run-tested (no compute spent) — Johnson scoped this ticket to the fix only, no detection-interval work in this branch.
+
+**Risk, real and unresolved: the existing cached asset for the current `reco-cli` (`JhnsonO/video-stitcher`) HEAD SHA still lacks the `.so` files** — it was uploaded before this fix, under the same `reco-cli-cuda13-<sha>` key. Since the cache key is keyed on the upstream `reco-cli` source SHA (not this script's own SHA), the next run will still get a cache **HIT** on that stale, `.so`-less asset and silently fall back to CPU again, exactly as before — this fix only takes effect once either (a) the upstream `reco-cli` SHA changes (natural cache MISS + rebuild), or (b) the stale `reco-cli-cuda13-<sha>` release asset is manually deleted to force a rebuild. Not deleted this session — needs a decision, not assumed.
+
+**Next:** before the detection-interval sweep (or any other run of this script) is trusted to be GPU-real, either delete the stale cache asset or bump/force a cache-key change so the fixed caching logic actually gets exercised. Then proceed with the `--detection-interval` sweep at 1920 (values 1/2/4/6/8, same 20s window) as its own separate ticket, per Johnson's scoping.
