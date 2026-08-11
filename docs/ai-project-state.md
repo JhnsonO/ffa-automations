@@ -728,3 +728,30 @@ Mechanics: plain `curl` + `jq` against the GitHub REST API (release lookup/creat
 3. Build the visual diagnostic locally: extract stills from `left_window.mp4`/`right_window.mp4` at a handful of shared sample frames, overlay each resolution's *actual* reported detections (including the existing 640 baseline's `events.jsonl`, already downloaded locally) on copies of the same stills, tile into one composite comparison image.
 4. Classify the result into regime A (resolution is the main problem — keep pushing resolution/optimize inference), B (resolution helps only modestly — generic COCO YOLOv8n is probably fundamentally weak for small fast football-ball detection; next step would be a football-specific detector or tiled inference), or C (resolution doesn't matter — stop here, look at ball perception another way). Report this classification with the numbers, do not just dump stats.
 5. Per Johnson's explicit constraints on this ticket: no FieldPanner tuning, no player dedup, no new tracker architecture, no panorama/cylindrical work — those all wait until the detector-resolution question is answered.
+
+## 2026-08-10 session (cont. 9): detector-resolution A/B result — REGIME A, resolution is the main problem
+
+**Run `31434114262`: SUCCESS.** Both `CpuYoloDetector loaded` log lines confirmed actual input size + conf_thresh (not trusted from filename): `input=1280x1280, conf_thresh=0.1` and `input=1920x1920, conf_thresh=0.1`.
+
+**Same 1199-frame window (t=7–27s of `trimmed_GX010197.MP4`/`trimmed_GX010173.MP4`), same everything except `--model`:**
+
+| resolution | frames w/ ≥1 ball | % | total ball detections | conf median | Left/Right |
+|---|---|---|---|---|---|
+| 640 (baseline, run `31427290826`) | 86/1199 | 7.2% | 92 | 0.40 | 81/11 |
+| 1280 | 204/1199 | 17.0% | 229 | 0.48 | 189/40 |
+| 1920 | 686/1199 | 57.2% | 880 | 0.36 | 789/91 |
+
+**Classification: Regime A — resolution is the main problem.** Matches the shape of the example Johnson gave for "keep pushing resolution." Confirmed visually, not just from counts: a 3-frame composite (`detector_resolution_comparison.png`, delivered to the person, built from each resolution's *actual* reported detections drawn onto real camera stills, not reimplemented inference) shows frame 823 where 640 and 1280 miss a small real ball entirely and 1920 catches it clearly, alongside a frame where all three agree (confidence drops slightly as resolution rises, box just tightens) and a frame where none of the three catch anything (genuine occlusion/motion-blur miss, not a resolution artifact — useful negative control).
+
+**Cost reality, measured not estimated (Johnson's explicit ask):** 1280 = 558.1s for 1199 frames (2.1 fps). 1920 = 1210.0s for 1199 frames (**1.0 fps** — over 20 minutes of compute for 20 seconds of footage) — all on CPU ORT (`--no-zero-copy`, deliberate, to isolate resolution from the CUDA/TensorRT backend question). **1920 on CPU is not economically viable for a real pipeline as-is.**
+
+**Decision point surfaced, not resolved this session:** resolution clearly works and should keep being pushed, but doing so on CPU inference is dead-ended. The previously-deferred test #2 (restore NVDEC + build the CUDA/TensorRT detector path, `--zero-copy` / without `--no-zero-copy`) is no longer just "the next planned test" — it's now the actual blocker to using higher-resolution detection at all economically.
+
+**Files/artifacts:** run `31434114262` artifact `oev-detector-res-test-31434114262` (309MB — includes `left_window.mp4`/`right_window.mp4`, the raw 7–27s window, useful for any further visual diagnostics without re-dispatching). `detector_resolution_comparison.png` built and delivered locally this session (not committed to the repo — a one-off diagnostic image, not a pipeline artifact).
+
+**Per Johnson's explicit scope constraints, none of the following happened this session and remain open:** no FieldPanner tuning (the "floating in the middle" panner-side finding from session-8 is still just diagnosed, not fixed), no player-detection dedup across the camera overlap (also still just flagged, not implemented), no new tracker architecture, no panorama/cylindrical work.
+
+**Next (fresh chat if needed — mandatory bootstrap: read `CLAUDE.md` + this file first):**
+1. Decide + scope the CUDA/TensorRT detector build (test #2). `reco-cli`'s `cuda`/`tensorrt` Cargo features exist but have never been built or tested in this repo's Vast.ai pipeline — this is real new work (build flags, driver/toolkit setup on the instance, `--zero-copy` decode path), not a config tweak like the last two tickets.
+2. Once GPU detection is viable, re-run a resolution test (or go straight to 1920, given how clean this result was) with `--zero-copy` to get a real fps number before deciding whether 1920 becomes the standing default for follow-cam.
+3. Only after the detector question is fully settled: revisit the session-8 FieldPanner finding (`cluster_alpha`/`dead_zone_rad` vs. a noisy/duplicate-heavy raw cluster) — a much stronger ball signal from higher-resolution detection may substantially change how much panner tuning is even needed, so tuning before this would risk tuning around the wrong problem.
