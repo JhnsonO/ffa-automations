@@ -28,6 +28,11 @@ on:
         required: false
         default: '2560'
         type: string
+      detection_interval:
+        description: 'reco --detection-interval to test (sweep values: 1, 2, 4, 6, 8)'
+        required: false
+        default: '1'
+        type: string
 
 permissions:
   contents: write
@@ -430,12 +435,13 @@ jobs:
           START_SEC: ${{ github.event.inputs.start_sec }}
           END_SEC: ${{ github.event.inputs.end_sec }}
           MODEL_RES: ${{ github.event.inputs.model_res }}
+          DETECTION_INTERVAL: ${{ github.event.inputs.detection_interval }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           $SCP oev_gpu_detector_test_remote.sh root@$IP:/tmp/oev_run/
           $SSH "chmod +x /tmp/oev_run/oev_gpu_detector_test_remote.sh"
-          $SSH "GH_TOKEN='$GH_TOKEN' START_SEC='$START_SEC' END_SEC='$END_SEC' MODEL_RES='$MODEL_RES' stdbuf -oL -eL /tmp/oev_run/oev_gpu_detector_test_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
+          $SSH "GH_TOKEN='$GH_TOKEN' START_SEC='$START_SEC' END_SEC='$END_SEC' MODEL_RES='$MODEL_RES' DETECTION_INTERVAL='$DETECTION_INTERVAL' stdbuf -oL -eL /tmp/oev_run/oev_gpu_detector_test_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
 
       - name: Pull back logs + outputs
         if: always()
@@ -449,6 +455,7 @@ jobs:
           PREFLIGHT_GPU_MODEL: ${{ steps.launch.outputs.preflight_gpu_model }}
           PREFLIGHT_DRIVER_VERSION: ${{ steps.launch.outputs.preflight_driver_version }}
           MODEL_RES: ${{ github.event.inputs.model_res }}
+          DETECTION_INTERVAL: ${{ github.event.inputs.detection_interval }}
         run: |
           SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           mkdir -p gpu_test_artifacts
@@ -461,11 +468,14 @@ jobs:
           preflight_driver_version=$PREFLIGHT_DRIVER_VERSION
           ip=$IP
           port=$PORT
+          model_res=$MODEL_RES
+          detection_interval=$DETECTION_INTERVAL
           META
           cat gpu_test_artifacts/run_metadata.txt
           RES="${MODEL_RES:-2560}"
-          for f in env.log build.log calibrate.log "stitch_${RES}_cuda.log" gpu_util.log result_summary.txt \
-                   match.json "events_${RES}_cuda.jsonl" "followcam_${RES}_cuda.mp4"; do
+          INT="${DETECTION_INTERVAL:-1}"
+          for f in env.log build.log calibrate.log "stitch_${RES}_int${INT}_cuda.log" gpu_util.log result_summary.txt \
+                   match.json "events_${RES}_int${INT}_cuda.jsonl" "followcam_${RES}_int${INT}_cuda.mp4"; do
             $SCP "root@$IP:/tmp/oev_run/$f" gpu_test_artifacts/ || echo "$f missing"
           done
 
@@ -473,7 +483,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: oev-gpu-detector-test-${{ github.run_id }}
+          name: oev-gpu-detector-test-int${{ github.event.inputs.detection_interval }}-${{ github.run_id }}
           path: gpu_test_artifacts/
           retention-days: 14
 
