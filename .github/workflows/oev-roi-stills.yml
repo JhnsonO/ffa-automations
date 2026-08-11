@@ -1,0 +1,109 @@
+name: OEV ROI Stills
+
+on:
+  workflow_dispatch:
+    inputs:
+      left_clip:
+        description: 'Left camera clip filename in the OEV Trimmed/ Drive folder'
+        required: false
+        default: 'trimmed_GX010197.MP4'
+        type: string
+      right_clip:
+        description: 'Right camera clip filename in the OEV Trimmed/ Drive folder'
+        required: false
+        default: 'trimmed_GX010173.MP4'
+        type: string
+      frame_timestamp:
+        description: 'Timestamp in each clip to grab the frame from (ffmpeg -ss format)'
+        required: false
+        default: '00:01:00'
+        type: string
+      artifact_name:
+        description: 'Name for the uploaded stills artifact'
+        required: false
+        default: 'oev-roi-stills'
+        type: string
+
+jobs:
+  oev-roi-stills:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Refresh Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -u - << 'PY'
+          import json, urllib.request as req
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          payload = json.dumps({'client_id': token_data.get('client_id') or creds_data['installed']['client_id'], 'client_secret': token_data.get('client_secret') or creds_data['installed']['client_secret'], 'refresh_token': token_data['refresh_token'], 'grant_type': 'refresh_token'}).encode()
+          response = req.urlopen(req.Request(token_data.get('token_uri', 'https://oauth2.googleapis.com/token'), data=payload, headers={'Content-Type': 'application/json'}, method='POST'))
+          token = json.loads(response.read())
+          if 'access_token' not in token: raise RuntimeError(f'Token refresh failed: {token}')
+          open('/tmp/drive_token.txt', 'w').write(token['access_token'])
+          print(f"Token OK (expires_in={token.get('expires_in')}s)")
+          PY
+
+      - name: Resolve clip file IDs in OEV Trimmed/ folder
+        env:
+          LEFT_CLIP: ${{ github.event.inputs.left_clip }}
+          RIGHT_CLIP: ${{ github.event.inputs.right_clip }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          FOLDER_ID=$(curl -sL -H "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://www.googleapis.com/drive/v3/files?q=name%3D%27Trimmed%27%20and%20mimeType%3D%27application%2Fvnd.google-apps.folder%27%20and%20trashed%3Dfalse&fields=files(id,name)" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['files'][0]['id'])")
+          echo "Trimmed folder id: $FOLDER_ID"
+
+          resolve_id() {
+            local NAME="$1"
+            curl -sL -H "Authorization: Bearer $ACCESS_TOKEN" \
+              "https://www.googleapis.com/drive/v3/files?q=name%3D%27${NAME}%27%20and%20%27${FOLDER_ID}%27%20in%20parents%20and%20trashed%3Dfalse&fields=files(id,name)" \
+              | python3 -c "import json,sys; d=json.load(sys.stdin); files=d.get('files',[]); print(files[0]['id']) if files else exit(1)"
+          }
+
+          LEFT_ID=$(resolve_id "$LEFT_CLIP")
+          RIGHT_ID=$(resolve_id "$RIGHT_CLIP")
+          echo "LEFT_ID=$LEFT_ID" >> "$GITHUB_ENV"
+          echo "RIGHT_ID=$RIGHT_ID" >> "$GITHUB_ENV"
+          echo "Resolved left=$LEFT_ID right=$RIGHT_ID"
+
+      - name: Download source clips from Drive
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          curl -sL -H "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://www.googleapis.com/drive/v3/files/${LEFT_ID}?alt=media" -o /tmp/left.mp4
+          curl -sL -H "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://www.googleapis.com/drive/v3/files/${RIGHT_ID}?alt=media" -o /tmp/right.mp4
+          ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/left.mp4
+          ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/right.mp4
+
+      - name: Extract one raw frame per camera
+        env:
+          TS: ${{ github.event.inputs.frame_timestamp }}
+        run: |
+          mkdir -p oev_roi_stills
+          ffmpeg -y -ss "$TS" -i /tmp/left.mp4 -frames:v 1 oev_roi_stills/left.jpg
+          ffmpeg -y -ss "$TS" -i /tmp/right.mp4 -frames:v 1 oev_roi_stills/right.jpg
+          ffprobe -v error -show_entries stream=width,height -of default=noprint_wrappers=1 oev_roi_stills/left.jpg
+          ffprobe -v error -show_entries stream=width,height -of default=noprint_wrappers=1 oev_roi_stills/right.jpg
+
+      - name: Upload stills artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.artifact_name }}-${{ github.run_id }}
+          path: oev_roi_stills/
+          retention-days: 14
