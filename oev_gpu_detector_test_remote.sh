@@ -321,8 +321,14 @@ if [ "$bin_cache_hit" -eq 0 ]; then
     exit 1
   fi
   if [ -n "$GH_TOKEN" ]; then
-    echo "Caching reco-cli (cuda) binary for next run..." | tee -a /tmp/oev_run/build.log
-    tar -czf /tmp/reco-cli-cuda-cache.tar.gz -C "$(dirname "$RECO_BIN")" "$(basename "$RECO_BIN")"
+    # Cache the binary AND any companion shared libraries next to it
+    # (e.g. libonnxruntime_providers_shared.so) — a prior cache-hit run
+    # (31474170441) silently fell back to CPU because only the "reco"
+    # binary itself was archived here, not its .so dependencies.
+    RECO_BIN_DIR="$(dirname "$RECO_BIN")"
+    CACHE_SO_FILES=$(find "$RECO_BIN_DIR" -maxdepth 1 -name '*.so*' -printf '%f\n' 2>/dev/null)
+    echo "Caching reco-cli (cuda) binary + companion .so files for next run: $(basename "$RECO_BIN") $CACHE_SO_FILES" | tee -a /tmp/oev_run/build.log
+    tar -czf /tmp/reco-cli-cuda-cache.tar.gz -C "$RECO_BIN_DIR" "$(basename "$RECO_BIN")" $CACHE_SO_FILES
     BIN_RELEASE_ID=$(gh_cache_release_id_or_create)
     gh_cache_upload "$BIN_RELEASE_ID" /tmp/reco-cli-cuda-cache.tar.gz "$BIN_CACHE_ASSET" 2>&1 | tee -a /tmp/oev_run/build.log \
       || echo "Binary cache upload failed (non-fatal)" | tee -a /tmp/oev_run/build.log
