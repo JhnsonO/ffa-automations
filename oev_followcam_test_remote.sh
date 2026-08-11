@@ -358,6 +358,75 @@ if [ ! -f match.json ]; then
 fi
 echo "Calibrate OK: match.json written" | tee -a calibrate.log
 
+# Fixed St Margaret's field ROI (prototype, single venue/camera setup).
+# Injected into match.json after calibrate, before stitch, so reco stitch's
+# already-existing field_roi auto-load (reco-cli/src/stitch.rs) filters out
+# detections from the neighbouring pitch. No new CLI flag, no ROI-editor
+# invocation, no venue-preset framework -- coordinates below are the fixed
+# prototype polygon Johnson marked on the calibrate-stills screenshots for
+# this exact clip pair/camera setup (docs/ai-project-state.md, cont.18).
+echo "Injecting St Margaret's field_roi into match.json" | tee -a calibrate.log
+python3 - <<'PYROI'
+import json
+
+with open("match.json") as f:
+    match = json.load(f)
+
+match["field_roi"] = {
+    "left": [
+        [0.1227, 0.9611],
+        [0.0573, 0.6846],
+        [0.1802, 0.6285],
+        [0.2645, 0.5769],
+        [0.4382, 0.4864],
+        [0.4988, 0.4658],
+        [0.5942, 0.4474],
+        [0.7835, 0.4175],
+        [0.9285, 0.3785],
+        [1.0000, 1.0000],
+        [0.1227, 1.0000],
+    ],
+    "right": [
+        [0.0391, 0.4206],
+        [0.0818, 0.4101],
+        [0.1839, 0.4070],
+        [0.2783, 0.4070],
+        [0.3448, 0.4083],
+        [0.4100, 0.4161],
+        [0.4684, 0.4319],
+        [0.6239, 0.4801],
+        [0.7368, 0.5200],
+        [0.7980, 0.5465],
+        [0.7454, 0.9011],
+        [0.7454, 1.0000],
+        [0.0000, 1.0000],
+    ],
+}
+
+with open("match.json", "w") as f:
+    json.dump(match, f, indent=2)
+
+assert len(match["field_roi"]["left"]) == 11
+assert len(match["field_roi"]["right"]) == 13
+print("field_roi injected: left=%d pts, right=%d pts" % (
+    len(match["field_roi"]["left"]), len(match["field_roi"]["right"])))
+PYROI
+if [ $? -ne 0 ]; then
+  echo "FATAL: field_roi injection into match.json failed" | tee -a calibrate.log
+  exit 2
+fi
+if ! python3 -c "
+import json, sys
+m = json.load(open('match.json'))
+roi = m.get('field_roi')
+assert roi and isinstance(roi.get('left'), list) and len(roi['left']) > 0, 'field_roi.left missing/empty'
+assert isinstance(roi.get('right'), list) and len(roi['right']) > 0, 'field_roi.right missing/empty'
+" 2>>calibrate.log; then
+  echo "FATAL: match.json field_roi validation failed after injection" | tee -a calibrate.log
+  exit 2
+fi
+echo "field_roi validated in match.json (left/right polygons present)" | tee -a calibrate.log
+
 echo "=== stitch.log: reco stitch (field follow-cam, l-shape, --features cuda build, --no-zero-copy) ===" | tee stitch.log
 # Exact flag set agreed with Johnson: normal perspective (l-shape,
 # default) projection, NOT cylindrical -- follow-cam uses Reco's
