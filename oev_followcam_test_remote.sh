@@ -22,11 +22,16 @@
 # a plain static stitch that looks like a follow-cam but isn't one.
 #
 # Expects, in /tmp/oev_run/:
-#   left.mp4, right.mp4   (the clip pair, already downloaded)
+#   left.mp4, right.mp4   (the FULL original left/right GoPro source clips,
+#                          not the ~45s trimmed test clips -- already
+#                          downloaded by the workflow)
 #
 # Produces, in /tmp/oev_run/:
 #   env.log         - toolchain/driver/YOLO-export versions
 #   build.log       - cargo build output
+#   segment.log     - full-source filenames + chosen start/duration for the
+#                     synchronised test segment cut from the full originals
+#   timing.log      - per-stage wall-clock timings (diagnostic only)
 #   calibrate.log   - reco calibrate output
 #   stitch.log      - reco stitch output
 #   acceptance.log  - AI-driven-camera acceptance check output
@@ -35,9 +40,12 @@
 #   events.jsonl    - pipeline event trace (present if stitch ran)
 #   followcam.mp4   - follow-cam output (only if stitch succeeds)
 #
-# Exit codes: 1=env/build/model-export failure, 2=calibrate failure,
-# 3=stitch command failure, 4=stitch reported success but output missing,
-# 5=stitch succeeded but the AI-driven-camera acceptance check failed.
+# Exit codes: 1=env/build/model-export/segment-selection failure,
+# 2=calibrate failure, 3=stitch command failure, 4=stitch reported success
+# but output missing, 5=stitch succeeded but the AI-driven-camera acceptance
+# check failed, 6=CUDA execution provider failed to initialise (fail-fast,
+# before the expensive calibrate/stitch stage -- no more silent CPU-fallback
+# renders).
 
 set -uo pipefail
 cd /tmp/oev_run
@@ -114,29 +122,73 @@ stdbuf -oL -eL apt-get install -y --no-install-recommends \
   libavdevice-dev libavfilter-dev libswresample-dev \
   python3 python3-pip python3-venv 2>&1 | tee -a env.log
 
-# --- Random 15-20s test segment (Johnson's request, 2026-08-11): the
-# downloaded clip pair is the full ~45s trimmed clip; a random sub-window
-# is picked here (not hand-chosen) so this GPU-cache-verification test
-# isn't testing a cherry-picked "easy" moment. Purely a segment-length
-# change, not a panner/tracker/detector change -- left.mp4/right.mp4 are
-# overwritten in place so the rest of the script is unaffected. ---
-echo "=== Selecting random 15-20s test segment ===" | tee segment.log
-FULL_DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 left.mp4)
-FULL_DURATION_INT=$(printf '%.0f' "${FULL_DURATION:-0}")
+# --- Timing instrumentation (diagnostic only, per Johnson's ticket --
+# do not optimise any stage based on these numbers in this ticket). ---
+TIMING_LOG="/tmp/oev_run/timing.log"
+: > "$TIMING_LOG"
+_stage_start() { STAGE_T0=$(date +%s); }
+_stage_end() {
+  local name="$1" t1 dt
+  t1=$(date +%s)
+  dt=$(( t1 - STAGE_T0 ))
+  echo "${name}: ${dt}s" | tee -a "$TIMING_LOG"
+}
+SCRIPT_T0=$(date +%s)
+
+# --- Synchronised 15-20s test segment from the FULL original source
+# clips (Johnson's request, 2026-08-11, supersedes the earlier random-crop-
+# of-the-45s-trimmed-clip logic, which was invalid for generalisation
+# testing since it never left the already-trimmed window). left.mp4/
+# right.mp4 as downloaded by the workflow ARE the full original left/right
+# GoPro recordings (resolved from the OEV Drive root folder, not
+# Trimmed/) -- one random start timestamp + one random 15-20s duration is
+# applied identically to both, bounded by the shorter of the two full
+# clips so the segment is guaranteed to exist in both. Purely a segment-
+# selection change, not a panner/tracker/detector change -- left.mp4/
+# right.mp4 are overwritten in place so the rest of the script is
+# unaffected. ---
+_stage_start
+echo "=== Selecting synchronised 15-20s test segment from full original sources ===" | tee segment.log
+LEFT_SOURCE_NAME="${LEFT_CLIP:-left.mp4}"
+RIGHT_SOURCE_NAME="${RIGHT_CLIP:-right.mp4}"
+LEFT_FULL_DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 left.mp4)
+RIGHT_FULL_DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 right.mp4)
+LEFT_FULL_DURATION_INT=$(printf '%.0f' "${LEFT_FULL_DURATION:-0}")
+RIGHT_FULL_DURATION_INT=$(printf '%.0f' "${RIGHT_FULL_DURATION:-0}")
+if [ "$LEFT_FULL_DURATION_INT" -le 0 ] || [ "$RIGHT_FULL_DURATION_INT" -le 0 ]; then
+  echo "FATAL: could not determine duration of left.mp4/right.mp4 (left=${LEFT_FULL_DURATION_INT}s right=${RIGHT_FULL_DURATION_INT}s) -- are these the full source clips?" | tee -a segment.log
+  exit 1
+fi
+# Overlap bound: the ONE shared valid window both full clips can supply.
+OVERLAP_DURATION_INT=$LEFT_FULL_DURATION_INT
+if [ "$RIGHT_FULL_DURATION_INT" -lt "$OVERLAP_DURATION_INT" ]; then
+  OVERLAP_DURATION_INT=$RIGHT_FULL_DURATION_INT
+fi
 SEG_DURATION=$(( (RANDOM % 6) + 15 ))
-MAX_START=$(( FULL_DURATION_INT - SEG_DURATION ))
+if [ "$SEG_DURATION" -gt "$OVERLAP_DURATION_INT" ]; then
+  echo "FATAL: overlapping duration (${OVERLAP_DURATION_INT}s) shorter than minimum segment length (15s) -- left=${LEFT_FULL_DURATION_INT}s right=${RIGHT_FULL_DURATION_INT}s" | tee -a segment.log
+  exit 1
+fi
+MAX_START=$(( OVERLAP_DURATION_INT - SEG_DURATION ))
 if [ "$MAX_START" -lt 0 ]; then MAX_START=0; fi
 SEG_START=$(( RANDOM % (MAX_START + 1) ))
-echo "Full clip duration: ${FULL_DURATION_INT}s. Random segment: start=${SEG_START}s duration=${SEG_DURATION}s" | tee -a segment.log
+{
+  echo "Left full source:  ${LEFT_SOURCE_NAME} (duration ${LEFT_FULL_DURATION_INT}s)"
+  echo "Right full source: ${RIGHT_SOURCE_NAME} (duration ${RIGHT_FULL_DURATION_INT}s)"
+  echo "Overlapping valid duration: ${OVERLAP_DURATION_INT}s"
+  echo "Chosen segment: start=${SEG_START}s duration=${SEG_DURATION}s (same start+duration applied to both cameras)"
+} | tee -a segment.log
 mv left.mp4 left_full.mp4
 mv right.mp4 right_full.mp4
 ffmpeg -y -ss "$SEG_START" -i left_full.mp4 -t "$SEG_DURATION" -c copy left.mp4 2>&1 | tee -a segment.log
 ffmpeg -y -ss "$SEG_START" -i right_full.mp4 -t "$SEG_DURATION" -c copy right.mp4 2>&1 | tee -a segment.log
 if [ ! -s left.mp4 ] || [ ! -s right.mp4 ]; then
-  echo "FATAL: random segment trim failed, left.mp4/right.mp4 missing/empty" | tee -a segment.log
+  echo "FATAL: synchronised segment trim failed, left.mp4/right.mp4 missing/empty" | tee -a segment.log
   exit 1
 fi
-echo "Segment trim OK: left.mp4/right.mp4 now ~${SEG_DURATION}s starting at ${SEG_START}s" | tee -a segment.log
+echo "Segment trim OK: left.mp4/right.mp4 now ~${SEG_DURATION}s starting at ${SEG_START}s (from full originals)" | tee -a segment.log
+_stage_end "segment_selection_and_extraction"
+_stage_start
 
 # --- CUDA runtime install (verbatim from oev_gpu_detector_test_remote.sh,
 # itself verbatim from oev_reco_stitch_remote.sh -- proven working in
@@ -372,7 +424,61 @@ fi
 echo "Build OK: $RECO_BIN (CUDA provider companion lib confirmed present)" | tee -a /tmp/oev_run/build.log
 cd /tmp/oev_run
 
+# --- CUDA EP fail-fast (Johnson's ticket, 2026-08-11): the .so-presence
+# check above only proves the file exists next to the binary -- it does
+# NOT prove ONNXRuntime's CUDA execution provider can actually initialise
+# on this host (driver/CUDA-runtime/cuDNN mismatch would still silently
+# degrade to CPU). Previously this was only checked informationally AFTER
+# stitch (grep on stitch.log). Moved here, before calibrate/stitch, and
+# now hard-fails the run instead of just logging a warning. Uses the same
+# yolo-venv already created for the ONNX export above; installs
+# onnxruntime-gpu (matching this host's already-installed CUDA
+# 13/cuDNN 9) and actually creates an InferenceSession against the
+# exported yolov8n.onnx with CUDAExecutionProvider, confirming it is
+# the active provider -- this exercises the real driver/CUDA-runtime/
+# cuDNN chain the Rust ort crate's CUDA EP also depends on, not just a
+# file-existence check. ---
+echo "=== Verifying CUDA execution provider can actually initialise (fail-fast) ===" | tee -a env.log
+source /tmp/yolo-venv/bin/activate
+pip install -q onnxruntime-gpu 2>&1 | tee -a env.log
+python3 - <<'PYEP' 2>&1 | tee -a env.log
+import sys
+try:
+    import onnxruntime as ort
+except Exception as e:
+    print(f"FATAL: onnxruntime-gpu import failed: {e}")
+    sys.exit(1)
+
+available = ort.get_available_providers()
+print(f"ORT available providers: {available}")
+if "CUDAExecutionProvider" not in available:
+    print("FATAL: CUDAExecutionProvider not in available providers")
+    sys.exit(1)
+
+try:
+    sess = ort.InferenceSession("/tmp/oev_run/yolov8n.onnx", providers=["CUDAExecutionProvider"])
+except Exception as e:
+    print(f"FATAL: CUDAExecutionProvider session creation raised: {e}")
+    sys.exit(1)
+
+active = sess.get_providers()
+print(f"Session active providers: {active}")
+if not active or active[0] != "CUDAExecutionProvider":
+    print(f"FATAL: session did not register CUDAExecutionProvider as active (got {active}) -- would silently fall back to CPU")
+    sys.exit(1)
+
+print("CUDA EP fail-fast check PASSED -- CUDAExecutionProvider confirmed active")
+PYEP
+cuda_ep_rc=${PIPESTATUS[0]}
+deactivate
+if [ "$cuda_ep_rc" -ne 0 ]; then
+  echo "FATAL: CUDA execution provider failed to initialise -- aborting before the expensive calibrate/stitch stage instead of allowing a silent CPU-fallback render." | tee -a env.log
+  exit 6
+fi
+_stage_end "deps_build_setup"
+
 echo "=== calibrate.log: reco calibrate ===" | tee calibrate.log
+_stage_start
 # Same pinned Hero10 Wide profile as the M1 pipeline (both cameras are
 # GoPro Hero 10, Wide mode; auto-detect is known to fail on this
 # footage's telemetry -- see docs/ai-project-state.md).
@@ -398,6 +504,7 @@ if [ ! -f match.json ]; then
   exit 2
 fi
 echo "Calibrate OK: match.json written" | tee -a calibrate.log
+_stage_end "calibrate"
 
 # Fixed St Margaret's field ROI (prototype, single venue/camera setup).
 # Injected into match.json after calibrate, before stitch, so reco stitch's
@@ -468,6 +575,7 @@ assert isinstance(roi.get('right'), list) and len(roi['right']) > 0, 'field_roi.
 fi
 echo "field_roi validated in match.json (left/right polygons present)" | tee -a calibrate.log
 
+_stage_start
 echo "=== stitch.log: reco stitch (field follow-cam, l-shape, --features cuda build, --no-zero-copy) ===" | tee stitch.log
 # Exact flag set agreed with Johnson: normal perspective (l-shape,
 # default) projection, NOT cylindrical -- follow-cam uses Reco's
@@ -501,6 +609,7 @@ if [ ! -f followcam.mp4 ]; then
   exit 4
 fi
 echo "Stitch OK: followcam.mp4 written" | tee -a stitch.log
+_stage_end "stitch_render"
 
 echo "=== acceptance.log: verifying AI-driven follow-cam (not a static stitch) ===" | tee acceptance.log
 python3 - <<'PY' 2>&1 | tee -a acceptance.log
@@ -591,5 +700,8 @@ echo "=== GPU/decode summary (Vulkan render device; CUDA EP for detection, decod
     echo "Neither CUDA EP log line found -- inconclusive, check build.log for whether --features cuda actually took effect."
   fi
 } 2>&1 | tee -a env.log
+
+SCRIPT_T1=$(date +%s)
+echo "total_runtime: $(( SCRIPT_T1 - SCRIPT_T0 ))s" | tee -a "$TIMING_LOG"
 
 echo "=== All stages completed ==="
