@@ -113,7 +113,7 @@ jobs:
               'num_gpus': {'gte': 1},
               'cpu_cores': {'gte': 8},
               'cpu_ram': {'gte': 8192},
-              'disk_space': {'gte': 40},
+              'disk_space': {'gte': 120},
               'inet_down': {'gte': 200},
           }
           bundles = request('GET', f'{base}/bundles/?' + urllib.parse.urlencode({'q': json.dumps(query)}))
