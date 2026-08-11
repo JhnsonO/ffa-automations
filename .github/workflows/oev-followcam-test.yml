@@ -54,7 +54,7 @@ jobs:
           VAST_API_KEY: ${{ secrets.VASTAI_API_KEY }}
         run: |
           python3 -u - << 'PY'
-          import os, json, time, urllib.request, urllib.parse, sys, subprocess
+          import os, json, time, urllib.request, urllib.parse, urllib.error, sys, subprocess
 
           api_key = os.environ['VAST_API_KEY']
           base = 'https://console.vast.ai/api/v0'
@@ -65,8 +65,16 @@ jobs:
           def request(method, url, data=None, timeout=25):
               body = json.dumps(data).encode() if data is not None else None
               req = urllib.request.Request(url, data=body, method=method, headers=headers)
-              with urllib.request.urlopen(req, timeout=timeout) as r:
-                  return json.loads(r.read())
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as r:
+                      return json.loads(r.read())
+              except urllib.error.HTTPError as exc:
+                  # 2026-08-11: two consecutive uniform 400s across every
+                  # offer tried, coincident with raising the launch 'disk'
+                  # parameter -- but the response body was being discarded,
+                  # making the real reason unrecoverable. Surface it.
+                  err_body = exc.read().decode(errors='replace')[:500]
+                  raise RuntimeError(f'HTTP {exc.code} from {method} {url}: {err_body}') from exc
 
           def delete_instance(instance_id):
               last_exc = None
