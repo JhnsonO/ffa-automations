@@ -874,3 +874,11 @@ Still deferred, unstarted: GPU-saturation investigation (14% mean util at 1920 �
 **Risk, real and unresolved: the existing cached asset for the current `reco-cli` (`JhnsonO/video-stitcher`) HEAD SHA still lacks the `.so` files** — it was uploaded before this fix, under the same `reco-cli-cuda13-<sha>` key. Since the cache key is keyed on the upstream `reco-cli` source SHA (not this script's own SHA), the next run will still get a cache **HIT** on that stale, `.so`-less asset and silently fall back to CPU again, exactly as before — this fix only takes effect once either (a) the upstream `reco-cli` SHA changes (natural cache MISS + rebuild), or (b) the stale `reco-cli-cuda13-<sha>` release asset is manually deleted to force a rebuild. Not deleted this session — needs a decision, not assumed.
 
 **Next:** before the detection-interval sweep (or any other run of this script) is trusted to be GPU-real, either delete the stale cache asset or bump/force a cache-key change so the fixed caching logic actually gets exercised. Then proceed with the `--detection-interval` sweep at 1920 (values 1/2/4/6/8, same 20s window) as its own separate ticket, per Johnson's scoping.
+
+## 2026-08-10 session (cont. 16): stale cuda13 cache asset deleted — next run rebuilds clean
+
+**Changed (infra, not code):** deleted GitHub Release asset `reco-cli-cuda13-53fe10f548d5767ad94ef66aeaedf2d8c7161f27.tar.gz` (id `509856429`) from the `oev-build-cache` release — this was the `.so`-less asset uploaded before the cont.15 fix. Confirmed removed (204, and absent from the release's asset list afterward).
+
+**Effect:** the risk noted in cont.15 is closed. Next dispatch of `oev_gpu_detector_test_remote.sh` at this source SHA will cache-MISS on the binary, rebuild from source with the cont.15 fix in place, and re-upload a cache asset containing both `reco` and its companion `.so` files. No forced cache-key bump was needed — deletion was reliable via the standard release-assets API.
+
+**Next:** detection-interval sweep at 1920 (values 1/2/4/6/8, same 20s window) now starts from a trustworthy GPU baseline — first run will pay the one-time rebuild cost, every run after reuses the corrected cache.
