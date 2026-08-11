@@ -23,6 +23,11 @@ on:
         required: false
         default: '27'
         type: string
+      model_res:
+        description: 'YOLO export/detector input resolution to test (square, e.g. 1920, 2560)'
+        required: false
+        default: '2560'
+        type: string
 
 permissions:
   contents: write
@@ -424,12 +429,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           START_SEC: ${{ github.event.inputs.start_sec }}
           END_SEC: ${{ github.event.inputs.end_sec }}
+          MODEL_RES: ${{ github.event.inputs.model_res }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           $SCP oev_gpu_detector_test_remote.sh root@$IP:/tmp/oev_run/
           $SSH "chmod +x /tmp/oev_run/oev_gpu_detector_test_remote.sh"
-          $SSH "GH_TOKEN='$GH_TOKEN' START_SEC='$START_SEC' END_SEC='$END_SEC' stdbuf -oL -eL /tmp/oev_run/oev_gpu_detector_test_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
+          $SSH "GH_TOKEN='$GH_TOKEN' START_SEC='$START_SEC' END_SEC='$END_SEC' MODEL_RES='$MODEL_RES' stdbuf -oL -eL /tmp/oev_run/oev_gpu_detector_test_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
 
       - name: Pull back logs + outputs
         if: always()
@@ -442,6 +448,7 @@ jobs:
           RELIABILITY: ${{ steps.launch.outputs.reliability }}
           PREFLIGHT_GPU_MODEL: ${{ steps.launch.outputs.preflight_gpu_model }}
           PREFLIGHT_DRIVER_VERSION: ${{ steps.launch.outputs.preflight_driver_version }}
+          MODEL_RES: ${{ github.event.inputs.model_res }}
         run: |
           SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           mkdir -p gpu_test_artifacts
@@ -456,8 +463,9 @@ jobs:
           port=$PORT
           META
           cat gpu_test_artifacts/run_metadata.txt
-          for f in env.log build.log calibrate.log stitch_1920_cuda.log gpu_util.log result_summary.txt \
-                   match.json events_1920_cuda.jsonl followcam_1920_cuda.mp4; do
+          RES="${MODEL_RES:-2560}"
+          for f in env.log build.log calibrate.log "stitch_${RES}_cuda.log" gpu_util.log result_summary.txt \
+                   match.json "events_${RES}_cuda.jsonl" "followcam_${RES}_cuda.mp4"; do
             $SCP "root@$IP:/tmp/oev_run/$f" gpu_test_artifacts/ || echo "$f missing"
           done
 
