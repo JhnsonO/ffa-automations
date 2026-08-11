@@ -987,4 +987,24 @@ No frozen file touched. `oev_reco_stitch_remote.sh`, all `video-stitcher` fork f
 
 **Dispatched:** run `31514919487`, `ref=main` (head `34441e2`), same inputs. https://github.com/JhnsonO/ffa-automations/actions/runs/31514919487 — status `queued` at dispatch. **DISPATCHED — UNVERIFIED.** This is debug cycle 3 of 3 (final) for this session.
 
-**Next action:** once run `31514919487` completes — if it fails again, pull the actual Vast.ai error body from the log (now captured) to get the real root cause, since this session's debug budget is exhausted; hand off to a fresh chat with that error text as the starting point rather than guessing a fourth time. If it succeeds past launch, continue: pull `segment.log` (confirm segment came from full originals, not trimmed clips, and left/right got identical start+duration), confirm the CUDA EP fail-fast check passed, confirm `field_roi` still injected/validated, confirm follow-cam acceptance still passes, and Johnson visually watches `followcam.mp4` against the single product question above. Do not tune panner/tracker/detector/ROI/speed until that visual review happens.
+**Run `31514919487`: FAILED — real cause finally visible.** `{"error":"insufficient_credit","msg":"Your account lacks credit; see the billing page."}` on every offer. Nothing to do with the `disk` parameter at all — both cycle-2 and cycle-3's "uniform 400 across all offers" symptom was Vast.ai account balance, not a launch-request bug. The `disk_space`/`disk` fixes (`5da01a7`, `f573427`) may still be correct/necessary for when full-source clips are used (unverified — never got far enough to prove it), but they were not the actual blocker on these two runs.
+
+**Session debug budget (3/3) exhausted.** Per CLAUDE.md, handing off to a fresh chat.
+
+**First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
+
+**Gate:** OEV follow-cam full-source-segment ticket (2026-08-11) — code changes (`d3bb7831`) verified via diff/syntax/standalone-arithmetic but never actually exercised on a full run; every dispatch since has failed at Vast.ai instance launch.
+
+**Done this session:**
+- `d3bb7831` — segment selection from full original source clips (not trimmed), CUDA EP fail-fast (exit 6), stage timing. Verified via diff + `bash -n` + standalone arithmetic/branch tests only — **not yet run to completion.**
+- `5da01a7` — offer query `disk_space` 40→120GB (fixes real disk-full failure seen on run `31508983649`).
+- `f573427` — launch-time `disk` param 40→120GB (matches the above; not yet proven necessary/sufficient on its own since account credit blocked verification).
+- `34441e2` — `request()` now surfaces real HTTP error bodies instead of discarding them. This is what found the actual blocker.
+
+**Runs this session, all UNVERIFIED/FAILED, none reached the segment-selection/CUDA-EP code:**
+- `31508983649` — disk full mid-download (before `disk_space`/`disk` fixes).
+- `31514234521`, `31514919487` (and `31514597279`, same signature) — `insufficient_credit` at Vast.ai launch, surfaced only on the last one once error-body logging was added.
+
+**Blocker (not code):** Vast.ai account (`console.vast.ai`) is out of credit. Johnson needs to top up before any further dispatch of this or any other Vast.ai-based OEV workflow will get past instance launch.
+
+**Next action:** once credit is topped up, dispatch `oev-followcam-test.yml` (`left_clip=GX010197.MP4`, `right_clip=GX010173.MP4`) on `main` (head `2199075` or later) — this will be the first real test of the `d3bb7831`/`5da01a7`/`f573427` changes. Then follow the standard verification: pull `segment.log` (full-source filenames, matching start/duration, within-overlap-bounds), confirm CUDA EP fail-fast passed, confirm `field_roi` still injected, confirm follow-cam acceptance passed, and Johnson visually watches `followcam.mp4` against the product question: does the follow-cam acquire the ball and produce good camerawork on a genuinely unseen segment. Do not tune panner/tracker/detector/ROI/speed until that visual review happens.
