@@ -167,7 +167,7 @@ jobs:
                   result = request('PUT', f'{base}/asks/{offer_id}/', {
                       'client_id': 'me',
                       'image': 'ubuntu:24.04',
-                      'disk': 40,
+                      'disk': 120,
                       'onstart': '',
                       'runtype': 'ssh',
                       'ssh_key': pub_key,
