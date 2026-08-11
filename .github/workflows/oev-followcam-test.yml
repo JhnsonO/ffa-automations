@@ -138,28 +138,31 @@ jobs:
           # cost to exclude for now -- see docs/ai-project-state.md.
           bad_gpu = ('RTX 5090', 'RTX 5080', 'RTX 5070', 'RTX 5060', 'RTX 5050', 'RTX PRO')
           offers = [o for o in offers if not any(x in (o.get('gpu_name') or '') for x in bad_gpu)]
-          # Three-tier ranking (Johnson's direction, 2026-08-10): cheap
-          # known-good first, then the normal high-reliability pool
-          # (preflight as-is), then expensive known-good only as a last
-          # resort if the normal pool keeps failing. Cheapest-first within
-          # each tier. Preference only -- does not bypass preflight or any
-          # resource/reliability filter above.
+          # Known-good-only selection (2026-08-11, per Johnson: repeated
+          # CUDA-runtime edge cases traced to arbitrary Vast hosts -- stop
+          # treating host compatibility as the product problem). Only
+          # machines with a proven-good CUDA/driver stack are ever tried.
+          # Cheap (7213) preferred; fallback (2750) only if 7213 has no
+          # offer. No arbitrary/normal-pool hosts. Preference only within
+          # each tier -- does not bypass preflight or any resource/
+          # reliability filter above.
           cheap_known_good = [o for o in offers if KNOWN_GOOD_MACHINES.get(o.get('machine_id')) == 'cheap']
           fallback_known_good = [o for o in offers if KNOWN_GOOD_MACHINES.get(o.get('machine_id')) == 'fallback']
-          normal_pool = [o for o in offers if o.get('machine_id') not in KNOWN_GOOD_MACHINES]
           cheap_known_good.sort(key=lambda o: float(o.get('dph_total', 999)))
-          normal_pool.sort(key=lambda o: float(o.get('dph_total', 999)))
           fallback_known_good.sort(key=lambda o: float(o.get('dph_total', 999)))
-          offers = cheap_known_good + normal_pool + fallback_known_good
+          offers = cheap_known_good + fallback_known_good
           if not offers:
-              print('ERROR: No reliable GPU offers matched the OEV reco-stitch requirements', file=sys.stderr)
+              print('ERROR: No rentable offer found on either known-good machine (7213 cheap / 2750 fallback). '
+                    'Not falling through to arbitrary Vast hosts -- failing fast per product decision (2026-08-11). '
+                    'Check machine availability on console.vast.ai or add a new machine to KNOWN_GOOD_MACHINES '
+                    'after a manual validation run.', file=sys.stderr)
               sys.exit(1)
           if cheap_known_good:
-              print(f'{len(cheap_known_good)} cheap known-good machine(s) have matching offers -- trying these first.')
+              print(f'{len(cheap_known_good)} offer(s) on known-good cheap machine (7213) -- trying these first.')
           if fallback_known_good:
-              print(f'{len(fallback_known_good)} fallback known-good machine(s) available if the normal pool ({len(normal_pool)} offers) is exhausted.')
+              print(f'{len(fallback_known_good)} offer(s) on known-good fallback machine (2750) available if 7213 is exhausted.')
 
-          print(f'Found {len(offers)} eligible offers; trying up to 15 cheapest reliable offers (raised from 8 -- RTX PRO/Blackwell now filtered out at the query level, so this budget is a safety net on top of a smarter pool, not a brute-force fallback).')
+          print(f'Found {len(offers)} eligible offers (known-good machines only); trying up to 15 cheapest.')
           selected = None
           MAX_OFFERS_TRIED = 15
           for index, offer in enumerate(offers[:MAX_OFFERS_TRIED], start=1):
@@ -294,18 +297,19 @@ jobs:
               pf_vulkan = _pf('PREFLIGHT_VULKAN')
               pf_cuda = _pf('PREFLIGHT_CUDA_INIT')
               pf_nvdec = _pf('PREFLIGHT_NVDEC')
+              pf_ort_cuda = _pf('PREFLIGHT_ORT_CUDA')
               pf_result = _pf('PREFLIGHT_RESULT')
 
-              print('Preflight offer=%s machine_id=%s reliability=%s gpu_model=%s driver=%s vulkan=%s cuda_init=%s nvdec=%s -> %s' % (
+              print('Preflight offer=%s machine_id=%s reliability=%s gpu_model=%s driver=%s vulkan=%s cuda_init=%s nvdec=%s ort_cuda=%s -> %s' % (
                   offer_id, offer.get('machine_id', '?'), offer.get('reliability', '?'), pf_gpu_model, pf_driver,
-                  pf_vulkan, pf_cuda, pf_nvdec, pf_result))
+                  pf_vulkan, pf_cuda, pf_nvdec, pf_ort_cuda, pf_result))
               print(f'--- Full preflight output for offer {offer_id} (for failure diagnosis / driver-correlation tracking) ---')
               print(preflight_out if preflight_out else '(no output captured)')
               print(f'--- end preflight output for offer {offer_id} ---')
 
               if pf_result != 'PASS':
                   failed_checks = [name for name, val in
-                                    (('vulkan', pf_vulkan), ('cuda_init', pf_cuda), ('nvdec', pf_nvdec))
+                                    (('vulkan', pf_vulkan), ('cuda_init', pf_cuda), ('nvdec', pf_nvdec), ('ort_cuda', pf_ort_cuda))
                                     if val != 'PASS']
                   print(f'Offer {offer_id} FAILED GPU-health preflight (failed checks: {failed_checks or ["unknown/no-output"]}); '
                         f'terminating instance {instance_id} and trying next offer.')
