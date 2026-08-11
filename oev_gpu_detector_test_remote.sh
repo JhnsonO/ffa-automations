@@ -396,23 +396,36 @@ echo "=== result_summary.txt ===" | tee result_summary.txt
   echo ""
   echo "--- GPU utilization: full distribution, not just peak (prior run's 27% peak was a brief blip, not sustained) ---"
   if [ -f gpu_util.log ]; then
-    UTIL_STATS=$(awk -F',' 'NR%2==0{gsub(/[^0-9.]/,"",$1); n++; sum+=$1+0; if($1+0>max)max=$1+0; if($1+0>10)above10++} END{if(n>0) printf "samples=%d mean=%.1f%% peak=%.1f%% samples_above_10pct=%d (%.0f%% of run)\n", n, sum/n, max, above10, 100*above10/n; else print "no samples"}' gpu_util.log)
-    echo "$UTIL_STATS"
-    SAMPLES_ABOVE_10=$(echo "$UTIL_STATS" | grep -oE 'samples_above_10pct=[0-9]+' | grep -oE '[0-9]+' || echo "0")
-    TOTAL_SAMPLES=$(echo "$UTIL_STATS" | grep -oE 'samples=[0-9]+' | grep -oE '[0-9]+' || echo "1")
+    # Structured key=value output on ITS OWN LINE per field -- the previous
+    # version packed everything into one sentence and extracted fields with
+    # `grep -oE '[0-9]+'`, which also matched the literal "10" inside the
+    # label text "samples_above_10pct", corrupting the count and silently
+    # breaking the verdict below (run 31470468751 genuinely passed but was
+    # misreported as FAIL because of this). One value per line removes the
+    # ambiguity instead of relying on a smarter regex.
+    awk -F',' 'NR%2==0{gsub(/[^0-9.]/,"",$1); n++; sum+=$1+0; if($1+0>max)max=$1+0; if($1+0>10)above10++} END{if(n>0){printf "gpu_util_samples %d\n", n; printf "gpu_util_mean_pct %.1f\n", sum/n; printf "gpu_util_peak_pct %.1f\n", max; printf "gpu_util_samples_above_10pct %d\n", above10} else print "gpu_util_samples 0"}' gpu_util.log > /tmp/gpu_util_stats.txt
+    cat /tmp/gpu_util_stats.txt
+    TOTAL_SAMPLES=$(awk '$1=="gpu_util_samples"{print $2}' /tmp/gpu_util_stats.txt)
+    SAMPLES_ABOVE_10=$(awk '$1=="gpu_util_samples_above_10pct"{print $2}' /tmp/gpu_util_stats.txt)
+    TOTAL_SAMPLES="${TOTAL_SAMPLES:-0}"
+    SAMPLES_ABOVE_10="${SAMPLES_ABOVE_10:-0}"
   else
     echo "gpu_util.log missing"
     SAMPLES_ABOVE_10=0
-    TOTAL_SAMPLES=1
+    TOTAL_SAMPLES=0
   fi
   echo ""
   echo "--- VERDICT (per Johnson's explicit acceptance bar: no fallback warning AND sustained GPU util AND throughput materially beats 1.0 fps CPU baseline) ---"
-  SUSTAINED=$([ "$TOTAL_SAMPLES" -gt 0 ] && [ $((SAMPLES_ABOVE_10 * 100 / TOTAL_SAMPLES)) -ge 50 ] && echo 1 || echo 0)
+  if [ "$TOTAL_SAMPLES" -gt 0 ]; then
+    SUSTAINED=$(awk -v a="$SAMPLES_ABOVE_10" -v t="$TOTAL_SAMPLES" 'BEGIN{print (100*a/t >= 50) ? 1 : 0}')
+  else
+    SUSTAINED=0
+  fi
   MATERIALLY_FASTER=$(awk -v fps="${MEASURED_FPS:-0}" 'BEGIN{print (fps > 2.0) ? 1 : 0}')
   if [ "${FALLBACK_WARNING:-0}" -eq 0 ] && [ "$SUSTAINED" -eq 1 ] && [ "$MATERIALLY_FASTER" -eq 1 ]; then
-    echo "PASS: CUDA EP registered cleanly, GPU utilization sustained (>=50% of samples above 10%), measured ${MEASURED_FPS:-0} fps materially beats 1.0 fps CPU baseline."
+    echo "PASS: CUDA EP registered cleanly, GPU utilization sustained ($SAMPLES_ABOVE_10/$TOTAL_SAMPLES samples above 10%), measured ${MEASURED_FPS:-0} fps materially beats 1.0 fps CPU baseline."
   else
-    echo "FAIL: at least one condition not met -- do not treat this run as 'CUDA works'. fallback_warning_count=${FALLBACK_WARNING:-0}, sustained_util=$SUSTAINED, measured_fps=${MEASURED_FPS:-0}"
+    echo "FAIL: at least one condition not met -- do not treat this run as 'CUDA works'. fallback_warning_count=${FALLBACK_WARNING:-0}, sustained_util=$SUSTAINED ($SAMPLES_ABOVE_10/$TOTAL_SAMPLES), measured_fps=${MEASURED_FPS:-0}"
   fi
 } | tee -a result_summary.txt
 
