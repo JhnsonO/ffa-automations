@@ -2,7 +2,9 @@
 # Runs ON the Vast.ai instance (uploaded + executed via SSH by
 # oev-gpu-detector-test.yml). Isolated from the M1 pipeline, the
 # follow-cam test, and the CPU-only detector-resolution A/B script --
-# this is a single, narrow test: how fast is 1920 YOLO inference when
+# this is a single, narrow test: how fast is YOLO inference at
+# ${MODEL_RES} (parametrized; default 2560, following the proven 1920
+# result of 57.2% recall / 5.7fps in run 31470468751) when
 # the ORT session actually gets a CUDA execution provider, vs. the CPU
 # ORT baseline already measured (1.0 fps in run 31434114262)?
 #
@@ -45,12 +47,12 @@
 #
 # Produces, in /tmp/oev_run/:
 #   env.log, build.log, calibrate.log
-#   stitch_1920_cuda.log      - reco stitch output
+#   stitch_${MODEL_RES}_cuda.log      - reco stitch output
 #   gpu_util.log              - nvidia-smi sampled every 5s during the stitch run
 #   result_summary.txt        - CUDA EP status + confirmed input size + measured fps, in one place
-#   match.json, yolov8n_1920.onnx
-#   events_1920_cuda.jsonl
-#   followcam_1920_cuda.mp4   (small, diagnostic only)
+#   match.json, yolov8n_${MODEL_RES}.onnx
+#   events_${MODEL_RES}_cuda.jsonl
+#   followcam_${MODEL_RES}_cuda.mp4   (small, diagnostic only)
 #
 # Exit codes: 1=env/CUDA-runtime/build failure, 2=calibrate failure,
 # 3=YOLO export failure, 4=stitch failure.
@@ -60,6 +62,11 @@ cd /tmp/oev_run
 
 START_SEC="${START_SEC:-7}"
 END_SEC="${END_SEC:-27}"
+# Model resolution under test. 1920 already proven (run 31470468751:
+# 57.2% ball recall, 5.7fps GPU). Default here is 2560 -- the next
+# controlled point per Johnson: is recall still climbing materially
+# beyond 1920, or has it plateaued while throughput keeps collapsing?
+MODEL_RES="${MODEL_RES:-2560}"
 
 # --- GitHub Release blob cache. Shared cache repo/tag with the other
 # three scripts, but the reco-cli binary asset name is deliberately
@@ -255,19 +262,19 @@ echo "=== Installing Rust toolchain ===" | tee -a env.log
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | stdbuf -oL -eL sh -s -- -y --default-toolchain stable 2>&1 | tee -a env.log
 source "$HOME/.cargo/env"
 
-echo "=== Installing ultralytics + exporting YOLOv8n ONNX at 1920 (NMS baked in) ===" | tee -a env.log
+echo "=== Installing ultralytics + exporting YOLOv8n ONNX at ${MODEL_RES} (NMS baked in) ===" | tee -a env.log
 python3 -m venv /tmp/yolo-venv 2>&1 | tee -a env.log
 source /tmp/yolo-venv/bin/activate
 pip install -q ultralytics 2>&1 | tee -a env.log
-yolo export model=yolov8n.pt format=onnx imgsz=1920 nms=True 2>&1 | tee -a env.log
+yolo export model=yolov8n.pt format=onnx imgsz=${MODEL_RES} nms=True 2>&1 | tee -a env.log
 export_rc=${PIPESTATUS[0]}
 deactivate
 if [ "$export_rc" -ne 0 ] || [ ! -s /tmp/oev_run/yolov8n.onnx ]; then
   echo "FATAL: ultralytics export failed (exit $export_rc)" | tee -a env.log
   exit 3
 fi
-mv yolov8n.onnx yolov8n_1920.onnx
-echo "Model ready: yolov8n_1920.onnx ($(du -h yolov8n_1920.onnx | cut -f1))" | tee -a env.log
+mv yolov8n.onnx yolov8n_${MODEL_RES}.onnx
+echo "Model ready: yolov8n_${MODEL_RES}.onnx ($(du -h yolov8n_${MODEL_RES}.onnx | cut -f1))" | tee -a env.log
 
 echo "=== build.log: cloning + building reco-cli --features cuda ===" | tee build.log
 export CARGO_NET_RETRY=2
@@ -342,18 +349,18 @@ if [ "$calibrate_rc" -ne 0 ] || [ ! -f match.json ]; then
 fi
 echo "Calibrate OK: match.json written" | tee -a calibrate.log
 
-echo "=== stitch_1920_cuda.log: reco stitch, YOLOv8n @ 1920, --features cuda build, --no-zero-copy (CPU decode, GPU inference if CUDA EP engages) ===" | tee stitch_1920_cuda.log
-STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam_1920_cuda.mp4
-  --model yolov8n_1920.onnx
+echo "=== stitch_${MODEL_RES}_cuda.log: reco stitch, YOLOv8n @ ${MODEL_RES}, --features cuda build, --no-zero-copy (CPU decode, GPU inference if CUDA EP engages) ===" | tee stitch_${MODEL_RES}_cuda.log
+STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam_${MODEL_RES}_cuda.mp4
+  --model yolov8n_${MODEL_RES}.onnx
   --tracking field
   --panner-preset broadcast
   --lookahead 1.5
   --detection-interval 1
-  --events events_1920_cuda.jsonl
+  --events events_${MODEL_RES}_cuda.jsonl
   --no-zero-copy
   --start-time "$START_SEC" --end-time "$END_SEC"
   --width 640 --height 360)
-echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch_1920_cuda.log
+echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch_${MODEL_RES}_cuda.log
 
 # Independent confirmation the GPU was actually doing work, not just a
 # faster wall-clock number: sample nvidia-smi every 5s for the
@@ -361,25 +368,25 @@ echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch_1920_cuda.log
 ( while true; do date -Iseconds; nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total --format=csv,noheader; sleep 5; done > gpu_util.log 2>&1 ) &
 GPU_SAMPLER_PID=$!
 
-stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch_1920_cuda.log
+stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch_${MODEL_RES}_cuda.log
 stitch_rc=${PIPESTATUS[0]}
 
 kill "$GPU_SAMPLER_PID" 2>/dev/null || true
 
 if [ "$stitch_rc" -ne 0 ]; then
-  echo "FATAL: reco stitch failed (exit $stitch_rc), see stitch_1920_cuda.log" | tee -a stitch_1920_cuda.log
+  echo "FATAL: reco stitch failed (exit $stitch_rc), see stitch_${MODEL_RES}_cuda.log" | tee -a stitch_${MODEL_RES}_cuda.log
   exit 4
 fi
-echo "Stitch OK: followcam_1920_cuda.mp4 written" | tee -a stitch_1920_cuda.log
+echo "Stitch OK: followcam_${MODEL_RES}_cuda.mp4 written" | tee -a stitch_${MODEL_RES}_cuda.log
 
 echo "=== result_summary.txt ===" | tee result_summary.txt
 {
   echo "--- CUDA execution provider status (from ort_session.rs AND ort's own internal EP-registration check) ---"
   echo "Prior run (31466295819) showed this builder-success line is NOT sufficient proof on its own --"
   echo "ort logs its own separate warning one line later if registration actually failed. Check both:"
-  grep -E "ORT: CUDA execution provider enabled|ORT: CUDA EP failed" stitch_1920_cuda.log \
+  grep -E "ORT: CUDA execution provider enabled|ORT: CUDA EP failed" stitch_${MODEL_RES}_cuda.log \
     || echo "NEITHER log line found -- ort/cuda EP code path may not have been reached at all, check build.log for --features cuda"
-  FALLBACK_WARNING=$(grep -c "No execution providers from session options registered successfully" stitch_1920_cuda.log || true)
+  FALLBACK_WARNING=$(grep -c "No execution providers from session options registered successfully" stitch_${MODEL_RES}_cuda.log || true)
   if [ "${FALLBACK_WARNING:-0}" -gt 0 ]; then
     echo "FALLBACK WARNING PRESENT ($FALLBACK_WARNING times) -- CUDA EP did NOT actually register. This alone fails the test regardless of speed."
   else
@@ -387,10 +394,10 @@ echo "=== result_summary.txt ===" | tee result_summary.txt
   fi
   echo ""
   echo "--- Confirmed loaded model (input size + conf_thresh) ---"
-  grep "CpuYoloDetector loaded" stitch_1920_cuda.log || echo "WARNING: no 'CpuYoloDetector loaded' line found"
+  grep "CpuYoloDetector loaded" stitch_${MODEL_RES}_cuda.log || echo "WARNING: no 'CpuYoloDetector loaded' line found"
   echo ""
   echo "--- Measured throughput ---"
-  DONE_LINE=$(grep "^Done: " stitch_1920_cuda.log || echo "")
+  DONE_LINE=$(grep "^Done: " stitch_${MODEL_RES}_cuda.log || echo "")
   echo "${DONE_LINE:-WARNING: no final Done: summary line found}"
   MEASURED_FPS=$(echo "$DONE_LINE" | grep -oE '\([0-9.]+ fps\)' | grep -oE '[0-9.]+' || echo "0")
   echo ""
