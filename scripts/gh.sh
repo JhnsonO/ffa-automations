@@ -203,6 +203,26 @@ for i in json.load(sys.stdin):
   esac
   ;;
 
+branch)
+  # gh.sh branch <new_branch> [from_ref]   -- create a feature branch from a ref (default main)
+  new_branch="${1:?new_branch}"; from_ref="${2:-main}"
+  base_sha=$(curl -sf "${auth[@]}" "${json[@]}" "${API}/git/ref/heads/${from_ref}" \
+    | python3 -c "import json,sys; print(json.load(sys.stdin)['object']['sha'])")
+  curl -sf -X POST "${auth[@]}" "${json[@]}" "${API}/git/refs" \
+    -d "{\"ref\":\"refs/heads/${new_branch}\",\"sha\":\"${base_sha}\"}" \
+    | python3 -c "import json,sys; d=json.load(sys.stdin); print('branch created', d['ref'], d['object']['sha'][:7])" \
+    || { echo "ERROR: branch create failed for ${new_branch}" >&2; exit 1; }
+  ;;
+
+merge)
+  # gh.sh merge <base> <head> "<commit message>"   -- merge head branch into base
+  base="${1:?base}"; head="${2:?head}"; msg="${3:-merge ${head} into ${base}}"
+  curl -sf -X POST "${auth[@]}" "${json[@]}" "${API}/merges" \
+    -d "{\"base\":\"${base}\",\"head\":\"${head}\",\"commit_message\":\"${msg}\"}" \
+    | python3 -c "import json,sys; d=json.load(sys.stdin); print('merged', d['sha'][:7], 'into', d.get('base') and '' or '')" \
+    || { echo "ERROR: merge failed for ${head} -> ${base}" >&2; exit 1; }
+  ;;
+
 *)
   grep '^#   gh.sh' "$0" | sed 's/^#   //'
   exit 1
