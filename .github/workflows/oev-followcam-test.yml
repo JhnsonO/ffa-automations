@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       left_clip:
-        description: 'Exact filename in OEV Drive Trimmed/ folder (left/first camera)'
+        description: 'Exact filename of the FULL original source clip in the OEV Drive root folder (left/first camera) -- NOT the Trimmed/ subfolder'
         required: false
-        default: 'trimmed_GX010197.MP4'
+        default: 'GX010197.MP4'
         type: string
       right_clip:
-        description: 'Exact filename in OEV Drive Trimmed/ folder (right/second camera)'
+        description: 'Exact filename of the FULL original source clip in the OEV Drive root folder (right/second camera) -- NOT the Trimmed/ subfolder'
         required: false
-        default: 'trimmed_GX010173.MP4'
+        default: 'GX010173.MP4'
         type: string
 
 permissions:
@@ -333,7 +333,7 @@ jobs:
           done
           echo 'ERROR: SSH never came up'; exit 1
 
-      - name: Resolve clip file IDs in OEV Drive Trimmed/ folder
+      - name: Resolve clip file IDs in OEV Drive root folder (full source clips)
         id: resolve
         env:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
@@ -364,28 +364,25 @@ jobs:
           access_token = token['access_token']
           open('/tmp/drive_token.txt', 'w').write(access_token)
 
-          def find_in_trimmed(filename):
-              # Locate the Trimmed/ subfolder, then the file within it.
-              q = f"name='Trimmed' and '{OEV_DRIVE_FOLDER_ID}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'"
-              url = 'https://www.googleapis.com/drive/v3/files?' + urllib.parse.urlencode({
-                  'q': q, 'fields': 'files(id)', 'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'})
-              r = req.urlopen(req.Request(url, headers={'Authorization': f'Bearer {access_token}'}))
-              folders = json.loads(r.read()).get('files', [])
-              if not folders:
-                  raise RuntimeError('Trimmed/ subfolder not found in OEV Drive folder')
-              trimmed_id = folders[0]['id']
-
-              q = f"name='{filename}' and '{trimmed_id}' in parents and trashed=false"
+          def find_in_drive_root(filename):
+              # Full original source clips live directly in the OEV Drive
+              # root folder (uploaded there by oev_drive_uploader.py) --
+              # NOT the Trimmed/ subfolder, which only holds the ~45s
+              # hand-trimmed test clips. Ticket 2026-08-11: follow-cam
+              # generalisation test must use a genuinely unseen segment
+              # from these full originals, not a random crop of the
+              # already-trimmed clips.
+              q = f"name='{filename}' and '{OEV_DRIVE_FOLDER_ID}' in parents and trashed=false"
               url = 'https://www.googleapis.com/drive/v3/files?' + urllib.parse.urlencode({
                   'q': q, 'fields': 'files(id,name)', 'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'})
               r = req.urlopen(req.Request(url, headers={'Authorization': f'Bearer {access_token}'}))
               files = json.loads(r.read()).get('files', [])
               if not files:
-                  raise RuntimeError(f'{filename} not found in Trimmed/ folder')
+                  raise RuntimeError(f'{filename} not found in OEV Drive root folder (id={OEV_DRIVE_FOLDER_ID})')
               return files[0]['id']
 
-          left_id = find_in_trimmed(os.environ['LEFT_CLIP'])
-          right_id = find_in_trimmed(os.environ['RIGHT_CLIP'])
+          left_id = find_in_drive_root(os.environ['LEFT_CLIP'])
+          right_id = find_in_drive_root(os.environ['RIGHT_CLIP'])
           print(f'left_clip_id={left_id}')
           print(f'right_clip_id={right_id}')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
@@ -412,17 +409,20 @@ jobs:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LEFT_CLIP: ${{ github.event.inputs.left_clip }}
+          RIGHT_CLIP: ${{ github.event.inputs.right_clip }}
         run: |
           SSH="ssh -i /tmp/vastai_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           SCP="scp -i /tmp/vastai_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           $SCP oev_followcam_test_remote.sh root@$IP:/tmp/oev_run/
           $SSH "chmod +x /tmp/oev_run/oev_followcam_test_remote.sh"
           # GH_TOKEN enables the shared reco-cli/CUDA-runtime cache (no-op if
-          # unset). Do not fail the step on non-zero exit -- logs must still
-          # be pulled back below even if a stage or the acceptance check
-          # failed partway through; the job is failed explicitly afterward
-          # by the "Evaluate acceptance" step instead.
-          $SSH "GH_TOKEN='$GH_TOKEN' stdbuf -oL -eL /tmp/oev_run/oev_followcam_test_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
+          # unset). LEFT_CLIP/RIGHT_CLIP are the full-source filenames, used
+          # only for segment.log labelling. Do not fail the step on non-zero
+          # exit -- logs must still be pulled back below even if a stage or
+          # the acceptance check failed partway through; the job is failed
+          # explicitly afterward by the "Evaluate acceptance" step instead.
+          $SSH "GH_TOKEN='$GH_TOKEN' LEFT_CLIP='$LEFT_CLIP' RIGHT_CLIP='$RIGHT_CLIP' stdbuf -oL -eL /tmp/oev_run/oev_followcam_test_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
 
       - name: Pull back logs + outputs
         if: always()
@@ -450,6 +450,8 @@ jobs:
           META
           cat followcam_artifacts/run_metadata.txt
           $SCP "root@$IP:/tmp/oev_run/env.log" followcam_artifacts/ || echo 'env.log missing'
+          $SCP "root@$IP:/tmp/oev_run/segment.log" followcam_artifacts/ || echo 'segment.log missing'
+          $SCP "root@$IP:/tmp/oev_run/timing.log" followcam_artifacts/ || echo 'timing.log missing'
           $SCP "root@$IP:/tmp/oev_run/build.log" followcam_artifacts/ || echo 'build.log missing'
           $SCP "root@$IP:/tmp/oev_run/calibrate.log" followcam_artifacts/ || echo 'calibrate.log missing'
           $SCP "root@$IP:/tmp/oev_run/stitch.log" followcam_artifacts/ || echo 'stitch.log missing'
