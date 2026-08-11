@@ -842,3 +842,25 @@ Per Johnson's explicit constraint: nothing else touched — no TensorRT, no pann
 5. Per Johnson: after this, STOP increasing resolution regardless of outcome, and make the actual engineering trade-off call (recall vs speed) rather than continuing to chase a bigger number. Do not dispatch a 3xxx-resolution test without being asked.
 6. Do not fold in detection-interval/frame-skipping optimization or TensorRT/GPU-saturation investigation into this same ticket -- both are explicitly deferred, separate follow-on tracks per Johnson, not part of "the eyesight experiment."
 7. This is the natural handover point for the OEV follow-cam/detector-resolution investigation -- summarize the full resolution arc (640 -> 1280 -> 1920 -> 2560, CPU vs GPU, the cuDNN fix, the continuous-gap metric) compactly for whoever picks this up next, rather than assuming they'll re-read every session note in full.
+
+## 2026-08-10 session (cont. 14): 2560 result — 1920 confirmed as final resolution; cache bug diagnosed (not yet fixed)
+
+**Run `31474170441` (2560, GPU): verdict — 1920 wins, resolution-chasing stops here, per Johnson's own pre-stated thresholds.**
+
+| resolution | recall | longest gap | conf median | L/R split |
+|---|---|---|---|---|
+| 640 | 7.2% | 11.31s | 0.40 | 81/11 |
+| 1280 | 17.0% | 4.80s | 0.48 | 189/40 |
+| 1920 | 57.2% | 2.34s | 0.36 | 789/91 |
+| 2560 | 54.4% | 1.60s | 0.37 | 800/121 |
+
+Recall 57.2% → 54.4% is flat/noise, not a climb — lands in Johnson's pre-stated "~60-62%, 1920 wins" regime, nowhere near the 70-80% bar that would justify continuing. Longest-gap did keep shrinking (2.34s → 1.60s) but on recall alone the resolution question is settled: **1920 is the standing follow-cam detector resolution.**
+
+**Bug found in this run, not a resolution finding: 2560's speed number (0.7 fps, CPU-baseline-like) is contaminated, do not use it.** `build.log` shows a binary-cache HIT (build skipped). The cache script only archives the `reco` binary itself, not the companion `libonnxruntime_providers_shared.so` that ships alongside it. That file was missing on this fresh instance, so the CUDA EP failed to load and silently fell back to CPU. Detection results (recall table above) are unaffected — same model/weights/algorithm regardless of backend — only the fps number is bad. **Fix not yet applied**: widen the cache archive/tar step to include `*.so` alongside the `reco` binary, in whichever script does the caching for the cuda-featured build (`oev_gpu_detector_test_remote.sh` cache key `reco-cli-cuda13-<sha>`).
+
+**Per Johnson's explicit handover instruction, this closes the resolution-investigation ticket.** Next ticket (separate, scoped, one variable at a time — per Johnson's stated ordering):
+1. Fix the cache bug first (widen tar/cache step to include companion `.so` files) — otherwise any future cache-hit run on the GPU detector silently regresses to CPU again, undetected.
+2. Then run a `--detection-interval` sweep at 1920 (not more resolution testing) — same 20s window, values 1/2/4/6/8 (10 excluded — Johnson: don't assume 60/interval fps naively holds real-time-viable, cameraman lateness matters more than the raw fps target). Metrics: fps, plus ball-freshness (how stale the last real detection is when the tracker/panner needs a position), not just speed.
+3. Only after both: revisit session-8 FieldPanner tuning finding (`cluster_alpha`/`dead_zone_rad`) — stronger GPU-detected ball signal at 1920 may change how much tuning is even needed.
+
+Still deferred, unstarted: GPU-saturation investigation (14% mean util at 1920 — CPU preprocessing/copies/sequential L/R inference/ORT overhead unexamined), player dedup across camera overlap, TensorRT, new tracker architecture.
