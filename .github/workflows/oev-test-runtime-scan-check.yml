@@ -17,7 +17,7 @@ jobs:
   scan-only:
     name: Scan an already-published image (no build)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout (for .gitleaks.toml allowlist config)
@@ -70,27 +70,58 @@ jobs:
           IMAGE_REF: ${{ inputs.image_ref }}
         run: |
           set -euo pipefail
+          REGISTRY="ghcr.io"
+          REPO="${IMAGE_REF#"$REGISTRY"/}"
+          REPO="${REPO%%:*}"
+          REPO="${REPO%%@*}"
+
+          download_blob() {
+            local digest="$1" out="$2"
+            local token_header
+            token_header=$(crane auth token -H "${REGISTRY}/${REPO}")
+            curl -sSL --http1.1 --fail --retry 8 --retry-delay 3 --retry-all-errors -C - \
+              -H "$token_header" \
+              "https://${REGISTRY}/v2/${REPO}/blobs/${digest}" \
+              -o "$out"
+          }
+
+          verify_digest() {
+            local file="$1" expected="$2"
+            local algo="${expected%%:*}" want="${expected#*:}" got
+            got=$("${algo}sum" "$file" | awk '{print $1}')
+            if [ "$got" != "$want" ]; then
+              echo "::error::Digest mismatch for $file: expected $want, got $got"
+              return 1
+            fi
+          }
+
           crane manifest --platform linux/amd64 "$IMAGE_REF" \
             | jq -r '.layers[] | "\(.digest) \(.mediaType)"' \
           | while read -r digest mediatype; do
+            echo "Downloading layer $digest ($mediatype)"
+            tmp="$(mktemp /tmp/layer-XXXXXX.blob)"
+            download_blob "$digest" "$tmp"
+            verify_digest "$tmp" "$digest"
             echo "Scanning layer $digest ($mediatype)"
             case "$mediatype" in
               *tar+gzip*)
-                crane blob "$IMAGE_REF@$digest" | gunzip -c | tar -xO 2>/dev/null \
+                gunzip -c "$tmp" | tar -xO 2>/dev/null \
                   | gitleaks stdin --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
                 ;;
               *tar+zstd*)
-                crane blob "$IMAGE_REF@$digest" | zstd -dc | tar -xO 2>/dev/null \
+                zstd -dc "$tmp" | tar -xO 2>/dev/null \
                   | gitleaks stdin --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
                 ;;
               *tar)
-                crane blob "$IMAGE_REF@$digest" | tar -xO 2>/dev/null \
+                tar -xO -f "$tmp" 2>/dev/null \
                   | gitleaks stdin --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
                 ;;
               *)
                 echo "Unrecognized layer mediaType: $mediatype" >&2
+                rm -f "$tmp"
                 exit 1
                 ;;
             esac
+            rm -f "$tmp"
           done
           echo "No secrets found in any layer."
