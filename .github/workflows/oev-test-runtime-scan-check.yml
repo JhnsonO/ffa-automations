@@ -20,6 +20,9 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      - name: Checkout (for .gitleaks.toml allowlist config)
+        uses: actions/checkout@v4
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -53,7 +56,7 @@ jobs:
       - name: Gitleaks canary self-test
         run: |
           set +e
-          echo 'aws_access_key_id = AKIAIOSFODNN7EXAMPLE' | gitleaks stdin --no-banner --redact --exit-code 2
+          echo 'aws_access_key_id = AKIAQWERTYUIOPASDFGH' | gitleaks stdin --no-banner --redact -v --exit-code 2
           CANARY_EXIT=$?
           set -e
           if [ "$CANARY_EXIT" -ne 2 ]; then
@@ -74,15 +77,15 @@ jobs:
             case "$mediatype" in
               *tar+gzip*)
                 crane blob "$IMAGE_REF@$digest" | gunzip -c | tar -xO 2>/dev/null \
-                  | gitleaks stdin --no-banner --redact --exit-code 2
+                  | gitleaks stdin --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
                 ;;
               *tar+zstd*)
                 crane blob "$IMAGE_REF@$digest" | zstd -dc | tar -xO 2>/dev/null \
-                  | gitleaks stdin --no-banner --redact --exit-code 2
+                  | gitleaks stdin --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
                 ;;
               *tar)
                 crane blob "$IMAGE_REF@$digest" | tar -xO 2>/dev/null \
-                  | gitleaks stdin --no-banner --redact --exit-code 2
+                  | gitleaks stdin --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
                 ;;
               *)
                 echo "Unrecognized layer mediaType: $mediatype" >&2
