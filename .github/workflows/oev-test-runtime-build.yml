@@ -84,14 +84,14 @@ jobs:
           set -euo pipefail
           cd /tmp
 
-          curl -sSLO "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
-          curl -sSLO "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/checksums.txt"
+          curl -sSL --fail --retry 5 --retry-delay 2 -O "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          curl -sSL --fail --retry 5 --retry-delay 2 -O "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/checksums.txt"
           sha256sum --ignore-missing -c checksums.txt
           tar -xzf go-containerregistry_Linux_x86_64.tar.gz crane
           sudo mv crane /usr/local/bin/crane
 
-          curl -sSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -sSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          curl -sSL --fail --retry 5 --retry-delay 2 -O "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSL --fail --retry 5 --retry-delay 2 -O "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
           sha256sum --ignore-missing -c "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
           tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
           sudo mv gitleaks /usr/local/bin/gitleaks
