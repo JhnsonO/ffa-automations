@@ -159,8 +159,10 @@ jobs:
                   )
 
               machine = info.get('machine') or {}
+              gpu_type_obj = machine.get('gpuType') or {}
               gpu_type = (
-                  machine.get('gpuDisplayName')
+                  gpu_type_obj.get('displayName')
+                  or machine.get('gpuDisplayName')
                   or machine.get('gpuTypeId')
                   or 'unknown'
               )
