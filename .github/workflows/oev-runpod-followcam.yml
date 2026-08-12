@@ -99,13 +99,15 @@ jobs:
           create_body = {
               'name': 'oev-runpod-followcam',
               'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
-              'gpuTypeIds': [
-                  'NVIDIA GeForce RTX 4090',
-                  'NVIDIA RTX A5000',
-                  'NVIDIA GeForce RTX 3090',
-                  'NVIDIA L4',
-              ],
-              'gpuTypePriority': 'custom',
+              # DIAGNOSTIC ISOLATION (temporary): single GPU type, no
+              # gpuTypePriority. The 4-type fallback list + gpuTypePriority=
+              # custom was introduced in 102bbc6809 and every run since has
+              # failed PREFLIGHT_NVDEC; the prior single-type
+              # ['NVIDIA L4'] config passed clean at 28c0d4379b. This isolates
+              # whether the regression is the multi-id/priority mechanism
+              # itself or the GPU class. Restore the fallback list once the
+              # cause is confirmed -- do not leave this narrowed permanently.
+              'gpuTypeIds': ['NVIDIA GeForce RTX 4090'],
               'gpuCount': 1,
               'cloudType': 'SECURE',
               'containerDiskInGb': 120,
@@ -141,7 +143,7 @@ jobs:
               port = None
               deadline = time.time() + 300
               while time.time() < deadline:
-                  info = request('GET', f'{base}/pods/{pod_id}')
+                  info = request('GET', f'{base}/pods/{pod_id}?includeMachine=true')
                   public_ip = info.get('publicIp')
                   mappings = info.get('portMappings') or {}
                   mapped_22 = None
