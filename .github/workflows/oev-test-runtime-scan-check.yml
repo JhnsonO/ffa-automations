@@ -53,7 +53,7 @@ jobs:
       - name: Gitleaks canary self-test
         run: |
           set +e
-          echo 'aws_access_key_id = AKIAZZZZZZZZZZZZZZZZ' | gitleaks stdin --no-banner --redact --exit-code 2
+          echo 'aws_access_key_id = AKIAQWERTYUIOPASDFGH' | gitleaks stdin --no-banner --redact --exit-code 2
           CANARY_EXIT=$?
           set -e
           if [ "$CANARY_EXIT" -ne 2 ]; then
