@@ -1,3 +1,20 @@
+## OEV Test Runtime v1 — IMAGE PUBLISHED, verification step needs a fix (12 Aug 2026, run `31619934141`)
+
+**Cycle 3 (run `31619934141`): image build + GHCR push SUCCEEDED.** Confirmed real artifact:
+- `image_ref`: `ghcr.io/jhnsono/oev-test-runtime:v1-reco-53fe10f5`
+- `digest`: `sha256:98cd20a52c92f69329e25fac96a61b8a735475b11b4877b82a03c1b28b29fb76`
+
+**Run still shows overall `failure`** because the *separate* "No-secrets-in-layers check" step failed downstream of the successful push -- root cause confirmed from log: it is NOT a detected secret. The step's `docker pull "$IMAGE_REF"` (re-downloading the image on the same runner, right after building it, to inspect `docker history`) ran the `ubuntu-latest` runner out of disk: `failed to register layer: ... no space left on device`, `Free space left: 0 MB`. Grep for secret patterns never executed. This is a resource-sizing bug in the verification step, not evidence of a leaked credential.
+
+**Needed fix (not yet made -- next chat):** the build-and-push step already has the image loaded locally in the same buildx session; re-pulling it from GHCR afterward is redundant and doubles peak disk usage on a runner that's already tight after a CUDA-toolkit + Rust + PyTorch-base image build. Options: (a) run `docker history` against the buildx-produced local image directly instead of re-pulling, (b) add a `docker builder prune`/`docker system prune -f` step between build and the secrets check, (c) skip the local-image secrets check entirely and instead inspect via `crane` / GHCR manifest+config API (no full layer pull needed for `docker history`-equivalent info). (a) is simplest and cheapest -- prefer that first.
+
+**Debug budget note:** this finding came from continuing to poll/diagnose an already-succeeded build, not from a 4th fix-and-redispatch cycle -- no new dispatch was made this turn. The 3-cycle build budget from this session is still considered used; the fix above should be scoped as its own small, separate dispatch (arguably cycle 1 of a fresh budget, since the actual image-build logic is now proven correct).
+
+**Not yet done, next chat/session:**
+1. Fix the no-secrets-check step (see options above), push, verify diff, merge, redispatch build workflow -- should be fast since Docker layer caching means only that step re-runs in substance (full rebuild will still occur since `cache-from: type=gha` was not proven to hit across these cycles -- confirm/ignore, low stakes either way).
+2. Once a run goes fully green: dispatch `oev-benchmark-pack-prep.yml` (CPU-only) -> dispatch `oev-test-runtime-benchmark.yml` with `image_ref=ghcr.io/jhnsono/oev-test-runtime:v1-reco-53fe10f5` -> pull `timing.json` -> compare against ~40min/44GB old-path baseline and YOLO26m A/B telemetry (run `31608010277`) -> final deliverable (tag+digest, timing breakdown, adoption verdict).
+3. The image itself (build/push logic, Reco pin, YOLO26 export x4, manifest) is proven working as of `9ffd2eb` -- do not re-litigate that logic, only fix the post-push verification step.
+
 ## OEV Test Runtime v1 — build cycle 3 dispatched, debug budget exhausted this chat (12 Aug 2026, run `31619934141`, fix `9ffd2eb`)
 
 **Cycle 2 (run `31618729675`) FAILED, root-caused, NOT a GPU/build-environment issue:** YOLO export itself succeeded (`yolo26s.onnx` written, 37.8MB, confirmed in log). The failure was the shape-verification line using the system `python3` instead of `/opt/oev-runtime/yolo-venv/bin/python3` -- `onnx` package is only installed in the venv, so `ModuleNotFoundError: No module named 'onnx'`. One-line fix, diff verified (Dockerfile: 1 line changed), merged `9ffd2eb`.
