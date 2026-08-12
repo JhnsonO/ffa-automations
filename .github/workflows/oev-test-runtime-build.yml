@@ -1,0 +1,97 @@
+name: OEV Test Runtime v1 — Build + Publish (GHCR)
+
+on:
+  workflow_dispatch:
+    inputs:
+      reco_sha:
+        description: 'Pinned video-stitcher (Reco) commit SHA to build into the image'
+        required: false
+        default: '53fe10f548d5767ad94ef66aeaedf2d8c7161f27'
+        type: string
+      image_tag:
+        description: 'Immutable image tag (never latest)'
+        required: false
+        default: 'v1-reco-53fe10f5'
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-publish:
+    name: Build + publish OEV Test Runtime image
+    # Deliberately a standard (non-GPU) runner. Building this image does
+    # not require a physical GPU: ort-sys pulls a prebuilt ONNX Runtime
+    # binary, cuDNN is a runtime dlopen dependency not a link-time one,
+    # and nvcc compiles the CUDA preprocessing kernels against a
+    # compute-capability list rather than a live device. If this build
+    # fails with concrete evidence of a GPU-device requirement (not
+    # just a missing lib), that failure is captured below and is the
+    # signal to move image compilation onto GPU-backed compute --
+    # not an assumption made in advance.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
+      image_ref: ${{ steps.tags.outputs.image_ref }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/oev-test-runtime"
+          IMAGE_LOWER=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          echo "image=$IMAGE_LOWER" >> "$GITHUB_OUTPUT"
+          echo "image_ref=$IMAGE_LOWER:${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (immutable tag, no latest)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.image_ref }}
+          build-args: |
+            RECO_SHA=${{ inputs.reco_sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Record digest
+        run: |
+          echo "Published: ${{ steps.tags.outputs.image_ref }}"
+          echo "Digest: ${{ steps.build.outputs.digest }}"
+
+      - name: No-secrets-in-layers check
+        env:
+          IMAGE_REF: ${{ steps.tags.outputs.image_ref }}
+        run: |
+          docker pull "$IMAGE_REF"
+          docker history --no-trunc "$IMAGE_REF" > /tmp/image_history.txt
+          if grep -iE 'RUNPOD_API_KEY|GH_TOKEN|GH_PAT|ghp_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,}|refresh_token' /tmp/image_history.txt; then
+            echo "::error::Potential secret material found in image layer history -- see /tmp/image_history.txt in the run log above."
+            exit 1
+          fi
+          echo "No obvious secret patterns found in 'docker history --no-trunc'."
+
+      - name: Smoke-check manifest inside image (no GPU required)
+        env:
+          IMAGE_REF: ${{ steps.tags.outputs.image_ref }}
+        run: |
+          docker run --rm "$IMAGE_REF" cat /opt/oev-runtime/manifest.json
+          docker run --rm "$IMAGE_REF" sha256sum -c /opt/oev-runtime/models/models.sha256
+          docker run --rm "$IMAGE_REF" /opt/oev-runtime/bin/reco --version
