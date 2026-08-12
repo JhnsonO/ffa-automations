@@ -159,10 +159,11 @@ jobs:
                   )
 
               machine = info.get('machine') or {}
-              print(f'DEBUG machine field: {json.dumps(machine)}')
+              gpu_obj = info.get('gpu') or {}
               gpu_type_obj = machine.get('gpuType') or {}
               gpu_type = (
-                  gpu_type_obj.get('displayName')
+                  gpu_obj.get('displayName')
+                  or gpu_type_obj.get('displayName')
                   or machine.get('gpuDisplayName')
                   or machine.get('gpuTypeId')
                   or 'unknown'
