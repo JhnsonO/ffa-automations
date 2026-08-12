@@ -1,3 +1,16 @@
+## OEV Test Runtime v1 — build cycle 3 dispatched, debug budget exhausted this chat (12 Aug 2026, run `31619934141`, fix `9ffd2eb`)
+
+**Cycle 2 (run `31618729675`) FAILED, root-caused, NOT a GPU/build-environment issue:** YOLO export itself succeeded (`yolo26s.onnx` written, 37.8MB, confirmed in log). The failure was the shape-verification line using the system `python3` instead of `/opt/oev-runtime/yolo-venv/bin/python3` -- `onnx` package is only installed in the venv, so `ModuleNotFoundError: No module named 'onnx'`. One-line fix, diff verified (Dockerfile: 1 line changed), merged `9ffd2eb`.
+
+**Cycle 3 dispatched:** run `31619934141` -- https://github.com/JhnsonO/ffa-automations/actions/runs/31619934141. 2 polls used, still `in_progress` past 9+ minutes with no failure surfaced (further than either prior cycle got before failing). NOT YET VERIFIED COMPLETE.
+
+**Debug budget exhausted for this ticket this chat (3 dispatch cycles used: run `31617406326` fail, `31618729675` fail, `31619934141` pending).** Per the debug-budget rule, do NOT attempt a cycle-4 fix in this chat even if `31619934141` also fails -- check the run result in a fresh chat/message and diagnose from there.
+
+**Not yet done, next chat/session:**
+1. Check run `31619934141` completion first action. If green: pull tag/digest from "Record digest"/"Smoke-check manifest" step logs, confirm no-secrets-check passed -- proceed to benchmark-pack-prep + isolated RunPod benchmark.
+2. If red: fresh diagnose/fix/dispatch cycle (new budget), starting from the exact failing step's log -- do not re-guess, pull the actual error window via the Actions API before editing the Dockerfile again.
+3. Both prior failures (cycle 1: wrong export output path, cycle 2: wrong python interpreter) were self-inflicted Dockerfile authoring mistakes, not environment/GPU/architecture problems -- the underlying design (CPU-only build runner, baked reco+models, GHCR publish) has not been challenged by any failure so far.
+
 ## OEV Test Runtime v1 — build cycle 2 in progress, cycle 1 root-caused (12 Aug 2026, run `31618729675`, fix `8f1aeda`)
 
 **Cycle 1 (run `31617406326`) FAILED, root-caused, NOT a GPU/build-environment issue:** `cargo build --release -p reco-cli --features cuda` completed successfully on the standard `ubuntu-latest` runner in 5m01s with zero device-related errors -- this is now mechanical confirmation that the CUDA-feature reco build does NOT require a physical GPU to compile (Correction 1 from the audit holds). The actual failure was downstream and self-inflicted: the Dockerfile's YOLO26 export loop passed `project=.../ name=...` to `yolo export`, then tried to `mv` the output from a `<name>/<model>.onnx` subdirectory that `yolo export` never creates -- `export` (unlike `train`) writes the `.onnx` directly into the working directory (confirmed in the log: `Results saved to /opt/oev-runtime/models/yolo26s.onnx`). Fixed by removing `project=`/`name=`/`mv`/`rm -rf` and just running `yolo export model=... format=onnx imgsz=1920` from within `/opt/oev-runtime/models` (matches the exact pattern already proven working in the AB-test run `31608010277`'s `segment.log`).
