@@ -145,11 +145,20 @@ JSONEOF
   export VK_DRIVER_FILES="$NVIDIA_EGL_ICD"
   export VK_ICD_FILENAMES="$NVIDIA_EGL_ICD"
   VULKAN_OUT=$(env -u DISPLAY vulkaninfo 2>&1)
-  if echo "$VULKAN_OUT" | grep -q 'deviceType.*DISCRETE_GPU'; then
+  # Use a here-string (<<<), not `echo "$VAR" | grep -q ...`. Confirmed via
+  # live evidence (2026-08-12 correction): with `-q`, grep exits the
+  # instant it finds a match; on a large multi-KB VULKAN_OUT (real vulkaninfo
+  # output is ~75KB+), the `echo` writer gets SIGPIPE writing the remainder
+  # into a pipe grep already closed, and under `set -o pipefail` (active in
+  # this script) that SIGPIPE makes the whole pipeline report failure --
+  # even though grep genuinely found the match. A here-string has no
+  # separate writer process to receive SIGPIPE, so this is immune by
+  # construction, not a workaround.
+  if grep -q 'deviceType.*DISCRETE_GPU' <<< "$VULKAN_OUT"; then
     VULKAN_RESULT="PASS"
   fi
   echo "--- vulkaninfo relevant lines ---"
-  echo "$VULKAN_OUT" | grep -iE 'deviceName|deviceType|driverID|driverName|driverInfo' || echo "(no device lines found)"
+  grep -iE 'deviceName|deviceType|driverID|driverName|driverInfo' <<< "$VULKAN_OUT" || echo "(no device lines found)"
 else
   echo "libEGL_nvidia.so.0 not found on this host -- cannot attempt Vulkan check"
 fi
@@ -173,8 +182,8 @@ PYEOF
 )
 echo "--- CUDA driver API probe ---"
 echo "$CUDA_PROBE_OUT"
-if echo "$CUDA_PROBE_OUT" | grep -q 'cuInit(0) -> CUresult 0' && \
-   echo "$CUDA_PROBE_OUT" | grep -qE 'cuDeviceGetCount -> CUresult 0, count=[1-9]'; then
+if grep -q 'cuInit(0) -> CUresult 0' <<< "$CUDA_PROBE_OUT" && \
+   grep -qE 'cuDeviceGetCount -> CUresult 0, count=[1-9]' <<< "$CUDA_PROBE_OUT"; then
   CUDA_INIT_RESULT="PASS"
 fi
 
@@ -186,7 +195,7 @@ if [ -f "$SYNTH_CLIP" ]; then
   NVDEC_OUT=$(ffmpeg -y -hwaccel cuda -hwaccel_output_format cuda -i "$SYNTH_CLIP" -frames:v 10 -f null - 2>&1)
   echo "--- NVDEC decode smoke test (tail) ---"
   echo "$NVDEC_OUT" | tail -15
-  if echo "$NVDEC_OUT" | grep -qE 'frame=\s*10' && ! echo "$NVDEC_OUT" | grep -qiE 'CUDA_ERROR|hwaccel initialisation returned error|No such file'; then
+  if grep -qE 'frame=\s*10' <<< "$NVDEC_OUT" && ! grep -qiE 'CUDA_ERROR|hwaccel initialisation returned error|No such file' <<< "$NVDEC_OUT"; then
     NVDEC_RESULT="PASS"
   fi
 else
@@ -273,7 +282,7 @@ PYEOF
 echo "--- ORT CUDA EP smoke test ---"
 cat /tmp/preflight_ort_install.log 2>/dev/null | tail -5
 echo "$ORT_OUT"
-if echo "$ORT_OUT" | grep -q '^ORT_CUDA_SMOKE_TEST PASSED'; then
+if grep -q '^ORT_CUDA_SMOKE_TEST PASSED' <<< "$ORT_OUT"; then
   ORT_CUDA_RESULT="PASS"
 fi
 

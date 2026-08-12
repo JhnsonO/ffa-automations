@@ -222,7 +222,7 @@ export VK_ICD_FILENAMES="$EGL_ICD_PATH"
 log "EGL ICD override written to $EGL_ICD_PATH"
 
 VULKAN_CHECK=$(env -u DISPLAY vulkaninfo 2>&1 | grep -iE 'deviceName|deviceType' | head -4)
-if ! echo "$VULKAN_CHECK" | grep -q 'DISCRETE_GPU'; then
+if ! grep -q 'DISCRETE_GPU' <<< "$VULKAN_CHECK"; then
   fail "Vulkan check after EGL ICD override did not report a DISCRETE_GPU device. Output: $VULKAN_CHECK" 2
 fi
 log "Vulkan confirmed: $(echo "$VULKAN_CHECK" | tr '\n' ' ')"
