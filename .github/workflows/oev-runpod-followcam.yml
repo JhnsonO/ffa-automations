@@ -52,7 +52,7 @@ jobs:
           os.chmod('/tmp/runpod_key', 0o600)
           PY
 
-      - name: Launch RunPod GPU pod
+      - name: Launch RunPod GPU pod (NVDEC preflight retry, max 3 attempts)
         id: launch
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
@@ -60,6 +60,7 @@ jobs:
           python3 -u - << 'PY'
           import json
           import os
+          import subprocess
           import sys
           import time
           import urllib.error
@@ -74,6 +75,13 @@ jobs:
           }
           pub_key = open('/tmp/runpod_key.pub').read().strip()
 
+          MAX_ATTEMPTS = 3
+          POD_IDS_FILE = '/tmp/runpod_all_pod_ids.txt'
+          # Truncate at the start of this job -- the final cleanup step reads
+          # this file to sweep every pod created this run, regardless of
+          # which attempt (if any) ends up published downstream.
+          open(POD_IDS_FILE, 'w').close()
+
           def request(method, url, data=None, timeout=30):
               body = json.dumps(data).encode() if data is not None else None
               req = urllib.request.Request(url, data=body, method=method, headers=headers)
@@ -87,59 +95,57 @@ jobs:
                       f'HTTP {exc.code} from {method} {url}: {err_body}'
                   ) from exc
 
-          def best_effort_delete(pod_id):
+          def delete_pod(pod_id):
+              # Best-effort only -- the final if:always() cleanup step reads
+              # POD_IDS_FILE and retries deletion for every pod created this
+              # run, so a failure here is not a leak, just a slower one.
               try:
                   request('DELETE', f'{base}/pods/{pod_id}', timeout=20)
-                  print(f'Best-effort cleanup: pod {pod_id} deleted')
+                  print(f'Deleted pod {pod_id} (attempt cleanup).')
               except Exception as exc:
-                  # Final if:always() cleanup gets another chance because pod_id
-                  # is written to GITHUB_OUTPUT immediately after creation.
-                  print(f'Best-effort cleanup warning for pod {pod_id}: {exc}')
+                  print(f'Delete warning for pod {pod_id}: {exc} (final cleanup step will retry).')
 
-          create_body = {
-              'name': 'oev-runpod-followcam',
-              'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
-              'gpuTypeIds': [
-                  'NVIDIA GeForce RTX 4090',
-                  'NVIDIA RTX A5000',
-                  'NVIDIA GeForce RTX 3090',
-                  'NVIDIA L4',
-              ],
-              'gpuTypePriority': 'custom',
-              'gpuCount': 1,
-              'cloudType': 'SECURE',
-              'containerDiskInGb': 120,
-              'ports': ['22/tcp'],
-              'supportPublicIp': True,
-              'allowedCudaVersions': ['12.8'],
-              # RunPod documentation/templates use both names in different
-              # SSH-key paths. Supplying both is harmless and makes this
-              # ephemeral per-run key explicit for the stock image.
-              'env': {
-                  'PUBLIC_KEY': pub_key,
-                  'SSH_PUBLIC_KEY': pub_key,
-              },
-          }
-          printable = {k: v for k, v in create_body.items() if k != 'env'}
-          print(f'Creating pod: {json.dumps(printable)}')
-          pod = request('POST', f'{base}/pods', create_body)
-          pod_id = pod.get('id')
-          if not pod_id:
-              print(f'ERROR: pod create response had no id: {pod}', file=sys.stderr)
-              sys.exit(1)
+          def create_pod():
+              create_body = {
+                  'name': 'oev-runpod-followcam',
+                  'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
+                  'gpuTypeIds': [
+                      'NVIDIA GeForce RTX 4090',
+                      'NVIDIA RTX A5000',
+                      'NVIDIA GeForce RTX 3090',
+                      'NVIDIA L4',
+                  ],
+                  'gpuTypePriority': 'custom',
+                  'gpuCount': 1,
+                  'cloudType': 'SECURE',
+                  'containerDiskInGb': 120,
+                  'ports': ['22/tcp'],
+                  'supportPublicIp': True,
+                  'allowedCudaVersions': ['12.8'],
+                  # RunPod documentation/templates use both names in different
+                  # SSH-key paths. Supplying both is harmless and makes this
+                  # ephemeral per-run key explicit for the stock image.
+                  'env': {
+                      'PUBLIC_KEY': pub_key,
+                      'SSH_PUBLIC_KEY': pub_key,
+                  },
+              }
+              printable = {k: v for k, v in create_body.items() if k != 'env'}
+              print(f'Creating pod: {json.dumps(printable)}')
+              pod = request('POST', f'{base}/pods', create_body)
+              pod_id = pod.get('id')
+              if not pod_id:
+                  raise RuntimeError(f'pod create response had no id: {pod}')
+              # Record immediately, before any polling/SSH work, so the final
+              # cleanup step knows about this pod even if this attempt crashes.
+              with open(POD_IDS_FILE, 'a') as f:
+                  f.write(pod_id + '\n')
+              print(f'Pod created: id={pod_id}')
+              return pod_id
 
-          print(f'Pod created: id={pod_id}')
-          launch_time = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-          # Persist the ID BEFORE any polling/network work. If anything below
-          # fails, the unconditional cleanup step still knows what to delete.
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f'pod_id={pod_id}\n')
-              output.write(f'launch_time={launch_time}\n')
-
-          try:
-              ip = None
-              port = None
-              deadline = time.time() + 300
+          def wait_for_network(pod_id, timeout_s=300):
+              deadline = time.time() + timeout_s
+              info = {}
               while time.time() < deadline:
                   info = request('GET', f'{base}/pods/{pod_id}')
                   public_ip = info.get('publicIp')
@@ -148,77 +154,145 @@ jobs:
                   if isinstance(mappings, dict):
                       mapped_22 = mappings.get('22') or mappings.get('22/tcp')
                   if public_ip and mapped_22:
-                      ip = public_ip
-                      port = mapped_22
-                      break
+                      return public_ip, mapped_22, info
                   time.sleep(10)
+              raise RuntimeError(f'pod {pod_id} never reported a public IP + SSH mapping within {timeout_s}s')
 
-              if not ip or not port:
-                  raise RuntimeError(
-                      f'pod {pod_id} never reported a public IP + SSH mapping within 5 minutes'
+          def wait_for_ssh(ip, port, attempts=18, delay_s=5):
+              for i in range(1, attempts + 1):
+                  result = subprocess.run(
+                      ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
+                       '-i', '/tmp/runpod_key', '-p', str(port), f'root@{ip}', 'echo OK'],
+                      capture_output=True, text=True, timeout=15,
                   )
+                  if 'OK' in result.stdout:
+                      return True
+                  print(f'SSH not ready ({i}/{attempts})')
+                  time.sleep(delay_s)
+              return False
+
+          def run_preflight(ip, port):
+              ssh_opts = ['-i', '/tmp/runpod_key', '-p', str(port), '-o', 'StrictHostKeyChecking=no',
+                          '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=30',
+                          '-o', 'ServerAliveCountMax=10', '-o', 'TCPKeepAlive=yes']
+              scp_opts = ['-i', '/tmp/runpod_key', '-P', str(port), '-o', 'StrictHostKeyChecking=no',
+                          '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=10',
+                          '-o', 'TCPKeepAlive=yes']
+              subprocess.run(['scp'] + scp_opts + ['runpod_gpu_preflight.sh', f'root@{ip}:/tmp/runpod_gpu_preflight.sh'],
+                              check=True, timeout=60)
+              subprocess.run(['ssh'] + ssh_opts + [f'root@{ip}', 'chmod +x /tmp/runpod_gpu_preflight.sh'],
+                              check=True, timeout=30)
+              result = subprocess.run(
+                  ['ssh'] + ssh_opts + [f'root@{ip}', 'stdbuf -oL -eL /tmp/runpod_gpu_preflight.sh'],
+                  capture_output=True, text=True, timeout=180,
+              )
+              output = result.stdout + result.stderr
+              passed = result.returncode == 0 and 'PREFLIGHT_RESULT=PASS' in output.splitlines()
+              return passed, output
+
+          def field(d, *keys, default='unknown'):
+              for k in keys:
+                  v = d.get(k)
+                  if v:
+                      return v
+              return default
+
+          winner = None
+          summary_lines = []
+          for attempt in range(1, MAX_ATTEMPTS + 1):
+              print(f'--- Pod allocation attempt {attempt}/{MAX_ATTEMPTS} ---')
+              try:
+                  pod_id = create_pod()
+              except Exception as exc:
+                  print(f'::error::Attempt {attempt}: pod create failed: {exc}')
+                  summary_lines.append(f'attempt={attempt} pod_id=none result=CREATE_FAILED error={exc}')
+                  continue
+
+              try:
+                  ip, port, info = wait_for_network(pod_id)
+              except Exception as exc:
+                  print(f'Attempt {attempt}: {exc}')
+                  summary_lines.append(f'attempt={attempt} pod_id={pod_id} result=NETWORK_TIMEOUT')
+                  delete_pod(pod_id)
+                  continue
 
               machine = info.get('machine') or {}
               gpu_obj = info.get('gpu') or {}
-              gpu_type_obj = machine.get('gpuType') or {}
-              gpu_type = (
-                  gpu_obj.get('displayName')
-                  or gpu_type_obj.get('displayName')
-                  or machine.get('gpuDisplayName')
-                  or machine.get('gpuTypeId')
-                  or 'unknown'
-              )
+              gpu_type = field(gpu_obj, 'displayName', default=None) \
+                  or field(machine.get('gpuType') or {}, 'displayName', default=None) \
+                  or field(machine, 'gpuDisplayName', 'gpuTypeId')
+              machine_id = field(machine, 'id', 'machineId')
               cost_per_hr = info.get('costPerHr')
               cost_str = f'{cost_per_hr}' if cost_per_hr is not None else 'unavailable'
 
-              print(f'Pod ready: id={pod_id} ip={ip} ssh_port={port}')
-              print(f'Selected GPU: {gpu_type} | price/hr: {cost_str}')
-              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-                  output.write(f'ip={ip}\nport={port}\n')
-                  output.write(f'gpu_type={gpu_type}\n')
-                  output.write(f'cost_per_hr={cost_str}\n')
-          except Exception:
-              best_effort_delete(pod_id)
-              raise
+              if not wait_for_ssh(ip, port):
+                  print(f'Attempt {attempt}: SSH never came up on pod {pod_id} ({ip}:{port})')
+                  summary_lines.append(
+                      f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                      f'gpu={gpu_type} result=SSH_TIMEOUT'
+                  )
+                  delete_pod(pod_id)
+                  continue
+
+              try:
+                  passed, preflight_output = run_preflight(ip, port)
+              except Exception as exc:
+                  print(f'Attempt {attempt}: preflight upload/run failed: {exc}')
+                  summary_lines.append(
+                      f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                      f'gpu={gpu_type} result=PREFLIGHT_ERROR error={exc}'
+                  )
+                  delete_pod(pod_id)
+                  continue
+
+              with open(f'preflight_attempt_{attempt}.txt', 'w') as f:
+                  f.write(preflight_output)
+
+              driver_version = 'unknown'
+              for line in preflight_output.splitlines():
+                  if line.startswith('PREFLIGHT_DRIVER_VERSION='):
+                      driver_version = line.split('=', 1)[1]
+                      break
+
+              result_str = 'PASS' if passed else 'FAIL'
+              print(f'Attempt {attempt}: pod={pod_id} host_ip={ip} machine_id={machine_id} '
+                    f'gpu={gpu_type} driver={driver_version} preflight={result_str}')
+              summary_lines.append(
+                  f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                  f'gpu={gpu_type} driver={driver_version} cost_per_hr={cost_str} result={result_str}'
+              )
+
+              if passed:
+                  with open('preflight_output.txt', 'w') as f:
+                      f.write(preflight_output)
+                  winner = {
+                      'pod_id': pod_id, 'ip': ip, 'port': port, 'gpu_type': gpu_type,
+                      'cost_per_hr': cost_str, 'machine_id': machine_id, 'driver_version': driver_version,
+                  }
+                  break
+              else:
+                  print(f'Attempt {attempt}: NVDEC preflight FAILED on pod {pod_id} '
+                        f'(driver {driver_version}, machine {machine_id}, host {ip}) -- deleting and retrying.')
+                  delete_pod(pod_id)
+
+          with open('pod_selection_summary.txt', 'w') as f:
+              f.write('\n'.join(summary_lines) + '\n')
+
+          if winner is None:
+              print(f'::error::All {MAX_ATTEMPTS} pod allocation attempts failed (NVDEC preflight, SSH, or network). '
+                    f'See pod_selection_summary.txt and preflight_attempt_*.txt for per-host evidence.')
+              sys.exit(1)
+
+          launch_time = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+          print(f'Selected healthy pod: {winner}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'pod_id={winner["pod_id"]}\n')
+              output.write(f'ip={winner["ip"]}\n')
+              output.write(f'port={winner["port"]}\n')
+              output.write(f'gpu_type={winner["gpu_type"]}\n')
+              output.write(f'cost_per_hr={winner["cost_per_hr"]}\n')
+              output.write(f'launch_time={launch_time}\n')
           PY
-
-      - name: Wait for SSH
-        env:
-          IP: ${{ steps.launch.outputs.ip }}
-          PORT: ${{ steps.launch.outputs.port }}
-        run: |
-          for i in $(seq 1 18); do
-            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
-              -i /tmp/runpod_key -p "$PORT" "root@$IP" 'echo OK' \
-              2>/dev/null | grep -q OK; then
-              echo 'SSH ready'
-              exit 0
-            fi
-            echo "SSH not ready ($i/18)"
-            sleep 5
-          done
-          echo 'ERROR: SSH never came up'
-          exit 1
-
-      - name: Upload + run GPU preflight (must PASS before continuing)
-        env:
-          IP: ${{ steps.launch.outputs.ip }}
-          PORT: ${{ steps.launch.outputs.port }}
-        run: |
-          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
-          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
-          $SCP runpod_gpu_preflight.sh root@$IP:/tmp/runpod_gpu_preflight.sh
-          $SSH root@$IP "chmod +x /tmp/runpod_gpu_preflight.sh"
-
-          set +e
-          $SSH root@$IP "stdbuf -oL -eL /tmp/runpod_gpu_preflight.sh" | tee preflight_output.txt
-          preflight_rc=${PIPESTATUS[0]}
-          set -e
-          if [ "$preflight_rc" -ne 0 ] || ! grep -q '^PREFLIGHT_RESULT=PASS$' preflight_output.txt; then
-            echo "::error::RunPod GPU preflight did NOT pass (exit $preflight_rc) -- aborting before bootstrap/footage."
-            exit 1
-          fi
-          echo 'Preflight PASSED.'
 
       - name: Upload + run environment bootstrap (must exit 0 before continuing)
         env:
@@ -375,6 +449,8 @@ jobs:
           mkdir -p followcam_artifacts
           cp preflight_output.txt followcam_artifacts/ 2>/dev/null || true
           cp bootstrap_output.txt followcam_artifacts/ 2>/dev/null || true
+          cp pod_selection_summary.txt followcam_artifacts/ 2>/dev/null || true
+          cp preflight_attempt_*.txt followcam_artifacts/ 2>/dev/null || true
 
           duration_str="unavailable"
           cost_str="unavailable"
@@ -522,7 +598,7 @@ jobs:
           PY
           set -e
 
-      - name: Terminate RunPod pod
+      - name: Terminate RunPod pod(s)
         if: always()
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
@@ -534,40 +610,72 @@ jobs:
           import urllib.error
           import urllib.request
 
-          pod_id = os.environ.get('POD_ID', '').strip()
-          if not pod_id:
-              print('No pod ID -- nothing to terminate (POST likely never created a pod).')
+          # The launch step records every pod it creates (not just the
+          # winning one) to this file the moment each pod is created, so a
+          # pod that failed NVDEC preflight and whose best-effort in-loop
+          # delete_pod() call didn't land is still swept here -- no orphan
+          # can survive both safety nets.
+          pod_ids = []
+          try:
+              with open('/tmp/runpod_all_pod_ids.txt') as f:
+                  pod_ids = [line.strip() for line in f if line.strip()]
+          except FileNotFoundError:
+              pass
+
+          # Backward-compat fallback: if the tracking file is missing or
+          # empty (e.g. launch step crashed before creating it) but the
+          # winning-pod output exists, still attempt to clean that one up.
+          single = os.environ.get('POD_ID', '').strip()
+          if single and single not in pod_ids:
+              pod_ids.append(single)
+
+          pod_ids = list(dict.fromkeys(pod_ids))  # de-dupe, preserve order
+
+          if not pod_ids:
+              print('No pod IDs recorded -- nothing to terminate.')
               raise SystemExit(0)
 
           headers = {'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}"}
-          url = f'https://rest.runpod.io/v1/pods/{pod_id}'
-          last_error = None
+          failures = []
 
-          for attempt in range(1, 4):
-              req = urllib.request.Request(url, method='DELETE', headers=headers)
-              try:
-                  with urllib.request.urlopen(req, timeout=20) as response:
-                      status = response.status
-                      if status in (200, 202, 204):
-                          print(f'Pod {pod_id} termination confirmed (HTTP {status}) on attempt {attempt}.')
-                          raise SystemExit(0)
-                      last_error = f'unexpected HTTP {status}'
-              except urllib.error.HTTPError as exc:
-                  if exc.code == 404:
-                      print(f'Pod {pod_id} already absent (HTTP 404) -- cleanup confirmed.')
-                      raise SystemExit(0)
-                  body = exc.read().decode(errors='replace')[:300]
-                  last_error = f'HTTP {exc.code}: {body}'
-              except Exception as exc:
-                  last_error = repr(exc)
+          for pod_id in pod_ids:
+              url = f'https://rest.runpod.io/v1/pods/{pod_id}'
+              last_error = None
+              confirmed = False
+              for attempt in range(1, 4):
+                  req = urllib.request.Request(url, method='DELETE', headers=headers)
+                  try:
+                      with urllib.request.urlopen(req, timeout=20) as response:
+                          status = response.status
+                          if status in (200, 202, 204):
+                              print(f'Pod {pod_id} termination confirmed (HTTP {status}) on attempt {attempt}.')
+                              confirmed = True
+                              break
+                          last_error = f'unexpected HTTP {status}'
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          print(f'Pod {pod_id} already absent (HTTP 404) -- cleanup confirmed.')
+                          confirmed = True
+                          break
+                      body = exc.read().decode(errors='replace')[:300]
+                      last_error = f'HTTP {exc.code}: {body}'
+                  except Exception as exc:
+                      last_error = repr(exc)
 
-              print(f'DELETE attempt {attempt}/3 failed: {last_error}')
-              if attempt < 3:
-                  time.sleep(5)
+                  print(f'Pod {pod_id}: DELETE attempt {attempt}/3 failed: {last_error}')
+                  if attempt < 3:
+                      time.sleep(5)
 
-          print(f'::error::Pod {pod_id} termination NOT confirmed after 3 attempts: {last_error}')
-          print('::error::Check the RunPod console manually; workflow is failing cleanup rather than hiding a potentially billable pod.')
-          raise SystemExit(1)
+              if not confirmed:
+                  failures.append((pod_id, last_error))
+
+          if failures:
+              for pod_id, last_error in failures:
+                  print(f'::error::Pod {pod_id} termination NOT confirmed after 3 attempts: {last_error}')
+              print('::error::Check the RunPod console manually; workflow is failing cleanup rather than hiding a potentially billable pod.')
+              raise SystemExit(1)
+
+          print(f'All {len(pod_ids)} pod(s) created this run confirmed terminated.')
           PY
 
       - name: Evaluate acceptance
