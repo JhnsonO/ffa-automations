@@ -99,7 +99,13 @@ jobs:
           create_body = {
               'name': 'oev-runpod-followcam',
               'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
-              'gpuTypeIds': ['NVIDIA L4'],
+              'gpuTypeIds': [
+                  'NVIDIA GeForce RTX 4090',
+                  'NVIDIA RTX A5000',
+                  'NVIDIA GeForce RTX 3090',
+                  'NVIDIA L4',
+              ],
+              'gpuTypePriority': 'custom',
               'gpuCount': 1,
               'cloudType': 'SECURE',
               'containerDiskInGb': 120,
@@ -123,10 +129,12 @@ jobs:
               sys.exit(1)
 
           print(f'Pod created: id={pod_id}')
+          launch_time = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
           # Persist the ID BEFORE any polling/network work. If anything below
           # fails, the unconditional cleanup step still knows what to delete.
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'pod_id={pod_id}\n')
+              output.write(f'launch_time={launch_time}\n')
 
           try:
               ip = None
@@ -150,9 +158,21 @@ jobs:
                       f'pod {pod_id} never reported a public IP + SSH mapping within 5 minutes'
                   )
 
+              machine = info.get('machine') or {}
+              gpu_type = (
+                  machine.get('gpuDisplayName')
+                  or machine.get('gpuTypeId')
+                  or 'unknown'
+              )
+              cost_per_hr = info.get('costPerHr')
+              cost_str = f'{cost_per_hr}' if cost_per_hr is not None else 'unavailable'
+
               print(f'Pod ready: id={pod_id} ip={ip} ssh_port={port}')
+              print(f'Selected GPU: {gpu_type} | price/hr: {cost_str}')
               with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
                   output.write(f'ip={ip}\nport={port}\n')
+                  output.write(f'gpu_type={gpu_type}\n')
+                  output.write(f'cost_per_hr={cost_str}\n')
           except Exception:
               best_effort_delete(pod_id)
               raise
@@ -326,10 +346,15 @@ jobs:
           # exact proven runtime environment in the shell that runs the real
           # football workload; do not install anything here.
           remote_cmd="test -d /usr/local/cuda-12.8/lib64 && test -f /tmp/nvidia_egl_icd.json || { echo 'FATAL: validated RunPod CUDA/Vulkan runtime files missing'; exit 10; }; export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}; export VK_DRIVER_FILES=/tmp/nvidia_egl_icd.json; export VK_ICD_FILENAMES=/tmp/nvidia_egl_icd.json; unset DISPLAY; LEFT_CLIP='$LEFT_CLIP' RIGHT_CLIP='$RIGHT_CLIP' stdbuf -oL -eL /tmp/oev_run/runpod_followcam_remote.sh"
+          processing_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "processing_start=$processing_start" >> "$GITHUB_OUTPUT"
           remote_rc=0
           $SSH "$remote_cmd" || remote_rc=$?
+          processing_end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "processing_end=$processing_end" >> "$GITHUB_OUTPUT"
           echo "remote_exit=$remote_rc" >> "$GITHUB_OUTPUT"
           echo "Remote follow-cam script exit: $remote_rc"
+          echo "Processing window: $processing_start -> $processing_end"
 
       - name: Pull back logs + outputs
         if: always()
@@ -337,14 +362,43 @@ jobs:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
           POD_ID: ${{ steps.launch.outputs.pod_id }}
+          GPU_TYPE: ${{ steps.launch.outputs.gpu_type }}
+          COST_PER_HR: ${{ steps.launch.outputs.cost_per_hr }}
+          LAUNCH_TIME: ${{ steps.launch.outputs.launch_time }}
+          PROCESSING_START: ${{ steps.run_followcam.outputs.processing_start }}
+          PROCESSING_END: ${{ steps.run_followcam.outputs.processing_end }}
         run: |
           mkdir -p followcam_artifacts
           cp preflight_output.txt followcam_artifacts/ 2>/dev/null || true
           cp bootstrap_output.txt followcam_artifacts/ 2>/dev/null || true
+
+          duration_str="unavailable"
+          cost_str="unavailable"
+          if [ -n "$PROCESSING_START" ] && [ -n "$PROCESSING_END" ]; then
+            start_s=$(date -u -d "$PROCESSING_START" +%s 2>/dev/null || echo "")
+            end_s=$(date -u -d "$PROCESSING_END" +%s 2>/dev/null || echo "")
+            if [ -n "$start_s" ] && [ -n "$end_s" ]; then
+              dur_s=$((end_s - start_s))
+              duration_str="${dur_s}s"
+              if [ -n "$COST_PER_HR" ] && [ "$COST_PER_HR" != "unavailable" ]; then
+                cost_str=$(python3 -c "print(f'{$COST_PER_HR * $dur_s / 3600:.4f}')" 2>/dev/null || echo "unavailable")
+              fi
+            fi
+          fi
+
+          echo "RunPod job summary: gpu=$GPU_TYPE price_per_hr=$COST_PER_HR pod_id=$POD_ID launch_time=$LAUNCH_TIME processing_start=$PROCESSING_START processing_end=$PROCESSING_END duration=$duration_str approx_cost=$cost_str"
+
           cat > followcam_artifacts/run_metadata.txt <<META
           pod_id=$POD_ID
           ip=$IP
           port=$PORT
+          gpu_type=$GPU_TYPE
+          cost_per_hr=$COST_PER_HR
+          launch_time=$LAUNCH_TIME
+          processing_start=$PROCESSING_START
+          processing_end=$PROCESSING_END
+          processing_duration=$duration_str
+          approx_processing_cost=$cost_str
           META
 
           if [ -z "$IP" ] || [ -z "$PORT" ]; then
