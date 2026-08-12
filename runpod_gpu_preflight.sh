@@ -227,7 +227,7 @@ echo "ORT package pin: $ORT_GPU_PIN (fixed -- this preflight's environment contr
 # --query-gpu=driver_version does not expose).
 HOST_CUDA_API_DIAG=$(nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: [0-9]+\.[0-9]+' | head -1)
 echo "Diagnostic only (not used for pin decision): ${HOST_CUDA_API_DIAG:-not found in nvidia-smi output}"
-pip3 install -q --no-input onnx "$ORT_GPU_PIN" >/tmp/preflight_ort_install.log 2>&1
+pip3 install -q --no-input --break-system-packages onnx "$ORT_GPU_PIN" >/tmp/preflight_ort_install.log 2>&1
 ORT_OUT=$(python3 - <<'PYEOF' 2>&1
 import sys
 try:
