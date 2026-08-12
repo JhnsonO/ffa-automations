@@ -1,0 +1,39 @@
+# Gitleaks configuration for ffa-automations.
+#
+# [[allowlists]] below suppresses 10 confirmed false-positive `private-key`
+# findings originating from usr/lib/x86_64-linux-gnu/libgnutls.so.30.37.1,
+# part of the stock Ubuntu package libgnutls30t64:amd64 pulled in as an apt
+# dependency in the oev-test-runtime base image. These are GnuTLS's own
+# compiled-in known-answer-test (KAT) key material used for internal
+# self-tests -- a standard, documented practice for crypto libraries
+# (RSA/DSA/ECDSA KATs) -- not secrets introduced by this repo.
+#
+# Confirmed via manual strings/objdump inspection of the extracted layer
+# (sha256:5a7813e071bfadf18aaa6ca8318be4824a9b6297b3240f2cc84c1db6f4113040)
+# against gitleaks v8.30.0 (pinned version used by the scan workflows).
+#
+# Layer scanning pipes each layer's concatenated file contents to
+# `gitleaks stdin`, which loses per-file path context -- so this allowlist
+# targets the specific secret content (regexTarget = "secret"), not a path.
+# Each regex below is a unique 48-char base64 fingerprint from the start of
+# one of the 10 confirmed findings; this is intentionally narrow so it does
+# not suppress any other private-key finding.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "libgnutls.so.30.37.1 GnuTLS self-test (KAT) key material -- confirmed false positive, not repo secrets"
+regexTarget = "secret"
+regexes = [
+  '''MGoCAQAwIQYIKoUDBwEBAQIwFQYJKoUDBwECAQIBBggqhQMH''',
+  '''MEgCAQAwHwYIKoUDBwEBAQEwEwYHKoUDAgIjAQYIKoUDBwEB''',
+  '''MEUCAQAwHAYGKoUDAgITMBIGByqFAwICIwEGByqFAwICHgEE''',
+  '''MIHbAgEBBEGO2n7NN363qSCvJVdlQtCvudtaW4o0fEufXRjE''',
+  '''MIGkAgEBBDDevshD6gb\+4rZpC9vwFcIwNs4KmGzdqCxyyN40''',
+  '''MHcCAQEEIPAKWV7\+pZe9c5EubMNfAEKWRQtP/MvlO9HehwHm''',
+  '''MGgCAQEEHOKWJFdWdrR/CgVrUeTeawOrJ9GozE9KKx2a8Pmg''',
+  '''MF8CAQEEGLjezFcbgDMeApVrdtZHvu/k1a8/tVZ41KAKBggq''',
+  '''MIIDTQIBAAKCAQEAh60B6yPMRIT7udq2kKuwnQDohvT1U0w\+''',
+  '''MIIEogIBAAKCAQEA6yCv\+BLrRP/dMPBXJWK21c0aqxIX6JkO''',
+]
