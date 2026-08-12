@@ -1,3 +1,27 @@
+## RunPod NVDEC pod-recreate retry loop — MERGED + DISPATCHED, execution verified, product goal NOT achieved: RunPod re-allocated the SAME bad host all 3 attempts (12 Aug 2026, run `31593541439`, commit `1788f9d`)
+
+**Built (Claude direct build, explicit routing override "You do it"):** `.github/workflows/oev-runpod-followcam.yml` — "Launch RunPod GPU pod" step now loops up to 3 pod-allocation attempts (create → wait for network → wait for SSH → preflight; NVDEC fail → delete pod → retry). Only the passing attempt's pod_id/ip/port/gpu_type/cost_per_hr is published downstream. All-3-fail hard-fails the step. "Terminate RunPod pod(s)" now sweeps every pod ID created this run (tracking file written the instant each pod is created), not just the winner. Per-attempt evidence (`pod_selection_summary.txt`, `preflight_attempt_N.txt`: pod_id, host IP, machine_id, GPU, driver version, result) pulled into the run artifact — no blacklist logic added, evidence-only as directed. Merged to `main` via feature branch `fix/runpod-nvdec-preflight-retry` (commit `ff81c13` → merge `1788f9d`). Frozen files untouched (`runpod_gpu_preflight.sh`, `runpod_bootstrap.sh`, `runpod_followcam_remote.sh`).
+
+**Run `31593541439`: retry-loop mechanics fully verified working, but did not solve the underlying problem.** All 3 attempts:
+- Attempt 1: pod `744f6igce7y6ny`, host `103.196.86.125`, driver `570.195.03` → NVDEC FAIL, deleted cleanly (attempt-level delete, not final sweep).
+- Attempt 2: pod `pzmg7y69kmldfg`, **same host `103.196.86.125`**, same driver → NVDEC FAIL, deleted cleanly.
+- Attempt 3: pod `ggq2k1xh29ewkc`, **same host `103.196.86.125`** again, same driver → NVDEC FAIL, deleted cleanly.
+- Step correctly hard-failed after 3/3 (`##[error]All 3 pod allocation attempts failed...`). Final "Terminate RunPod pod(s)" sweep step: `success` — confirmed no orphans (all 3 already individually deleted in-loop; sweep is a no-op safety net here, working as designed).
+
+**New finding, decision-relevant:** RunPod's Secure Cloud 4090 allocator handed this account the exact same physical host (`103.196.86.125`) on all 3 consecutive create calls despite deleting the pod between each — this account/region is currently pinned to (or heavily weighted toward) one specific bad box. Delete-and-recreate alone cannot escape a sticky-host allocator; a plain retry loop is not sufficient on its own right now.
+
+**Also new: this host+driver combination (`103.196.86.125`, driver `570.195.03`) fails NVDEC, while the earlier PASS host (`103.196.86.137`, same driver `570.195.03`) passed twice.** This rules out driver-version alone as the signature (two different hosts, identical driver string, opposite NVDEC outcomes) — confirms the problem is genuinely per-physical-host, not per-driver-version. Do not build a driver-version blacklist off this data.
+
+**Gap found, not yet fixed:** `machine_id` field extraction (`field(machine, 'id', 'machineId')`) returned `unknown` on all 3 attempts — the RunPod pod-info payload doesn't expose machine identity under those key names (or the retry loop's `info` isn't the right object). Host IP is the only reliable evidence of physical-host identity right now. Needs a live payload inspection (print the full `machine` dict once) before any host-exclusion feature can be built, since that would need a real, stable host/machine identifier to exclude on.
+
+**Not yet done — real next candidates:**
+1. Inspect a live RunPod `GET /pods/{id}` response's full `machine` object to find the actual field name(s) available (if any) for physical host identity, before designing exclusion logic around it.
+2. If RunPod's create API supports it, request exclusion of a specific host/machine on the next create call within the same retry loop (needs the field from #1 first).
+3. Alternative not requiring new RunPod API surface: on repeated same-host NVDEC failures within one retry loop, deliberately vary `gpuTypeIds`/priority order attempt-to-attempt (e.g. try A5000 first on attempt 2) to see if that steers the allocator to a different host — cheap to test, no new dependency on undocumented fields.
+4. Simplest fallback if neither works: widen `MAX_ATTEMPTS` isn't the fix (sticky-host, not random-host, problem) — do not just raise the retry count without addressing host stickiness first.
+
+**Debug cycle 1 of 3 this session (retry-loop cycle) used. Handing decision to Johnson: which of #1-#3 to pursue next.**
+
 ## RunPod NVDEC — NVIDIA_DRIVER_CAPABILITIES isolation REJECTED without dispatch (12 Aug 2026, fresh chat, cycle not spent)
 
 **Hypothesis considered:** unset `NVIDIA_DRIVER_CAPABILITIES` (missing `video`) causes the per-host NVDEC failures, fix = explicitly request `compute,utility,video` on pod create.
