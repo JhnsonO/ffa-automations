@@ -103,10 +103,8 @@ RUN python3 -m venv /opt/oev-runtime/yolo-venv \
 
 RUN set -e; \
     for size in s m l x; do \
-      /opt/oev-runtime/yolo-venv/bin/yolo export model="yolo26${size}.pt" format=onnx imgsz=1920 \
-        project=/opt/oev-runtime/models name="yolo26${size}" exist_ok=True; \
-      mv "/opt/oev-runtime/models/yolo26${size}/yolo26${size}.onnx" "/opt/oev-runtime/models/yolo26${size}.onnx"; \
-      rm -rf "/opt/oev-runtime/models/yolo26${size}"; \
+      /opt/oev-runtime/yolo-venv/bin/yolo export model="yolo26${size}.pt" format=onnx imgsz=1920; \
+      test -f "/opt/oev-runtime/models/yolo26${size}.onnx" || { echo "FATAL: yolo26${size}.onnx not found after export"; exit 1; }; \
       python3 -c "import onnx; m=onnx.load('/opt/oev-runtime/models/yolo26${size}.onnx'); \
 inp=m.graph.input[0].type.tensor_type.shape.dim; out=m.graph.output[0].type.tensor_type.shape.dim; \
 print('yolo26${size} input=', [d.dim_value or d.dim_param for d in inp], 'output=', [d.dim_value or d.dim_param for d in out])"; \
