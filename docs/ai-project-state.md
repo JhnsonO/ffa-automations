@@ -1165,3 +1165,19 @@ Note: between my push and the first dispatch, Johnson pushed a follow-up commit 
 **Merged to main.** Branch `feat/runpod-followcam-workflow` (commits `12a08fb`, `4d3bf272`, `6c9f21b`) merged into `main`.
 
 **Not yet done -- the actual next product step, no more synthetic infrastructure tests needed first:** pull `followcam.mp4` from run `31557269688`'s artifact and visually judge the camerawork on this genuinely unseen 15-20s segment (start=2395s, duration=16s, from the full `GX010197.MP4`/`GX010173.MP4` source pair). A green workflow proves execution only, not product acceptance -- per the standing rule in `ai-project-state.md`, visual evidence outranks aggregate counts for this kind of decision gate.
+
+## 2026-08-12 session (cont. 2): CORRECTION -- zero-copy claim in prior entry was wrong; reco-cli has a real zero-copy bug
+
+**The "LIVE VERIFIED... run 31557269688" entry above is WRONG about product quality.** That run went green on every acceptance signal (tracking, CUDAExecutionProvider, zero-copy log lines) but Johnson's visual review of the resulting `followcam.mp4` showed a corrupted solid green band across the frame. A green CI job proved execution only, exactly the standing caveat -- I wrote the caveat in that same entry and still didn't catch the actual bug until Johnson looked at the video.
+
+**Isolated via A/B, both on RunPod, same segment/geometry/match.json, only the zero-copy flag changed:**
+- Run `31557269688` (zero-copy active, `--no-zero-copy` omitted): green CI, corrupted green-band video.
+- Run `31558373625` (`--no-zero-copy` added back, diagnostic branch): green CI, clean correct video (Johnson confirmed: "It worked").
+
+**Conclusion:** the corruption is specific to `reco-cli`'s zero-copy NV12 decode/encode path in the `video-stitcher` fork -- an actual bug in that fork, not in RunPod, not in this repo's workflow/script geometry, flags, or match.json. That code path had never been exercised end-to-end before run `31557269688` (Vast has always run `--no-zero-copy`), so this bug would surface on Vast too if zero-copy were ever tried there.
+
+**Fix applied to `main`:** `runpod_followcam_remote.sh` now passes `--no-zero-copy`, matching Vast, as the interim production setting. The zero-copy evidence acceptance-check block is still present but now gated to only run when `--no-zero-copy` is absent from `STITCH_ARGS` -- it's dormant, not deleted, for whenever the underlying bug is fixed and zero-copy is re-enabled. Do not remove `--no-zero-copy` from `runpod_followcam_remote.sh` again until the `reco-cli` NV12 zero-copy bug is actually fixed and re-verified with a visual (not just CI-green) check.
+
+**Open item, not yet scheduled:** diagnose/fix the NV12 chroma-plane bug in `JhnsonO/video-stitcher`'s zero-copy encode path. Likely candidates: chroma plane stride/pitch mismatch, U/V plane pointer not correctly passed through the zero-copy GPU buffer, or a colorspace (BT.601/BT.709) conversion step being skipped only on the zero-copy code path. Not investigated yet -- no reco-cli source was read this session.
+
+**Standing lesson for future acceptance checks in this repo:** a script-level acceptance check that greps logs for "the right things happened" is not sufficient for anything touching pixel/frame correctness -- it can pass while the actual output is broken. Any acceptance gate claiming video-quality validation should either include an automated frame-sanity check (e.g. sample-frame color histogram, not-all-one-color) or explicitly say in its output that visual human review is still required, rather than implying "PASSED acceptance" covers picture quality.

@@ -15,13 +15,27 @@
 #
 # Segment-selection, calibrate, field_roi injection, and the tracking-
 # acceptance check below are reused verbatim from
-# oev_followcam_test_remote.sh (the Vast.ai equivalent). The one
-# deliberate deviation is the reco stitch invocation: --no-zero-copy is
-# OMITTED here (Johnson confirmed it was a Vast CPU-decode diagnostic
-# compromise, not a locked production setting -- the canonical RunPod
-# path is full zero-copy). A second, RunPod-specific acceptance check is
-# added at the end to require explicit log evidence that zero-copy
-# actually engaged, since that is the entire point of this ticket.
+# oev_followcam_test_remote.sh (the Vast.ai equivalent).
+#
+# --no-zero-copy IS PASSED HERE, matching Vast, as of 2026-08-12. This is
+# an interim correction, not the original intent: run 31557269688 proved
+# full zero-copy (--no-zero-copy omitted) executes cleanly per every log
+# signal (tracking, CUDAExecutionProvider, zero-copy engaged) but
+# actually produces a corrupted followcam.mp4 -- a solid green band,
+# confirmed on visual review, consistent with an NV12->RGB chroma-plane
+# bug in reco-cli's zero-copy encode path that had never been exercised
+# end-to-end before that run. Run 31558373625, identical script except
+# --no-zero-copy added back, produced a clean, correct followcam.mp4 --
+# isolating the corruption to zero-copy specifically (not geometry,
+# flags, or match.json). Do not remove --no-zero-copy again until the
+# zero-copy NV12 bug is actually fixed and re-verified in the
+# JhnsonO/video-stitcher fork. The RunPod-specific zero-copy acceptance
+# check below is left in place for when that fix lands and this flag is
+# removed again -- it is currently dead code on this path since
+# --no-zero-copy means those log lines will never appear, but a
+# following "no such text found" acceptance failure on THIS path with
+# --no-zero-copy still present would itself indicate the flag silently
+# stopped applying and is worth investigating if seen.
 #
 # Deliberately does NOT pass --allow-no-tracking: if Reco can't
 # initialize tracking, the run must fail loudly, not silently produce a
@@ -225,16 +239,17 @@ assert isinstance(roi.get('right'), list) and len(roi['right']) > 0, 'field_roi.
 fi
 echo "field_roi validated in match.json (left/right polygons present)" | tee -a calibrate.log
 
-echo "=== stitch.log: reco stitch (field follow-cam, l-shape, full zero-copy) ===" | tee stitch.log
+echo "=== stitch.log: reco stitch (field follow-cam, l-shape, --no-zero-copy interim) ===" | tee stitch.log
 # Same flag set agreed with Johnson as the Vast script: normal
-# perspective (l-shape, default) projection, NOT cylindrical. Only
-# deviation from the Vast script: --no-zero-copy is OMITTED. This is the
-# canonical RunPod path -- full NVDEC-to-GPU-resident decode +
-# CUDAExecutionProvider inference, not the Vast CPU-decode diagnostic
-# compromise. --detection-interval 1 (no frame-skipping, out of scope
-# for this ticket). Deliberately NO --allow-no-tracking: a tracking-init
-# failure must fail this run loudly, not silently degrade to a static
-# stitch.
+# perspective (l-shape, default) projection, NOT cylindrical.
+# --detection-interval 1 (no frame-skipping, out of scope for this
+# ticket). Deliberately NO --allow-no-tracking: a tracking-init failure
+# must fail this run loudly, not silently degrade to a static stitch.
+# --no-zero-copy: see the file-header note (2026-08-12) -- zero-copy
+# proved to produce a corrupted green-band output on this pod
+# (run 31557269688), isolated to the zero-copy path specifically via A/B
+# against run 31558373625. This is now the production setting, matching
+# Vast, until the underlying reco-cli bug is fixed and re-verified.
 STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
   --model yolov8n.onnx
   --tracking field
@@ -242,6 +257,7 @@ STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
   --lookahead 1.5
   --detection-interval 1
   --events events.jsonl
+  --no-zero-copy
   --width 1920 --height 1080)
 echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch.log
 stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
@@ -329,38 +345,46 @@ if [ "$tracking_accept_rc" -ne 0 ]; then
   exit 5
 fi
 
-# --- RunPod-specific: zero-copy evidence check. This is the actual
-# point of Task 4 -- a followcam.mp4 existing, or the tracking check
-# above passing, does NOT prove zero-copy engaged; it only proves
-# tracking worked, which could happen even on a silent CPU-decode
-# fallback. All three of the following must be present in stitch.log. ---
-echo "=== Verifying full zero-copy path actually engaged (RunPod-specific, no Vast equivalent) ===" | tee -a acceptance.log
-zero_copy_fail=0
-if grep -qiE 'zero-copy|zero copy' stitch.log; then
-  echo "OK: zero-copy log line found" | tee -a acceptance.log
+# --- RunPod-specific: zero-copy evidence check. Only runs when
+# --no-zero-copy is NOT in STITCH_ARGS -- i.e. only when zero-copy is
+# actually expected to be active. As of 2026-08-12, --no-zero-copy IS in
+# STITCH_ARGS (interim production setting, see file header), so this
+# whole block is skipped on this path; it's left in place, unmodified,
+# for whenever the reco-cli zero-copy bug is fixed and --no-zero-copy is
+# removed again -- do not delete this block to "clean up" while
+# --no-zero-copy is the active setting. ---
+if printf '%s\n' "${STITCH_ARGS[@]}" | grep -qx -- '--no-zero-copy'; then
+  echo "=== --no-zero-copy is active this run -- skipping zero-copy evidence check (expected, not applicable) ===" | tee -a acceptance.log
 else
-  echo "FAIL: no zero-copy log line found in stitch.log" | tee -a acceptance.log
-  zero_copy_fail=1
+  echo "=== Verifying full zero-copy path actually engaged (RunPod-specific, no Vast equivalent) ===" | tee -a acceptance.log
+  zero_copy_fail=0
+  if grep -qiE 'zero-copy|zero copy' stitch.log; then
+    echo "OK: zero-copy log line found" | tee -a acceptance.log
+  else
+    echo "FAIL: no zero-copy log line found in stitch.log" | tee -a acceptance.log
+    zero_copy_fail=1
+  fi
+  if grep -qiE 'NVDEC.*CUDA|NVDEC \(CUDA\)|cuvid' stitch.log; then
+    echo "OK: GPU decode (NVDEC/CUDA) log line found" | tee -a acceptance.log
+  else
+    echo "FAIL: no NVDEC/CUDA decode log line found in stitch.log" | tee -a acceptance.log
+    zero_copy_fail=1
+  fi
+  if grep -qE "No execution providers from session options registered successfully" stitch.log; then
+    echo "FAIL: CUDA EP fallback warning present in stitch.log -- detection likely ran on CPU" | tee -a acceptance.log
+    zero_copy_fail=1
+  elif grep -qiE 'CUDAExecutionProvider' stitch.log; then
+    echo "OK: CUDAExecutionProvider log line found, no fallback warning" | tee -a acceptance.log
+  else
+    echo "FAIL: no CUDAExecutionProvider log line found in stitch.log" | tee -a acceptance.log
+    zero_copy_fail=1
+  fi
+  if [ "$zero_copy_fail" -ne 0 ]; then
+    echo "FATAL: zero-copy acceptance check FAILED -- see acceptance.log. Tracking passed but full zero-copy is NOT confirmed active on this run." | tee -a acceptance.log
+    exit 5
+  fi
+  echo "Acceptance OK: zero-copy (GPU decode + CUDA inference) confirmed engaged" | tee -a acceptance.log
 fi
-if grep -qiE 'NVDEC.*CUDA|NVDEC \(CUDA\)|cuvid' stitch.log; then
-  echo "OK: GPU decode (NVDEC/CUDA) log line found" | tee -a acceptance.log
-else
-  echo "FAIL: no NVDEC/CUDA decode log line found in stitch.log" | tee -a acceptance.log
-  zero_copy_fail=1
-fi
-if grep -qE "No execution providers from session options registered successfully" stitch.log; then
-  echo "FAIL: CUDA EP fallback warning present in stitch.log -- detection likely ran on CPU" | tee -a acceptance.log
-  zero_copy_fail=1
-elif grep -qiE 'CUDAExecutionProvider' stitch.log; then
-  echo "OK: CUDAExecutionProvider log line found, no fallback warning" | tee -a acceptance.log
-else
-  echo "FAIL: no CUDAExecutionProvider log line found in stitch.log" | tee -a acceptance.log
-  zero_copy_fail=1
-fi
-if [ "$zero_copy_fail" -ne 0 ]; then
-  echo "FATAL: zero-copy acceptance check FAILED -- see acceptance.log. Tracking passed but full zero-copy is NOT confirmed active on this run." | tee -a acceptance.log
-  exit 5
-fi
-echo "Acceptance OK: AI tracking confirmed active with real detections + camera movement, AND full zero-copy (GPU decode + CUDA inference) confirmed engaged" | tee -a acceptance.log
+echo "Acceptance OK: AI tracking confirmed active with real detections + camera movement" | tee -a acceptance.log
 
 echo "=== All stages completed ==="

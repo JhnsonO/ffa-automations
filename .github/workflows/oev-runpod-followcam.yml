@@ -1,4 +1,4 @@
-name: OEV — Follow-Cam Test (Reco field autocam, RunPod, full zero-copy)
+name: OEV — Follow-Cam Test (Reco field autocam, RunPod)
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   followcam-test-runpod:
-    name: Follow-Cam Test (RunPod, zero-copy)
+    name: Follow-Cam Test (RunPod)
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -375,7 +375,7 @@ jobs:
             echo "::error::RunPod follow-cam test did NOT pass (remote exit ${REMOTE_EXIT:-unknown}). See artifact logs."
             exit 1
           fi
-          echo 'Follow-cam test PASSED acceptance (AI tracking + full zero-copy confirmed).'
+          echo 'Follow-cam test PASSED acceptance (AI tracking confirmed; --no-zero-copy interim setting, see runpod_followcam_remote.sh header).'
 
       - name: Terminate RunPod pod
         if: always()
