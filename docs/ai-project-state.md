@@ -1,3 +1,16 @@
+## OEV Test Runtime v1 — build cycle 2 in progress, cycle 1 root-caused (12 Aug 2026, run `31618729675`, fix `8f1aeda`)
+
+**Cycle 1 (run `31617406326`) FAILED, root-caused, NOT a GPU/build-environment issue:** `cargo build --release -p reco-cli --features cuda` completed successfully on the standard `ubuntu-latest` runner in 5m01s with zero device-related errors -- this is now mechanical confirmation that the CUDA-feature reco build does NOT require a physical GPU to compile (Correction 1 from the audit holds). The actual failure was downstream and self-inflicted: the Dockerfile's YOLO26 export loop passed `project=.../ name=...` to `yolo export`, then tried to `mv` the output from a `<name>/<model>.onnx` subdirectory that `yolo export` never creates -- `export` (unlike `train`) writes the `.onnx` directly into the working directory (confirmed in the log: `Results saved to /opt/oev-runtime/models/yolo26s.onnx`). Fixed by removing `project=`/`name=`/`mv`/`rm -rf` and just running `yolo export model=... format=onnx imgsz=1920` from within `/opt/oev-runtime/models` (matches the exact pattern already proven working in the AB-test run `31608010277`'s `segment.log`).
+
+**Fix pushed to `feat/oev-test-runtime-v1`, diff verified (Dockerfile: +2/-4, only file changed), merged to `main` (`8f1aeda`).**
+
+**Cycle 2 dispatched:** run `31618729675` -- https://github.com/JhnsonO/ffa-automations/actions/runs/31618729675. 2 polls used this session (~9.5min elapsed total), still `in_progress` at "Build and push" -- past the point cycle 1 failed at, no failure evidence yet. NOT YET VERIFIED COMPLETE. This is dispatch/debug cycle 2 of 3 for this ticket.
+
+**Not yet done, next check:**
+1. Check run `31618729675` completion. If green: pull tag/digest from "Record digest" + "Smoke-check manifest" step logs, confirm no-secrets-check passed.
+2. If red: cycle 3 of 3 -- diagnose from the run log (`gh.sh logs` / job log) before redispatching; if that also fails, stop and hand off per debug budget.
+3. Then: dispatch `oev-benchmark-pack-prep.yml` (CPU-only) -> dispatch `oev-test-runtime-benchmark.yml` with the confirmed image ref -> pull `timing.json` -> compare against ~40min/44GB old-path baseline and YOLO26m A/B telemetry (run `31608010277`) -> final deliverable (tag+digest, timing breakdown, adoption verdict).
+
 ## OEV Test Runtime v1 — build DISPATCHED, in progress (12 Aug 2026, run `31617406326`, merge `6982b52`)
 
 **Goal:** versioned GHCR image baking pinned reco-cli + pre-exported YOLO26 s/m/l/x@1920 so experiments skip the ~40min bootstrap/44GB-download tax. CPU-detector-only by design (see GPU-detector finding below).
