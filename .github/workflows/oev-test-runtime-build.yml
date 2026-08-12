@@ -79,7 +79,7 @@ jobs:
       - name: Install crane and gitleaks (pinned, checksum-verified)
         env:
           CRANE_VERSION: "0.21.7"
-          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_VERSION: "8.30.0"
         run: |
           set -euo pipefail
           cd /tmp
@@ -98,6 +98,18 @@ jobs:
 
           crane version
           gitleaks version
+
+      - name: Gitleaks canary self-test
+        run: |
+          set +e
+          echo 'aws_access_key_id = AKIAIOSFODNN7EXAMPLE' | gitleaks stdin --no-banner --exit-code 2
+          CANARY_EXIT=$?
+          set -e
+          if [ "$CANARY_EXIT" -ne 2 ]; then
+            echo "::error::Gitleaks canary self-test failed -- known fake AWS key was NOT detected (exit $CANARY_EXIT, expected 2). This gitleaks build may be silently broken; refusing to trust the layer scan."
+            exit 1
+          fi
+          echo "Gitleaks canary self-test passed -- known fake secret correctly detected."
 
       - name: No-secrets-in-layers check
         env:
