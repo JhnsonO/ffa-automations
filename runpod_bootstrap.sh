@@ -16,11 +16,13 @@
 #     a later hardening ticket, once the real unseen follow-cam validation
 #     has passed against this bootstrap-script approach.
 #   - Does not fetch real production footage, credentials, or secrets. The
-#     Reco CUDA smoke test at the end uses a small self-generated synthetic
-#     clip pair, matching the same design philosophy as
-#     oev_gpu_preflight.sh's own synthetic NVDEC/ORT checks -- it proves
-#     the real reco-cli binary's Vulkan/NVDEC/ORT-CUDA-EP stack initialises
-#     and runs, not that a specific piece of footage stitches correctly.
+#     Reco CUDA smoke test at the end derives a left/right clip pair from a
+#     single deterministic synthetic source (guaranteed feature overlap by
+#     construction, not probabilistic), and exercises the actual --model
+#     detector path with a small real YOLO ONNX export -- it proves the
+#     real reco-cli binary's Vulkan/NVDEC/CUDAExecutionProvider/
+#     OrtGpuDetector stack initialises and runs for real, not just that
+#     the renderer/decode path works without a detector attached.
 #
 # Idempotency: every step below either checks for existing state before
 # acting, or is itself a no-op-safe operation (apt-get install on an
@@ -165,15 +167,31 @@ if [ -z "$CUDA_LIB_DIR" ]; then
 fi
 log "CUDA lib dir: $CUDA_LIB_DIR"
 
-log "Installing cuDNN 9 for CUDA 12..."
-if ! apt-get install -y -qq libcudnn9-cuda-12 2>/tmp/cudnn_err.log; then
-  if ! apt-get install -y -qq cudnn9-cuda-12 2>>/tmp/cudnn_err.log; then
-    cat /tmp/cudnn_err.log
-    fail "could not install libcudnn9-cuda-12 or cudnn9-cuda-12" 2
-  fi
-fi
-CUDNN_VER=$(dpkg -l | grep -E 'libcudnn9-cuda-12|cudnn9-cuda-12' | awk '{print $3}' | head -1)
-log_version "cudnn_package_version" "${CUDNN_VER:-unknown}"
+# cuDNN: do NOT assume a specific apt package is required. Confirmed this
+# session that libcudnn9-cuda-12 can fail to install (apt exit 100) on this
+# exact base image while the real production reco-cli run still registered
+# CUDAExecutionProvider and completed real inference successfully --
+# meaning the base image (which ships PyTorch + its own bundled CUDA
+# userspace libs, commonly under a Python site-packages nvidia/ tree)
+# already provides what's actually needed at runtime. Installing a package
+# "because it seemed like it should be needed" without evidence is exactly
+# the mistake this section previously made.
+#
+# Correct order: inventory what's already resolvable BEFORE attempting any
+# install, and only install if evidence (ldd on the real built .so, once
+# it exists) shows something is genuinely missing. The build step below
+# does not require cuDNN at build time (ort-sys downloads a prebuilt
+# onnxruntime binary; cuDNN is a dlopen'd runtime dependency of that
+# binary, not a compile-time link), so cuDNN resolution is deferred until
+# after the build produces the real libonnxruntime_providers_cuda.so to
+# inspect.
+log "Inventorying pre-existing CUDA userspace libraries (cudnn/cublas)..."
+EXISTING_CUDNN=$(find / -xdev -iname "libcudnn*.so*" 2>/dev/null | grep -v '^/proc')
+EXISTING_CUBLAS=$(find / -xdev -iname "libcublas*.so*" 2>/dev/null | grep -v '^/proc')
+log "Pre-existing libcudnn*: ${EXISTING_CUDNN:-none found}"
+log "Pre-existing libcublas*: ${EXISTING_CUBLAS:-none found}"
+echo "preexisting_libcudnn_paths=${EXISTING_CUDNN:-none}" >> "$VERSIONS_LOG"
+echo "preexisting_libcublas_paths=${EXISTING_CUBLAS:-none}" >> "$VERSIONS_LOG"
 
 export ORT_CUDA_VERSION=12
 export LD_LIBRARY_PATH="${CUDA_LIB_DIR}/lib64:${LD_LIBRARY_PATH:-}"
@@ -250,6 +268,55 @@ log "Companion .so files alongside reco binary:"
 echo "$COMPANION_SOS" | tee -a "$VERSIONS_LOG"
 
 # ---------------------------------------------------------------------------
+# 6b. Evidence-based cuDNN/cublas resolution. Inspect the REAL runtime
+# dependencies of the actual built libonnxruntime_providers_cuda.so via
+# ldd, rather than assuming a package is needed. Only install something if
+# ldd shows an actual "=> not found" entry -- never install speculatively.
+# ---------------------------------------------------------------------------
+CUDA_PROVIDER_SO=$(find "$WORKDIR/target/release" -maxdepth 1 -iname "libonnxruntime_providers_cuda.so" 2>/dev/null | head -1)
+if [ -z "$CUDA_PROVIDER_SO" ]; then
+  log "WARNING: libonnxruntime_providers_cuda.so not found alongside reco binary -- cannot inventory its dependencies. This may itself indicate a problem (see companion .so list above); proceeding to the smoke test, which will fail loudly if CUDA EP cannot load."
+else
+  log "Inspecting real runtime dependencies of $CUDA_PROVIDER_SO..."
+  LDD_OUT=$(ldd "$CUDA_PROVIDER_SO" 2>&1)
+  echo "$LDD_OUT" | tee -a "$VERSIONS_LOG"
+  MISSING_LIBS=$(echo "$LDD_OUT" | grep "not found" | awk '{print $1}' | sort -u)
+
+  if [ -z "$MISSING_LIBS" ]; then
+    log "All shared library dependencies of libonnxruntime_providers_cuda.so already resolve -- no cuDNN/cublas package install needed. Base image already provides what's required (confirmed by ldd, not assumed)."
+  else
+    log "ldd reports missing libraries: $MISSING_LIBS"
+    for lib in $MISSING_LIBS; do
+      case "$lib" in
+        libcudnn*)
+          log "Missing $lib -- attempting libcudnn9-cuda-12 (evidence: ldd, not speculation)"
+          if apt-get install -y -qq libcudnn9-cuda-12 2>/tmp/cudnn_err.log || apt-get install -y -qq cudnn9-cuda-12 2>>/tmp/cudnn_err.log; then
+            log "cuDNN package install succeeded."
+          else
+            log "WARNING: cuDNN package install failed (see /tmp/cudnn_err.log). Proceeding anyway -- the smoke test below is the real acceptance signal, not this install's exit code. A failed apt install here does not necessarily mean the environment is broken, per this session's own evidence (production run succeeded despite this exact package failing on this exact base image previously)."
+            cat /tmp/cudnn_err.log
+          fi
+          ;;
+        libcublas*)
+          log "Missing $lib -- this should have come from cuda-cudart-12-8/cuda-libraries; re-checking cuda lib dir is on LD_LIBRARY_PATH ($LD_LIBRARY_PATH)"
+          ;;
+        *)
+          log "Missing $lib -- no known fix in this script; smoke test will surface whether this is fatal"
+          ;;
+      esac
+    done
+    # Re-check after any install attempts, log the final state either way.
+    LDD_RECHECK=$(ldd "$CUDA_PROVIDER_SO" 2>&1)
+    STILL_MISSING=$(echo "$LDD_RECHECK" | grep "not found")
+    if [ -n "$STILL_MISSING" ]; then
+      log "After install attempts, still unresolved: $STILL_MISSING -- this will be caught by the Reco CUDA smoke test below if it's actually fatal."
+    else
+      log "All dependencies resolved after install attempts."
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 7. Standard 4-check preflight (Vulkan / CUDA driver API / NVDEC / ORT CUDA
 #    EP), reused from runpod_gpu_preflight.sh so this script and the
 #    standalone preflight never drift apart. Then the real Reco CUDA smoke
@@ -267,49 +334,107 @@ else
   log "WARNING: runpod_gpu_preflight.sh not found alongside this script -- skipping standard 4-check preflight, proceeding straight to Reco smoke test. Run runpod_gpu_preflight.sh separately to get the full check."
 fi
 
-log "Running real Reco CUDA smoke test (synthetic clip pair, actual reco-cli binary)..."
+log "Running real Reco CUDA smoke test (deterministic calibratable fixture + real --model detector path)..."
 SMOKE_DIR="/tmp/runpod_smoke"
 rm -rf "$SMOKE_DIR"
 mkdir -p "$SMOKE_DIR"
 cd "$SMOKE_DIR"
 
-# Two short synthetic clips with distinct patterns so calibrate's AKAZE
-# feature matcher has real (if arbitrary) structure to detect -- a single
-# flat color would produce zero features and fail calibrate for reasons
-# unrelated to GPU/CUDA health.
-ffmpeg -y -loglevel error -f lavfi -i "testsrc2=size=1280x720:rate=30:duration=2" -c:v libx264 -pix_fmt yuv420p smoke_left.mp4
-ffmpeg -y -loglevel error -f lavfi -i "mandelbrot=size=1280x720:rate=30" -t 2 -c:v libx264 -pix_fmt yuv420p smoke_right.mp4
+# --- Deterministic, guaranteed-calibratable fixture ---
+# Generate ONE patterned source, then derive left/right by cropping two
+# overlapping windows of it (same underlying pixels, shifted). This
+# guarantees shared AKAZE features exist by construction -- unlike two
+# unrelated generators (e.g. testsrc2 + mandelbrot), which may or may not
+# share enough structure for calibrate to find matches, making that
+# earlier version's pass/fail probabilistic rather than deterministic.
+SRC_W=2560
+SRC_H=720
+CROP_W=1280
+CROP_H=720
+LEFT_X=0
+RIGHT_X=640   # 640px overlap out of 1280px crop width = 50% shared region
+
+ffmpeg -y -loglevel error -f lavfi -i "testsrc2=size=${SRC_W}x${SRC_H}:rate=30:duration=2" \
+  -c:v libx264 -pix_fmt yuv420p smoke_source.mp4
+ffmpeg -y -loglevel error -i smoke_source.mp4 \
+  -vf "crop=${CROP_W}:${CROP_H}:${LEFT_X}:0" -c:v libx264 -pix_fmt yuv420p smoke_left.mp4
+ffmpeg -y -loglevel error -i smoke_source.mp4 \
+  -vf "crop=${CROP_W}:${CROP_H}:${RIGHT_X}:0" -c:v libx264 -pix_fmt yuv420p smoke_right.mp4
 
 # No lens profile available for synthetic footage and no real GoPro
 # telemetry to auto-detect from -- this smoke test intentionally does not
 # validate calibrate's lens-profile logic (that needs real footage, kept
 # out of a generic bootstrap script per the no-secrets/no-large-download
-# constraint). It validates the GPU/CUDA/Vulkan/ORT stack only.
+# constraint). It validates the GPU/CUDA/Vulkan/ORT/detector stack.
 "$RECO_BIN" calibrate --no-auto-imu --frames 1 smoke_left.mp4 smoke_right.mp4 \
   --output smoke_match.json 2>&1 | tee smoke_calibrate.log
 CALIB_EXIT=${PIPESTATUS[0]}
 if [ "$CALIB_EXIT" -ne 0 ] || [ ! -f smoke_match.json ]; then
-  fail "Reco smoke calibrate failed (exit $CALIB_EXIT) or produced no match.json. This does not necessarily mean the GPU/CUDA stack is broken -- calibrate on synthetic footage can fail for feature-matching reasons unrelated to GPU health. See smoke_calibrate.log." 4
+  fail "Reco smoke calibrate failed (exit $CALIB_EXIT) or produced no match.json against a DETERMINISTIC overlapping fixture -- this is a real failure, not a probabilistic feature-matching miss (the fixture is constructed to guarantee shared features). See smoke_calibrate.log." 4
+fi
+if ! grep -qE 'matched points|frame pairs produced matches' smoke_calibrate.log; then
+  fail "Reco smoke calibrate exited 0 but log shows no evidence of real feature matching -- see smoke_calibrate.log" 4
+fi
+
+# --- Small real ONNX YOLO model, same code path as production (NMS
+# built in, input size read from the model itself) so the smoke test
+# actually exercises OrtGpuDetector / CUDAExecutionProvider, not just the
+# stitch renderer. Uses a small imgsz (320, vs production's 1920) purely
+# for smoke-test speed -- this validates the CODE PATH and CUDA EP
+# registration, not production detection quality at production
+# resolution. Idempotent: skips re-export if the model already exists. ---
+SMOKE_MODEL="$SMOKE_DIR/smoke_yolov8n.onnx"
+if [ ! -f "$SMOKE_MODEL" ]; then
+  log "Exporting small smoke-test YOLO model..."
+  SMOKE_VENV="/tmp/runpod_smoke_venv"
+  if [ ! -d "$SMOKE_VENV" ]; then
+    python3 -m venv "$SMOKE_VENV" || fail "failed to create venv for smoke model export" 4
+  fi
+  # shellcheck disable=SC1091
+  source "$SMOKE_VENV/bin/activate"
+  pip install -q ultralytics >/tmp/smoke_ultralytics_install.log 2>&1 \
+    || fail "pip install ultralytics failed for smoke model export -- see /tmp/smoke_ultralytics_install.log" 4
+  yolo export model=yolov8n.pt format=onnx nms=True imgsz=320 project="$SMOKE_DIR" >/tmp/smoke_yolo_export.log 2>&1
+  EXPORT_EXIT=$?
+  deactivate
+  FOUND_ONNX=$(find "$SMOKE_DIR" /tmp -maxdepth 3 -iname "yolov8n.onnx" -newer /tmp/smoke_ultralytics_install.log 2>/dev/null | head -1)
+  if [ "$EXPORT_EXIT" -ne 0 ] || [ -z "$FOUND_ONNX" ]; then
+    cat /tmp/smoke_yolo_export.log
+    fail "YOLO ONNX export for smoke test failed -- see /tmp/smoke_yolo_export.log" 4
+  fi
+  cp "$FOUND_ONNX" "$SMOKE_MODEL"
+  log "Smoke model exported to $SMOKE_MODEL"
+else
+  log "Smoke model already present at $SMOKE_MODEL, skipping re-export."
 fi
 
 "$RECO_BIN" stitch --calibration smoke_match.json --width 640 --height 360 \
+  --model "$SMOKE_MODEL" --tracking field --detection-interval 1 --lookahead 0 \
   --max-frames 20 -o smoke_output.mp4 smoke_left.mp4 smoke_right.mp4 2>&1 | tee smoke_stitch.log
 STITCH_EXIT=${PIPESTATUS[0]}
 
 if [ "$STITCH_EXIT" -ne 0 ]; then
-  fail "Reco smoke stitch failed (exit $STITCH_EXIT). See smoke_stitch.log" 4
-fi
-if ! grep -qE 'Selected GPU: NVIDIA' smoke_stitch.log; then
-  fail "Reco smoke stitch did not report a real NVIDIA GPU selected -- see smoke_stitch.log for the actual device line" 4
-fi
-if grep -qiE 'llvmpipe' smoke_stitch.log; then
-  fail "Reco smoke stitch fell back to llvmpipe (software Vulkan) -- GPU passthrough is not healthy on this pod" 4
-fi
-if [ ! -s smoke_output.mp4 ]; then
-  fail "Reco smoke stitch reported success but smoke_output.mp4 is missing or empty" 4
+  fail "Reco smoke stitch (with --model) failed (exit $STITCH_EXIT). See smoke_stitch.log" 4
 fi
 
-log "Reco CUDA smoke test PASSED: real GPU selected, output produced."
+# Every one of these is required -- no partial credit. A missing
+# CUDAExecutionProvider or a llvmpipe/CPU-fallback signature means the
+# smoke test does NOT pass, even if stitch exits 0 and produces a file.
+SMOKE_FAIL_REASONS=""
+grep -q "Selected GPU: NVIDIA" smoke_stitch.log || SMOKE_FAIL_REASONS="${SMOKE_FAIL_REASONS}no real NVIDIA GPU selected; "
+grep -qi "llvmpipe" smoke_stitch.log && SMOKE_FAIL_REASONS="${SMOKE_FAIL_REASONS}llvmpipe (software Vulkan) detected; "
+grep -q "Successfully registered \`CUDAExecutionProvider\`" smoke_stitch.log || SMOKE_FAIL_REASONS="${SMOKE_FAIL_REASONS}CUDAExecutionProvider registration not confirmed; "
+grep -q "ORT: CUDA execution provider enabled" smoke_stitch.log || SMOKE_FAIL_REASONS="${SMOKE_FAIL_REASONS}'ORT: CUDA execution provider enabled' not logged; "
+grep -qE "OrtGpuDetector.*warmup inference complete" smoke_stitch.log || SMOKE_FAIL_REASONS="${SMOKE_FAIL_REASONS}OrtGpuDetector warmup inference not confirmed; "
+grep -qi "falling back to CPU" smoke_stitch.log && SMOKE_FAIL_REASONS="${SMOKE_FAIL_REASONS}explicit CPU fallback logged; "
+grep -qE "NVDEC \(CUDA\)" smoke_stitch.log || SMOKE_FAIL_REASONS="${SMOKE_FAIL_REASONS}NVDEC zero-copy decode not confirmed; "
+[ -s smoke_output.mp4 ] || SMOKE_FAIL_REASONS="${SMOKE_FAIL_REASONS}smoke_output.mp4 missing or empty; "
+
+if [ -n "$SMOKE_FAIL_REASONS" ]; then
+  fail "Reco CUDA smoke test FAILED acceptance: $SMOKE_FAIL_REASONS See smoke_stitch.log for full detail." 4
+fi
+
+log "Reco CUDA smoke test PASSED: real GPU selected, CUDAExecutionProvider registered, OrtGpuDetector warmup completed, NVDEC zero-copy confirmed, no CPU fallback, output produced."
 log "Versions summary written to $VERSIONS_LOG"
 log "Bootstrap complete."
 exit 0
