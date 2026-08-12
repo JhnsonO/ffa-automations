@@ -123,15 +123,15 @@ jobs:
             case "$mediatype" in
               *tar+gzip*)
                 crane blob "$IMAGE_REF@$digest" | gunzip -c | tar -xO 2>/dev/null \
-                  | gitleaks stdin --no-banner --redact -v --exit-code 2
+                  | gitleaks stdin --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
                 ;;
               *tar+zstd*)
                 crane blob "$IMAGE_REF@$digest" | zstd -dc | tar -xO 2>/dev/null \
-                  | gitleaks stdin --no-banner --redact -v --exit-code 2
+                  | gitleaks stdin --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
                 ;;
               *tar)
                 crane blob "$IMAGE_REF@$digest" | tar -xO 2>/dev/null \
-                  | gitleaks stdin --no-banner --redact -v --exit-code 2
+                  | gitleaks stdin --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
                 ;;
               *)
                 echo "Unrecognized layer mediaType: $mediatype" >&2
