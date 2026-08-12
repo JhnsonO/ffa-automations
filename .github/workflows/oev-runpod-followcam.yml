@@ -1,0 +1,342 @@
+name: OEV — Follow-Cam Test (Reco field autocam, RunPod, full zero-copy)
+
+on:
+  workflow_dispatch:
+    inputs:
+      left_clip:
+        description: 'Exact filename of the FULL original source clip in the OEV Drive root folder (left/first camera) -- NOT the Trimmed/ subfolder'
+        required: false
+        default: 'GX010197.MP4'
+        type: string
+      right_clip:
+        description: 'Exact filename of the FULL original source clip in the OEV Drive root folder (right/second camera) -- NOT the Trimmed/ subfolder'
+        required: false
+        default: 'GX010173.MP4'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  followcam-test-runpod:
+    name: Follow-Cam Test (RunPod, zero-copy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Generate SSH key pair
+        run: |
+          pip install -q cryptography
+          python3 -u - << 'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+          key = Ed25519PrivateKey.generate()
+          priv = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
+          pub = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+          with open('/tmp/runpod_key', 'wb') as f: f.write(priv)
+          with open('/tmp/runpod_key.pub', 'wb') as f: f.write(pub + b' ffa-oev-runpod-followcam\n')
+          os.chmod('/tmp/runpod_key', 0o600)
+          PY
+
+      # RunPod pod-create API mechanics confirmed against RunPod's current
+      # docs (docs.runpod.io/api-reference/pods/POST/pods), not guessed or
+      # carried over from Vast:
+      #   - POST https://rest.runpod.io/v1/pods, Bearer auth, JSON body.
+      #   - imageName pinned to the exact base validated in the 2026-08-12
+      #     RunPod session (docs/ai-project-state.md): runpod's stock
+      #     pytorch image, Ubuntu 24.04 / CUDA 12.8.1.
+      #   - gpuTypeIds must be one of RunPod's exact enum strings --
+      #     "NVIDIA L4" confirmed valid.
+      #   - ports: ["22/tcp"] exposes SSH; RunPod's stock pytorch template
+      #     already runs an SSH daemon and reads the PUBLIC_KEY env var at
+      #     boot to populate authorized_keys (confirmed against RunPod's
+      #     "Full SSH via public IP" docs -- this is a *pod-level* env var
+      #     override, distinct from account-level SSH key management, and
+      #     is the correct mechanism here since this workflow has no
+      #     RunPod account to pre-register a key against).
+      #   - No offer/bid/marketplace flow like Vast -- pod creation is
+      #     direct. No multi-offer selection loop, no known-good-machine
+      #     tiering: that logic is Vast-specific and does not port over.
+      - name: Launch RunPod GPU pod
+        id: launch
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 -u - << 'PY'
+          import os, json, time, urllib.request, urllib.error, sys
+
+          api_key = os.environ['RUNPOD_API_KEY']
+          base = 'https://rest.runpod.io/v1'
+          headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json', 'Accept': 'application/json'}
+          pub_key = open('/tmp/runpod_key.pub').read().strip()
+
+          def request(method, url, data=None, timeout=30):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as r:
+                      raw = r.read()
+                      return json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as exc:
+                  err_body = exc.read().decode(errors='replace')[:500]
+                  raise RuntimeError(f'HTTP {exc.code} from {method} {url}: {err_body}') from exc
+
+          def delete_pod(pod_id):
+              try:
+                  request('DELETE', f'{base}/pods/{pod_id}', timeout=20)
+              except Exception as exc:
+                  print(f'Cleanup warning for pod {pod_id}: DELETE failed: {exc}')
+
+          create_body = {
+              'name': 'oev-runpod-followcam',
+              'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
+              'gpuTypeIds': ['NVIDIA L4'],
+              'gpuCount': 1,
+              'cloudType': 'SECURE',
+              'containerDiskInGb': 60,
+              'ports': ['22/tcp'],
+              'env': {'PUBLIC_KEY': pub_key},
+          }
+          print(f'Creating pod: {json.dumps({k: v for k, v in create_body.items() if k != "env"})}')
+          pod = request('POST', f'{base}/pods', create_body)
+          pod_id = pod.get('id')
+          if not pod_id:
+              print(f'ERROR: pod create response had no id: {pod}', file=sys.stderr)
+              sys.exit(1)
+          print(f'Pod created: id={pod_id}')
+
+          # Poll until the pod reports a public IP + mapped port for 22/tcp.
+          ip = None
+          port = None
+          deadline = time.time() + 300
+          while time.time() < deadline:
+              info = request('GET', f'{base}/pods/{pod_id}')
+              public_ip = info.get('publicIp')
+              port_mappings = info.get('portMappings') or {}
+              mapped_22 = port_mappings.get('22')
+              if public_ip and mapped_22:
+                  ip = public_ip
+                  port = mapped_22
+                  break
+              time.sleep(10)
+
+          if not ip or not port:
+              print(f'ERROR: pod {pod_id} never reported a public IP + mapped SSH port within 5 minutes', file=sys.stderr)
+              delete_pod(pod_id)
+              sys.exit(1)
+
+          print(f'Pod ready: id={pod_id} ip={ip} ssh_port={port}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'pod_id={pod_id}\nip={ip}\nport={port}\n')
+          PY
+
+      - name: Wait for SSH
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          for i in $(seq 1 18); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 -i /tmp/runpod_key -p "$PORT" "root@$IP" 'echo OK' 2>/dev/null | grep -q OK; then
+              echo 'SSH ready'; exit 0
+            fi
+            echo "SSH not ready ($i/18)"; sleep 5
+          done
+          echo 'ERROR: SSH never came up'; exit 1
+
+      # Preflight must pass BEFORE bootstrap, and bootstrap must pass
+      # BEFORE any footage is touched -- ordering constraint from the
+      # Task 4 spec. Frozen file: never modified, only uploaded verbatim.
+      - name: Upload + run GPU preflight (must PASS before continuing)
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP runpod_gpu_preflight.sh root@$IP:/tmp/runpod_gpu_preflight.sh
+          $SSH "chmod +x /tmp/runpod_gpu_preflight.sh" root@$IP
+          $SSH root@$IP "stdbuf -oL -eL /tmp/runpod_gpu_preflight.sh" | tee preflight_output.txt
+          preflight_rc=${PIPESTATUS[0]}
+          if [ "$preflight_rc" -ne 0 ] || ! grep -q '^PREFLIGHT_RESULT=PASS$' preflight_output.txt; then
+            echo "::error::RunPod GPU preflight did NOT pass (exit $preflight_rc) -- aborting before bootstrap/footage. See preflight_output.txt in the run log above."
+            exit 1
+          fi
+          echo "Preflight PASSED."
+
+      - name: Upload + run environment bootstrap (must exit 0 before continuing)
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP runpod_bootstrap.sh root@$IP:/tmp/runpod_bootstrap.sh
+          $SSH root@$IP "chmod +x /tmp/runpod_bootstrap.sh"
+          $SSH root@$IP "stdbuf -oL -eL /tmp/runpod_bootstrap.sh"
+          bootstrap_rc=$?
+          if [ "$bootstrap_rc" -ne 0 ]; then
+            echo "::error::runpod_bootstrap.sh failed (exit $bootstrap_rc) -- aborting before footage download. Exit code meanings: 1=wrong base image, 2=install step failed, 3=build failed, 4=smoke test failed."
+            exit 1
+          fi
+          echo "Bootstrap PASSED (reco-cli built with --features cuda)."
+
+      # Same OAuth refresh-token + Drive-root-folder lookup + aria2c
+      # download logic as the Vast follow-cam workflow, reused verbatim.
+      - name: Resolve clip file IDs in OEV Drive root folder (full source clips)
+        id: resolve
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          LEFT_CLIP: ${{ github.event.inputs.left_clip }}
+          RIGHT_CLIP: ${{ github.event.inputs.right_clip }}
+        run: |
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -u - << 'PY'
+          import json, os, urllib.request as req, urllib.parse
+
+          OEV_DRIVE_FOLDER_ID = "18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ"
+
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          payload = json.dumps({
+              'client_id': token_data.get('client_id') or creds_data['installed']['client_id'],
+              'client_secret': token_data.get('client_secret') or creds_data['installed']['client_secret'],
+              'refresh_token': token_data['refresh_token'],
+              'grant_type': 'refresh_token',
+          }).encode()
+          resp = req.urlopen(req.Request('https://oauth2.googleapis.com/token', data=payload,
+                                          headers={'Content-Type': 'application/json'}, method='POST'))
+          token = json.loads(resp.read())
+          if 'access_token' not in token:
+              raise RuntimeError(f'Token refresh failed: {token}')
+          access_token = token['access_token']
+          open('/tmp/drive_token.txt', 'w').write(access_token)
+
+          def find_in_drive_root(filename):
+              q = f"name='{filename}' and '{OEV_DRIVE_FOLDER_ID}' in parents and trashed=false"
+              url = 'https://www.googleapis.com/drive/v3/files?' + urllib.parse.urlencode({
+                  'q': q, 'fields': 'files(id,name)', 'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'})
+              r = req.urlopen(req.Request(url, headers={'Authorization': f'Bearer {access_token}'}))
+              files = json.loads(r.read()).get('files', [])
+              if not files:
+                  raise RuntimeError(f'{filename} not found in OEV Drive root folder (id={OEV_DRIVE_FOLDER_ID})')
+              return files[0]['id']
+
+          left_id = find_in_drive_root(os.environ['LEFT_CLIP'])
+          right_id = find_in_drive_root(os.environ['RIGHT_CLIP'])
+          print(f'left_clip_id={left_id}')
+          print(f'right_clip_id={right_id}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'left_id={left_id}\nright_id={right_id}\n')
+          PY
+
+      - name: Download clip pair to pod
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          LEFT_ID: ${{ steps.resolve.outputs.left_id }}
+          RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          $SSH "apt-get update -qq && apt-get install -y -qq --no-install-recommends aria2 > /dev/null; mkdir -p /tmp/oev_run"
+          $SSH "aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=left.mp4 'https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media' 2>&1 | tail -5"
+          $SSH "aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=right.mp4 'https://www.googleapis.com/drive/v3/files/$RIGHT_ID?alt=media' 2>&1 | tail -5"
+          $SSH "ls -la /tmp/oev_run/"
+
+      - name: Upload + run follow-cam test script
+        id: run_followcam
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          LEFT_CLIP: ${{ github.event.inputs.left_clip }}
+          RIGHT_CLIP: ${{ github.event.inputs.right_clip }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP runpod_followcam_remote.sh root@$IP:/tmp/oev_run/
+          $SSH "chmod +x /tmp/oev_run/runpod_followcam_remote.sh"
+          # Do not fail the step on non-zero exit -- logs must still be
+          # pulled back below even if a stage or the acceptance check
+          # failed partway through; the job is failed explicitly
+          # afterward by the "Evaluate acceptance" step instead.
+          $SSH "LEFT_CLIP='$LEFT_CLIP' RIGHT_CLIP='$RIGHT_CLIP' stdbuf -oL -eL /tmp/oev_run/runpod_followcam_remote.sh"; echo "remote_exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Pull back logs + outputs
+        if: always()
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          POD_ID: ${{ steps.launch.outputs.pod_id }}
+        run: |
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          mkdir -p followcam_artifacts
+          cat > followcam_artifacts/run_metadata.txt <<META
+          pod_id=$POD_ID
+          ip=$IP
+          port=$PORT
+          META
+          cat followcam_artifacts/run_metadata.txt
+          $SCP "root@$IP:/tmp/oev_run/segment.log" followcam_artifacts/ || echo 'segment.log missing'
+          $SCP "root@$IP:/tmp/oev_run/calibrate.log" followcam_artifacts/ || echo 'calibrate.log missing'
+          $SCP "root@$IP:/tmp/oev_run/stitch.log" followcam_artifacts/ || echo 'stitch.log missing'
+          $SCP "root@$IP:/tmp/oev_run/acceptance.log" followcam_artifacts/ || echo 'acceptance.log missing'
+          $SCP "root@$IP:/tmp/oev_run/match.json" followcam_artifacts/ || echo 'match.json missing (calibrate did not complete)'
+          $SCP "root@$IP:/tmp/oev_run/events.jsonl" followcam_artifacts/ || echo 'events.jsonl missing (stitch did not run)'
+          $SCP "root@$IP:/tmp/oev_run/followcam.mp4" followcam_artifacts/ || echo 'followcam.mp4 missing (stitch did not complete)'
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-runpod-followcam-${{ github.run_id }}
+          path: followcam_artifacts/
+          retention-days: 14
+
+      - name: Evaluate acceptance
+        if: always()
+        env:
+          REMOTE_EXIT: ${{ steps.run_followcam.outputs.remote_exit }}
+        run: |
+          echo "Remote script exit code: ${REMOTE_EXIT:-unknown}"
+          if [ "${REMOTE_EXIT:-1}" != "0" ]; then
+            echo "::error::RunPod follow-cam test did NOT pass (remote exit ${REMOTE_EXIT:-unknown}). See acceptance.log/stitch.log in the run artifact -- a followcam.mp4 file existing does not mean tracking OR zero-copy was confirmed."
+            exit 1
+          fi
+          echo "Follow-cam test PASSED acceptance (AI tracking confirmed active, non-static pan, full zero-copy confirmed engaged)."
+
+      # Unconditional cleanup -- must run on every path, including a
+      # preflight or bootstrap failure that aborted before this point.
+      # DELETE is the actual terminate call. Do NOT call any "stop"
+      # endpoint (POST /pods/{id}/stop) -- that only pauses billing for
+      # the pod's running state and does not tear it down; confirmed
+      # against RunPod's current docs (docs.runpod.io/pods/manage-pods).
+      - name: Terminate RunPod pod
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          POD_ID: ${{ steps.launch.outputs.pod_id }}
+        run: |
+          python3 - << 'PY'
+          import os, urllib.request, urllib.error
+          pod_id = os.environ.get('POD_ID', '')
+          if not pod_id:
+              print('No pod ID -- nothing to terminate (launch likely failed before pod creation)')
+              raise SystemExit(0)
+
+          headers = {'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          url = f'https://rest.runpod.io/v1/pods/{pod_id}'
+          req = urllib.request.Request(url, method='DELETE', headers=headers)
+          try:
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  print(f'Pod {pod_id} terminated OK: {r.read().decode()[:200]}')
+          except urllib.error.HTTPError as exc:
+              print(f'::error::Pod {pod_id} DELETE returned HTTP {exc.code}: {exc.read().decode(errors="replace")[:300]} -- check https://console.runpod.io/pods manually')
+          except Exception as exc:
+              print(f'::error::Pod {pod_id} DELETE failed: {exc} -- check https://console.runpod.io/pods manually')
+          PY
