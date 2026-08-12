@@ -82,6 +82,18 @@ jobs:
           # which attempt (if any) ends up published downstream.
           open(POD_IDS_FILE, 'w').close()
 
+          # Full documented RunPod data center list (from the REST v1 OpenAPI
+          # schema's dataCenterIds default/enum). Used only to steer AWAY from
+          # datacenters that already produced an NVDEC-failing host this run --
+          # not a permanent blacklist, not persisted between runs.
+          ALL_DATACENTERS = [
+              'EU-RO-1', 'CA-MTL-1', 'EU-SE-1', 'US-IL-1', 'EUR-IS-1', 'EU-CZ-1',
+              'US-TX-3', 'EUR-IS-2', 'US-KS-2', 'US-GA-2', 'US-WA-1', 'US-TX-1',
+              'CA-MTL-3', 'EU-NL-1', 'US-TX-4', 'US-CA-2', 'US-NC-1', 'OC-AU-1',
+              'US-DE-1', 'EUR-IS-3', 'CA-MTL-2', 'AP-JP-1', 'EUR-NO-1', 'EU-FR-1',
+              'US-KS-3', 'US-GA-1', 'AP-IN-1', 'US-MD-1',
+          ]
+
           def request(method, url, data=None, timeout=30):
               body = json.dumps(data).encode() if data is not None else None
               req = urllib.request.Request(url, data=body, method=method, headers=headers)
@@ -105,10 +117,13 @@ jobs:
               except Exception as exc:
                   print(f'Delete warning for pod {pod_id}: {exc} (final cleanup step will retry).')
 
-          def create_pod():
+          def create_pod(exclude_datacenters):
               create_body = {
                   'name': 'oev-runpod-followcam',
                   'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
+                  # GPU order/config deliberately UNCHANGED this cycle -- only
+                  # datacenter steering is under test, to isolate which lever
+                  # (if either) actually escapes the sticky-host allocator.
                   'gpuTypeIds': [
                       'NVIDIA GeForce RTX 4090',
                       'NVIDIA RTX A5000',
@@ -130,6 +145,16 @@ jobs:
                       'SSH_PUBLIC_KEY': pub_key,
                   },
               }
+              if exclude_datacenters:
+                  candidates = [dc for dc in ALL_DATACENTERS if dc not in exclude_datacenters]
+                  if not candidates:
+                      # Exhausted every documented datacenter -- nothing left
+                      # to exclude meaningfully, fall back to the full list
+                      # rather than sending an empty/invalid constraint.
+                      candidates = ALL_DATACENTERS
+                  create_body['dataCenterIds'] = candidates
+                  print(f'Steering away from datacenter(s) {sorted(exclude_datacenters)} '
+                        f'-- restricting to {len(candidates)} remaining documented datacenters.')
               printable = {k: v for k, v in create_body.items() if k != 'env'}
               print(f'Creating pod: {json.dumps(printable)}')
               pod = request('POST', f'{base}/pods', create_body)
@@ -190,19 +215,13 @@ jobs:
               passed = result.returncode == 0 and 'PREFLIGHT_RESULT=PASS' in output.splitlines()
               return passed, output
 
-          def field(d, *keys, default='unknown'):
-              for k in keys:
-                  v = d.get(k)
-                  if v:
-                      return v
-              return default
-
           winner = None
           summary_lines = []
+          excluded_datacenters = set()
           for attempt in range(1, MAX_ATTEMPTS + 1):
               print(f'--- Pod allocation attempt {attempt}/{MAX_ATTEMPTS} ---')
               try:
-                  pod_id = create_pod()
+                  pod_id = create_pod(excluded_datacenters)
               except Exception as exc:
                   print(f'::error::Attempt {attempt}: pod create failed: {exc}')
                   summary_lines.append(f'attempt={attempt} pod_id=none result=CREATE_FAILED error={exc}')
@@ -218,10 +237,18 @@ jobs:
 
               machine = info.get('machine') or {}
               gpu_obj = info.get('gpu') or {}
-              gpu_type = field(gpu_obj, 'displayName', default=None) \
-                  or field(machine.get('gpuType') or {}, 'displayName', default=None) \
-                  or field(machine, 'gpuDisplayName', 'gpuTypeId')
-              machine_id = field(machine, 'id', 'machineId')
+              gpu_type = (
+                  gpu_obj.get('displayName')
+                  or (machine.get('gpuType') or {}).get('displayName')
+                  or machine.get('gpuDisplayName')
+                  or machine.get('gpuTypeId')
+                  or 'unknown'
+              )
+              # FIXED this cycle: machineId is a top-level Pod field per RunPod's
+              # official OpenAPI schema, not nested under machine. dataCenterId
+              # is correctly nested under machine, confirmed against the same schema.
+              machine_id = info.get('machineId') or 'unknown'
+              data_center_id = machine.get('dataCenterId') or 'unknown'
               cost_per_hr = info.get('costPerHr')
               cost_str = f'{cost_per_hr}' if cost_per_hr is not None else 'unavailable'
 
@@ -229,7 +256,7 @@ jobs:
                   print(f'Attempt {attempt}: SSH never came up on pod {pod_id} ({ip}:{port})')
                   summary_lines.append(
                       f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
-                      f'gpu={gpu_type} result=SSH_TIMEOUT'
+                      f'data_center_id={data_center_id} gpu={gpu_type} result=SSH_TIMEOUT'
                   )
                   delete_pod(pod_id)
                   continue
@@ -240,7 +267,7 @@ jobs:
                   print(f'Attempt {attempt}: preflight upload/run failed: {exc}')
                   summary_lines.append(
                       f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
-                      f'gpu={gpu_type} result=PREFLIGHT_ERROR error={exc}'
+                      f'data_center_id={data_center_id} gpu={gpu_type} result=PREFLIGHT_ERROR error={exc}'
                   )
                   delete_pod(pod_id)
                   continue
@@ -256,10 +283,11 @@ jobs:
 
               result_str = 'PASS' if passed else 'FAIL'
               print(f'Attempt {attempt}: pod={pod_id} host_ip={ip} machine_id={machine_id} '
-                    f'gpu={gpu_type} driver={driver_version} preflight={result_str}')
+                    f'data_center_id={data_center_id} gpu={gpu_type} driver={driver_version} preflight={result_str}')
               summary_lines.append(
                   f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
-                  f'gpu={gpu_type} driver={driver_version} cost_per_hr={cost_str} result={result_str}'
+                  f'data_center_id={data_center_id} gpu={gpu_type} driver={driver_version} '
+                  f'cost_per_hr={cost_str} result={result_str}'
               )
 
               if passed:
@@ -267,12 +295,16 @@ jobs:
                       f.write(preflight_output)
                   winner = {
                       'pod_id': pod_id, 'ip': ip, 'port': port, 'gpu_type': gpu_type,
-                      'cost_per_hr': cost_str, 'machine_id': machine_id, 'driver_version': driver_version,
+                      'cost_per_hr': cost_str, 'machine_id': machine_id,
+                      'data_center_id': data_center_id, 'driver_version': driver_version,
                   }
                   break
               else:
                   print(f'Attempt {attempt}: NVDEC preflight FAILED on pod {pod_id} '
-                        f'(driver {driver_version}, machine {machine_id}, host {ip}) -- deleting and retrying.')
+                        f'(driver {driver_version}, machine {machine_id}, datacenter {data_center_id}, '
+                        f'host {ip}) -- deleting and steering next attempt away from this datacenter.')
+                  if data_center_id != 'unknown':
+                      excluded_datacenters.add(data_center_id)
                   delete_pod(pod_id)
 
           with open('pod_selection_summary.txt', 'w') as f:
@@ -291,6 +323,8 @@ jobs:
               output.write(f'port={winner["port"]}\n')
               output.write(f'gpu_type={winner["gpu_type"]}\n')
               output.write(f'cost_per_hr={winner["cost_per_hr"]}\n')
+              output.write(f'machine_id={winner["machine_id"]}\n')
+              output.write(f'data_center_id={winner["data_center_id"]}\n')
               output.write(f'launch_time={launch_time}\n')
           PY
 
@@ -442,6 +476,8 @@ jobs:
           POD_ID: ${{ steps.launch.outputs.pod_id }}
           GPU_TYPE: ${{ steps.launch.outputs.gpu_type }}
           COST_PER_HR: ${{ steps.launch.outputs.cost_per_hr }}
+          MACHINE_ID: ${{ steps.launch.outputs.machine_id }}
+          DATA_CENTER_ID: ${{ steps.launch.outputs.data_center_id }}
           LAUNCH_TIME: ${{ steps.launch.outputs.launch_time }}
           PROCESSING_START: ${{ steps.run_followcam.outputs.processing_start }}
           PROCESSING_END: ${{ steps.run_followcam.outputs.processing_end }}
@@ -466,7 +502,7 @@ jobs:
             fi
           fi
 
-          echo "RunPod job summary: gpu=$GPU_TYPE price_per_hr=$COST_PER_HR pod_id=$POD_ID launch_time=$LAUNCH_TIME processing_start=$PROCESSING_START processing_end=$PROCESSING_END duration=$duration_str approx_cost=$cost_str"
+          echo "RunPod job summary: gpu=$GPU_TYPE price_per_hr=$COST_PER_HR pod_id=$POD_ID machine_id=$MACHINE_ID data_center_id=$DATA_CENTER_ID launch_time=$LAUNCH_TIME processing_start=$PROCESSING_START processing_end=$PROCESSING_END duration=$duration_str approx_cost=$cost_str"
 
           cat > followcam_artifacts/run_metadata.txt <<META
           pod_id=$POD_ID
@@ -474,6 +510,8 @@ jobs:
           port=$PORT
           gpu_type=$GPU_TYPE
           cost_per_hr=$COST_PER_HR
+          machine_id=$MACHINE_ID
+          data_center_id=$DATA_CENTER_ID
           launch_time=$LAUNCH_TIME
           processing_start=$PROCESSING_START
           processing_end=$PROCESSING_END
