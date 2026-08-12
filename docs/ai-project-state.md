@@ -23,7 +23,12 @@
 
 **Dispatch history this session:** first dispatch attempt returned HTTP 400 (workflow file had just been pushed, GitHub hadn't indexed it yet) but apparently queued anyway; a retry produced a second concurrent run. Both hit RunPod `HTTP 500 "There are no instances currently available"` on all 3 pod-create attempts (transient capacity on the same GPU pool the production workflow already uses -- not a script/workflow bug). Zero pods were created on either failed run (`No pod IDs recorded`), so no double-spend occurred. Single clean re-dispatch: run `31607161708`, queued cleanly, one status check confirms it's past pod launch (`in_progress`) -- not polling further, awaiting completion.
 
-**Not yet done:** pull `31607161708`'s `events.jsonl`/`stitch.log`/`run_metadata.txt`, apply the same locked/sustained-lock definitions above, build the A/B table, visual review of `followcam.mp4`, verdict (clear improvement / marginal / no improvement / regression).
+**Dispatch attempts, this session (budget: 3 diagnose/dispatch cycles):**
+1. `31607161708` (superseded by duplicate below) / `31607077409` -- both FAILED at pod-create: RunPod `HTTP 500 "There are no instances currently available"` on all 3 attempts, transient capacity on the standard 4090/A5000/3090/L4 pool. Zero pods created, zero cost.
+2. `31607161708` (clean redispatch) -- FAILED at bootstrap: preflight PASSED clean (host `203.57.40.217`, US-IL-1, RTX 4090, driver `570.195.03`), then SSH connection timed out ~2min into `runpod_bootstrap.sh` (frozen, unrelated to the AB script -- AB script never ran). Matches the already-documented SSH-drop signature from the earlier RunPod NVDEC diagnosis session. Pod terminated cleanly (HTTP 204 confirmed), no orphan, ~2min uptime cost.
+3. `31608010277` -- **DISPATCHED — UNVERIFIED**, in progress, past the bootstrap point where attempt 2 failed. This is dispatch/debug cycle 3 of 3 for this session -- next chat should pick up from here if this also fails.
+
+**Not yet done:** confirm run `31608010277` completes; pull `events.jsonl`/`stitch.log`/`run_metadata.txt`, apply the same locked/sustained-lock definitions above, build the A/B table, visual review of `followcam.mp4`, verdict (clear improvement / marginal / no improvement / regression).
 
 ## RunPod NVDEC pod-retry pipeline — GREEN END-TO-END, first full followcam.mp4 produced (12 Aug 2026, run `31596442940`, commit `3cc8fc8`)
 
