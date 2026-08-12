@@ -187,6 +187,31 @@ if grep -q 'cuInit(0) -> CUresult 0' <<< "$CUDA_PROBE_OUT" && \
   CUDA_INIT_RESULT="PASS"
 fi
 
+# --- 2b. NVDEC root-cause diagnostics (added 2026-08-12, additive only --
+# does not affect any PASS/FAIL criterion). Four consecutive RunPod
+# dispatches on the 4090/A5000/3090/L4 fallback pool all failed NVDEC with
+# CUDA_ERROR_NO_DEVICE while Vulkan/CUDA-init/ORT-CUDA all passed -- the
+# classic signature of libnvcuvid being absent or version-mismatched at the
+# container level, not a dead GPU. These lines make that visible without
+# guessing at another env-var fix blind. ---
+echo "--- NVDEC diagnostics ---"
+echo "NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-<unset>}"
+echo "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-<unset>}"
+NVCUVID_PATHS=$(find /usr/lib /usr/local -iname "libnvcuvid.so*" 2>/dev/null)
+if [ -n "$NVCUVID_PATHS" ]; then
+  echo "libnvcuvid.so found:"
+  echo "$NVCUVID_PATHS" | while read -r p; do ls -la "$p"; done
+else
+  echo "libnvcuvid.so NOT FOUND on this host -- this alone would explain CUDA_ERROR_NO_DEVICE from cuvidGetDecoderCaps regardless of GPU health."
+fi
+FFMPEG_BIN=$(command -v ffmpeg)
+if [ -n "$FFMPEG_BIN" ] && [ -n "$NVCUVID_PATHS" ]; then
+  echo "ldd $FFMPEG_BIN | grep -i cuvid:"
+  ldd "$FFMPEG_BIN" 2>&1 | grep -i cuvid || echo "  (ffmpeg does not directly link libnvcuvid -- expected, it dlopens it at runtime; presence above is what matters)"
+fi
+DRIVER_LIBCUDA=$(find /usr/lib /usr/local -iname "libcuda.so.1" 2>/dev/null | head -1)
+echo "libcuda.so.1: ${DRIVER_LIBCUDA:-NOT FOUND}"
+
 # --- 3. Minimal NVDEC decode smoke test ---
 SYNTH_CLIP=/tmp/preflight_synth.mp4
 ffmpeg -y -loglevel error -f lavfi -i "testsrc2=size=640x360:rate=30:duration=1" \
