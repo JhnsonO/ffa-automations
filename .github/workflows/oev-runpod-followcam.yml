@@ -172,7 +172,7 @@ jobs:
               deadline = time.time() + timeout_s
               info = {}
               while time.time() < deadline:
-                  info = request('GET', f'{base}/pods/{pod_id}')
+                  info = request('GET', f'{base}/pods/{pod_id}?includeMachine=true')
                   public_ip = info.get('publicIp')
                   mappings = info.get('portMappings') or {}
                   mapped_22 = None
