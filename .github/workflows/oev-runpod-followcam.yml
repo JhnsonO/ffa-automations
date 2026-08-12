@@ -366,15 +366,25 @@ jobs:
           retention-days: 14
 
       - name: Upload follow-cam result to OEV Drive Followcam/ folder
-        if: hashFiles('followcam_artifacts/followcam.mp4') != ''
+        id: drive_upload
+        if: always()
         env:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
           LEFT_CLIP: ${{ github.event.inputs.left_clip }}
         run: |
           pip install -q google-auth google-auth-oauthlib google-api-python-client
+
+          if [ ! -s followcam_artifacts/followcam.mp4 ]; then
+            echo 'followcam.mp4 missing/empty -- nothing to upload (remote script did not produce output).'
+            echo 'drive_upload_verified=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
           echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+
+          set +e
           python3 -u - << 'PY'
           import json, sys
           sys.path.insert(0, '.')
@@ -385,62 +395,74 @@ jobs:
 
           OEV_DRIVE_FOLDER_ID = "18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ"
 
-          token_data = json.loads(open('/tmp/youtube_token.json').read())
-          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
-          creds = Credentials(
-              token=None,
-              refresh_token=token_data['refresh_token'],
-              token_uri=token_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
-              client_id=token_data.get('client_id') or creds_data['installed']['client_id'],
-              client_secret=token_data.get('client_secret') or creds_data['installed']['client_secret'],
-          )
-          drive = build('drive', 'v3', credentials=creds)
+          try:
+              token_data = json.loads(open('/tmp/youtube_token.json').read())
+              creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+              creds = Credentials(
+                  token=None,
+                  refresh_token=token_data['refresh_token'],
+                  token_uri=token_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
+                  client_id=token_data.get('client_id') or creds_data['installed']['client_id'],
+                  client_secret=token_data.get('client_secret') or creds_data['installed']['client_secret'],
+              )
+              drive = build('drive', 'v3', credentials=creds)
 
-          res = drive.files().list(
-              q=f"name='Followcam' and '{OEV_DRIVE_FOLDER_ID}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
-              fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True,
-          ).execute()
-          files = res.get('files', [])
-          if files:
-              followcam_id = files[0]['id']
-          else:
-              folder = drive.files().create(
-                  body={'name': 'Followcam', 'mimeType': 'application/vnd.google-apps.folder', 'parents': [OEV_DRIVE_FOLDER_ID]},
-                  fields='id',
+              res = drive.files().list(
+                  q=f"name='Followcam' and '{OEV_DRIVE_FOLDER_ID}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+                  fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True,
               ).execute()
-              followcam_id = folder['id']
+              files = res.get('files', [])
+              if files:
+                  followcam_id = files[0]['id']
+              else:
+                  folder = drive.files().create(
+                      body={'name': 'Followcam', 'mimeType': 'application/vnd.google-apps.folder', 'parents': [OEV_DRIVE_FOLDER_ID]},
+                      fields='id',
+                  ).execute()
+                  followcam_id = folder['id']
 
-          left_clip = os.environ['LEFT_CLIP']
-          out_name = f"followcam_{left_clip}"
-          media = MediaFileUpload('followcam_artifacts/followcam.mp4', mimetype='video/mp4', resumable=True)
-          uploaded = drive.files().create(
-              body={'name': out_name, 'parents': [followcam_id]},
-              media_body=media, fields='id', supportsAllDrives=True,
-          ).execute()
-          print(f"Uploaded followcam.mp4 -> Drive file id {uploaded['id']}")
-
-          events_path = 'followcam_artifacts/events.jsonl'
-          if os.path.exists(events_path) and os.path.getsize(events_path) > 0:
-              events_name = f"events_{left_clip}.jsonl"
-              events_media = MediaFileUpload(events_path, mimetype='application/json', resumable=True)
-              events_uploaded = drive.files().create(
-                  body={'name': events_name, 'parents': [followcam_id]},
-                  media_body=events_media, fields='id', supportsAllDrives=True,
+              left_clip = os.environ['LEFT_CLIP']
+              local_size = os.path.getsize('followcam_artifacts/followcam.mp4')
+              out_name = f"followcam_{left_clip}"
+              media = MediaFileUpload('followcam_artifacts/followcam.mp4', mimetype='video/mp4', resumable=True)
+              uploaded = drive.files().create(
+                  body={'name': out_name, 'parents': [followcam_id]},
+                  media_body=media, fields='id', supportsAllDrives=True,
               ).execute()
-              print(f"Uploaded events.jsonl -> Drive file id {events_uploaded['id']}")
+              file_id = uploaded['id']
+              print(f"Uploaded followcam.mp4 -> Drive file id {file_id}")
+
+              # Verify: fetch the uploaded file's metadata back and compare size.
+              verify = drive.files().get(
+                  fileId=file_id, fields='id,size', supportsAllDrives=True,
+              ).execute()
+              remote_size = int(verify.get('size', -1))
+              if remote_size != local_size:
+                  raise RuntimeError(
+                      f"Upload verification failed: local size {local_size} != Drive size {remote_size} (file id {file_id})"
+                  )
+              print(f"Verified: Drive file {file_id} size {remote_size} matches local.")
+
+              events_path = 'followcam_artifacts/events.jsonl'
+              if os.path.exists(events_path) and os.path.getsize(events_path) > 0:
+                  events_name = f"events_{left_clip}.jsonl"
+                  events_media = MediaFileUpload(events_path, mimetype='application/json', resumable=True)
+                  events_uploaded = drive.files().create(
+                      body={'name': events_name, 'parents': [followcam_id]},
+                      media_body=events_media, fields='id', supportsAllDrives=True,
+                  ).execute()
+                  print(f"Uploaded events.jsonl -> Drive file id {events_uploaded['id']}")
+
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as gh_out:
+                  gh_out.write('drive_upload_verified=true\n')
+                  gh_out.write(f'drive_file_id={file_id}\n')
+          except Exception as exc:
+              print(f"::error::Drive upload/verification failed: {exc}", file=sys.stderr)
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as gh_out:
+                  gh_out.write('drive_upload_verified=false\n')
+              sys.exit(0)  # do not fail this step directly -- acceptance step reports it
           PY
-
-      - name: Evaluate acceptance
-        if: always()
-        env:
-          REMOTE_EXIT: ${{ steps.run_followcam.outputs.remote_exit }}
-        run: |
-          echo "Remote script exit code: ${REMOTE_EXIT:-unknown}"
-          if [ "${REMOTE_EXIT:-1}" != '0' ]; then
-            echo "::error::RunPod follow-cam test did NOT pass (remote exit ${REMOTE_EXIT:-unknown}). See artifact logs."
-            exit 1
-          fi
-          echo 'Follow-cam test PASSED acceptance (AI tracking confirmed; --no-zero-copy interim setting, see runpod_followcam_remote.sh header).'
+          set -e
 
       - name: Terminate RunPod pod
         if: always()
@@ -489,3 +511,23 @@ jobs:
           print('::error::Check the RunPod console manually; workflow is failing cleanup rather than hiding a potentially billable pod.')
           raise SystemExit(1)
           PY
+
+      - name: Evaluate acceptance
+        if: always()
+        env:
+          REMOTE_EXIT: ${{ steps.run_followcam.outputs.remote_exit }}
+          DRIVE_UPLOAD_VERIFIED: ${{ steps.drive_upload.outputs.drive_upload_verified }}
+          DRIVE_FILE_ID: ${{ steps.drive_upload.outputs.drive_file_id }}
+          POD_ID: ${{ steps.launch.outputs.pod_id }}
+        run: |
+          echo "Remote script exit code: ${REMOTE_EXIT:-unknown}"
+          echo "Drive upload verified: ${DRIVE_UPLOAD_VERIFIED:-unknown}"
+          if [ "${REMOTE_EXIT:-1}" != '0' ]; then
+            echo "::error::RunPod follow-cam test did NOT pass (remote exit ${REMOTE_EXIT:-unknown}). See artifact logs."
+            exit 1
+          fi
+          if [ "${DRIVE_UPLOAD_VERIFIED:-false}" != 'true' ]; then
+            echo "::error::Drive upload was not verified for pod ${POD_ID:-unknown} (already terminated). Recovery: the run's GitHub Actions artifact 'oev-runpod-followcam-${{ github.run_id }}' still holds followcam.mp4/events.jsonl locally -- download it and upload to Drive manually, or re-dispatch this workflow."
+            exit 1
+          fi
+          echo "Follow-cam test PASSED acceptance (AI tracking confirmed; Drive upload verified as file ${DRIVE_FILE_ID:-unknown}; --no-zero-copy interim setting, see runpod_followcam_remote.sh header)."
