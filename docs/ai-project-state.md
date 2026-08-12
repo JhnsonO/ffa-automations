@@ -1,3 +1,13 @@
+## RunPod NVDEC — NVIDIA_DRIVER_CAPABILITIES isolation REJECTED without dispatch (12 Aug 2026, fresh chat, cycle not spent)
+
+**Hypothesis considered:** unset `NVIDIA_DRIVER_CAPABILITIES` (missing `video`) causes the per-host NVDEC failures, fix = explicitly request `compute,utility,video` on pod create.
+
+**Rejected on existing evidence, no new dispatch needed:** all 3 recent `fix/runpod-nvdec-diagnosis` runs (`31587433143` PASS, `31587964973` PASS, `31590998085` FAIL) ran identical code with `NVIDIA_DRIVER_CAPABILITIES` unset in every case (confirmed printed by `runpod_gpu_preflight.sh`, unchanged since added). Unset passed clean on 2/3 hosts (`libnvcuvid.so` present, NVDEC working) and failed only on the host running driver `570.158.01`. Since the capability declaration was constant across both PASS and FAIL runs, it cannot explain a failure that appears on only one host/driver — setting it explicitly would very likely be an inert env-var change, not a real fix. Consistent with RunPod's own docs, which describe them handling GPU passthrough themselves rather than via the standard `nvidia-container-toolkit` env-var gate this variable normally controls.
+
+**Do not re-open this hypothesis** without new evidence that ties capability declaration (not host/driver) to pass/fail outcome.
+
+**Live lead, unchanged:** per-host/per-driver NVDEC failure (see entry below) — `PREFLIGHT_DRIVER_VERSION` logging + watching for a `570.158.01` pattern, or pod-recreate-on-NVDEC-fail mitigation, are the next real candidates.
+
 ## RunPod NVDEC — CORRECTION: prior "root cause" was wrong, real pattern is per-host, not request-shape (12 Aug 2026, run `31590998085`)
 
 **The two-entries-ago "root cause confirmed" conclusion (gpuTypeIds-multi + gpuTypePriority=custom breaks NVDEC) is FALSIFIED by this run.** Third dispatch used the exact same single-type config that passed clean twice (`gpuTypeIds: ['NVIDIA GeForce RTX 4090']`, no `gpuTypePriority`) and got `PREFLIGHT_NVDEC=FAIL` / `CUDA_ERROR_NO_DEVICE` — the identical signature from the original 4 multi-type failures. Same request shape, different outcome. The request-shape theory was built on only 2 data points and was wrong; flagging this explicitly so a future session doesn't trust that entry's conclusion.
