@@ -193,24 +193,31 @@ else
   echo "Failed to generate synthetic test clip -- cannot run NVDEC test"
 fi
 
-# --- 4. Real ONNX Runtime CUDA EP smoke test. Uses the base image's own
-# Python (this base already ships torch/CUDA-aware Python, unlike the old
-# Kasm desktop's Python 3.8 which capped onnxruntime-gpu at a CUDA-11-era
-# build) -- resolve the correct onnxruntime-gpu pin from the actual Python
-# version present rather than assuming. ---
-PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
-echo "Python version for ORT check: $PY_VER"
-HOST_CUDA_MAX=$(echo "$SMI_OUT" | grep -oE '[0-9]+\.[0-9]+' | tail -1)
-if [ -z "$HOST_CUDA_MAX" ]; then
-  HOST_CUDA_MAX=$(nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1)
-fi
-HOST_CUDA_MAJOR="${HOST_CUDA_MAX%%.*}"
-if [ -n "$HOST_CUDA_MAJOR" ] && [ "$HOST_CUDA_MAJOR" -ge 13 ] 2>/dev/null; then
-  ORT_GPU_PIN="onnxruntime-gpu"
-else
-  ORT_GPU_PIN="onnxruntime-gpu==1.20.2"
-fi
-echo "ORT package pin selected: $ORT_GPU_PIN (host CUDA major: ${HOST_CUDA_MAJOR:-unknown})"
+# --- 4. Real ONNX Runtime CUDA EP smoke test.
+#
+# This RunPod environment's contract is fixed at CUDA 12 / ORT_CUDA_VERSION=12
+# (see runpod_bootstrap.sh and the environment contract check above -- this
+# script only runs at all on the validated Ubuntu 24.04 base). The pin
+# below is therefore DETERMINISTIC, not inferred from driver text.
+#
+# Bug fixed here (2026-08-12 correction): the previous version of this
+# script tried to extract a "host CUDA version" by regexing digits out of
+# $SMI_OUT -- but $SMI_OUT only ever contains `name,driver_version`
+# (see the nvidia-smi query above: --query-gpu=name,driver_version), it
+# has NEVER contained a CUDA version field. That regex was silently
+# parsing the DRIVER number instead (e.g. a driver "580.159.04" could get
+# read as CUDA major "580", wrongly forcing the >=13 unpinned-package
+# branch). Never infer ORT's required CUDA build from driver version text.
+ORT_GPU_PIN="onnxruntime-gpu==1.20.2"
+echo "ORT package pin: $ORT_GPU_PIN (fixed -- this preflight's environment contract is CUDA 12 / ORT_CUDA_VERSION=12, not inferred from driver text)"
+
+# Diagnostics only, never used for the pin decision above: parse the
+# actual "CUDA Version:" field from nvidia-smi's own header output (a
+# different field entirely from driver_version -- this is the max CUDA
+# API the driver advertises support for, which nvidia-smi does print but
+# --query-gpu=driver_version does not expose).
+HOST_CUDA_API_DIAG=$(nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: [0-9]+\.[0-9]+' | head -1)
+echo "Diagnostic only (not used for pin decision): ${HOST_CUDA_API_DIAG:-not found in nvidia-smi output}"
 pip3 install -q --no-input onnx "$ORT_GPU_PIN" >/tmp/preflight_ort_install.log 2>&1
 ORT_OUT=$(python3 - <<'PYEOF' 2>&1
 import sys
