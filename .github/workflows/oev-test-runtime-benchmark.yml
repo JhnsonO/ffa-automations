@@ -1,0 +1,578 @@
+name: OEV Test Runtime v1 — Isolated RunPod Benchmark (image-backed)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: 'Full GHCR image ref to benchmark (immutable tag)'
+        required: false
+        default: 'ghcr.io/jhnsono/oev-test-runtime:v1-reco-53fe10f5'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark-runtime-v1:
+    name: Benchmark OEV Test Runtime v1 (RunPod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Record job start
+        id: t0
+        run: echo "job_start=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SSH key pair
+        run: |
+          pip install -q cryptography
+          python3 -u - << 'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+
+          key = Ed25519PrivateKey.generate()
+          priv = key.private_bytes(
+              serialization.Encoding.PEM,
+              serialization.PrivateFormat.OpenSSH,
+              serialization.NoEncryption(),
+          )
+          pub = key.public_key().public_bytes(
+              serialization.Encoding.OpenSSH,
+              serialization.PublicFormat.OpenSSH,
+          )
+          with open('/tmp/runpod_key', 'wb') as f:
+              f.write(priv)
+          with open('/tmp/runpod_key.pub', 'wb') as f:
+              f.write(pub + b' ffa-oev-test-runtime-benchmark\n')
+          os.chmod('/tmp/runpod_key', 0o600)
+          PY
+
+      # Launch step: pod-allocation loop and its NVDEC-preflight retry are
+      # copied verbatim (mechanics unchanged) from
+      # .github/workflows/oev-runpod-followcam.yml's "Launch RunPod GPU
+      # pod" step, with exactly two changes: (1) imageName points at the
+      # OEV Test Runtime v1 image instead of stock runpod/pytorch,
+      # (2) gpuTypeIds is a single RTX 4090 with no gpuTypePriority (the
+      # multi-id + gpuTypePriority:'custom' combination is a confirmed
+      # NVDEC-breaking request shape on RunPod's allocator -- do not
+      # restore it here).
+      - name: Launch RunPod GPU pod (NVDEC preflight retry, max 3 attempts)
+        id: launch
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          IMAGE_REF: ${{ inputs.image_ref }}
+        run: |
+          python3 -u - << 'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          api_key = os.environ['RUNPOD_API_KEY']
+          image_ref = os.environ['IMAGE_REF']
+          base = 'https://rest.runpod.io/v1'
+          headers = {
+              'Authorization': f'Bearer {api_key}',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+          }
+          pub_key = open('/tmp/runpod_key.pub').read().strip()
+
+          MAX_ATTEMPTS = 3
+          POD_IDS_FILE = '/tmp/runpod_all_pod_ids.txt'
+          open(POD_IDS_FILE, 'w').close()
+
+          def request(method, url, data=None, timeout=30):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as response:
+                      raw = response.read()
+                      return json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as exc:
+                  err_body = exc.read().decode(errors='replace')[:500]
+                  raise RuntimeError(f'HTTP {exc.code} from {method} {url}: {err_body}') from exc
+
+          def delete_pod(pod_id):
+              try:
+                  request('DELETE', f'{base}/pods/{pod_id}', timeout=20)
+                  print(f'Deleted pod {pod_id} (attempt cleanup).')
+              except Exception as exc:
+                  print(f'Delete warning for pod {pod_id}: {exc} (final cleanup step will retry).')
+
+          def create_pod():
+              create_body = {
+                  'name': 'oev-test-runtime-benchmark',
+                  'imageName': image_ref,
+                  'gpuTypeIds': ['NVIDIA GeForce RTX 4090'],
+                  'gpuCount': 1,
+                  'cloudType': 'SECURE',
+                  'containerDiskInGb': 40,
+                  'ports': ['22/tcp'],
+                  'supportPublicIp': True,
+                  'allowedCudaVersions': ['12.8'],
+                  'env': {
+                      'PUBLIC_KEY': pub_key,
+                      'SSH_PUBLIC_KEY': pub_key,
+                  },
+              }
+              printable = {k: v for k, v in create_body.items() if k != 'env'}
+              print(f'Creating pod: {json.dumps(printable)}')
+              pod = request('POST', f'{base}/pods', create_body)
+              pod_id = pod.get('id')
+              if not pod_id:
+                  raise RuntimeError(f'pod create response had no id: {pod}')
+              with open(POD_IDS_FILE, 'a') as f:
+                  f.write(pod_id + '\n')
+              print(f'Pod created: id={pod_id}')
+              return pod_id
+
+          def wait_for_network(pod_id, timeout_s=300):
+              deadline = time.time() + timeout_s
+              info = {}
+              while time.time() < deadline:
+                  info = request('GET', f'{base}/pods/{pod_id}?includeMachine=true')
+                  public_ip = info.get('publicIp')
+                  mappings = info.get('portMappings') or {}
+                  mapped_22 = None
+                  if isinstance(mappings, dict):
+                      mapped_22 = mappings.get('22') or mappings.get('22/tcp')
+                  if public_ip and mapped_22:
+                      return public_ip, mapped_22, info
+                  time.sleep(10)
+              raise RuntimeError(f'pod {pod_id} never reported a public IP + SSH mapping within {timeout_s}s')
+
+          def wait_for_ssh(ip, port, attempts=18, delay_s=5):
+              for i in range(1, attempts + 1):
+                  result = subprocess.run(
+                      ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
+                       '-i', '/tmp/runpod_key', '-p', str(port), f'root@{ip}', 'echo OK'],
+                      capture_output=True, text=True, timeout=15,
+                  )
+                  if 'OK' in result.stdout:
+                      return True
+                  print(f'SSH not ready ({i}/{attempts})')
+                  time.sleep(delay_s)
+              return False
+
+          def run_preflight(ip, port):
+              ssh_opts = ['-i', '/tmp/runpod_key', '-p', str(port), '-o', 'StrictHostKeyChecking=no',
+                          '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=30',
+                          '-o', 'ServerAliveCountMax=10', '-o', 'TCPKeepAlive=yes']
+              scp_opts = ['-i', '/tmp/runpod_key', '-P', str(port), '-o', 'StrictHostKeyChecking=no',
+                          '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=10',
+                          '-o', 'TCPKeepAlive=yes']
+              subprocess.run(['scp'] + scp_opts + ['runpod_gpu_preflight.sh', f'root@{ip}:/tmp/runpod_gpu_preflight.sh'],
+                              check=True, timeout=60)
+              subprocess.run(['ssh'] + ssh_opts + [f'root@{ip}', 'chmod +x /tmp/runpod_gpu_preflight.sh'],
+                              check=True, timeout=30)
+              result = subprocess.run(
+                  ['ssh'] + ssh_opts + [f'root@{ip}', 'stdbuf -oL -eL /tmp/runpod_gpu_preflight.sh'],
+                  capture_output=True, text=True, timeout=180,
+              )
+              output = result.stdout + result.stderr
+              passed = result.returncode == 0 and 'PREFLIGHT_RESULT=PASS' in output.splitlines()
+              return passed, output
+
+          winner = None
+          summary_lines = []
+          for attempt in range(1, MAX_ATTEMPTS + 1):
+              print(f'--- Pod allocation attempt {attempt}/{MAX_ATTEMPTS} ---')
+              pod_requested_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+              try:
+                  pod_id = create_pod()
+              except Exception as exc:
+                  print(f'::error::Attempt {attempt}: pod create failed: {exc}')
+                  summary_lines.append(f'attempt={attempt} pod_id=none result=CREATE_FAILED error={exc}')
+                  continue
+
+              try:
+                  ip, port, info = wait_for_network(pod_id)
+              except Exception as exc:
+                  print(f'Attempt {attempt}: {exc}')
+                  summary_lines.append(f'attempt={attempt} pod_id={pod_id} result=NETWORK_TIMEOUT')
+                  delete_pod(pod_id)
+                  continue
+
+              machine = info.get('machine') or {}
+              gpu_obj = info.get('gpu') or {}
+              gpu_type = (
+                  gpu_obj.get('displayName')
+                  or (machine.get('gpuType') or {}).get('displayName')
+                  or machine.get('gpuDisplayName')
+                  or machine.get('gpuTypeId')
+                  or 'unknown'
+              )
+              machine_id = info.get('machineId') or 'unknown'
+              data_center_id = machine.get('dataCenterId') or 'unknown'
+              cost_per_hr = info.get('costPerHr')
+              cost_str = f'{cost_per_hr}' if cost_per_hr is not None else 'unavailable'
+              network_ready_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+              if not wait_for_ssh(ip, port):
+                  print(f'Attempt {attempt}: SSH never came up on pod {pod_id} ({ip}:{port})')
+                  summary_lines.append(
+                      f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                      f'data_center_id={data_center_id} gpu={gpu_type} result=SSH_TIMEOUT'
+                  )
+                  delete_pod(pod_id)
+                  continue
+
+              try:
+                  passed, preflight_output = run_preflight(ip, port)
+              except Exception as exc:
+                  print(f'Attempt {attempt}: preflight upload/run failed: {exc}')
+                  summary_lines.append(
+                      f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                      f'data_center_id={data_center_id} gpu={gpu_type} result=PREFLIGHT_ERROR error={exc}'
+                  )
+                  delete_pod(pod_id)
+                  continue
+
+              with open(f'preflight_attempt_{attempt}.txt', 'w') as f:
+                  f.write(preflight_output)
+
+              result_str = 'PASS' if passed else 'FAIL'
+              summary_lines.append(
+                  f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                  f'data_center_id={data_center_id} gpu={gpu_type} cost_per_hr={cost_str} result={result_str}'
+              )
+
+              if passed:
+                  with open('preflight_output.txt', 'w') as f:
+                      f.write(preflight_output)
+                  ssh_ready_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                  winner = {
+                      'pod_id': pod_id, 'ip': ip, 'port': port, 'gpu_type': gpu_type,
+                      'cost_per_hr': cost_str, 'machine_id': machine_id,
+                      'data_center_id': data_center_id,
+                      'pod_requested_at': pod_requested_at,
+                      'network_ready_at': network_ready_at,
+                      'ssh_ready_at': ssh_ready_at,
+                  }
+                  break
+              else:
+                  print(f'Attempt {attempt}: NVDEC preflight FAILED on pod {pod_id} (host {ip}) -- deleting.')
+                  delete_pod(pod_id)
+
+          with open('pod_selection_summary.txt', 'w') as f:
+              f.write('\n'.join(summary_lines) + '\n')
+
+          if winner is None:
+              print(f'::error::All {MAX_ATTEMPTS} pod allocation attempts failed. See pod_selection_summary.txt.')
+              sys.exit(1)
+
+          launch_time = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+          print(f'Selected healthy pod: {winner}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'pod_id={winner["pod_id"]}\n')
+              output.write(f'ip={winner["ip"]}\n')
+              output.write(f'port={winner["port"]}\n')
+              output.write(f'gpu_type={winner["gpu_type"]}\n')
+              output.write(f'cost_per_hr={winner["cost_per_hr"]}\n')
+              output.write(f'launch_time={launch_time}\n')
+              output.write(f'pod_requested_at={winner["pod_requested_at"]}\n')
+              output.write(f'network_ready_at={winner["network_ready_at"]}\n')
+              output.write(f'ssh_ready_at={winner["ssh_ready_at"]}\n')
+          PY
+
+      - name: Image acceptance checks (manifest, models, reco version -- no build/export)
+        id: image_check
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          echo "image_check_start=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" >> "$GITHUB_OUTPUT"
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          $SSH "nvidia-smi -L"
+          $SSH "cat /opt/oev-runtime/manifest.json"
+          $SSH "cd /opt/oev-runtime/models && sha256sum -c models.sha256"
+          $SSH "/opt/oev-runtime/bin/reco --version"
+          $SSH "python3 -c 'import onnxruntime; print(onnxruntime.get_available_providers())'"
+          echo "image_check_end=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve benchmark pack file IDs (OEV Drive Benchmarks/oev-test-runtime-v1/)
+        id: resolve
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -u - << 'PY'
+          import json
+          import urllib.parse
+          import urllib.request as req
+
+          OEV_DRIVE_FOLDER_ID = '18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ'
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          payload = json.dumps({
+              'client_id': token_data.get('client_id') or creds_data['installed']['client_id'],
+              'client_secret': token_data.get('client_secret') or creds_data['installed']['client_secret'],
+              'refresh_token': token_data['refresh_token'],
+              'grant_type': 'refresh_token',
+          }).encode()
+          response = req.urlopen(req.Request(
+              'https://oauth2.googleapis.com/token', data=payload,
+              headers={'Content-Type': 'application/json'}, method='POST',
+          ))
+          token = json.loads(response.read())
+          access_token = token['access_token']
+          open('/tmp/drive_token.txt', 'w').write(access_token)
+
+          def find_id(name, parent):
+              q = f"name='{name}' and '{parent}' in parents and trashed=false"
+              url = 'https://www.googleapis.com/drive/v3/files?' + urllib.parse.urlencode({
+                  'q': q, 'fields': 'files(id,name)',
+                  'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true',
+              })
+              r = req.urlopen(req.Request(url, headers={'Authorization': f'Bearer {access_token}'}))
+              files = json.loads(r.read()).get('files', [])
+              if not files:
+                  raise RuntimeError(f'{name} not found under parent {parent}')
+              return files[0]['id']
+
+          benchmarks_id = find_id('Benchmarks', OEV_DRIVE_FOLDER_ID)
+          pack_id = find_id('oev-test-runtime-v1', benchmarks_id)
+          left_id = find_id('left_2274_19s.mp4', pack_id)
+          right_id = find_id('right_2274_19s.mp4', pack_id)
+          import os
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'left_id={left_id}\nright_id={right_id}\n')
+          PY
+
+      - name: Download benchmark pack to pod
+        id: download
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          LEFT_ID: ${{ steps.resolve.outputs.left_id }}
+          RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
+        run: |
+          echo "download_start=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" >> "$GITHUB_OUTPUT"
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          $SSH "mkdir -p /tmp/oev_run"
+          $SSH "set -o pipefail; aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=left.mp4 'https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media' 2>&1 | tail -5"
+          $SSH "set -o pipefail; aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=right.mp4 'https://www.googleapis.com/drive/v3/files/$RIGHT_ID?alt=media' 2>&1 | tail -5"
+          $SSH "test -s /tmp/oev_run/left.mp4 && test -s /tmp/oev_run/right.mp4 && ls -lh /tmp/oev_run/left.mp4 /tmp/oev_run/right.mp4"
+          echo "download_end=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload + run benchmark script
+        id: run_benchmark
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP oev_test_runtime_benchmark_remote.sh root@$IP:/tmp/oev_run/
+          $SSH "chmod +x /tmp/oev_run/oev_test_runtime_benchmark_remote.sh"
+
+          processing_start=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+          echo "processing_start=$processing_start" >> "$GITHUB_OUTPUT"
+          remote_rc=0
+          $SSH "unset DISPLAY; stdbuf -oL -eL /tmp/oev_run/oev_test_runtime_benchmark_remote.sh" || remote_rc=$?
+          processing_end=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+          echo "processing_end=$processing_end" >> "$GITHUB_OUTPUT"
+          echo "remote_exit=$remote_rc" >> "$GITHUB_OUTPUT"
+          echo "Remote benchmark script exit: $remote_rc"
+
+      - name: Pull back logs + outputs + timing
+        if: always()
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          mkdir -p benchmark_artifacts
+          cp preflight_output.txt pod_selection_summary.txt preflight_attempt_*.txt benchmark_artifacts/ 2>/dev/null || true
+          if [ -n "$IP" ] && [ -n "$PORT" ]; then
+            SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+            for file in timing.log calibrate.log stitch.log acceptance.log match.json events.jsonl followcam.mp4; do
+              $SCP "root@$IP:/tmp/oev_run/$file" benchmark_artifacts/ || echo "$file missing"
+            done
+          fi
+
+      - name: Build timing.json breakdown
+        if: always()
+        env:
+          JOB_START: ${{ steps.t0.outputs.job_start }}
+          POD_REQUESTED_AT: ${{ steps.launch.outputs.pod_requested_at }}
+          NETWORK_READY_AT: ${{ steps.launch.outputs.network_ready_at }}
+          SSH_READY_AT: ${{ steps.launch.outputs.ssh_ready_at }}
+          IMAGE_CHECK_START: ${{ steps.image_check.outputs.image_check_start }}
+          IMAGE_CHECK_END: ${{ steps.image_check.outputs.image_check_end }}
+          DOWNLOAD_START: ${{ steps.download.outputs.download_start }}
+          DOWNLOAD_END: ${{ steps.download.outputs.download_end }}
+          PROCESSING_START: ${{ steps.run_benchmark.outputs.processing_start }}
+          PROCESSING_END: ${{ steps.run_benchmark.outputs.processing_end }}
+          GPU_TYPE: ${{ steps.launch.outputs.gpu_type }}
+          COST_PER_HR: ${{ steps.launch.outputs.cost_per_hr }}
+        run: |
+          python3 - << 'PY'
+          import json, os
+          from datetime import datetime
+
+          def parse(s):
+              if not s:
+                  return None
+              for fmt in ('%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ'):
+                  try:
+                      return datetime.strptime(s, fmt)
+                  except ValueError:
+                      continue
+              return None
+
+          def delta(a, b):
+              ta, tb = parse(a), parse(b)
+              if ta is None or tb is None:
+                  return None
+              return (tb - ta).total_seconds()
+
+          env = os.environ
+          breakdown = {
+              'job_start_to_pod_requested_s': delta(env.get('JOB_START'), env.get('POD_REQUESTED_AT')),
+              'pod_requested_to_network_ready_s': delta(env.get('POD_REQUESTED_AT'), env.get('NETWORK_READY_AT')),
+              'network_ready_to_ssh_preflight_pass_s': delta(env.get('NETWORK_READY_AT'), env.get('SSH_READY_AT')),
+              'image_acceptance_check_s': delta(env.get('IMAGE_CHECK_START'), env.get('IMAGE_CHECK_END')),
+              'benchmark_pack_download_s': delta(env.get('DOWNLOAD_START'), env.get('DOWNLOAD_END')),
+              'render_total_wrapper_s': delta(env.get('PROCESSING_START'), env.get('PROCESSING_END')),
+              'model_export_s': 0,
+              'reco_build_s': 0,
+              'gpu_type': env.get('GPU_TYPE'),
+              'cost_per_hr': env.get('COST_PER_HR'),
+          }
+
+          # Fine-grained calibrate/render split from the remote script's own
+          # timing.log, if it was pulled back successfully.
+          try:
+              lines = open('benchmark_artifacts/timing.log').read().splitlines()
+              marks = {}
+              for line in lines:
+                  if '=' in line:
+                      k, v = line.split('=', 1)
+                      marks[k.strip()] = v.strip()
+              breakdown['env_sanity_s'] = delta(marks.get('timing_env_sanity_start'), marks.get('timing_env_sanity_end'))
+              breakdown['calibrate_s'] = delta(marks.get('timing_calibrate_start'), marks.get('timing_calibrate_end'))
+              breakdown['render_s'] = delta(marks.get('timing_render_start'), marks.get('timing_render_end'))
+          except FileNotFoundError:
+              breakdown['note'] = 'remote timing.log not retrieved -- see benchmark_artifacts for whatever was pulled back'
+
+          if breakdown.get('job_start_to_pod_requested_s') is not None and breakdown.get('render_total_wrapper_s') is not None:
+              parts = [v for v in [
+                  breakdown.get('job_start_to_pod_requested_s'),
+                  breakdown.get('pod_requested_to_network_ready_s'),
+                  breakdown.get('network_ready_to_ssh_preflight_pass_s'),
+                  breakdown.get('image_acceptance_check_s'),
+                  breakdown.get('benchmark_pack_download_s'),
+                  breakdown.get('render_total_wrapper_s'),
+              ] if v is not None]
+              breakdown['total_wall_clock_s'] = sum(parts)
+
+          os.makedirs('benchmark_artifacts', exist_ok=True)
+          with open('benchmark_artifacts/timing.json', 'w') as f:
+              json.dump(breakdown, f, indent=2)
+          print(json.dumps(breakdown, indent=2))
+          PY
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-test-runtime-benchmark-${{ github.run_id }}
+          path: benchmark_artifacts/
+          retention-days: 30
+
+      # Terminate step: copied verbatim (mechanics unchanged) from
+      # .github/workflows/oev-runpod-followcam.yml's "Terminate RunPod
+      # pod(s)" step. No changes.
+      - name: Terminate RunPod pod(s)
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          POD_ID: ${{ steps.launch.outputs.pod_id }}
+        run: |
+          python3 -u - << 'PY'
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          pod_ids = []
+          try:
+              with open('/tmp/runpod_all_pod_ids.txt') as f:
+                  pod_ids = [line.strip() for line in f if line.strip()]
+          except FileNotFoundError:
+              pass
+
+          single = os.environ.get('POD_ID', '').strip()
+          if single and single not in pod_ids:
+              pod_ids.append(single)
+
+          pod_ids = list(dict.fromkeys(pod_ids))
+
+          if not pod_ids:
+              print('No pod IDs recorded -- nothing to terminate.')
+              raise SystemExit(0)
+
+          headers = {'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          failures = []
+
+          for pod_id in pod_ids:
+              url = f'https://rest.runpod.io/v1/pods/{pod_id}'
+              last_error = None
+              confirmed = False
+              for attempt in range(1, 4):
+                  req = urllib.request.Request(url, method='DELETE', headers=headers)
+                  try:
+                      with urllib.request.urlopen(req, timeout=20) as response:
+                          status = response.status
+                          if status in (200, 202, 204):
+                              print(f'Pod {pod_id} termination confirmed (HTTP {status}) on attempt {attempt}.')
+                              confirmed = True
+                              break
+                          last_error = f'unexpected HTTP {status}'
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          print(f'Pod {pod_id} already absent (HTTP 404) -- cleanup confirmed.')
+                          confirmed = True
+                          break
+                      body = exc.read().decode(errors='replace')[:300]
+                      last_error = f'HTTP {exc.code}: {body}'
+                  except Exception as exc:
+                      last_error = repr(exc)
+
+                  print(f'Pod {pod_id}: DELETE attempt {attempt}/3 failed: {last_error}')
+                  if attempt < 3:
+                      time.sleep(5)
+
+              if not confirmed:
+                  failures.append((pod_id, last_error))
+
+          if failures:
+              for pod_id, last_error in failures:
+                  print(f'::error::Pod {pod_id} termination NOT confirmed after 3 attempts: {last_error}')
+              raise SystemExit(1)
+
+          print(f'All {len(pod_ids)} pod(s) created this run confirmed terminated.')
+          PY
+
+      - name: Evaluate acceptance
+        if: always()
+        env:
+          REMOTE_EXIT: ${{ steps.run_benchmark.outputs.remote_exit }}
+        run: |
+          echo "Remote script exit code: ${REMOTE_EXIT:-unknown}"
+          if [ "${REMOTE_EXIT:-1}" != '0' ]; then
+            echo "::error::OEV Test Runtime v1 benchmark did NOT pass (remote exit ${REMOTE_EXIT:-unknown}). See artifact logs."
+            exit 1
+          fi
+          echo "OEV Test Runtime v1 benchmark PASSED acceptance (image-backed, CPU-detector, YOLO26m@1920)."
