@@ -1,3 +1,22 @@
+## RunPod NVDEC — CORRECTION: prior "root cause" was wrong, real pattern is per-host, not request-shape (12 Aug 2026, run `31590998085`)
+
+**The two-entries-ago "root cause confirmed" conclusion (gpuTypeIds-multi + gpuTypePriority=custom breaks NVDEC) is FALSIFIED by this run.** Third dispatch used the exact same single-type config that passed clean twice (`gpuTypeIds: ['NVIDIA GeForce RTX 4090']`, no `gpuTypePriority`) and got `PREFLIGHT_NVDEC=FAIL` / `CUDA_ERROR_NO_DEVICE` — the identical signature from the original 4 multi-type failures. Same request shape, different outcome. The request-shape theory was built on only 2 data points and was wrong; flagging this explicitly so a future session doesn't trust that entry's conclusion.
+
+**Actual pattern across all 3 `fix/runpod-nvdec-diagnosis` dispatches, by host:**
+- Run `31587433143`: host `103.196.86.137`, driver `570.195.03` → NVDEC PASS
+- Run `31587964973`: host `103.196.86.137` (same host again), driver `570.195.03` → NVDEC PASS (SSH dropped later at bootstrap, unrelated)
+- Run `31590998085`: host `47.47.180.35` (different), driver `570.158.01` (different point release) → NVDEC FAIL, `libnvcuvid.so.570.158.01` present and correctly matched to the driver (not a naming/version-mismatch at the file level) -- yet `cuvidGetDecoderCaps` still returns `CUDA_ERROR_NO_DEVICE`.
+
+**Working hypothesis (not yet confirmed):** certain RunPod secure-cloud 4090 hosts -- specifically ones running driver `570.158.01` or similar -- have NVDEC genuinely broken at the host/driver level, independent of container config. This is close to the very first hypothesis from earlier today, now with real per-host evidence instead of price-based inference (the price-correlation theory from the original session was also wrong -- $0.74/hr showed up on both a passing and failing host, it's just the standard secure-cloud 4090 rate, not a marker of a bad pool).
+
+**Not yet done / next candidate steps (untried):**
+1. Log `PREFLIGHT_DRIVER_VERSION` as a first-class signal going forward -- already printed, just needs to be watched. If a pattern emerges (all `570.158.01`-driver hosts fail, all `570.195.03` hosts pass), that's a concrete, actionable driver-version block-list.
+2. RunPod's pod-create API may support excluding specific machine IDs or requesting a minimum driver version -- not yet researched.
+3. Simplest short-term mitigation: on `PREFLIGHT_NVDEC=FAIL`, terminate and retry the pod create once or twice within the same workflow run (cheap -- preflight fails fast, before the expensive bootstrap/build step) rather than failing the whole run and requiring a manual re-dispatch.
+4. The SSH-drop issue from the previous entry (same-host, run `31587433143`/`31587964973`) is now a red herring for "systemic" -- it only repeated because both those runs happened to land on the same host by chance, not because of a workflow bug. Downgrade its priority; may not be a real recurring issue at all, watch for it rather than actively fixing.
+
+**Debug budget exhausted this session (3 cycles: 2 confirms + this falsification). Handing off.**
+
 ## RunPod SSH-drop confirmed reproducible on same host (12 Aug 2026, run `31587964973`)
 
 **NVDEC fix confirmed 2/2:** second dispatch on `fix/runpod-nvdec-diagnosis` (single-type `['NVIDIA GeForce RTX 4090']`, no `gpuTypePriority`) again passed `PREFLIGHT_RESULT=PASS` clean. The root-cause diagnosis from the previous entry (multi-`gpuTypeIds` + `gpuTypePriority: custom` breaks NVDEC) is now backed by 2 clean single-type passes vs 4 failed multi-type dispatches — confident, not provisional.
