@@ -1,3 +1,30 @@
+## AB TEST — yolo26m vs yolov8n follow-cam comparison, isolated path (12 Aug 2026, run `31607161708` DISPATCHED — UNVERIFIED, branch `experiment/yolo26-ab-test`)
+
+**Goal:** does YOLO26m materially improve ball-detection/follow-cam quality over YOLOv8n at the same 1920 input, all else equal. One-shot experiment, not a production change.
+
+**Model verification (done before dispatch, not guessed):** `yolo26m.pt` confirmed current (Ultralytics, Sep 2025). Baseline's `yolov8n.onnx` is exported with `nms=True`, giving `(1, 300, 6)` xyxy+conf+cls (confirmed from baseline run `31596442940` segment.log, not assumed). YOLO26's **default** export head (one-to-one, NMS-free) also outputs `(1, 300, 6)` in the same layout -- so `yolo export model=yolo26m.pt format=onnx imgsz=1920` (no `nms=True`/`end2end=False` needed) is format-compatible with Reco's `CpuYoloDetector` with zero decode changes.
+
+**Segment pinned (not random):** start=2274s, duration=19s, `GX010197.MP4`/`GX010173.MP4`, matches baseline run `31596442940` exactly (source: that run's `segment.log`).
+
+**Baseline telemetry reconciled and locked in** (from run `31596442940`'s `events.jsonl`, definitions below -- use identically for the candidate run, do not redefine per-run):
+- "Locked" = ball world_state in `{Tracking, Coasting}` (Coasting is active prediction-hold during a missed frame, not a loss -- Lost/no-ball-frame is the only true break). Earlier session mistakenly required unbroken raw `Tracking` only, which structurally can never sustain past ~9 frames given Coasting flicker -- that was the bug, now fixed.
+- "Sustained lock" = first locked run &ge;1.0s. Baseline: **first sustained lock at frame 511 = 8.53s, duration 1.18s** (matches Johnson's independent check).
+- First raw ball detection: frame 236 = 3.94s.
+- Total raw ball detections: 142; frames with &ge;1 ball detection: 119/1136 = 10.5%.
+- Detector gaps: 28, longest 3.94s, total gap time 16.97s.
+- Ball state acquisitions (transitions into Tracking): 19; losses (out of Tracking): 27.
+- Longest non-Tracking run: 3.94s (frames 0-235, i.e. before first detection).
+- Player detections: 17,244 raw, 100% frame coverage (1136/1136).
+- Processing: 274s, RTX 4090, $0.0563. Detection runs on **CPU** (`reco_detect::detectors::cpu`), not GPU -- GPU is NVDEC/encode only. YOLO26m (medium) vs YOLOv8n (nano) on CPU inference is expected to be meaningfully slower; not yet measured.
+
+**Isolated test path (frozen production files untouched):**
+- `runpod_followcam_remote_ab_yolo26.sh` -- branch `experiment/yolo26-ab-test` ONLY, never `main`. Copy of frozen `runpod_followcam_remote.sh` with exactly 2 functional diffs: (1) segment pinned to 2274/19 instead of `$RANDOM`, (2) model `yolov8n.pt`/`yolov8n.onnx` &rarr; `yolo26m.pt`/`yolo26m.onnx` (export flags adjusted: drop `nms=True`, not equivalent for YOLO26). Tracking/panner/lookahead/detection-interval/resolution/ROI/`--no-zero-copy` byte-identical to production. Diff self-verified before push.
+- `.github/workflows/oev-runpod-followcam-ab-yolo26.yml` -- **new file, on `main`** (commit `6aa1671`), required only because GitHub's `workflow_dispatch` API requires the workflow file to exist on the default branch to be dispatchable at all (confirmed: this applies to the Actions UI too, not just the API). Does not modify `oev-runpod-followcam.yml` or any other existing file (diffed and confirmed: pod launch/preflight/retry/terminate steps, lines ~1-450 and ~640-720, untouched verbatim). Its checkout step pulls actual content from whatever ref it's dispatched against, so the real experimental script content still lives only on the branch. Differences from production workflow: points scp/ssh exec at the AB script filename, distinct artifact name `oev-runpod-followcam-AB-YOLO26M-<run_id>`, Drive upload step disabled (`if: false` -- one-off test, don't pollute the shared OEV Drive Followcam/ folder), acceptance gate no longer requires Drive verification.
+
+**Dispatch history this session:** first dispatch attempt returned HTTP 400 (workflow file had just been pushed, GitHub hadn't indexed it yet) but apparently queued anyway; a retry produced a second concurrent run. Both hit RunPod `HTTP 500 "There are no instances currently available"` on all 3 pod-create attempts (transient capacity on the same GPU pool the production workflow already uses -- not a script/workflow bug). Zero pods were created on either failed run (`No pod IDs recorded`), so no double-spend occurred. Single clean re-dispatch: run `31607161708`, queued cleanly, one status check confirms it's past pod launch (`in_progress`) -- not polling further, awaiting completion.
+
+**Not yet done:** pull `31607161708`'s `events.jsonl`/`stitch.log`/`run_metadata.txt`, apply the same locked/sustained-lock definitions above, build the A/B table, visual review of `followcam.mp4`, verdict (clear improvement / marginal / no improvement / regression).
+
 ## RunPod NVDEC pod-retry pipeline — GREEN END-TO-END, first full followcam.mp4 produced (12 Aug 2026, run `31596442940`, commit `3cc8fc8`)
 
 **Cycle 3 (fix + redispatch only, per explicit budget correction -- cycle 2 was invalidated by an implementation bug, not a real test):** one-line fix, `.github/workflows/oev-runpod-followcam.yml` -- added `?includeMachine=true` to the pod-status poll URL used by the retry loop. No other change; GPU order/config untouched throughout cycles 2-3, as directed, to keep datacenter steering isolated as the only variable under test.
