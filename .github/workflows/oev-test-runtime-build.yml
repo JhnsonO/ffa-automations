@@ -76,17 +76,57 @@ jobs:
           echo "Published: ${{ steps.tags.outputs.image_ref }}"
           echo "Digest: ${{ steps.build.outputs.digest }}"
 
+      - name: Install crane and gitleaks (pinned, checksum-verified)
+        env:
+          CRANE_VERSION: "0.21.7"
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          set -euo pipefail
+          cd /tmp
+
+          curl -sSLO "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          curl -sSLO "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/checksums.txt"
+          sha256sum --ignore-missing -c checksums.txt
+          tar -xzf go-containerregistry_Linux_x86_64.tar.gz crane
+          sudo mv crane /usr/local/bin/crane
+
+          curl -sSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          sha256sum --ignore-missing -c "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+
+          crane version
+          gitleaks version
+
       - name: No-secrets-in-layers check
         env:
           IMAGE_REF: ${{ steps.tags.outputs.image_ref }}
         run: |
-          docker pull "$IMAGE_REF"
-          docker history --no-trunc "$IMAGE_REF" > /tmp/image_history.txt
-          if grep -iE 'RUNPOD_API_KEY|GH_TOKEN|GH_PAT|ghp_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,}|refresh_token' /tmp/image_history.txt; then
-            echo "::error::Potential secret material found in image layer history -- see /tmp/image_history.txt in the run log above."
-            exit 1
-          fi
-          echo "No obvious secret patterns found in 'docker history --no-trunc'."
+          set -euo pipefail
+          crane manifest --platform linux/amd64 "$IMAGE_REF" \
+            | jq -r '.layers[] | "\(.digest) \(.mediaType)"' \
+          | while read -r digest mediatype; do
+            echo "Scanning layer $digest ($mediatype)"
+            case "$mediatype" in
+              *tar+gzip*)
+                crane blob "$IMAGE_REF@$digest" | gunzip -c | tar -xO 2>/dev/null \
+                  | gitleaks stdin --no-banner --exit-code 2
+                ;;
+              *tar+zstd*)
+                crane blob "$IMAGE_REF@$digest" | zstd -dc | tar -xO 2>/dev/null \
+                  | gitleaks stdin --no-banner --exit-code 2
+                ;;
+              *tar)
+                crane blob "$IMAGE_REF@$digest" | tar -xO 2>/dev/null \
+                  | gitleaks stdin --no-banner --exit-code 2
+                ;;
+              *)
+                echo "Unrecognized layer mediaType: $mediatype" >&2
+                exit 1
+                ;;
+            esac
+          done
 
       - name: Smoke-check manifest inside image (no GPU required)
         env:
