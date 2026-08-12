@@ -365,6 +365,71 @@ jobs:
           path: followcam_artifacts/
           retention-days: 14
 
+      - name: Upload follow-cam result to OEV Drive Followcam/ folder
+        if: hashFiles('followcam_artifacts/followcam.mp4') != ''
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          LEFT_CLIP: ${{ github.event.inputs.left_clip }}
+        run: |
+          pip install -q google-auth google-auth-oauthlib google-api-python-client
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -u - << 'PY'
+          import json, sys
+          sys.path.insert(0, '.')
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+          import os
+
+          OEV_DRIVE_FOLDER_ID = "18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ"
+
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          creds = Credentials(
+              token=None,
+              refresh_token=token_data['refresh_token'],
+              token_uri=token_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
+              client_id=token_data.get('client_id') or creds_data['installed']['client_id'],
+              client_secret=token_data.get('client_secret') or creds_data['installed']['client_secret'],
+          )
+          drive = build('drive', 'v3', credentials=creds)
+
+          res = drive.files().list(
+              q=f"name='Followcam' and '{OEV_DRIVE_FOLDER_ID}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+              fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True,
+          ).execute()
+          files = res.get('files', [])
+          if files:
+              followcam_id = files[0]['id']
+          else:
+              folder = drive.files().create(
+                  body={'name': 'Followcam', 'mimeType': 'application/vnd.google-apps.folder', 'parents': [OEV_DRIVE_FOLDER_ID]},
+                  fields='id',
+              ).execute()
+              followcam_id = folder['id']
+
+          left_clip = os.environ['LEFT_CLIP']
+          out_name = f"followcam_{left_clip}"
+          media = MediaFileUpload('followcam_artifacts/followcam.mp4', mimetype='video/mp4', resumable=True)
+          uploaded = drive.files().create(
+              body={'name': out_name, 'parents': [followcam_id]},
+              media_body=media, fields='id', supportsAllDrives=True,
+          ).execute()
+          print(f"Uploaded followcam.mp4 -> Drive file id {uploaded['id']}")
+
+          events_path = 'followcam_artifacts/events.jsonl'
+          if os.path.exists(events_path) and os.path.getsize(events_path) > 0:
+              events_name = f"events_{left_clip}.jsonl"
+              events_media = MediaFileUpload(events_path, mimetype='application/json', resumable=True)
+              events_uploaded = drive.files().create(
+                  body={'name': events_name, 'parents': [followcam_id]},
+                  media_body=events_media, fields='id', supportsAllDrives=True,
+              ).execute()
+              print(f"Uploaded events.jsonl -> Drive file id {events_uploaded['id']}")
+          PY
+
       - name: Evaluate acceptance
         if: always()
         env:
