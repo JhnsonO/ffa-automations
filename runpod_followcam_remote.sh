@@ -242,7 +242,16 @@ STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
   --lookahead 1.5
   --detection-interval 1
   --events events.jsonl
+  --no-zero-copy
   --width 1920 --height 1080)
+# DIAGNOSTIC ONLY (2026-08-12): run 31557269688 produced a followcam.mp4
+# with a corrupted solid-green band despite every acceptance check
+# (tracking, CUDAExecutionProvider, zero-copy log lines) passing --
+# classic NV12->RGB chroma-plane bug in reco-cli's zero-copy encode path,
+# which had never been exercised end-to-end before that run. --no-zero-copy
+# re-added here ONLY to isolate whether the corruption is zero-copy-
+# specific (this flag is normally omitted on the canonical RunPod path --
+# see the main-branch version of this file). Not for merge to main.
 echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch.log
 stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
 stitch_rc=${PIPESTATUS[0]}
