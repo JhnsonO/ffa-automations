@@ -1086,3 +1086,38 @@ No frozen file touched. `oev_reco_stitch_remote.sh`, all `video-stitcher` fork f
 **Next action:** redispatch (`left_clip=GX010197.MP4`, `right_clip=GX010173.MP4`) on `main` (head `e68a990` or later) once either known-good machine has a rentable offer. Watch specifically for `PREFLIGHT_ORT_CUDA=PASS` in the launch step log. If it passes and the run proceeds past launch, continue standard verification: `segment.log`, remote script's own CUDA EP check (confirmatory), `field_roi`, acceptance, then Johnson's visual review of `followcam.mp4`.
 
 **First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
+
+## 2026-08-12 session: RunPod Ubuntu 24.04 L4 — production Reco stack VALIDATED, RunPod desktop track abandoned
+
+**RunPod is now a VALIDATED execution environment for OEV, alongside Vast.ai.** Confirmed end-to-end on the real `JhnsonO/video-stitcher` fork (`53fe10f548d5767ad94ef66aeaedf2d8c7161f27`), `reco-cli` built with `--features cuda`, against a real trimmed footage fixture (`trimmed_GX010197.MP4`/`trimmed_GX010173.MP4`, 3s window) with the real production 1920px YOLOv8n ONNX model (`nms=True`):
+
+- `Selected GPU: NVIDIA L4 (Vulkan)` — real device, zero `llvmpipe` occurrences in the log
+- NVDEC active on both streams (`left/right GPU decoder: NVDEC (CUDA)`)
+- `CUDAExecutionProvider` genuinely registered for both detectors (ball + player), not just listed as available
+- Zero-copy GPU path exercised (no `--no-zero-copy` crutch) — `Decode: GPU zero-copy (CUDA/Vulkan)`
+- `h264_nvenc (hardware)` encode
+- GPU utilization 76–79% during the actual inference/render window (idle before/after)
+- 650 real pipeline events in `events.jsonl`, genuine per-frame ball/player detections at real confidence scores using the real model's class IDs (ball=32, person=0, auto-resolved from model metadata)
+- Valid output: `followcam_smoke.mp4`, 130 frames, correct duration
+
+**Two `next_frame_gpu returned None (non-CUDA?)` errors observed at the tail of the run are benign** — end-of-stream signal from the deliberately tiny 3s fixture running out of frames after sync-offset trimming, not a CUDA fault; 130 frames still encoded successfully afterward with zero further errors.
+
+**Critical distinction — the earlier RunPod failures were a base-image problem, not a GPU-runtime problem.** The first RunPod pod tried this session was `runpod/kasm-desktop:1.0.0`, a Kasm desktop image built on **Ubuntu 20.04 "focal"**, which only ships FFmpeg 4.2.7 in its repos — too old for `reco-io`'s `Pixel::VAAPI` usage (6 compile errors, `crates/reco-io/src/ffmpeg/{encoder,hw_upload}.rs`), on top of missing `pip3`, ancient `vulkan-tools` (no `--summary` support), Python 3.8 capping `onnxruntime-gpu` at a CUDA-11-era build requiring a manually-assembled CUDA-11 pip runtime stack, and a `cuda-runtime-12-8` apt dependency conflict that would have tried to pull a newer NVIDIA driver package than the host's actual 570.195.03. **None of these were GPU/Vulkan/CUDA-driver problems** — Vulkan, the CUDA driver API, NVDEC, and Python ORT CUDA EP all passed cleanly on that same desktop pod's hardware (test 1). Switching to a plain RunPod official template, `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404` (Ubuntu 24.04, CUDA 12.8.1, no desktop/X11), resolved every one of the base-image gaps in a single clean pass — FFmpeg 6.1.1 already present, `pkg-config`/`libclang`/ffmpeg-dev all installed cleanly via one `apt-get install`, and the `reco-cli` `cuda`-featured build compiled in under 2 minutes with zero dependency-chasing cycles (versus 8+ on the desktop image).
+
+**Validated environment recipe (RunPod, `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404`, driver 580.159.04 observed this session, CUDA 12.8):**
+- Build `reco-cli` with `--features cuda`, `ORT_CUDA_VERSION=12` (matched to the driver's CUDA-12 class — **do not** reuse Vast.ai's `ORT_CUDA_VERSION=13`/`libcudnn9-cuda-13` pairing, that was matched to CUDA-13-class Vast hosts specifically)
+- `cuda-cudart-12-8` only (runtime libs) — explicitly **not** the full `cuda-runtime-12-8` meta-package, which depends on `libnvidia-compute-570 >= 570.211.01` and would attempt to pull a newer NVIDIA driver package than the host's actual installed driver; confirmed this fails cleanly as a dependency conflict rather than silently breaking anything
+- `libcudnn9-cuda-12`
+- Standard build deps not preinstalled on this base: `git curl build-essential pkg-config cmake libavutil-dev libavcodec-dev libavformat-dev libswscale-dev libavdevice-dev libavfilter-dev libswresample-dev libssl-dev libclang-dev clang`, Rust via `rustup`
+- EGL ICD override (same trick proven on Vast.ai): write `/tmp/nvidia_egl_icd.json` pointing at `libEGL_nvidia.so.0`, export both `VK_DRIVER_FILES` and `VK_ICD_FILENAMES` to it
+- This base is headless (no X11/desktop) — `DISPLAY` unset is defensive/harmless here, not load-bearing the way it was on the Kasm desktop image
+- Real production stitch flags confirmed working: `--projection l-shape --tracking field --panner-preset broadcast --lookahead 1.5 --detection-interval 1 --events <path> --width 1920 --height 1080`, **no** `--no-zero-copy`
+
+**Vast.ai status: remains a valid fallback path, not deprecated.** No further arbitrary-host driver/Vulkan/CUDA debugging planned against Vast.ai for the current product milestone — that track is closed per Johnson's standing "production-ready enough for now" direction from the earlier GPU-selection session. RunPod is now the primary path under active development.
+
+**Not yet done, deliberately deferred to a later hardening ticket:** publishing a custom Docker image / RunPod template for this recipe. Current approach is a bootstrap script run against the stock `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404` template, chosen specifically to avoid standing up an image-registry/template-publishing pipeline before the real unseen follow-cam validation (next product step) has passed on this environment.
+
+**Next:**
+1. Environment reproducibility: `runpod_bootstrap.sh` + `runpod_gpu_preflight.sh` added this session (see below) — codify the above recipe as an idempotent, fail-loud script rather than manual SSH commands.
+2. RunPod workflow integration (launch/preflight/dispatch/cleanup plumbing, analogous to the existing Vast.ai workflows) — explicitly scoped as a separate follow-up ticket, not done this session.
+3. Only after both of the above are merged and reviewed: dispatch one genuinely unseen 15–20s full-source follow-cam segment on RunPod and judge the camerawork — this is the actual next product validation step, not further infrastructure work.
