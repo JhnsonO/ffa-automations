@@ -169,6 +169,15 @@ jobs:
               'volumeMountPath': '/runpod-volume',
               'ports': ['22/tcp'],
               'supportPublicIp': True,
+              # Missing this let RunPod match a host with an older driver
+              # (CUDA 12.4) than the image requires (12.8) -- confirmed
+              # live on a US-IL-1 host (13 Aug 2026): container stuck in
+              # a permanent create-crash loop, "nvidia-container-cli:
+              # requirement error: unsatisfied condition: cuda>=12.8".
+              # oev-test-runtime-benchmark.yml's create_pod already sets
+              # this; populate-volume never had it. Filtering at request
+              # time avoids ever landing on an incompatible host.
+              'allowedCudaVersions': ['12.8'],
               'env': {
                   'PUBLIC_KEY': pub_key,
                   'SSH_PUBLIC_KEY': pub_key,
