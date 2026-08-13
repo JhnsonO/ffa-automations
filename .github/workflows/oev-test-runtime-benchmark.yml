@@ -216,7 +216,22 @@ jobs:
               create_body = {
                   'name': 'oev-test-runtime-benchmark',
                   'imageName': image_ref,
-                  'gpuTypeIds': ['NVIDIA GeForce RTX 4090'],
+                  # Restored multi-GPU fallback list (verbatim from the
+                  # frozen oev-runpod-followcam.yml, which already fixed
+                  # this same single-GPU-type problem) -- a single
+                  # gpuTypeIds entry means "no instances currently
+                  # available" any time that one type has zero capacity
+                  # in the selected datacenter, even if other compatible
+                  # GPUs are free there. 13 Aug 2026: confirmed live,
+                  # EU-RO-1 and EUR-IS-1 both 500'd on RTX-4090-only
+                  # requests despite the datacenter itself being up.
+                  'gpuTypeIds': [
+                      'NVIDIA GeForce RTX 4090',
+                      'NVIDIA RTX A5000',
+                      'NVIDIA GeForce RTX 3090',
+                      'NVIDIA L4',
+                  ],
+                  'gpuTypePriority': 'custom',
                   'gpuCount': 1,
                   'cloudType': 'SECURE',
                   'containerDiskInGb': 40,
