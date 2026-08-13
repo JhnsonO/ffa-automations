@@ -84,3 +84,26 @@ regexes = [
   '''^MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDN6hM0rsDYGbzQPQfOygqlRtQgKUXMfnSjhIBL7LnReAVBEd7ZmKtyN2qmSasMl4HZpMhVe2rPWVVwBDl6iyNE/Kok6E6v6V3vCLGsOpQAuuNVye/3QxzIldzG/jQAdWZiyXReRVapOhZtLjGfywCvlWq7Sl/e3sbc0vWybSDI2QIDAQAB$''',
   '''^MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDAQt2ZDdPfoSe/JI6ID5bgLHRCnCu9T36aYczmhw/tnv6QZB2I6WnOCMZXJZlRdqWc7w9jo4BWhYS50Vb4weMfh/I0On7VcRwJUgfAxW2cHB\+EkmtI1v4v/OU24OqIa1Nmv9uRVeX0GjhQukdLNhAE6ACWooaf5kqKlCeK\+1GOkQIDAQAB$''',
 ]
+
+[[allowlists]]
+description = "Real SSH host private keys inherited from the runpod/pytorch base image (openssh-server postinst generates these at base-image build time; not removable by a later Docker layer since the bytes remain in the base layer's history). Genuine finding, not a false positive -- tracked via container-startup host-key regeneration (ssh-keygen -A before sshd starts) so no running pod ever uses this static inherited identity. Allowlisted here only because flattening/rebuilding the RunPod base image to strip them isn't practical."
+paths = [
+  '''etc/ssh/ssh_host_ecdsa_key$''',
+  '''etc/ssh/ssh_host_rsa_key$''',
+  '''etc/ssh/ssh_host_ed25519_key$''',
+]
+
+[[allowlists]]
+description = "Vendor/stdlib false positives in the runpod/pytorch base image, confirmed by finding context in the CI log (gitleaks dir mode, real paths): rsync-ssl config keyword, libmagic compiled signature DB, jwt/cryptography library type annotations and parameter names, oauthlib example/test OAuth field names (source + compiled .pyc), CMake's known-public Windows code-signing test certificate, and vim keymap variable names. None are repo or deployment secrets."
+paths = [
+  '''usr/bin/rsync-ssl$''',
+  '''usr/lib/file/magic\.mgc$''',
+  '''usr/lib/python3/dist-packages/jwt/algorithms\.py$''',
+  '''usr/lib/python3/dist-packages/oauthlib/oauth1/rfc5849/parameters\.py$''',
+  '''usr/lib/python3/dist-packages/oauthlib/oauth1/rfc5849/__pycache__/parameters\.cpython-312\.pyc$''',
+  '''usr/lib/python3/dist-packages/oauthlib/oauth2/rfc6749/parameters\.py$''',
+  '''usr/lib/python3/dist-packages/oauthlib/oauth2/rfc6749/__pycache__/parameters\.cpython-312\.pyc$''',
+  '''usr/lib/python3/dist-packages/cryptography/hazmat/backends/openssl/backend\.py$''',
+  '''usr/share/cmake-3\.28/Templates/Windows/Windows_TemporaryKey\.pfx$''',
+  '''usr/share/vim/vim91/keymap/.*\.vim$''',
+]
