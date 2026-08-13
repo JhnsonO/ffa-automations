@@ -114,16 +114,14 @@ jobs:
           os.chmod('/tmp/runpod_key', 0o600)
           PY
 
-      # Launch mechanics deliberately kept simple (single attempt, no
-      # NVDEC-preflight retry loop) -- this pod only needs to build
-      # reco-cli and export ONNX models, neither of which requires a
-      # working NVDEC/render-capable GPU (confirmed: reco-cli's CUDA
-      # feature compiles against a compute-capability list, not a live
-      # device; yolo export is a CPU-fine pytorch->onnx conversion).
-      # A cheap general GPU-preflight check still runs (via the frozen,
-      # unmodified runpod_gpu_preflight.sh) so a genuinely broken host
-      # doesn't silently eat the ~15-20min build before failing later.
-      - name: Launch RunPod GPU pod with network volume attached
+      # Retry loop with a real delay between attempts (not NVDEC preflight
+      # -- this pod only builds reco-cli and exports ONNX models, neither
+      # of which needs a working NVDEC/render-capable GPU). Added 13 Aug
+      # 2026: pod-create can 500 with "no instances currently available"
+      # purely from live market capacity, unrelated to this job's needs;
+      # a real gap between attempts (not back-to-back calls) gives each
+      # one an actual chance to land on a different market state.
+      - name: Launch RunPod GPU pod with network volume attached (retry with real delay)
         id: launch
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
@@ -147,6 +145,11 @@ jobs:
           }
           pub_key = open('/tmp/runpod_key.pub').read().strip()
 
+          MAX_ATTEMPTS = 3
+          RETRY_DELAY_S = 40
+          POD_IDS_FILE = '/tmp/populate_pod_id.txt'
+          open(POD_IDS_FILE, 'w').close()
+
           def request(method, url, data=None, timeout=30):
               body = json.dumps(data).encode() if data is not None else None
               req = urllib.request.Request(url, data=body, method=method, headers=headers)
@@ -158,91 +161,126 @@ jobs:
                   err_body = exc.read().decode(errors='replace')[:500]
                   raise RuntimeError(f'HTTP {exc.code} from {method} {url}: {err_body}') from exc
 
-          create_body = {
-              'name': 'oev-populate-volume',
-              'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
-              # Restored multi-GPU fallback list (verbatim from the
-              # frozen oev-runpod-followcam.yml) -- same fix as
-              # oev-test-runtime-benchmark.yml, same reason: a single
-              # gpuTypeIds entry 500s with "no instances currently
-              # available" whenever that one type is out of capacity in
-              # the selected datacenter, even if other compatible GPUs
-              # are free there. This pod only builds reco-cli + exports
-              # ONNX models (no NVDEC/render requirement), so any of
-              # these GPU types is equally fine for the job itself.
-              'gpuTypeIds': [
-                  'NVIDIA GeForce RTX 4090',
-                  'NVIDIA RTX A5000',
-                  'NVIDIA GeForce RTX 3090',
-                  'NVIDIA L4',
-              ],
-              'gpuTypePriority': 'custom',
-              'gpuCount': 1,
-              'cloudType': 'SECURE',
-              'containerDiskInGb': 40,
-              'networkVolumeId': volume_id,
-              'volumeMountPath': '/runpod-volume',
-              'ports': ['22/tcp'],
-              'supportPublicIp': True,
-              # Missing this let RunPod match a host with an older driver
-              # (CUDA 12.4) than the image requires (12.8) -- confirmed
-              # live on a US-IL-1 host (13 Aug 2026): container stuck in
-              # a permanent create-crash loop, "nvidia-container-cli:
-              # requirement error: unsatisfied condition: cuda>=12.8".
-              # oev-test-runtime-benchmark.yml's create_pod already sets
-              # this; populate-volume never had it. Filtering at request
-              # time avoids ever landing on an incompatible host.
-              'allowedCudaVersions': ['12.8'],
-              'env': {
-                  'PUBLIC_KEY': pub_key,
-                  'SSH_PUBLIC_KEY': pub_key,
-              },
-          }
-          printable = {k: v for k, v in create_body.items() if k != 'env'}
-          print(f'Creating pod: {json.dumps(printable)}')
-          pod = request('POST', f'{base}/pods', create_body)
-          pod_id = pod.get('id')
-          if not pod_id:
-              raise RuntimeError(f'pod create response had no id: {pod}')
-          print(f'Pod created: id={pod_id}')
-          with open('/tmp/populate_pod_id.txt', 'w') as f:
-              f.write(pod_id)
+          def delete_pod(pod_id):
+              try:
+                  request('DELETE', f'{base}/pods/{pod_id}', timeout=20)
+                  print(f'Deleted pod {pod_id} (attempt cleanup).')
+              except Exception as exc:
+                  print(f'Delete warning for pod {pod_id}: {exc} (final cleanup step will retry).')
 
-          deadline = time.time() + 1200
-          ip = port = None
-          while time.time() < deadline:
-              info = request('GET', f'{base}/pods/{pod_id}?includeMachine=true')
-              public_ip = info.get('publicIp')
-              mappings = info.get('portMappings') or {}
-              mapped_22 = None
-              if isinstance(mappings, dict):
-                  mapped_22 = mappings.get('22') or mappings.get('22/tcp')
-              if public_ip and mapped_22:
-                  ip, port = public_ip, mapped_22
-                  break
-              time.sleep(10)
-          if not ip:
-              raise RuntimeError(f'pod {pod_id} never reported a public IP + SSH mapping within 1200s')
+          def create_pod():
+              create_body = {
+                  'name': 'oev-populate-volume',
+                  'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
+                  # GPU fallback list, verbatim base from the frozen
+                  # oev-runpod-followcam.yml plus 4 more types confirmed
+                  # to show real (if thin) live availability on 13 Aug
+                  # 2026 (L40S in US-IL-1; RTX 5090, RTX 2000 Ada, RTX PRO
+                  # 6000 Blackwell Server Edition in EUR-IS-1). This pod
+                  # only builds reco-cli + exports ONNX models (no
+                  # NVDEC/render requirement), so any of these types is
+                  # equally fine for the job itself.
+                  'gpuTypeIds': [
+                      'NVIDIA GeForce RTX 4090',
+                      'NVIDIA RTX A5000',
+                      'NVIDIA GeForce RTX 3090',
+                      'NVIDIA L4',
+                      'NVIDIA L40S',
+                      'NVIDIA GeForce RTX 5090',
+                      'NVIDIA RTX 2000 Ada Generation',
+                      'NVIDIA RTX PRO 6000 Blackwell Server Edition',
+                  ],
+                  'gpuTypePriority': 'custom',
+                  'gpuCount': 1,
+                  'cloudType': 'SECURE',
+                  'containerDiskInGb': 40,
+                  'networkVolumeId': volume_id,
+                  'volumeMountPath': '/runpod-volume',
+                  'ports': ['22/tcp'],
+                  'supportPublicIp': True,
+                  # Missing this let RunPod match a host with an older driver
+                  # (CUDA 12.4) than the image requires (12.8) -- confirmed
+                  # live on a US-IL-1 host (13 Aug 2026): container stuck in
+                  # a permanent create-crash loop, "nvidia-container-cli:
+                  # requirement error: unsatisfied condition: cuda>=12.8".
+                  'allowedCudaVersions': ['12.8'],
+                  'env': {
+                      'PUBLIC_KEY': pub_key,
+                      'SSH_PUBLIC_KEY': pub_key,
+                  },
+              }
+              printable = {k: v for k, v in create_body.items() if k != 'env'}
+              print(f'Creating pod: {json.dumps(printable)}')
+              pod = request('POST', f'{base}/pods', create_body)
+              pod_id = pod.get('id')
+              if not pod_id:
+                  raise RuntimeError(f'pod create response had no id: {pod}')
+              print(f'Pod created: id={pod_id}')
+              return pod_id
 
-          ssh_ok = False
-          for i in range(1, 19):
-              result = subprocess.run(
-                  ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
-                   '-i', '/tmp/runpod_key', '-p', str(port), f'root@{ip}', 'echo OK'],
-                  capture_output=True, text=True, timeout=15,
-              )
-              if 'OK' in result.stdout:
-                  ssh_ok = True
-                  break
-              print(f'SSH not ready ({i}/18)')
-              time.sleep(5)
-          if not ssh_ok:
-              raise RuntimeError(f'SSH never came up on pod {pod_id} ({ip}:{port})')
+          def wait_for_network(pod_id, timeout_s=1200):
+              deadline = time.time() + timeout_s
+              while time.time() < deadline:
+                  info = request('GET', f'{base}/pods/{pod_id}?includeMachine=true')
+                  public_ip = info.get('publicIp')
+                  mappings = info.get('portMappings') or {}
+                  mapped_22 = None
+                  if isinstance(mappings, dict):
+                      mapped_22 = mappings.get('22') or mappings.get('22/tcp')
+                  if public_ip and mapped_22:
+                      return public_ip, mapped_22
+                  time.sleep(10)
+              raise RuntimeError(f'pod {pod_id} never reported a public IP + SSH mapping within {timeout_s}s')
+
+          def wait_for_ssh(ip, port, attempts=18, delay_s=5):
+              for i in range(1, attempts + 1):
+                  result = subprocess.run(
+                      ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
+                       '-i', '/tmp/runpod_key', '-p', str(port), f'root@{ip}', 'echo OK'],
+                      capture_output=True, text=True, timeout=15,
+                  )
+                  if 'OK' in result.stdout:
+                      return True
+                  print(f'SSH not ready ({i}/{attempts})')
+                  time.sleep(delay_s)
+              return False
+
+          winner = None
+          for attempt in range(1, MAX_ATTEMPTS + 1):
+              print(f'--- Pod allocation attempt {attempt}/{MAX_ATTEMPTS} ---')
+              try:
+                  pod_id = create_pod()
+              except Exception as exc:
+                  print(f'::error::Attempt {attempt}: pod create failed: {exc}')
+                  if attempt < MAX_ATTEMPTS:
+                      print(f'Waiting {RETRY_DELAY_S}s before next attempt (real time gap, not an instant retry)...')
+                      time.sleep(RETRY_DELAY_S)
+                  continue
+
+              with open(POD_IDS_FILE, 'w') as f:
+                  f.write(pod_id)
+
+              try:
+                  ip, port = wait_for_network(pod_id)
+                  if not wait_for_ssh(ip, port):
+                      raise RuntimeError(f'SSH never came up on pod {pod_id} ({ip}:{port})')
+              except Exception as exc:
+                  print(f'Attempt {attempt}: {exc} -- deleting pod and retrying.')
+                  delete_pod(pod_id)
+                  if attempt < MAX_ATTEMPTS:
+                      time.sleep(RETRY_DELAY_S)
+                  continue
+
+              winner = {'pod_id': pod_id, 'ip': ip, 'port': port}
+              break
+
+          if winner is None:
+              raise RuntimeError(f'All {MAX_ATTEMPTS} pod allocation attempts failed. See job log above.')
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f'pod_id={pod_id}\n')
-              output.write(f'ip={ip}\n')
-              output.write(f'port={port}\n')
+              output.write(f'pod_id={winner["pod_id"]}\n')
+              output.write(f'ip={winner["ip"]}\n')
+              output.write(f'port={winner["port"]}\n')
           PY
 
       - name: General GPU preflight (frozen script, unmodified)
