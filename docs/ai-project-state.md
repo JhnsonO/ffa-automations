@@ -1525,3 +1525,33 @@ Validated locally against the exact previously-failing layer digest: full 2.05GB
 **Post-merge cleanup:** deleted `fix/secrets-layer-scan` (confirmed fully merged into `main`, zero unique commits remaining). No other stray files from this session's local forensic work (layer extraction, boundary-corpus testing, etc.) were ever committed to the repo — all of that happened in a scratch container, not in git.
 
 **Package visibility (decided, not actioned):** considered making the `oev-test-runtime` GHCR package private as defense-in-depth on top of the scan fix. Decision: **skip for now** — no confirmed consumer other than the two GitHub Actions workflows (already authenticate via `docker/login-action` + `GITHUB_TOKEN`, unaffected either way); unclear whether RunPod pulls this image tag directly and anonymously, and there's no API-driven way to change GHCR container visibility (confirmed via GitHub community discussions — visibility toggle is web-UI-only, no REST endpoint exists), so flipping it blind risked breaking an unverified consumer with no easy revert mid-pull. Revisit next time the RunPod pull path is being touched anyway.
+
+## OEV Test Runtime — network-volume migration IN PROGRESS, blocked on RunPod account balance (13 Aug 2026)
+
+**Ticket:** move OEV Test Runtime from a fully-baked ~19.7GB Docker image to a runtime-lite image + a persistent RunPod Network Volume for the heavy build/model assets. Base: `main` @ `ff872ce9`.
+
+**Merged to `main` (`80bb608`, then two follow-up fixes `3371bba`, `d5ddb5b`):**
+- `Dockerfile` — stripped to runtime-lite: base image + vulkan-tools/libvulkan1/aria2/curl/ca-certificates + cuda-cudart install block only. Rust toolchain, build-essential/clang/cmake/pkg-config, ffmpeg -dev headers, git-clone+cargo-build, and YOLO export all removed. Adds `/runpod-volume` mount point + PATH/LD_LIBRARY_PATH pointed there. Tag scheme: `v1-lite`.
+- `.github/workflows/oev-network-volume-setup.yml` (new) — idempotent find-or-create RunPod network volume via `rest.runpod.io/v1`, live datacenter auto-select via `api.runpod.io/v2/catalog/gpus?include=AVAILABILITY&product=POD` (RunPod API v2 — v1 has no catalog/availability route, confirmed 400 on first dispatch), writes `vars.OEV_NETWORK_VOLUME_ID`.
+- `.github/workflows/oev-populate-volume.yml` + `oev_populate_volume_remote.sh` (new) — attaches the volume to a throwaway RunPod pod, builds reco-cli (`--features cuda`) at the pinned SHA + exports YOLO26 s/m/l/x@1920 onto the volume, idempotent via manifest.json SHA/version check. **Not yet exercised by any run** — blocked behind the volume-setup step below.
+- `.github/workflows/oev-test-runtime-benchmark.yml` — `create_pod()` gets `networkVolumeId`/`volumeMountPath: /runpod-volume`; acceptance checks read `/runpod-volume/oev-runtime` instead of `/opt/oev-runtime`. gpuTypeIds, MAX_ATTEMPTS, `wait_for_network` timeout (1200s), job timeout (90min), tiered minDownloadMbps ([800,400,None]) all untouched.
+- `oev_test_runtime_benchmark_remote.sh` — `RECO_BIN`/`MODEL_PATH` + sanity checks repointed at `/runpod-volume/oev-runtime`.
+- `.github/workflows/oev-test-runtime-build.yml` — build steps trimmed to match the lite Dockerfile (dropped `reco_sha` input/build-arg, default tag `v1-lite`, rewrote the post-build smoke-check for the new image contents). Gitleaks canary + secrets-in-layers steps confirmed byte-identical, untouched.
+
+Frozen files confirmed untouched by diff: `oev-runpod-followcam.yml`, `runpod_bootstrap.sh`, `runpod_gpu_preflight.sh`, `runpod_followcam_remote.sh`, `oev-benchmark-pack-prep.yml`.
+
+**`oev-network-volume-setup.yml` dispatch history, this session (3 cycles, code now proven correct up to the point of volume creation):**
+1. Run `31700328452` — FAILED. `rest.runpod.io/v1/gputypes` doesn't exist (`400`, "path does not exist in the specification"). Fixed by switching the datacenter-availability query to `api.runpod.io/v2/catalog/gpus?include=AVAILABILITY&product=POD` (confirmed real via that host's live `openapi.json`), commit `3371bba`.
+2. Run `31700466893` — FAILED. New endpoint hit a Cloudflare 403 (`error_code=1010`, `browser_signature_banned`) — urllib's default User-Agent looked like a bot. Fixed by setting an explicit `User-Agent` header on all requests in the script, commit `d5ddb5b`.
+3. Run `31700543149` — FAILED, but this is a real external blocker, not a code defect: **the catalog query and datacenter auto-select both worked correctly** (returned live availability for 31 datacenters — every RTX 4090 datacenter currently shows `LOW` or `NONE` availability, auto-selected `EU-RO-1` at `LOW` as the best available, matching the intended "no HIGH/MEDIUM → don't fail, just pick the best of what's there" behavior). The `POST /v1/networkvolumes` call itself then failed: `HTTP 500 "create network volume: You must have at least $5 in your account to create a network volume"`.
+
+**Blocker (not code): RunPod account balance is under $5, the minimum required to create a network volume.** Per debug-budget policy, this is not being treated as a further code-fix cycle — there's nothing left in this script to fix; it's an account-funding action for Johnson.
+
+**Not yet done, next chat/session (once RunPod account is topped up above $5):**
+1. Re-dispatch `oev-network-volume-setup.yml` on `main` — should now succeed and write `vars.OEV_NETWORK_VOLUME_ID`. Confirm the repo variable was actually set (check Settings → Actions → Variables, or `gh.sh` if extended for it).
+2. Dispatch `oev-populate-volume.yml` — this is the one-time paid GPU cost (~15–20 min RTX 4090, roughly $0.20–0.25 at recent rates). Tell Johnson before dispatching (paid compute). Verify it writes a valid `manifest.json` + `reco` binary + 4 YOLO26 models to the volume (pull the run's `build.log`/`timing.log` artifact).
+3. Dispatch `oev-test-runtime-build.yml` to publish the new `v1-lite` image to GHCR (confirm the build workflow diff itself hasn't been exercised by any run yet either).
+4. Dispatch `oev-test-runtime-benchmark.yml` against the new lite image + volume. Verify pull time no longer hits anywhere near the 1200s `wait_for_network` ceiling, and that calibration/tracking/detection/pan acceptance checks still pass (same `oev_test_runtime_benchmark_remote.sh` logic, just repointed at the volume).
+5. Produce the deliverable: image size before (~19.7GB, 47 layers, confirmed via GHCR manifest earlier) vs after (new lite image, size TBD from step 3's run), pull time before vs after (from `timing.json`), and an ADOPT/DO-NOT-ADOPT verdict.
+
+**First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
