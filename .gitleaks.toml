@@ -76,3 +76,11 @@ regexTarget = "secret"
 regexes = [
   '''^ghr_bufferSizeI7double2E16cusolverStatus$''',
 ]
+
+[[allowlists]]
+description = "Qt WebEngine resources.pak (opt/nvidia/nsight-compute/2025.1.1/host/linux-desktop-glibc_2_11_3-x64/resources/qtwebengine_resources.pak) -- two embedded Chromium component-extension manifest \"key\" fields. Both are valid 1024-bit RSA SubjectPublicKeyInfo (rsaEncryption OID, public exponent 65537) confirmed via `openssl rsa -pubin -in ... -text -noout`. Public keys, not secrets -- this is the standard Chromium extension-manifest.json \"key\" field format."
+regexTarget = "secret"
+regexes = [
+  '''^MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDN6hM0rsDYGbzQPQfOygqlRtQgKUXMfnSjhIBL7LnReAVBEd7ZmKtyN2qmSasMl4HZpMhVe2rPWVVwBDl6iyNE/Kok6E6v6V3vCLGsOpQAuuNVye/3QxzIldzG/jQAdWZiyXReRVapOhZtLjGfywCvlWq7Sl/e3sbc0vWybSDI2QIDAQAB$''',
+  '''^MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDAQt2ZDdPfoSe/JI6ID5bgLHRCnCu9T36aYczmhw/tnv6QZB2I6WnOCMZXJZlRdqWc7w9jo4BWhYS50Vb4weMfh/I0On7VcRwJUgfAxW2cHB\+EkmtI1v4v/OU24OqIa1Nmv9uRVeX0GjhQukdLNhAE6ACWooaf5kqKlCeK\+1GOkQIDAQAB$''',
+]
