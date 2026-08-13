@@ -393,7 +393,8 @@ jobs:
           fi
           echo 'Reco revision gate PASSED.'
 
-      - name: Copy sample clips from network volume to pod workload path
+      - name: Copy sample clips from network volume to pod workload path (best-effort)
+        id: volume_copy
         env:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
@@ -405,15 +406,120 @@ jobs:
           SRC_DIR="/runpod-volume/oev-samples/$SAMPLE_SET_ID"
           LEFT_SRC="$SRC_DIR/${SAMPLE_ID}_left_${DURATION_S}s.mp4"
           RIGHT_SRC="$SRC_DIR/${SAMPLE_ID}_right_${DURATION_S}s.mp4"
-          # No download -- the volume is already attached to this pod
-          # (networkVolumeId set at launch). A local cp only, nothing goes
-          # over the network, so this step should be near-instant.
-          $SSH "mkdir -p /tmp/oev_run && test -s '$LEFT_SRC' && test -s '$RIGHT_SRC'" || {
-            echo "::error::Sample clip(s) not found on network volume: $LEFT_SRC / $RIGHT_SRC -- do not regenerate/restage, check sample_id/duration_s/sample_set_id inputs."
+          # Best-effort only -- does NOT fail the job. If either file is
+          # missing on the volume (wrong datacenter's volume, pack not
+          # staged there, etc.) this falls through to the Drive fallback
+          # step below instead of hard-failing the whole run.
+          $SSH "mkdir -p /tmp/oev_run"
+          if $SSH "test -s '$LEFT_SRC' && test -s '$RIGHT_SRC'"; then
+            $SSH "cp '$LEFT_SRC' /tmp/oev_run/left.mp4 && cp '$RIGHT_SRC' /tmp/oev_run/right.mp4"
+            $SSH "test -s /tmp/oev_run/left.mp4 && test -s /tmp/oev_run/right.mp4 && ls -lh /tmp/oev_run/left.mp4 /tmp/oev_run/right.mp4"
+            echo "Found on network volume: $LEFT_SRC / $RIGHT_SRC"
+            echo "volume_hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Sample clip(s) not found on network volume ($LEFT_SRC / $RIGHT_SRC) -- will fall back to Drive."
+            echo "volume_hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve + download sample clips from Drive (fallback only, when not on volume)
+        id: resolve_drive_fallback
+        if: steps.volume_copy.outputs.volume_hit != 'true'
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          SAMPLE_SET_ID: ${{ inputs.sample_set_id }}
+          SAMPLE_ID: ${{ inputs.sample_id }}
+          DURATION_S: ${{ inputs.duration_s }}
+        run: |
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -u - << 'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request as req
+
+          OEV_DRIVE_FOLDER_ID = '18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ'
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          payload = json.dumps({
+              'client_id': token_data.get('client_id') or creds_data['installed']['client_id'],
+              'client_secret': token_data.get('client_secret') or creds_data['installed']['client_secret'],
+              'refresh_token': token_data['refresh_token'],
+              'grant_type': 'refresh_token',
+          }).encode()
+          response = req.urlopen(req.Request(
+              'https://oauth2.googleapis.com/token',
+              data=payload,
+              headers={'Content-Type': 'application/json'},
+              method='POST',
+          ))
+          token = json.loads(response.read())
+          if 'access_token' not in token:
+              raise RuntimeError(f'Token refresh failed: {token}')
+          access_token = token['access_token']
+          open('/tmp/drive_token.txt', 'w').write(access_token)
+
+          def find_child(name, parent, folder=False):
+              mime = " and mimeType='application/vnd.google-apps.folder'" if folder else ""
+              q = f"name='{name}' and '{parent}' in parents and trashed=false{mime}"
+              url = 'https://www.googleapis.com/drive/v3/files?' + urllib.parse.urlencode({
+                  'q': q,
+                  'fields': 'files(id,name)',
+                  'supportsAllDrives': 'true',
+                  'includeItemsFromAllDrives': 'true',
+              })
+              response = req.urlopen(req.Request(
+                  url,
+                  headers={'Authorization': f'Bearer {access_token}'},
+              ))
+              files = json.loads(response.read()).get('files', [])
+              if not files:
+                  raise RuntimeError(f"{name!r} not found under Drive parent {parent!r}")
+              return files[0]['id']
+
+          sample_set_id = os.environ['SAMPLE_SET_ID']
+          sample_id = os.environ['SAMPLE_ID']
+          duration_s = os.environ['DURATION_S']
+
+          samples_id = find_child('Samples', OEV_DRIVE_FOLDER_ID, folder=True)
+          set_id = find_child(sample_set_id, samples_id, folder=True)
+          sample_folder_id = find_child(sample_id, set_id, folder=True)
+          left_id = find_child(f'{sample_id}_left_{duration_s}s.mp4', sample_folder_id)
+          right_id = find_child(f'{sample_id}_right_{duration_s}s.mp4', sample_folder_id)
+          print(f'left_id={left_id}')
+          print(f'right_id={right_id}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'left_id={left_id}\nright_id={right_id}\n')
+          PY
+
+      - name: Download clip pair to pod (Drive fallback only)
+        if: steps.volume_copy.outputs.volume_hit != 'true'
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          LEFT_ID: ${{ steps.resolve_drive_fallback.outputs.left_id }}
+          RIGHT_ID: ${{ steps.resolve_drive_fallback.outputs.right_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          $SSH "apt-get update -qq && apt-get install -y -qq --no-install-recommends aria2 >/dev/null && mkdir -p /tmp/oev_run"
+          $SSH "set -o pipefail; aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=left.mp4 'https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media' 2>&1 | tail -5"
+          $SSH "set -o pipefail; aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=right.mp4 'https://www.googleapis.com/drive/v3/files/$RIGHT_ID?alt=media' 2>&1 | tail -5"
+          echo "Downloaded from Drive (network-volume fallback path)."
+
+      - name: Verify sample clips present (either source)
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          $SSH "test -s /tmp/oev_run/left.mp4 && test -s /tmp/oev_run/right.mp4 && ls -lh /tmp/oev_run/left.mp4 /tmp/oev_run/right.mp4" || {
+            echo "::error::Sample clips missing after both network-volume and Drive fallback attempts -- see prior steps for evidence."
             exit 1
           }
-          $SSH "cp '$LEFT_SRC' /tmp/oev_run/left.mp4 && cp '$RIGHT_SRC' /tmp/oev_run/right.mp4"
-          $SSH "test -s /tmp/oev_run/left.mp4 && test -s /tmp/oev_run/right.mp4 && ls -lh /tmp/oev_run/left.mp4 /tmp/oev_run/right.mp4"
 
       - name: Upload + run sample-baseline test script
         id: run_followcam
