@@ -1760,3 +1760,18 @@ Frozen files confirmed untouched: `oev-runpod-followcam.yml`, `runpod_bootstrap.
 **Not yet done:**
 1. Redispatch `sample_01_30s` (yolo26m) — plain retry, ~$0.08–0.15, to complete the paired comparison at both durations.
 2. `EUR-IS-1` volume YOLO26 populate still blocked on RunPod capacity (unchanged from prior entry).
+
+## CORRECTION (13 Aug 2026, same day) — prior YOLO26-vs-YOLOv8n verdict was built on a mismatched, misleadingly-small sample
+
+**The "YOLO26m loses the ball 10x more than YOLOv8n" verdict two entries above is retracted as stated.** Root cause: it compared YOLO26m's one 60s sample against YOLOv8n's one 60s sample, and that YOLOv8n 60s sample turned out to be an unusually quiet stretch (1 loss). Checking the full 180s cut of the identical clip/model (run `31746711839`, now verified — this closes the "check sample_01_180s to completion" action from the prior handoff):
+
+- **YOLOv8n over the full 180s: 80 `track lost` events, 81 reacquires** — 0.44 losses/sec, i.e. ~26.7 per 60s-equivalent. This is *higher* than YOLO26m's observed 10-per-60s rate, not lower.
+- Confidence-floor theory (YOLO26 emits more low-confidence noise, explaining more losses) does not hold up: YOLOv8n's confidence distribution is nearly identical between its 60s slice and full 180s clip (2.8% of raw detections <0.3 in both), yet loss-per-second differs by ~44x across those two windows of the *same model*. Loss frequency is evidently driven mostly by in-game action (clustering, occlusion, fast play), not primarily a detector-quality gap between the two models.
+- **The "stuck panner, never recovers" framing is partially wrong.** Checked actual `pan_decision` yaw past the 60s cutoff: the tracker reacquires at t≈56.9s (conf 0.32) as previously found, but the camera's smoothing genuinely lags — yaw barely moves until ~t=57.4s, then creeps slowly rather than snapping, and by t=61.4s is still only partway toward where the ball was at reacquire (having since moved again). This is real panner-smoothing lag (`cluster_alpha`/EMA), independent of which detector is used — not a permanent freeze, and not something either model "fixes."
+
+**Correct current state:** the YOLO26-vs-YOLOv8n comparison is NOT yet apples-to-apples (different clip lengths tested per model) and the panner-lag behavior looks like a separate, model-independent issue worth its own investigation. No verdict on detector choice should be drawn from what's in this file until both models are tested on matching clip lengths (ideally both 180s, or repeat the 60s test multiple times to get past single-sample noise).
+
+**Real next actions, superseding the "Next" list two entries up:**
+1. Redispatch `sample_01_30s` (yolo26m) — still blocked on the same sticky-bad-host issue in `EU-RO-1`, unchanged.
+2. Run `sample_01_180s` with `model_variant=yolo26m` (the workflow already supports this via the `model_variant` input added today) to get a real apples-to-apples comparison against the now-verified YOLOv8n 180s result (80 losses/180s).
+3. Panner-smoothing lag (`cluster_alpha`) is a separate, real, model-independent finding — worth its own ticket regardless of detector choice.
