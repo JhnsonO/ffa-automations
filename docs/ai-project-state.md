@@ -1589,3 +1589,18 @@ Not yet done, next chat/session:
 3. Produce the deliverable: image size before (~19.7GB, 47 layers) vs after, pull time before vs after (from `timing.json`), ADOPT/DO-NOT-ADOPT verdict.
 
 **First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
+
+## OEV Test Runtime v1-lite — image built + published to GHCR (13 Aug 2026, runs `31702638274`→`31707056434`→`31708241913`)
+
+`oev-test-runtime-build.yml` published `ghcr.io/jhnsono/oev-test-runtime:v1-lite` @ `sha256:3434a07b0c389af45c8ad35b7075946fc430ae597692bcb2d03e746c1f2528c4`. Build/push/gitleaks-scan passed on the first two attempts; the smoke-check step needed 2 fixes:
+
+1. `0c90c4a` — `vulkaninfo --summary` fails with `ERROR_INCOMPATIBLE_DRIVER` on the GPU-less GHA runner (correct behavior, no driver present) — tried `vulkaninfo --help` as a driver-independent alternative. Wrong: still failed.
+2. `e6236c1` — `vulkaninfo --help` itself exits 1 by design (confirmed against Vulkan-Tools source: `main()` returns 1 after printing help) — not a GPU issue, a tool quirk. Fixed with `which vulkaninfo` (presence-only check, sidesteps invoking the tool at all). **This is the correct final form — do not swap to `command -v` without wrapping in `sh -c`, which would be a structural change; leave as `which`.**
+
+Run `31708241913`: all 11 steps green, including smoke-check (ffmpeg -version, `which vulkaninfo`, aria2c --version, both `/runpod-volume/oev-runtime/{bin,models}` dir checks).
+
+Not yet done, next chat/session:
+1. Dispatch `oev-test-runtime-benchmark.yml` against the new `v1-lite` image + populated network volume (`gdso18q8kw`). Verify pull time no longer hits near the 1200s `wait_for_network` ceiling, and calibration/tracking/detection/pan acceptance checks still pass.
+2. Produce the deliverable: image size before (~19.7GB, 47 layers) vs after (v1-lite, size TBD — check via GHCR manifest), pull time before vs after (from `timing.json`), ADOPT/DO-NOT-ADOPT verdict.
+
+**First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
