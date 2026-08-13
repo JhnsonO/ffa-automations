@@ -231,15 +231,29 @@ echo "=== stitch.log: reco stitch (field follow-cam, l-shape, --no-zero-copy int
 # (run 31557269688), isolated to the zero-copy path specifically via A/B
 # against run 31558373625. This is now the production setting, matching
 # Vast, until the underlying reco-cli bug is fixed and re-verified.
+: "${LOOKAHEAD:=1.5}"
 STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
   --model "${YOLO26_VARIANT}.onnx"
   --tracking field
   --panner-preset broadcast
-  --lookahead 1.5
+  --lookahead "${LOOKAHEAD}"
   --detection-interval 1
   --events events.jsonl
   --no-zero-copy
   --width 1920 --height 1080)
+
+# --- Measurement-only overlay: optional cluster_alpha override on top of
+# the broadcast preset. Blank/unset CLUSTER_ALPHA_OVERRIDE (the default)
+# leaves this block entirely inert -- STITCH_ARGS is unchanged and
+# behavior is byte-identical to the pre-existing baseline. Only alpha is
+# overridden; every other broadcast parameter (dead_zone_rad, lead_gain,
+# lead_alpha, lookahead_reactivity, ball_weight) stays at preset default.
+if [ -n "${CLUSTER_ALPHA_OVERRIDE:-}" ]; then
+  echo "{\"cluster_alpha\": ${CLUSTER_ALPHA_OVERRIDE}}" > panner_overlay.json
+  STITCH_ARGS+=(--panner-config panner_overlay.json)
+  echo "Panner overlay active: cluster_alpha=${CLUSTER_ALPHA_OVERRIDE} (panner_overlay.json)" | tee -a stitch.log
+fi
+
 echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch.log
 stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
 stitch_rc=${PIPESTATUS[0]}
