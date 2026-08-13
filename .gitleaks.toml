@@ -37,3 +37,42 @@ regexes = [
   '''MIIDTQIBAAKCAQEAh60B6yPMRIT7udq2kKuwnQDohvT1U0w\+''',
   '''MIIEogIBAAKCAQEA6yCv\+BLrRP/dMPBXJWK21c0aqxIX6JkO''',
 ]
+
+[[allowlists]]
+description = "Nsight Compute 2025.1.1 bundled Qt/OpenSSL/libssh string tables (libqopensslbackend.so, libssh.so, libQt6Network.so.6) -- confirmed false positives, not repo secrets. Traced by extracting the ghcr.io/jhnsono/oev-test-runtime image layer sha256:abf026459f528efac0543168ff07d7037e9415fe3eb956b82f8fd617c7d2db1f locally and running gitleaks unredacted against each candidate file in isolation. All four are OpenSSL/libssh/Qt-Network internal error-message and cert-type-name string tables that happen to contain PEM header text (\"-----BEGIN ... PRIVATE KEY-----\") as literal strings, not actual key material."
+regexTarget = "secret"
+regexes = [
+  '''-----BEGIN ENCRYPTED PRIVATE KEY-----\x001\.2\.840\.113549\.1\.5\.3\x002''',
+  '''-----BEGIN RSA PRIVATE KEY-----\x00-----BEGIN EC PRIVATE KEY-----\x00\x00ecdsa-''',
+  '''-----BEGIN RSA PRIVATE KEY-----\x00-----BEGIN DSA PRIVATE KEY-----\x00referer\x00Htt''',
+  '''-----BEGIN EC PRIVATE KEY-----\x00-----END EC PRIVATE KEY-----\x00POST\x00unexpected''',
+]
+
+[[allowlists]]
+description = "Linux kernel uapi headers (nf_tables.h, nl80211.h) bundled in the base image -- generic-api-key false positives on enum constant names ending in _KEY_MAX, not secrets."
+regexTarget = "secret"
+regexes = [
+  '''^__NFTA_TUNNEL_KEY_IP6_MAX$''',
+  '''^NL80211_KEY_MAX$''',
+]
+
+[[allowlists]]
+description = "Perl 5.38.2 CORE headers (cop.h) -- generic-api-key false positive on internal apidoc constant name COPHH_KEY_UTF8, not a secret."
+regexTarget = "secret"
+regexes = [
+  '''^COPHH_KEY_UTF8$''',
+]
+
+[[allowlists]]
+description = "CUDA 12.8 thrust/cub headers (agent_merge.cuh etc.) -- generic-api-key false positive on local C++ variable name partition1_loc.second, not a secret."
+regexTarget = "secret"
+regexes = [
+  '''^partition1_loc\.second$''',
+]
+
+[[allowlists]]
+description = "CUDA 12.8 libcusolver_static.a -- github-refresh-token false positive on a demangled C++ symbol fragment from cusolverDnXorgqr_bufferSize (double2 overload), not a secret. Occurs 4x (once per template instantiation) in the archive."
+regexTarget = "secret"
+regexes = [
+  '''^ghr_bufferSizeI7double2E16cusolverStatus$''',
+]
