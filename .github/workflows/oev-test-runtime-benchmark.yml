@@ -16,7 +16,7 @@ jobs:
   benchmark-runtime-v1:
     name: Benchmark OEV Test Runtime v1 (RunPod)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -134,7 +134,7 @@ jobs:
               print(f'Pod created: id={pod_id}')
               return pod_id
 
-          def wait_for_network(pod_id, timeout_s=300):
+          def wait_for_network(pod_id, timeout_s=1200):
               deadline = time.time() + timeout_s
               info = {}
               while time.time() < deadline:
