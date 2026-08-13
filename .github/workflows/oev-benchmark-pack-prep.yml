@@ -106,7 +106,7 @@ jobs:
           RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
         run: |
           ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
-          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends aria2
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends aria2 ffmpeg
           mkdir -p /tmp/oev_pack
           aria2c -x 8 -s 8 --file-allocation=none --header="Authorization: Bearer $ACCESS_TOKEN" \
             --dir=/tmp/oev_pack --out=left_full.mp4 "https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media"
