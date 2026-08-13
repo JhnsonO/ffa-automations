@@ -148,27 +148,29 @@ jobs:
             tmp="$(mktemp /tmp/layer-XXXXXX.blob)"
             download_blob "$digest" "$tmp"
             verify_digest "$tmp" "$digest"
-            echo "Scanning layer $digest ($mediatype)"
+            layerdir="$(mktemp -d /tmp/layer-extract-XXXXXX)"
+            echo "Extracting layer $digest ($mediatype)"
             case "$mediatype" in
               *tar+gzip*)
-                gunzip -c "$tmp" | tar -xO 2>/dev/null \
-                  | gitleaks stdin --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
+                gunzip -c "$tmp" | tar -x --no-same-owner --no-same-permissions -C "$layerdir" 2>/dev/null || true
                 ;;
               *tar+zstd*)
-                zstd -dc "$tmp" | tar -xO 2>/dev/null \
-                  | gitleaks stdin --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
+                zstd -dc "$tmp" | tar -x --no-same-owner --no-same-permissions -C "$layerdir" 2>/dev/null || true
                 ;;
               *tar)
-                tar -xO -f "$tmp" 2>/dev/null \
-                  | gitleaks stdin --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
+                tar -x --no-same-owner --no-same-permissions -f "$tmp" -C "$layerdir" 2>/dev/null || true
                 ;;
               *)
                 echo "Unrecognized layer mediaType: $mediatype" >&2
                 rm -f "$tmp"
+                rm -rf "$layerdir"
                 exit 1
                 ;;
             esac
             rm -f "$tmp"
+            echo "Scanning layer $digest ($mediatype)"
+            gitleaks dir "$layerdir" --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
+            rm -rf "$layerdir"
           done
 
       - name: Smoke-check manifest inside image (no GPU required)
