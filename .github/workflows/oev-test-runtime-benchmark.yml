@@ -4,9 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       image_ref:
-        description: 'Full GHCR image ref to benchmark (immutable tag) -- now the small runtime-lite image; heavy assets come from vars.OEV_NETWORK_VOLUME_ID instead of image layers'
+        description: 'Full GHCR image ref to benchmark (immutable tag) -- now the small runtime-lite image; heavy assets come from vars.OEV_NETWORK_VOLUME_MAP instead of image layers'
         required: false
         default: 'ghcr.io/jhnsono/oev-test-runtime:v1-lite'
+        type: string
+      datacenter_id:
+        description: 'Datacenter id whose volume to benchmark against (key in vars.OEV_NETWORK_VOLUME_MAP). Leave blank to auto-select the best-available candidate from the map.'
+        required: false
+        default: ''
         type: string
 
 permissions:
@@ -51,6 +56,85 @@ jobs:
           os.chmod('/tmp/runpod_key', 0o600)
           PY
 
+      - name: Select datacenter + volume from OEV_NETWORK_VOLUME_MAP
+        id: volume
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          VOLUME_MAP: ${{ vars.OEV_NETWORK_VOLUME_MAP }}
+          DATACENTER_ID: ${{ inputs.datacenter_id }}
+        run: |
+          python3 -u - << 'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          volume_map_json = os.environ.get('VOLUME_MAP', '')
+          dc_input = os.environ.get('DATACENTER_ID', '').strip()
+          if not volume_map_json:
+              print('::error::vars.OEV_NETWORK_VOLUME_MAP is not set. Run oev-network-volume-setup.yml (and oev-populate-volume.yml) first.')
+              raise SystemExit(1)
+          volume_map = json.loads(volume_map_json)
+          if not volume_map:
+              print('::error::vars.OEV_NETWORK_VOLUME_MAP is set but empty.')
+              raise SystemExit(1)
+
+          if dc_input:
+              dc = dc_input
+              volume_id = volume_map.get(dc)
+              if not volume_id:
+                  print(f'::error::datacenter_id={dc!r} is not a key in OEV_NETWORK_VOLUME_MAP={volume_map_json}. Valid keys: {list(volume_map.keys())}')
+                  raise SystemExit(1)
+              print(f'Using explicit datacenter_id={dc}, volume={volume_id}')
+          else:
+              # Auto-select the best-ranked candidate among only the
+              # datacenters already present in the map (same live-query,
+              # HIGH/MEDIUM/LOW ranking logic as
+              # oev-network-volume-setup.yml -- no need to re-filter
+              # against the volume-capable set since map keys are
+              # volume-capable by construction).
+              headers = {
+                  'Authorization': f'Bearer {os.environ["RUNPOD_API_KEY"]}',
+                  'Accept': 'application/json',
+                  'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) ffa-automations-oev-test-runtime-benchmark',
+              }
+              candidates = []
+              try:
+                  req = urllib.request.Request(
+                      'https://api.runpod.io/v2/catalog/gpus?include=AVAILABILITY&product=POD',
+                      headers=headers,
+                  )
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      gpu_types = json.loads(response.read())
+                  if isinstance(gpu_types, dict):
+                      gpu_types = gpu_types.get('gpus') or gpu_types.get('data') or []
+                  for g in gpu_types:
+                      if g.get('id') == 'NVIDIA GeForce RTX 4090' or g.get('name') == 'RTX 4090':
+                          for entry in (g.get('dataCenters') or []):
+                              candidates.append((entry.get('availability', ''), entry.get('id')))
+              except Exception as exc:
+                  print(f'GPU-type/datacenter availability query failed or unexpected shape: {exc}')
+
+              candidates = [c for c in candidates if c[1] in volume_map]
+              rank = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
+              candidates.sort(key=lambda c: rank.get(c[0], 3))
+
+              if candidates:
+                  dc = candidates[0][1]
+                  volume_id = volume_map[dc]
+                  print(f'Auto-selected datacenter {dc!r} (availability={candidates[0][0]!r}) from {len(candidates)} candidate(s) restricted to map keys: {candidates}')
+              else:
+                  # No live signal restricted to the map's datacenters --
+                  # fall back to the first map entry rather than failing
+                  # outright, since the map is already known-volume-capable.
+                  dc, volume_id = next(iter(volume_map.items()))
+                  print(f'::warning::No live availability signal for any datacenter in the map -- falling back to first map entry: {dc}={volume_id}')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'volume_id={volume_id}\n')
+              f.write(f'data_center_id={dc}\n')
+          PY
+
       # Launch step: pod-allocation loop and its NVDEC-preflight retry are
       # copied verbatim (mechanics unchanged) from
       # .github/workflows/oev-runpod-followcam.yml's "Launch RunPod GPU
@@ -73,10 +157,10 @@ jobs:
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           IMAGE_REF: ${{ inputs.image_ref }}
-          VOLUME_ID: ${{ vars.OEV_NETWORK_VOLUME_ID }}
+          VOLUME_ID: ${{ steps.volume.outputs.volume_id }}
         run: |
           if [ -z "$VOLUME_ID" ]; then
-            echo "::error::vars.OEV_NETWORK_VOLUME_ID is not set. Run oev-network-volume-setup.yml (and oev-populate-volume.yml) first."
+            echo "::error::No volume_id resolved from OEV_NETWORK_VOLUME_MAP. Run oev-network-volume-setup.yml (and oev-populate-volume.yml) first."
             exit 1
           fi
           python3 -u - << 'PY'
