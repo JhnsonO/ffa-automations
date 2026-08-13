@@ -131,6 +131,7 @@ jobs:
           if [ -n "$SEED_INPUT" ]; then
             SEED_ARG="--seed $SEED_INPUT"
           fi
+          mkdir -p /tmp/oev_samples
           python3 scripts/oev_generate_sample_dataset.py \
             --left /tmp/oev_pack/left_full.mp4 \
             --right /tmp/oev_pack/right_full.mp4 \
