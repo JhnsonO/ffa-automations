@@ -75,6 +75,13 @@ jobs:
               'Authorization': f'Bearer {api_key}',
               'Content-Type': 'application/json',
               'Accept': 'application/json',
+              # Cloudflare in front of api.runpod.io (v2) 403s requests
+              # with urllib's default User-Agent as a bot signature
+              # (confirmed live: error_code 1010 "browser_signature_banned").
+              # rest.runpod.io/v1 has never needed this, but setting it on
+              # every request here is harmless and avoids the same trap if
+              # Cloudflare's policy ever tightens on v1 too.
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) ffa-automations-oev-network-volume-setup',
           }
 
           def request(method, url, data=None, hdrs=None, timeout=30):
