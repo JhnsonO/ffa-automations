@@ -1740,3 +1740,23 @@ Frozen files confirmed untouched: `oev-runpod-followcam.yml`, `runpod_bootstrap.
 2. Repo Settings -> Actions -> Workflow permissions read-only issue (pre-existing, unrelated to this ticket) remains un-flipped.
 
 **First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
+
+## YOLO26m vs YOLOv8n follow-cam A/B — sample_01_60s CONCLUDED, sample_01_30s blocked on infra (13 Aug 2026)
+
+**Ticket closed for the 60s comparison (the AB comparison the original ticket, run `31608010277`, never reached).** Built via direct Claude execution (Johnson: "you write and execute"), merged `97e753a` on `main`:
+- `runpod_sample_baseline_yolo26_remote.sh` (new) — copy of `runpod_sample_baseline_remote.sh` with exactly one functional diff: points `--model` at a volume-staged `${YOLO26_VARIANT}.onnx` (default `yolo26m`) from `/runpod-runtime/oev-runtime/models/`, hard-fails if not present on the volume (no fresh-export fallback, unlike the YOLOv8n baseline path). All other flags (`--tracking field --panner-preset broadcast --lookahead 1.5 --detection-interval 1 --no-zero-copy --width 1920 --height 1080`), calibrate/field_roi/acceptance logic byte-identical to baseline.
+- `oev-runpod-sample-baseline.yml` — added `model_variant` workflow_dispatch input (`yolov8n`/`yolo26s`/`yolo26m`/`yolo26l`/`yolo26x`, default `yolov8n` so the existing baseline path is unaffected), selects which remote script to scp+run and passes `YOLO26_VARIANT` env accordingly.
+- Diff verified before merge: exactly these 2 files, +20/-3 and +371/-0, no frozen files touched.
+
+**Results — sample_01_60s, YOLO26m, `EU-RO-1`, run `31748260446` PASS:**
+- 634s processing, 5.6–5.7fps (vs YOLOv8n baseline's 6.4fps — YOLO26m is measurably slower, expected for medium vs nano), $0.1303 (vs baseline's $0.134 — comparable, run finished a hair faster on cost despite lower fps due to a shorter pod-selection phase).
+- `detections_raw events with >=1 detection`: 3596/3596 frames (100%), `pan_decision` yaw spread 1.24 rad — same shape of result as the YOLOv8n baseline's per-frame detection coverage; this acceptance-level metric does not discriminate between the two models.
+- **Real discriminating finding — track-loss behavior differs sharply from the YOLOv8n baseline:** YOLO26m logged **10 `BallTracker: track lost` events** across the 60s clip (vs YOLOv8n's **1**), spread roughly evenly through the clip (first at t≈6.6s) rather than clustered late. But **every single YOLO26m loss reacquired within 0.5–4.5s** (fastest: 2 losses within the last 2s of the clip, both recovered in <1s each) — unlike the YOLOv8n baseline, whose one loss at t≈56s **never recovered** before the clip ended (camera frozen for the final ~3.4s).
+- Visual spot-check (frames extracted at two loss/reacquire windows, t≈6.4–7.1s and t≈49.2–50.2s): camera pan is clearly live and tracking the play through both windows — no stuck/frozen framing, no wild whip-pans, composition stays reasonably centered on the ball/pack of players even mid-loss.
+- **Verdict: mixed, not a clean win either way.** YOLO26m loses lock on the ball far more often than YOLOv8n (10x vs 1x in this single 60s sample) — likely a real detection-confidence/calibration difference, not noise, given even spacing across the clip. But YOLO26m's recovery behavior is categorically better: it always re-finds the ball, where YOLOv8n's tracker got permanently stuck on its one loss. Practical watchability verdict needs the 30s run too (still blocked, see below) and ideally repeat sampling before calling this improvement/regression definitively — one 60s sample is not enough to separate "YOLO26m genuinely loses the ball more" from "this specific clip has harder passages for YOLO26m specifically."
+
+**sample_01_30s, YOLO26m, run `31748218337` FAILED — infra only, not code:** all 3 pod-allocation attempts landed the identical bad NVDEC host (`213.173.98.36`, machine `6mxeer3pl6dj`) in `EU-RO-1` — same sticky-bad-host pattern already documented for this datacenter/script family. Pods confirmed cleaned up (HTTP 404 on all 3 deletes), zero real cost. Needs a plain redispatch (no code change) once/if that host clears, or accept the 60s result alone as sufficient sample size for now.
+
+**Not yet done:**
+1. Redispatch `sample_01_30s` (yolo26m) — plain retry, ~$0.08–0.15, to complete the paired comparison at both durations.
+2. `EUR-IS-1` volume YOLO26 populate still blocked on RunPod capacity (unchanged from prior entry).
