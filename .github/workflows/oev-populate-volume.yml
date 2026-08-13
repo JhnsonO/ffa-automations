@@ -1,18 +1,24 @@
 name: OEV — Populate RunPod Network Volume
 
 # One-time (or rare re-run) paid-GPU workflow: attaches the persistent
-# OEV_NETWORK_VOLUME_ID network volume to a throwaway RunPod pod, builds
-# reco-cli at the pinned SHA (--features cuda) and pre-exports YOLO26
-# s/m/l/x @1920 ONNX models onto the volume via
-# oev_populate_volume_remote.sh, then terminates the pod. Idempotent --
-# the remote script skips the build entirely if the volume's
-# manifest.json already matches the requested reco_sha/ultralytics
-# version, unless force_rebuild is set.
+# one datacenter's entry in the OEV_NETWORK_VOLUME_MAP, builds reco-cli
+# at the pinned SHA (--features cuda) and pre-exports YOLO26 s/m/l/x
+# @1920 ONNX models onto that volume via oev_populate_volume_remote.sh,
+# then terminates the pod. Idempotent -- the remote script skips the
+# build entirely if the volume's manifest.json already matches the
+# requested reco_sha/ultralytics version, unless force_rebuild is set.
 #
-# Requires ${{ vars.OEV_NETWORK_VOLUME_ID }} to already exist -- run
-# oev-network-volume-setup.yml first if it doesn't.
+# CHANGED 13 Aug 2026: this workflow now populates one volume per
+# dispatch, selected via the required datacenter_id input, since
+# OEV_NETWORK_VOLUME_MAP holds several small volumes across several
+# datacenters (replacing the old single OEV_NETWORK_VOLUME_ID). Dispatch
+# this once per datacenter in the map that needs populating.
 #
-# Attaching a network volume constrains this pod to the volume's
+# Requires ${{ vars.OEV_NETWORK_VOLUME_MAP }} to already exist and
+# contain datacenter_id as a key -- run oev-network-volume-setup.yml
+# first if it doesn't.
+#
+# Attaching a network volume constrains this pod to that volume's
 # datacenter, trading some GPU-availability flexibility for the
 # pull-time win the volume exists to deliver -- expected and accepted
 # per the ticket this workflow was built for.
@@ -20,6 +26,10 @@ name: OEV — Populate RunPod Network Volume
 on:
   workflow_dispatch:
     inputs:
+      datacenter_id:
+        description: 'Datacenter id whose volume to populate (must be a key in vars.OEV_NETWORK_VOLUME_MAP, e.g. EU-RO-1)'
+        required: true
+        type: string
       reco_sha:
         description: 'Pinned video-stitcher (Reco) commit SHA to build'
         required: false
@@ -54,13 +64,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Verify OEV_NETWORK_VOLUME_ID is set
+      - name: Look up volume id for datacenter_id in OEV_NETWORK_VOLUME_MAP
+        id: volume
+        env:
+          VOLUME_MAP: ${{ vars.OEV_NETWORK_VOLUME_MAP }}
+          DATACENTER_ID: ${{ inputs.datacenter_id }}
         run: |
-          if [ -z "${{ vars.OEV_NETWORK_VOLUME_ID }}" ]; then
-            echo "::error::vars.OEV_NETWORK_VOLUME_ID is not set. Run oev-network-volume-setup.yml first."
-            exit 1
-          fi
-          echo "Using network volume: ${{ vars.OEV_NETWORK_VOLUME_ID }}"
+          python3 -u - << 'PY'
+          import json
+          import os
+
+          volume_map_json = os.environ.get('VOLUME_MAP', '')
+          dc = os.environ['DATACENTER_ID']
+          if not volume_map_json:
+              print('::error::vars.OEV_NETWORK_VOLUME_MAP is not set. Run oev-network-volume-setup.yml first.')
+              raise SystemExit(1)
+          volume_map = json.loads(volume_map_json)
+          volume_id = volume_map.get(dc)
+          if not volume_id:
+              print(f'::error::datacenter_id={dc!r} is not a key in OEV_NETWORK_VOLUME_MAP={volume_map_json}. Valid keys: {list(volume_map.keys())}')
+              raise SystemExit(1)
+          print(f'Using network volume {volume_id} for datacenter {dc}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'volume_id={volume_id}\n')
+          PY
 
       - name: Generate SSH key pair
         run: |
@@ -100,7 +127,7 @@ jobs:
         id: launch
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-          VOLUME_ID: ${{ vars.OEV_NETWORK_VOLUME_ID }}
+          VOLUME_ID: ${{ steps.volume.outputs.volume_id }}
         run: |
           python3 -u - << 'PY'
           import json
