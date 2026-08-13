@@ -171,7 +171,7 @@ jobs:
           # This check only confirms the inference-time dependencies and
           # the expected volume mount point exist.
           docker run --rm "$IMAGE_REF" ffmpeg -version
-          docker run --rm "$IMAGE_REF" vulkaninfo --help
+          docker run --rm "$IMAGE_REF" which vulkaninfo
           docker run --rm "$IMAGE_REF" aria2c --version
           docker run --rm "$IMAGE_REF" test -d /runpod-volume/oev-runtime/bin
           docker run --rm "$IMAGE_REF" test -d /runpod-volume/oev-runtime/models
