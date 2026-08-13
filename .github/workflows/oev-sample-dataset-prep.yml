@@ -1,0 +1,227 @@
+name: OEV — Sample Dataset Prep (5 locations x 3 durations, no GPU)
+
+# One-time (or rare re-run) dataset-generation job: picks 5 randomized,
+# non-clustered start timestamps from a full-source stereo pair already in
+# the OEV Drive root folder, cuts a 180s/60s/30s clip at each location
+# (stream copy only -- 60s/30s derived from the 180s cut, source never
+# decoded more than once per location per side), writes a manifest.json,
+# and uploads the full set to Drive under Samples/<sample-set-id>/.
+#
+# This is deliberately NOT wired into any benchmark/test run -- it is run
+# manually, on purpose, whenever a new sample set is wanted. Staging the
+# resulting set onto RunPod network volumes is a separate workflow
+# (oev-populate-volume-samples.yml).
+
+on:
+  workflow_dispatch:
+    inputs:
+      left_clip:
+        description: 'Full source left clip filename in OEV Drive root'
+        required: false
+        default: 'GX010197.MP4'
+        type: string
+      right_clip:
+        description: 'Full source right clip filename in OEV Drive root'
+        required: false
+        default: 'GX010173.MP4'
+        type: string
+      seed:
+        description: 'Optional random seed for reproducible sample selection (blank = fresh random seed, recorded in the manifest)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-sample-dataset:
+    name: Generate 5x3 sample clips + manifest, upload to Drive
+    # ffmpeg stream-copy trims only -- no decode/re-encode, no GPU needed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Resolve full-source clip IDs in OEV Drive root folder
+        id: resolve
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          LEFT_CLIP: ${{ inputs.left_clip }}
+          RIGHT_CLIP: ${{ inputs.right_clip }}
+        run: |
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -u - << 'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request as req
+
+          OEV_DRIVE_FOLDER_ID = '18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ'
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          payload = json.dumps({
+              'client_id': token_data.get('client_id') or creds_data['installed']['client_id'],
+              'client_secret': token_data.get('client_secret') or creds_data['installed']['client_secret'],
+              'refresh_token': token_data['refresh_token'],
+              'grant_type': 'refresh_token',
+          }).encode()
+          response = req.urlopen(req.Request(
+              'https://oauth2.googleapis.com/token',
+              data=payload,
+              headers={'Content-Type': 'application/json'},
+              method='POST',
+          ))
+          token = json.loads(response.read())
+          if 'access_token' not in token:
+              raise RuntimeError(f'Token refresh failed: {token}')
+          access_token = token['access_token']
+          open('/tmp/drive_token.txt', 'w').write(access_token)
+
+          def find_in_drive_root(filename):
+              q = f"name='{filename}' and '{OEV_DRIVE_FOLDER_ID}' in parents and trashed=false"
+              url = 'https://www.googleapis.com/drive/v3/files?' + urllib.parse.urlencode({
+                  'q': q,
+                  'fields': 'files(id,name)',
+                  'supportsAllDrives': 'true',
+                  'includeItemsFromAllDrives': 'true',
+              })
+              response = req.urlopen(req.Request(
+                  url,
+                  headers={'Authorization': f'Bearer {access_token}'},
+              ))
+              files = json.loads(response.read()).get('files', [])
+              if not files:
+                  raise RuntimeError(f'{filename} not found in OEV Drive root folder')
+              return files[0]['id']
+
+          left_id = find_in_drive_root(os.environ['LEFT_CLIP'])
+          right_id = find_in_drive_root(os.environ['RIGHT_CLIP'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'left_id={left_id}\nright_id={right_id}\n')
+          PY
+
+      - name: Download full source clips
+        env:
+          LEFT_ID: ${{ steps.resolve.outputs.left_id }}
+          RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends aria2 ffmpeg
+          mkdir -p /tmp/oev_pack
+          aria2c -x 8 -s 8 --file-allocation=none --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/oev_pack --out=left_full.mp4 "https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media"
+          aria2c -x 8 -s 8 --file-allocation=none --header="Authorization: Bearer $ACCESS_TOKEN" \
+            --dir=/tmp/oev_pack --out=right_full.mp4 "https://www.googleapis.com/drive/v3/files/$RIGHT_ID?alt=media"
+          test -s /tmp/oev_pack/left_full.mp4 && test -s /tmp/oev_pack/right_full.mp4
+          ls -lh /tmp/oev_pack/
+
+      - name: Generate sample dataset (5 locations x 30/60/180s, both sides)
+        id: generate
+        env:
+          LEFT_CLIP: ${{ inputs.left_clip }}
+          RIGHT_CLIP: ${{ inputs.right_clip }}
+          SEED_INPUT: ${{ inputs.seed }}
+        run: |
+          SEED_ARG=""
+          if [ -n "$SEED_INPUT" ]; then
+            SEED_ARG="--seed $SEED_INPUT"
+          fi
+          python3 scripts/oev_generate_sample_dataset.py \
+            --left /tmp/oev_pack/left_full.mp4 \
+            --right /tmp/oev_pack/right_full.mp4 \
+            --left-name "$LEFT_CLIP" \
+            --right-name "$RIGHT_CLIP" \
+            --outdir /tmp/oev_samples \
+            $SEED_ARG | tee /tmp/oev_samples/generate_stdout.log
+
+          SAMPLE_SET_ID=$(grep '^sample_set_id=' /tmp/oev_samples/generate_stdout.log | cut -d= -f2)
+          echo "sample_set_id=$SAMPLE_SET_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Upload sample dataset (artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-sample-dataset-${{ github.run_id }}
+          path: /tmp/oev_samples/
+          retention-days: 30
+
+      - name: Upload sample dataset to OEV Drive Samples/<sample-set-id>/ folder
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          SAMPLE_SET_ID: ${{ steps.generate.outputs.sample_set_id }}
+        run: |
+          pip install -q google-auth google-auth-oauthlib google-api-python-client
+          python3 -u - << 'PY'
+          import json, os, sys
+          from pathlib import Path
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          OEV_DRIVE_FOLDER_ID = '18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ'
+          SAMPLE_SET_ID = os.environ['SAMPLE_SET_ID']
+
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          creds = Credentials(
+              token=None,
+              refresh_token=token_data['refresh_token'],
+              token_uri=token_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
+              client_id=token_data.get('client_id') or creds_data['installed']['client_id'],
+              client_secret=token_data.get('client_secret') or creds_data['installed']['client_secret'],
+          )
+          drive = build('drive', 'v3', credentials=creds)
+
+          def find_or_create_folder(name, parent):
+              res = drive.files().list(
+                  q=f"name='{name}' and '{parent}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+                  fields='files(id)', supportsAllDrives=True, includeItemsFromAllDrives=True,
+              ).execute()
+              files = res.get('files', [])
+              if files:
+                  return files[0]['id']
+              folder = drive.files().create(
+                  body={'name': name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent]},
+                  fields='id',
+              ).execute()
+              return folder['id']
+
+          samples_id = find_or_create_folder('Samples', OEV_DRIVE_FOLDER_ID)
+          set_id = find_or_create_folder(SAMPLE_SET_ID, samples_id)
+
+          local_root = Path('/tmp/oev_samples')
+          uploaded = 0
+          for path in sorted(local_root.rglob('*')):
+              if not path.is_file():
+                  continue
+              if path.name == 'generate_stdout.log':
+                  continue
+              rel = path.relative_to(local_root)
+              parent_id = set_id
+              # mirror any sample_NN subdirectory as a Drive subfolder
+              if len(rel.parts) > 1:
+                  parent_id = find_or_create_folder(rel.parts[0], set_id)
+              mimetype = 'video/mp4' if path.suffix == '.mp4' else 'application/octet-stream'
+              media = MediaFileUpload(str(path), mimetype=mimetype, resumable=True)
+              result = drive.files().create(
+                  body={'name': path.name, 'parents': [parent_id]},
+                  media_body=media, fields='id', supportsAllDrives=True,
+              ).execute()
+              file_id = result['id']
+              local_size = path.stat().st_size
+              verify = drive.files().get(fileId=file_id, fields='id,size', supportsAllDrives=True).execute()
+              remote_size = int(verify.get('size', -1)) if path.suffix == '.mp4' else local_size
+              if path.suffix == '.mp4' and remote_size != local_size:
+                  print(f'::error::Upload verification failed for {path.name}: local {local_size} != remote {remote_size}')
+                  sys.exit(1)
+              uploaded += 1
+              print(f'Uploaded {rel} -> Drive file id {file_id}')
+
+          print(f'Done: {uploaded} file(s) uploaded to Samples/{SAMPLE_SET_ID}/')
+          PY
