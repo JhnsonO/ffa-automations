@@ -1680,3 +1680,32 @@ All 4 volumes are 10GB, created in run `31715262161`. Note: this workflow's own 
 4. Update this doc with final per-datacenter monthly storage cost vs the old $7/mo once the old volume is deleted (expected: 4×10GB×$0.07/GB = $2.80/mo, ~60% reduction).
 
 **First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
+
+## RunPod provisioning — round-robin + weighted ranking, MERGED + VERIFIED (13 Aug 2026)
+
+**Ticket:** replace RTX-4090-only DC ranking and per-DC-exhaustion retry with 8-GPU weighted scoring and round-robin cross-DC retry, in `oev-test-runtime-benchmark.yml` and `oev-populate-volume.yml`. Base: `main` @ `7daa829`.
+
+**Merged to `main` (`5337505`, feature branch `feat/runpod-dc-roundrobin` deleted after merge -- confirm deletion next session if not already done):**
+
+- `oev-test-runtime-benchmark.yml`:
+  - DC ranking now scores all 8 allowed GPU types (weighted 8..1) × availability points (HIGH=3/MEDIUM=2/LOW=1/NONE=0), replacing the old RTX-4090-only proxy. Every mapped DC stays a candidate regardless of score. API failure falls back to stable map order.
+  - Retry loop replaced: 3 global rounds (`SLEEP_BEFORE_ROUND=[0,30,60]`), round 1 = every currently-eligible mapped DC (not capped) with the preferred-4 GPU tier, rounds 2-3 = same eligible set with the full 8-GPU tier.
+  - Failure handling split: capacity failure -> next DC immediately, DC stays eligible; network timeout -> DC demoted to back of order for future rounds only (current round unaffected); SSH timeout / preflight error / preflight FAIL -> DC removed from further rounds this run (bad-host avoidance) -- except when `datacenter_id` is explicitly pinned, which instead retries the same DC next round.
+  - Download-speed floor now keyed by global round (`[800,400,None]`), not per-DC attempt -- no longer resets to 800 when moving DC within a round.
+- `oev-populate-volume.yml`: same 3-round schedule (`[0,30,60]`) replacing flat `MAX_ATTEMPTS=3`/`RETRY_DELAY_S=40`; round 1 = preferred-4 GPU tier, rounds 2-3 = full 8. Still strictly single-DC (input-pinned), no cross-DC fallback, no `dataCenterIds` added -- SSH timeout deletes the pod and retries the same DC next round (no removal, nowhere else to go).
+
+Frozen files confirmed untouched: `oev-runpod-followcam.yml`, `runpod_bootstrap.sh`, `runpod_gpu_preflight.sh`, `runpod_followcam_remote.sh`, `oev-benchmark-pack-prep.yml`.
+
+**Verification run `31732339439` (post-merge, on `main`), all green:**
+- DC scores confirmed in log: `EU-RO-1=35, US-IL-1=15, EUR-IS-1=12, AP-JP-1=0` -- all 4 kept as candidates including the zero-score one.
+- Round 1 correctly offered all 4 eligible DCs (ranked order), not capped at a fixed count.
+- Selected `EU-RO-1` (top score) on first attempt, RTX 4090, `$0.74/hr`, no fallback to round 2/3 needed.
+- `total_wall_clock_s = 303.5` (~5 min), cost ≈ $0.06.
+
+**Note (process, not code):** `gh.sh dispatch`'s HTTP-code capture returned a false "ERROR: dispatch HTTP 400" on this session's first dispatch call even though the dispatch had actually succeeded (204) underneath -- a manual retry then created a genuine duplicate run (`31732340917`), which was cancelled (HTTP 202) before it reached pod-creation cost. `gh.sh`'s dispatch code-capture logic may need a look if this recurs; not touched this session (out of scope, and the manual-curl path already provides a correct fallback).
+
+**Not yet done / backlog:**
+1. Staging benchmark-pack video samples onto the network volumes (per-DC, since volumes are DC-pinned) to cut `benchmark_pack_download_s` (~42.5s last run) to near-zero -- raised by Johnson this session, not scoped or actioned. Would need extending `oev-populate-volume.yml` (or a new small workflow) plus a manifest/versioning check matching the existing reco/models pattern.
+2. Repo Settings -> Actions -> Workflow permissions read-only issue (pre-existing, unrelated to this ticket) remains un-flipped.
+
+**First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
