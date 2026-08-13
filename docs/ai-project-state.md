@@ -1796,3 +1796,19 @@ This closes the YOLO26-vs-YOLOv8n AB ticket (the one originally left unconcluded
 **Not yet done:**
 1. `sample_01_30s` yolo26m still blocked on sticky-bad-host NVDEC in `EU-RO-1` (unchanged, low priority now that 180s gives a solid verdict).
 2. If pursuing further: `yolo26s/l/x` size sweep, or the panner-smoothing-lag ticket, are the two real open threads — neither started.
+
+## Panner-lag PRIORITY FINDING — camera off-target >50% of tracking frames, model-independent (13 Aug 2026)
+
+**Real, quantified, and bigger than the detector-choice question.** Compared `pan_decision` yaw against `world_state.ball` yaw (the actual tracked ball position, not just detection events) frame-by-frame across both full 180s runs:
+
+| | YOLOv8n (`31746711839`) | YOLO26m (`31750846382`) |
+|---|---|---|
+| frames where ball state = actively Tracking | 2884 | 7497 |
+| median camera-to-ball yaw offset while tracking | 0.397 rad | 0.346 rad |
+| **ball genuinely outside visible frame despite active tracking** | **57.1%** | **51.5%** |
+
+Method: `world_state` events carry the ball's true tracked yaw/pitch each frame (`ball.state == "Tracking"`); compared against the concurrent `pan_decision.pose.yaw` (where the camera is actually pointed). "Outside visible frame" = offset exceeds half the virtual camera's FOV (~38.24° observed, so >19.1° off-target).
+
+**This means the panner's smoothing (`cluster_alpha`/EMA, `--lookahead 1.5`) is the dominant driver of "ball out of shot" — not detector quality.** Model swap only moved the out-of-frame rate from 57% to 51.5%; the panner itself is the real lever. Confirms/generalizes the earlier single-instance "stuck panner" observation (t≈56s YOLOv8n) into a clip-wide, systemic pattern.
+
+**Recommendation, not yet actioned:** investigate `cluster_alpha`/EMA smoothing gain and `--lookahead` tuning as the next real priority — likely higher-value than further detector work (model-size sweep, pose-based occlusion recovery) given this affects the majority of frames regardless of detector choice.
