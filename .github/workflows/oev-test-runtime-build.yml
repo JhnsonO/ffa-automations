@@ -76,17 +76,102 @@ jobs:
           echo "Published: ${{ steps.tags.outputs.image_ref }}"
           echo "Digest: ${{ steps.build.outputs.digest }}"
 
+      - name: Install crane and gitleaks (pinned, checksum-verified)
+        env:
+          CRANE_VERSION: "0.21.7"
+          GITLEAKS_VERSION: "8.30.0"
+        run: |
+          set -euo pipefail
+          cd /tmp
+
+          curl -sSL --fail --retry 5 --retry-delay 2 -O "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          curl -sSL --fail --retry 5 --retry-delay 2 -O "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/checksums.txt"
+          sha256sum --ignore-missing -c checksums.txt
+          tar -xzf go-containerregistry_Linux_x86_64.tar.gz crane
+          sudo mv crane /usr/local/bin/crane
+
+          curl -sSL --fail --retry 5 --retry-delay 2 -O "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSL --fail --retry 5 --retry-delay 2 -O "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          sha256sum --ignore-missing -c "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+
+          crane version
+          gitleaks version
+
+      - name: Gitleaks canary self-test
+        run: |
+          set +e
+          echo 'aws_access_key_id = AKIAQWERTYUIOPASDFGH' | gitleaks stdin --no-banner --redact -v --exit-code 2
+          CANARY_EXIT=$?
+          set -e
+          if [ "$CANARY_EXIT" -ne 2 ]; then
+            echo "::error::Gitleaks canary self-test failed -- known fake AWS key was NOT detected (exit $CANARY_EXIT, expected 2). This gitleaks build may be silently broken; refusing to trust the layer scan."
+            exit 1
+          fi
+          echo "Gitleaks canary self-test passed -- known fake secret correctly detected."
+
       - name: No-secrets-in-layers check
         env:
           IMAGE_REF: ${{ steps.tags.outputs.image_ref }}
         run: |
-          docker pull "$IMAGE_REF"
-          docker history --no-trunc "$IMAGE_REF" > /tmp/image_history.txt
-          if grep -iE 'RUNPOD_API_KEY|GH_TOKEN|GH_PAT|ghp_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,}|refresh_token' /tmp/image_history.txt; then
-            echo "::error::Potential secret material found in image layer history -- see /tmp/image_history.txt in the run log above."
-            exit 1
-          fi
-          echo "No obvious secret patterns found in 'docker history --no-trunc'."
+          set -euo pipefail
+          REGISTRY="ghcr.io"
+          REPO="${IMAGE_REF#"$REGISTRY"/}"
+          REPO="${REPO%%:*}"
+          REPO="${REPO%%@*}"
+
+          download_blob() {
+            local digest="$1" out="$2"
+            local token_header
+            token_header=$(crane auth token -H "${REGISTRY}/${REPO}")
+            curl -sSL --http1.1 --fail --retry 8 --retry-delay 3 --retry-all-errors -C - \
+              -H "$token_header" \
+              "https://${REGISTRY}/v2/${REPO}/blobs/${digest}" \
+              -o "$out"
+          }
+
+          verify_digest() {
+            local file="$1" expected="$2"
+            local algo="${expected%%:*}" want="${expected#*:}" got
+            got=$("${algo}sum" "$file" | awk '{print $1}')
+            if [ "$got" != "$want" ]; then
+              echo "::error::Digest mismatch for $file: expected $want, got $got"
+              return 1
+            fi
+          }
+
+          crane manifest --platform linux/amd64 "$IMAGE_REF" \
+            | jq -r '.layers[] | "\(.digest) \(.mediaType)"' \
+          | while read -r digest mediatype; do
+            echo "Downloading layer $digest ($mediatype)"
+            tmp="$(mktemp /tmp/layer-XXXXXX.blob)"
+            download_blob "$digest" "$tmp"
+            verify_digest "$tmp" "$digest"
+            layerdir="$(mktemp -d /tmp/layer-extract-XXXXXX)"
+            echo "Extracting layer $digest ($mediatype)"
+            case "$mediatype" in
+              *tar+gzip*)
+                gunzip -c "$tmp" | tar -x --no-same-owner --no-same-permissions -C "$layerdir" 2>/dev/null || true
+                ;;
+              *tar+zstd*)
+                zstd -dc "$tmp" | tar -x --no-same-owner --no-same-permissions -C "$layerdir" 2>/dev/null || true
+                ;;
+              *tar)
+                tar -x --no-same-owner --no-same-permissions -f "$tmp" -C "$layerdir" 2>/dev/null || true
+                ;;
+              *)
+                echo "Unrecognized layer mediaType: $mediatype" >&2
+                rm -f "$tmp"
+                rm -rf "$layerdir"
+                exit 1
+                ;;
+            esac
+            rm -f "$tmp"
+            echo "Scanning layer $digest ($mediatype)"
+            gitleaks dir "$layerdir" --no-banner --redact -v --exit-code 2 --config .gitleaks.toml
+            rm -rf "$layerdir"
+          done
 
       - name: Smoke-check manifest inside image (no GPU required)
         env:

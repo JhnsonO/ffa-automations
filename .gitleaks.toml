@@ -1,0 +1,132 @@
+# Gitleaks configuration for ffa-automations.
+#
+# [[allowlists]] below suppresses 10 confirmed false-positive `private-key`
+# findings originating from usr/lib/x86_64-linux-gnu/libgnutls.so.30.37.1,
+# part of the stock Ubuntu package libgnutls30t64:amd64 pulled in as an apt
+# dependency in the oev-test-runtime base image. These are GnuTLS's own
+# compiled-in known-answer-test (KAT) key material used for internal
+# self-tests -- a standard, documented practice for crypto libraries
+# (RSA/DSA/ECDSA KATs) -- not secrets introduced by this repo.
+#
+# Confirmed via manual strings/objdump inspection of the extracted layer
+# (sha256:5a7813e071bfadf18aaa6ca8318be4824a9b6297b3240f2cc84c1db6f4113040)
+# against gitleaks v8.30.0 (pinned version used by the scan workflows).
+#
+# Layer scanning pipes each layer's concatenated file contents to
+# `gitleaks stdin`, which loses per-file path context -- so this allowlist
+# targets the specific secret content (regexTarget = "secret"), not a path.
+# Each regex below is a unique 48-char base64 fingerprint from the start of
+# one of the 10 confirmed findings; this is intentionally narrow so it does
+# not suppress any other private-key finding.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "libgnutls.so.30.37.1 GnuTLS self-test (KAT) key material -- confirmed false positive, not repo secrets"
+regexTarget = "secret"
+regexes = [
+  '''MGoCAQAwIQYIKoUDBwEBAQIwFQYJKoUDBwECAQIBBggqhQMH''',
+  '''MEgCAQAwHwYIKoUDBwEBAQEwEwYHKoUDAgIjAQYIKoUDBwEB''',
+  '''MEUCAQAwHAYGKoUDAgITMBIGByqFAwICIwEGByqFAwICHgEE''',
+  '''MIHbAgEBBEGO2n7NN363qSCvJVdlQtCvudtaW4o0fEufXRjE''',
+  '''MIGkAgEBBDDevshD6gb\+4rZpC9vwFcIwNs4KmGzdqCxyyN40''',
+  '''MHcCAQEEIPAKWV7\+pZe9c5EubMNfAEKWRQtP/MvlO9HehwHm''',
+  '''MGgCAQEEHOKWJFdWdrR/CgVrUeTeawOrJ9GozE9KKx2a8Pmg''',
+  '''MF8CAQEEGLjezFcbgDMeApVrdtZHvu/k1a8/tVZ41KAKBggq''',
+  '''MIIDTQIBAAKCAQEAh60B6yPMRIT7udq2kKuwnQDohvT1U0w\+''',
+  '''MIIEogIBAAKCAQEA6yCv\+BLrRP/dMPBXJWK21c0aqxIX6JkO''',
+]
+
+[[allowlists]]
+description = "Nsight Compute 2025.1.1 bundled Qt/OpenSSL/libssh string tables (libqopensslbackend.so, libssh.so, libQt6Network.so.6) -- confirmed false positives, not repo secrets. Traced by extracting the ghcr.io/jhnsono/oev-test-runtime image layer sha256:abf026459f528efac0543168ff07d7037e9415fe3eb956b82f8fd617c7d2db1f locally and running gitleaks unredacted against each candidate file in isolation. All four are OpenSSL/libssh/Qt-Network internal error-message and cert-type-name string tables that happen to contain PEM header text (\"-----BEGIN ... PRIVATE KEY-----\") as literal strings, not actual key material."
+regexTarget = "secret"
+regexes = [
+  '''-----BEGIN ENCRYPTED PRIVATE KEY-----\x001\.2\.840\.113549\.1\.5\.3\x002''',
+  '''-----BEGIN RSA PRIVATE KEY-----\x00-----BEGIN EC PRIVATE KEY-----\x00\x00ecdsa-''',
+  '''-----BEGIN RSA PRIVATE KEY-----\x00-----BEGIN DSA PRIVATE KEY-----\x00referer\x00Htt''',
+  '''-----BEGIN EC PRIVATE KEY-----\x00-----END EC PRIVATE KEY-----\x00POST\x00unexpected''',
+]
+
+[[allowlists]]
+description = "Linux kernel uapi headers (nf_tables.h, nl80211.h) bundled in the base image -- generic-api-key false positives on enum constant names ending in _KEY_MAX, not secrets."
+regexTarget = "secret"
+regexes = [
+  '''^__NFTA_TUNNEL_KEY_IP6_MAX$''',
+  '''^NL80211_KEY_MAX$''',
+]
+
+[[allowlists]]
+description = "Perl 5.38.2 CORE headers (cop.h) -- generic-api-key false positive on internal apidoc constant name COPHH_KEY_UTF8, not a secret."
+regexTarget = "secret"
+regexes = [
+  '''^COPHH_KEY_UTF8$''',
+]
+
+[[allowlists]]
+description = "CUDA 12.8 thrust/cub headers (agent_merge.cuh etc.) -- generic-api-key false positive on local C++ variable name partition1_loc.second, not a secret."
+regexTarget = "secret"
+regexes = [
+  '''^partition1_loc\.second$''',
+]
+
+[[allowlists]]
+description = "CUDA 12.8 libcusolver_static.a -- github-refresh-token false positive on a demangled C++ symbol fragment from cusolverDnXorgqr_bufferSize (double2 overload), not a secret. Occurs 4x (once per template instantiation) in the archive."
+regexTarget = "secret"
+regexes = [
+  '''^ghr_bufferSizeI7double2E16cusolverStatus$''',
+]
+
+[[allowlists]]
+description = "Qt WebEngine resources.pak (opt/nvidia/nsight-compute/2025.1.1/host/linux-desktop-glibc_2_11_3-x64/resources/qtwebengine_resources.pak) -- two embedded Chromium component-extension manifest \"key\" fields. Both are valid 1024-bit RSA SubjectPublicKeyInfo (rsaEncryption OID, public exponent 65537) confirmed via `openssl rsa -pubin -in ... -text -noout`. Public keys, not secrets -- this is the standard Chromium extension-manifest.json \"key\" field format."
+regexTarget = "secret"
+regexes = [
+  '''^MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDN6hM0rsDYGbzQPQfOygqlRtQgKUXMfnSjhIBL7LnReAVBEd7ZmKtyN2qmSasMl4HZpMhVe2rPWVVwBDl6iyNE/Kok6E6v6V3vCLGsOpQAuuNVye/3QxzIldzG/jQAdWZiyXReRVapOhZtLjGfywCvlWq7Sl/e3sbc0vWybSDI2QIDAQAB$''',
+  '''^MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDAQt2ZDdPfoSe/JI6ID5bgLHRCnCu9T36aYczmhw/tnv6QZB2I6WnOCMZXJZlRdqWc7w9jo4BWhYS50Vb4weMfh/I0On7VcRwJUgfAxW2cHB\+EkmtI1v4v/OU24OqIa1Nmv9uRVeX0GjhQukdLNhAE6ACWooaf5kqKlCeK\+1GOkQIDAQAB$''',
+]
+
+[[allowlists]]
+description = "Real SSH host private keys inherited from the runpod/pytorch base image (openssh-server postinst generates these at base-image build time; not removable by a later Docker layer since the bytes remain in the base layer's history). Genuine finding, not a false positive -- tracked via container-startup host-key regeneration (ssh-keygen -A before sshd starts) so no running pod ever uses this static inherited identity. Allowlisted here only because flattening/rebuilding the RunPod base image to strip them isn't practical."
+paths = [
+  '''etc/ssh/ssh_host_ecdsa_key$''',
+  '''etc/ssh/ssh_host_rsa_key$''',
+  '''etc/ssh/ssh_host_ed25519_key$''',
+]
+
+[[allowlists]]
+description = "Vendor/stdlib false positives in the runpod/pytorch base image, confirmed by finding context in the CI log (gitleaks dir mode, real paths): rsync-ssl config keyword, libmagic compiled signature DB, jwt/cryptography library type annotations and parameter names, oauthlib example/test OAuth field names (source + compiled .pyc), CMake's known-public Windows code-signing test certificate, and vim keymap variable names. None are repo or deployment secrets."
+paths = [
+  '''usr/bin/rsync-ssl$''',
+  '''usr/lib/file/magic\.mgc$''',
+  '''usr/lib/python3/dist-packages/jwt/algorithms\.py$''',
+  '''usr/lib/python3/dist-packages/oauthlib/oauth1/rfc5849/parameters\.py$''',
+  '''usr/lib/python3/dist-packages/oauthlib/oauth1/rfc5849/__pycache__/parameters\.cpython-312\.pyc$''',
+  '''usr/lib/python3/dist-packages/oauthlib/oauth2/rfc6749/parameters\.py$''',
+  '''usr/lib/python3/dist-packages/oauthlib/oauth2/rfc6749/__pycache__/parameters\.cpython-312\.pyc$''',
+  '''usr/lib/python3/dist-packages/cryptography/hazmat/backends/openssl/backend\.py$''',
+  '''usr/share/cmake-3\.28/Templates/Windows/Windows_TemporaryKey\.pfx$''',
+  '''usr/share/vim/vim91/keymap/.*\.vim$''',
+]
+
+[[allowlists]]
+description = "JupyterLab bundled/minified static JS (webpack chunks) -- generic-api-key false positive on the CodeMirror-vim FourKeyMap class name, mangled by minification into 't.FourKeyMap=...' assignment-like syntax. Not a secret."
+paths = [
+  '''usr/local/share/jupyter/lab/static/2880\.8483d51b11998bfe8e4b\.js$''',
+  '''usr/local/share/jupyter/lab/static/3799\.eaa0438bc5c41bad0516\.js$''',
+  '''usr/local/share/jupyter/lab/static/7856\.dd9523e57bed80f1f694\.js$''',
+]
+
+[[allowlists]]
+description = "Rust toolchain bundled documentation (rustup stable-x86_64-unknown-linux-gnu docs) -- generic-api-key false positives: Cargo's official registry-authentication docs showing example 'token = \"...\"' config syntax, and the _mm256_sm4key4_epi32 AVX/SM4 SIMD intrinsic name (contains literal substring 'key4') in the std-doc sidebar JSON for x86/x86_64 core::arch. Not secrets."
+paths = [
+  '''root/\.rustup/toolchains/stable-x86_64-unknown-linux-gnu/share/doc/rust/html/cargo/reference/registries\.html$''',
+  '''root/\.rustup/toolchains/stable-x86_64-unknown-linux-gnu/share/doc/rust/html/cargo/print\.html$''',
+  '''root/\.rustup/toolchains/stable-x86_64-unknown-linux-gnu/share/doc/rust/html/core/arch/x86/sidebar-items1\.97\.1\.js$''',
+  '''root/\.rustup/toolchains/stable-x86_64-unknown-linux-gnu/share/doc/rust/html/core/arch/x86_64/sidebar-items1\.97\.1\.js$''',
+]
+
+[[allowlists]]
+description = "mozilla/mp4parse-rust (cargo-vendored git dependency) test_encryption.rs -- generic-api-key false positive on a hardcoded CENC test key_id/key pair (7e571d04.../7e574444...), a well-known public dummy test vector used across Bento4/mp4box-style MP4-encryption test suites, also present in mp4parse-rust's own public.rs on GitHub. Not a real secret."
+paths = [
+  '''root/\.cargo/git/checkouts/mp4parse-rust-f4865e61c02cef6e/ff910c6/mp4parse_capi/tests/test_encryption\.rs$''',
+]
