@@ -295,6 +295,7 @@ jobs:
           ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
           SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           $SSH "mkdir -p /tmp/oev_run"
+          $SSH "command -v aria2c >/dev/null || (apt-get update -qq && apt-get install -y -qq aria2)"
           $SSH "set -o pipefail; aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=left.mp4 'https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media' 2>&1 | tail -5"
           $SSH "set -o pipefail; aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=right.mp4 'https://www.googleapis.com/drive/v3/files/$RIGHT_ID?alt=media' 2>&1 | tail -5"
           $SSH "test -s /tmp/oev_run/left.mp4 && test -s /tmp/oev_run/right.mp4 && ls -lh /tmp/oev_run/left.mp4 /tmp/oev_run/right.mp4"
