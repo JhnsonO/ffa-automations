@@ -1,0 +1,374 @@
+name: OEV — Populate RunPod Network Volume (sample dataset)
+
+# One-time (or rare re-run) paid-GPU-pod workflow: attaches one
+# datacenter's volume from OEV_NETWORK_VOLUME_MAP and stages a sample
+# dataset (produced by oev-sample-dataset-prep.yml, uploaded to Drive
+# under Samples/<sample-set-id>/) onto it via
+# oev_populate_volume_samples_remote.sh, then terminates the pod.
+# Idempotent -- the remote script skips the download entirely if that
+# volume already has this sample_set_id, unless force_repopulate is set.
+#
+# Structurally mirrors oev-populate-volume.yml (same volume lookup, same
+# pod launch/retry/cleanup mechanics) but stages video sample clips
+# instead of building reco-cli/models -- kept as a separate workflow so
+# the already-verified reco/model populate workflow is never touched.
+#
+# Dispatch this once per datacenter in OEV_NETWORK_VOLUME_MAP that should
+# carry this sample set. Does not touch datacenter-selection/round-robin
+# logic used elsewhere -- this pod is pinned to whichever datacenter its
+# volume lives in, same tradeoff as oev-populate-volume.yml.
+#
+# Requires ${{ vars.OEV_NETWORK_VOLUME_MAP }} to already exist and
+# contain datacenter_id as a key -- run oev-network-volume-setup.yml
+# first if it doesn't. Requires the sample_set_id to already exist under
+# Drive Samples/ -- run oev-sample-dataset-prep.yml first if it doesn't.
+
+on:
+  workflow_dispatch:
+    inputs:
+      datacenter_id:
+        description: 'Datacenter id whose volume to populate (must be a key in vars.OEV_NETWORK_VOLUME_MAP, e.g. EU-RO-1)'
+        required: true
+        type: string
+      sample_set_id:
+        description: 'Sample set id to stage (must exist under OEV Drive Samples/, e.g. GX010197-seed12345)'
+        required: true
+        type: string
+      force_repopulate:
+        description: 'Re-download even if the volume already has this sample_set_id'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  populate-volume-samples:
+    name: Stage sample dataset onto the OEV network volume
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Look up volume id for datacenter_id in OEV_NETWORK_VOLUME_MAP
+        id: volume
+        env:
+          VOLUME_MAP: ${{ vars.OEV_NETWORK_VOLUME_MAP }}
+          DATACENTER_ID: ${{ inputs.datacenter_id }}
+        run: |
+          python3 -u - << 'PY'
+          import json
+          import os
+
+          volume_map_json = os.environ.get('VOLUME_MAP', '')
+          dc = os.environ['DATACENTER_ID']
+          if not volume_map_json:
+              print('::error::vars.OEV_NETWORK_VOLUME_MAP is not set. Run oev-network-volume-setup.yml first.')
+              raise SystemExit(1)
+          volume_map = json.loads(volume_map_json)
+          volume_id = volume_map.get(dc)
+          if not volume_id:
+              print(f'::error::datacenter_id={dc!r} is not a key in OEV_NETWORK_VOLUME_MAP={volume_map_json}. Valid keys: {list(volume_map.keys())}')
+              raise SystemExit(1)
+          print(f'Using network volume {volume_id} for datacenter {dc}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'volume_id={volume_id}\n')
+          PY
+
+      - name: Generate SSH key pair
+        run: |
+          pip install -q cryptography
+          python3 -u - << 'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+
+          key = Ed25519PrivateKey.generate()
+          priv = key.private_bytes(
+              serialization.Encoding.PEM,
+              serialization.PrivateFormat.OpenSSH,
+              serialization.NoEncryption(),
+          )
+          pub = key.public_key().public_bytes(
+              serialization.Encoding.OpenSSH,
+              serialization.PublicFormat.OpenSSH,
+          )
+          with open('/tmp/runpod_key', 'wb') as f:
+              f.write(priv)
+          with open('/tmp/runpod_key.pub', 'wb') as f:
+              f.write(pub + b' ffa-oev-populate-volume-samples\n')
+          os.chmod('/tmp/runpod_key', 0o600)
+          PY
+
+      # Round schedule + GPU tiers copied verbatim from
+      # oev-populate-volume.yml's launch step (proven mechanics) -- this
+      # pod only downloads video files from Drive onto the attached
+      # volume, so GPU choice is irrelevant, but the launch/retry/cleanup
+      # machinery itself is reused unchanged rather than hand-rolled.
+      - name: Launch RunPod GPU pod with network volume attached (round-robin retry, pinned DC)
+        id: launch
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          VOLUME_ID: ${{ steps.volume.outputs.volume_id }}
+        run: |
+          python3 -u - << 'PY'
+          import json
+          import os
+          import subprocess
+          import time
+          import urllib.error
+          import urllib.request
+
+          api_key = os.environ['RUNPOD_API_KEY']
+          volume_id = os.environ['VOLUME_ID']
+          base = 'https://rest.runpod.io/v1'
+          headers = {
+              'Authorization': f'Bearer {api_key}',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+          }
+          pub_key = open('/tmp/runpod_key.pub').read().strip()
+
+          ROUNDS = 3
+          SLEEP_BEFORE_ROUND = [0, 30, 60]
+          POD_IDS_FILE = '/tmp/populate_samples_pod_id.txt'
+          open(POD_IDS_FILE, 'w').close()
+
+          GPU_TIER_ROUND1 = [
+              'NVIDIA GeForce RTX 4090',
+              'NVIDIA RTX A5000',
+              'NVIDIA GeForce RTX 3090',
+              'NVIDIA L4',
+          ]
+          GPU_TIER_WIDE = [
+              'NVIDIA GeForce RTX 4090',
+              'NVIDIA RTX A5000',
+              'NVIDIA GeForce RTX 3090',
+              'NVIDIA L4',
+              'NVIDIA L40S',
+              'NVIDIA GeForce RTX 5090',
+              'NVIDIA RTX 2000 Ada Generation',
+              'NVIDIA RTX PRO 6000 Blackwell Server Edition',
+          ]
+
+          def request(method, url, data=None, timeout=30):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as response:
+                      raw = response.read()
+                      return json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as exc:
+                  err_body = exc.read().decode(errors='replace')[:500]
+                  raise RuntimeError(f'HTTP {exc.code} from {method} {url}: {err_body}') from exc
+
+          def delete_pod(pod_id):
+              try:
+                  request('DELETE', f'{base}/pods/{pod_id}', timeout=20)
+                  print(f'Deleted pod {pod_id} (attempt cleanup).')
+              except Exception as exc:
+                  print(f'Delete warning for pod {pod_id}: {exc} (final cleanup step will retry).')
+
+          def create_pod(gpu_type_ids):
+              create_body = {
+                  'name': 'oev-populate-volume-samples',
+                  'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
+                  'gpuTypeIds': gpu_type_ids,
+                  'gpuTypePriority': 'custom',
+                  'gpuCount': 1,
+                  'cloudType': 'SECURE',
+                  'containerDiskInGb': 40,
+                  'networkVolumeId': volume_id,
+                  'volumeMountPath': '/runpod-volume',
+                  'ports': ['22/tcp'],
+                  'supportPublicIp': True,
+                  'allowedCudaVersions': ['12.8'],
+                  'env': {
+                      'PUBLIC_KEY': pub_key,
+                      'SSH_PUBLIC_KEY': pub_key,
+                  },
+              }
+              printable = {k: v for k, v in create_body.items() if k != 'env'}
+              print(f'Creating pod: {json.dumps(printable)}')
+              pod = request('POST', f'{base}/pods', create_body)
+              pod_id = pod.get('id')
+              if not pod_id:
+                  raise RuntimeError(f'pod create response had no id: {pod}')
+              print(f'Pod created: id={pod_id}')
+              return pod_id
+
+          def wait_for_network(pod_id, timeout_s=1200):
+              deadline = time.time() + timeout_s
+              while time.time() < deadline:
+                  info = request('GET', f'{base}/pods/{pod_id}?includeMachine=true')
+                  public_ip = info.get('publicIp')
+                  mappings = info.get('portMappings') or {}
+                  mapped_22 = None
+                  if isinstance(mappings, dict):
+                      mapped_22 = mappings.get('22') or mappings.get('22/tcp')
+                  if public_ip and mapped_22:
+                      return public_ip, mapped_22
+                  time.sleep(10)
+              raise RuntimeError(f'pod {pod_id} never reported a public IP + SSH mapping within {timeout_s}s')
+
+          def wait_for_ssh(ip, port, attempts=18, delay_s=5):
+              for i in range(1, attempts + 1):
+                  result = subprocess.run(
+                      ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
+                       '-i', '/tmp/runpod_key', '-p', str(port), f'root@{ip}', 'echo OK'],
+                      capture_output=True, text=True, timeout=15,
+                  )
+                  if 'OK' in result.stdout:
+                      return True
+                  print(f'SSH not ready ({i}/{attempts})')
+                  time.sleep(delay_s)
+              return False
+
+          winner = None
+          for round_num in range(1, ROUNDS + 1):
+              sleep_s = SLEEP_BEFORE_ROUND[round_num - 1]
+              if sleep_s:
+                  print(f'Waiting {sleep_s}s before round {round_num} (real gap, not an instant retry)...')
+                  time.sleep(sleep_s)
+
+              gpu_type_ids = GPU_TIER_ROUND1 if round_num == 1 else GPU_TIER_WIDE
+              print(f'--- Round {round_num}/{ROUNDS} (same pinned datacenter, gpu_tier={"preferred-4" if round_num == 1 else "all-8"}) ---')
+              try:
+                  pod_id = create_pod(gpu_type_ids)
+              except Exception as exc:
+                  print(f'::error::Round {round_num}: pod create failed: {exc}')
+                  continue
+
+              with open(POD_IDS_FILE, 'w') as f:
+                  f.write(pod_id)
+
+              try:
+                  ip, port = wait_for_network(pod_id)
+                  if not wait_for_ssh(ip, port):
+                      raise RuntimeError(f'SSH never came up on pod {pod_id} ({ip}:{port})')
+              except Exception as exc:
+                  print(f'Round {round_num}: {exc} -- deleting pod and continuing to next round.')
+                  delete_pod(pod_id)
+                  continue
+
+              winner = {'pod_id': pod_id, 'ip': ip, 'port': port}
+              break
+
+          if winner is None:
+              raise RuntimeError(f'All {ROUNDS} rounds failed to allocate a reachable pod. See job log above.')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'pod_id={winner["pod_id"]}\n')
+              output.write(f'ip={winner["ip"]}\n')
+              output.write(f'port={winner["port"]}\n')
+          PY
+
+      - name: Upload + run populate-volume-samples script
+        id: populate
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          SAMPLE_SET_ID: ${{ inputs.sample_set_id }}
+          FORCE_REPOPULATE: ${{ inputs.force_repopulate }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP oev_populate_volume_samples_remote.sh root@$IP:/tmp/oev_populate_volume_samples_remote.sh
+          $SSH "chmod +x /tmp/oev_populate_volume_samples_remote.sh"
+
+          remote_rc=0
+          $SSH "cd /tmp && SAMPLE_SET_ID='$SAMPLE_SET_ID' YOUTUBE_TOKEN='$YOUTUBE_TOKEN' YOUTUBE_CREDENTIALS='$YOUTUBE_CREDENTIALS' VOLUME_MOUNT=/runpod-volume FORCE_REPOPULATE='$FORCE_REPOPULATE' stdbuf -oL -eL /tmp/oev_populate_volume_samples_remote.sh" || remote_rc=$?
+          echo "remote_exit=$remote_rc" >> "$GITHUB_OUTPUT"
+          echo "Remote populate-volume-samples script exit: $remote_rc"
+
+      - name: Pull back logs
+        if: always()
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          mkdir -p populate_samples_artifacts
+          if [ -n "$IP" ] && [ -n "$PORT" ]; then
+            SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no"
+            $SCP "root@$IP:/tmp/download.log" populate_samples_artifacts/ || true
+            $SCP "root@$IP:/tmp/timing.log" populate_samples_artifacts/ || true
+          fi
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-populate-volume-samples-${{ github.run_id }}
+          path: populate_samples_artifacts/
+          retention-days: 30
+
+      - name: Terminate RunPod pod
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 -u - << 'PY'
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          try:
+              with open('/tmp/populate_samples_pod_id.txt') as f:
+                  pod_id = f.read().strip()
+          except FileNotFoundError:
+              print('No pod ID recorded -- nothing to terminate.')
+              raise SystemExit(0)
+
+          if not pod_id:
+              print('No pod ID recorded -- nothing to terminate.')
+              raise SystemExit(0)
+
+          headers = {'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          url = f'https://rest.runpod.io/v1/pods/{pod_id}'
+          confirmed = False
+          last_error = None
+          for attempt in range(1, 4):
+              req = urllib.request.Request(url, method='DELETE', headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as response:
+                      if response.status in (200, 202, 204):
+                          print(f'Pod {pod_id} termination confirmed (HTTP {response.status}) on attempt {attempt}.')
+                          confirmed = True
+                          break
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      print(f'Pod {pod_id} already absent (HTTP 404) -- cleanup confirmed.')
+                      confirmed = True
+                      break
+                  last_error = f'HTTP {exc.code}: {exc.read().decode(errors="replace")[:300]}'
+              except Exception as exc:
+                  last_error = repr(exc)
+              print(f'Pod {pod_id}: DELETE attempt {attempt}/3 failed: {last_error}')
+              if attempt < 3:
+                  time.sleep(5)
+
+          if not confirmed:
+              print(f'::error::Pod {pod_id} termination NOT confirmed after 3 attempts: {last_error}')
+              raise SystemExit(1)
+          PY
+
+      - name: Evaluate result
+        if: always()
+        env:
+          REMOTE_EXIT: ${{ steps.populate.outputs.remote_exit }}
+        run: |
+          echo "Remote script exit code: ${REMOTE_EXIT:-unknown}"
+          if [ "${REMOTE_EXIT:-1}" = '0' ]; then
+            echo "Populate-volume-samples: sample dataset downloaded and written to the volume."
+          elif [ "${REMOTE_EXIT:-1}" = '2' ]; then
+            echo "Populate-volume-samples: volume already has this sample_set_id -- no download needed."
+          else
+            echo "::error::Populate-volume-samples FAILED (remote exit ${REMOTE_EXIT:-unknown}). See artifact logs."
+            exit 1
+          fi
