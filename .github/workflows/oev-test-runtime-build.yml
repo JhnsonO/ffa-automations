@@ -3,15 +3,10 @@ name: OEV Test Runtime v1 — Build + Publish (GHCR)
 on:
   workflow_dispatch:
     inputs:
-      reco_sha:
-        description: 'Pinned video-stitcher (Reco) commit SHA to build into the image'
-        required: false
-        default: '53fe10f548d5767ad94ef66aeaedf2d8c7161f27'
-        type: string
       image_tag:
         description: 'Immutable image tag (never latest)'
         required: false
-        default: 'v1-reco-53fe10f5'
+        default: 'v1-lite'
         type: string
 
 permissions:
@@ -21,15 +16,11 @@ permissions:
 jobs:
   build-and-publish:
     name: Build + publish OEV Test Runtime image
-    # Deliberately a standard (non-GPU) runner. Building this image does
-    # not require a physical GPU: ort-sys pulls a prebuilt ONNX Runtime
-    # binary, cuDNN is a runtime dlopen dependency not a link-time one,
-    # and nvcc compiles the CUDA preprocessing kernels against a
-    # compute-capability list rather than a live device. If this build
-    # fails with concrete evidence of a GPU-device requirement (not
-    # just a missing lib), that failure is captured below and is the
-    # signal to move image compilation onto GPU-backed compute --
-    # not an assumption made in advance.
+    # Runtime-lite image (no reco-cli build, no YOLO26 export -- those
+    # moved to oev-populate-volume.yml, writing to a persistent RunPod
+    # Network Volume instead of image layers). No physical GPU required
+    # to build this image either way -- it's now just an apt-based
+    # inference-dependency layer on top of the stock base image.
     runs-on: ubuntu-latest
     timeout-minutes: 90
     outputs:
@@ -66,8 +57,6 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: ${{ steps.tags.outputs.image_ref }}
-          build-args: |
-            RECO_SHA=${{ inputs.reco_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -173,10 +162,16 @@ jobs:
             rm -rf "$layerdir"
           done
 
-      - name: Smoke-check manifest inside image (no GPU required)
+      - name: Smoke-check runtime-lite image contents (no GPU required)
         env:
           IMAGE_REF: ${{ steps.tags.outputs.image_ref }}
         run: |
-          docker run --rm "$IMAGE_REF" cat /opt/oev-runtime/manifest.json
-          docker run --rm "$IMAGE_REF" sha256sum -c /opt/oev-runtime/models/models.sha256
-          docker run --rm "$IMAGE_REF" /opt/oev-runtime/bin/reco --version
+          # This image no longer bakes reco/models/manifest -- those live
+          # on the network volume (populated by oev-populate-volume.yml).
+          # This check only confirms the inference-time dependencies and
+          # the expected volume mount point exist.
+          docker run --rm "$IMAGE_REF" ffmpeg -version
+          docker run --rm "$IMAGE_REF" vulkaninfo --summary
+          docker run --rm "$IMAGE_REF" aria2c --version
+          docker run --rm "$IMAGE_REF" test -d /runpod-volume/oev-runtime/bin
+          docker run --rm "$IMAGE_REF" test -d /runpod-volume/oev-runtime/models

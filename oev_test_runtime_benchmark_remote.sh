@@ -3,18 +3,22 @@
 # from the custom ghcr.io/.../oev-test-runtime image.
 #
 # Unlike runpod_followcam_remote.sh (frozen production script), this
-# script assumes the environment is already fully built into the image:
-#   - /opt/oev-runtime/bin/reco       (pinned Reco SHA, --features cuda)
-#   - /opt/oev-runtime/models/yolo26{s,m,l,x}.onnx  (pre-exported @1920)
+# script assumes the environment is already fully built -- now on the
+# persistent RunPod Network Volume (mounted at /runpod-volume by the
+# calling workflow's networkVolumeId/volumeMountPath pod-create params),
+# not baked into image layers:
+#   - /runpod-volume/oev-runtime/bin/reco       (pinned Reco SHA, --features cuda)
+#   - /runpod-volume/oev-runtime/models/yolo26{s,m,l,x}.onnx  (pre-exported @1920)
 #   - left.mp4 / right.mp4            (pre-cut 19s benchmark pack,
 #                                       uploaded to /tmp/oev_run/ by the
 #                                       calling workflow BEFORE this
 #                                       script runs)
 #
 # It performs ZERO rust builds, ZERO apt installs, ZERO yolo exports --
-# only calibrate + stitch against the already-baked binary/models. This
-# is the entire point of the runtime: prove the wall-clock difference
-# against runpod_followcam_remote.sh's ~40min environment/download tax.
+# only calibrate + stitch against the already-built binary/models on the
+# volume. This is the entire point of the volume-backed runtime: prove
+# the wall-clock difference against runpod_followcam_remote.sh's ~40min
+# environment/download tax, now with a much smaller image to pull first.
 #
 # Same tracking/panner/ROI/--no-zero-copy contract as the frozen
 # production script -- CPU-detector-only, by the documented decision
@@ -28,8 +32,8 @@
 set -uo pipefail
 cd /tmp/oev_run || exit 1
 
-RECO_BIN="/opt/oev-runtime/bin/reco"
-MODEL_PATH="/opt/oev-runtime/models/yolo26m.onnx"
+RECO_BIN="/runpod-volume/oev-runtime/bin/reco"
+MODEL_PATH="/runpod-volume/oev-runtime/models/yolo26m.onnx"
 
 ts() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
 echo "timing_env_sanity_start=$(ts)" | tee -a timing.log
@@ -38,11 +42,11 @@ echo "timing_env_sanity_start=$(ts)" | tee -a timing.log
 #     build/export invocation appearing anywhere below this point is a
 #     bug in this script, not expected behaviour -- the point of the
 #     image is that none of that happens at experiment time.
-[ -x "$RECO_BIN" ] || { echo "FATAL: $RECO_BIN not found/executable -- image did not bake reco-cli" | tee -a timing.log; exit 1; }
-[ -f "$MODEL_PATH" ] || { echo "FATAL: $MODEL_PATH not found -- image did not bake YOLO26m" | tee -a timing.log; exit 1; }
+[ -x "$RECO_BIN" ] || { echo "FATAL: $RECO_BIN not found/executable -- volume not populated (run oev-populate-volume.yml) or not mounted for this pod" | tee -a timing.log; exit 1; }
+[ -f "$MODEL_PATH" ] || { echo "FATAL: $MODEL_PATH not found -- volume not populated (run oev-populate-volume.yml)" | tee -a timing.log; exit 1; }
 [ -f left.mp4 ] || { echo "FATAL: left.mp4 (benchmark pack) not present in /tmp/oev_run" | tee -a timing.log; exit 1; }
 [ -f right.mp4 ] || { echo "FATAL: right.mp4 (benchmark pack) not present in /tmp/oev_run" | tee -a timing.log; exit 1; }
-sha256sum -c /opt/oev-runtime/models/models.sha256 --ignore-missing || { echo "FATAL: baked model checksum mismatch" | tee -a timing.log; exit 1; }
+sha256sum -c /runpod-volume/oev-runtime/models/models.sha256 --ignore-missing || { echo "FATAL: volume model checksum mismatch" | tee -a timing.log; exit 1; }
 echo "Environment sanity PASSED: reco=$($RECO_BIN --version 2>&1), model=$MODEL_PATH present, benchmark pack present." | tee -a timing.log
 echo "timing_env_sanity_end=$(ts)" | tee -a timing.log
 

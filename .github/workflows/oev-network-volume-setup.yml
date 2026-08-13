@@ -1,0 +1,171 @@
+name: OEV — RunPod Network Volume Setup (idempotent)
+
+# One-off/rare-rerun workflow. Finds an existing RunPod network volume
+# by name, or creates one if missing, then stores its id as the repo
+# variable OEV_NETWORK_VOLUME_ID so oev-populate-volume.yml and
+# oev-test-runtime-benchmark.yml can reference it as
+# ${{ vars.OEV_NETWORK_VOLUME_ID }} without hardcoding an ID into a file.
+#
+# Datacenter selection: queries RunPod's GPU-type/datacenter-availability
+# info live at dispatch time and picks a datacenter reporting HIGH
+# availability for the GPU type this pipeline actually uses (RTX 4090),
+# rather than a hardcoded guess. If that query's shape doesn't match what
+# this script expects (API surface not fully confirmed from outside a
+# live key), it falls back to a small candidate list and prints exactly
+# which path was taken -- verifiable from the log, not a silent guess.
+#
+# Re-running this workflow after a volume already exists is a no-op on
+# the RunPod side (idempotent list-then-create-if-missing) and just
+# re-confirms/re-writes the repo variable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      volume_name:
+        description: 'Network volume name (idempotency key)'
+        required: false
+        default: 'oev-runtime-volume'
+        type: string
+      volume_size_gb:
+        description: 'Volume size in GB (only used if creating)'
+        required: false
+        default: '100'
+        type: string
+      datacenter_id_override:
+        description: 'Optional: force a specific RunPod datacenter id instead of auto-selecting'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  setup-volume:
+    name: Find-or-create OEV network volume
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Find-or-create network volume, write repo variable
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VOLUME_NAME: ${{ inputs.volume_name }}
+          VOLUME_SIZE_GB: ${{ inputs.volume_size_gb }}
+          DC_OVERRIDE: ${{ inputs.datacenter_id_override }}
+        run: |
+          python3 -u - << 'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          api_key = os.environ['RUNPOD_API_KEY']
+          gh_token = os.environ['GH_TOKEN']
+          gh_repo = os.environ['GH_REPO']
+          volume_name = os.environ['VOLUME_NAME']
+          volume_size_gb = int(os.environ['VOLUME_SIZE_GB'])
+          dc_override = os.environ.get('DC_OVERRIDE', '').strip()
+
+          base = 'https://rest.runpod.io/v1'
+          headers = {
+              'Authorization': f'Bearer {api_key}',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+          }
+
+          def request(method, url, data=None, hdrs=None, timeout=30):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(url, data=body, method=method, headers=hdrs or headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as response:
+                      raw = response.read()
+                      return json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as exc:
+                  err_body = exc.read().decode(errors='replace')[:500]
+                  raise RuntimeError(f'HTTP {exc.code} from {method} {url}: {err_body}') from exc
+
+          # ---- 1. Idempotent find ----
+          print(f'Listing existing network volumes, filtering by name={volume_name!r} ...')
+          existing = request('GET', f'{base}/networkvolumes')
+          if isinstance(existing, dict):
+              existing = existing.get('volumes') or existing.get('data') or []
+          match = next((v for v in existing if v.get('name') == volume_name), None)
+
+          if match:
+              volume_id = match['id']
+              print(f'Found existing volume: id={volume_id}, dataCenterId={match.get("dataCenterId")}, size={match.get("size")}GB -- reusing, not creating.')
+          else:
+              print(f'No existing volume named {volume_name!r} found -- will create one.')
+
+              data_center_id = dc_override
+              if not data_center_id:
+                  # Try to pick a HIGH-availability RTX 4090 datacenter live.
+                  # Endpoint shape confirmed from RunPod's public API-reference
+                  # example (catalog/list-gpu-types); if this account's key
+                  # doesn't expose that route or the shape differs, fall back
+                  # rather than guessing forever.
+                  candidates = []
+                  try:
+                      gpu_types = request('GET', 'https://rest.runpod.io/v1/gputypes')
+                      if isinstance(gpu_types, dict):
+                          gpu_types = gpu_types.get('gpus') or gpu_types.get('data') or []
+                      for g in gpu_types:
+                          if g.get('id') == 'NVIDIA GeForce RTX 4090' or g.get('name') == 'RTX 4090':
+                              for dc in (g.get('dataCenters') or []):
+                                  candidates.append((dc.get('availability', ''), dc.get('id')))
+                  except Exception as exc:
+                      print(f'GPU-type/datacenter availability query failed or unexpected shape: {exc}')
+
+                  candidates = [c for c in candidates if c[1]]
+                  # Prefer HIGH, then MEDIUM, then anything returned.
+                  rank = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
+                  candidates.sort(key=lambda c: rank.get(c[0], 3))
+
+                  if candidates:
+                      data_center_id = candidates[0][1]
+                      print(f'Auto-selected datacenter {data_center_id!r} (availability={candidates[0][0]!r}) from {len(candidates)} candidate(s): {candidates}')
+                  else:
+                      # No live signal available -- do not silently guess a
+                      # single datacenter. Stop and ask for an explicit
+                      # datacenter_id_override input instead.
+                      raise RuntimeError(
+                          'Could not determine a datacenter with RTX 4090 availability from the live '
+                          'RunPod API (empty/unexpected response). Re-dispatch this workflow with an '
+                          'explicit datacenter_id_override input rather than guessing blind.'
+                      )
+
+              create_body = {
+                  'dataCenterId': data_center_id,
+                  'name': volume_name,
+                  'size': volume_size_gb,
+              }
+              print(f'Creating network volume: {json.dumps(create_body)}')
+              created = request('POST', f'{base}/networkvolumes', create_body)
+              volume_id = created.get('id')
+              if not volume_id:
+                  raise RuntimeError(f'Network volume create response had no id: {created}')
+              print(f'Created volume: id={volume_id}, dataCenterId={created.get("dataCenterId")}')
+
+          # ---- 2. Write/update repo variable OEV_NETWORK_VOLUME_ID ----
+          var_url = f'https://api.github.com/repos/{gh_repo}/actions/variables/OEV_NETWORK_VOLUME_ID'
+          gh_headers = {
+              'Authorization': f'Bearer {gh_token}',
+              'Accept': 'application/vnd.github+json',
+              'Content-Type': 'application/json',
+          }
+          body = {'name': 'OEV_NETWORK_VOLUME_ID', 'value': volume_id}
+          try:
+              request('PATCH', var_url, body, hdrs=gh_headers)
+              print(f'Updated repo variable OEV_NETWORK_VOLUME_ID={volume_id}')
+          except RuntimeError as exc:
+              if 'HTTP 404' in str(exc):
+                  create_url = f'https://api.github.com/repos/{gh_repo}/actions/variables'
+                  request('POST', create_url, body, hdrs=gh_headers)
+                  print(f'Created repo variable OEV_NETWORK_VOLUME_ID={volume_id}')
+              else:
+                  raise
+          PY
