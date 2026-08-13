@@ -115,3 +115,12 @@ paths = [
   '''usr/local/share/jupyter/lab/static/3799\.eaa0438bc5c41bad0516\.js$''',
   '''usr/local/share/jupyter/lab/static/7856\.dd9523e57bed80f1f694\.js$''',
 ]
+
+[[allowlists]]
+description = "Rust toolchain bundled documentation (rustup stable-x86_64-unknown-linux-gnu docs) -- generic-api-key false positives: Cargo's official registry-authentication docs showing example 'token = \"...\"' config syntax, and the _mm256_sm4key4_epi32 AVX/SM4 SIMD intrinsic name (contains literal substring 'key4') in the std-doc sidebar JSON for x86/x86_64 core::arch. Not secrets."
+paths = [
+  '''root/\.rustup/toolchains/stable-x86_64-unknown-linux-gnu/share/doc/rust/html/cargo/reference/registries\.html$''',
+  '''root/\.rustup/toolchains/stable-x86_64-unknown-linux-gnu/share/doc/rust/html/cargo/print\.html$''',
+  '''root/\.rustup/toolchains/stable-x86_64-unknown-linux-gnu/share/doc/rust/html/core/arch/x86/sidebar-items1\.97\.1\.js$''',
+  '''root/\.rustup/toolchains/stable-x86_64-unknown-linux-gnu/share/doc/rust/html/core/arch/x86_64/sidebar-items1\.97\.1\.js$''',
+]
