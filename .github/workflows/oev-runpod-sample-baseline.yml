@@ -1,0 +1,722 @@
+name: OEV — Sample Baseline Test (network-volume samples, pinned datacenter, RunPod)
+
+on:
+  workflow_dispatch:
+    inputs:
+      datacenter:
+        description: 'RunPod datacenter to pin this run to -- must be a key in vars.OEV_NETWORK_VOLUME_MAP that already has the sample pack staged. Never falls back to any other datacenter.'
+        required: true
+        type: choice
+        options:
+          - EU-RO-1
+          - EUR-IS-1
+      sample_id:
+        description: "Sample id within the staged pack, e.g. 'sample_01'"
+        required: true
+        type: string
+      duration_s:
+        description: 'Sample duration variant to test'
+        required: true
+        type: choice
+        options:
+          - '30'
+          - '60'
+          - '180'
+      sample_set_id:
+        description: 'Sample-set directory name on the network volume under /runpod-volume/oev-samples/'
+        required: false
+        default: 'GX010197-seed1384188843'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  followcam-test-runpod:
+    name: Follow-Cam Test (RunPod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Generate SSH key pair
+        run: |
+          pip install -q cryptography
+          python3 -u - << 'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+
+          key = Ed25519PrivateKey.generate()
+          priv = key.private_bytes(
+              serialization.Encoding.PEM,
+              serialization.PrivateFormat.OpenSSH,
+              serialization.NoEncryption(),
+          )
+          pub = key.public_key().public_bytes(
+              serialization.Encoding.OpenSSH,
+              serialization.PublicFormat.OpenSSH,
+          )
+          with open('/tmp/runpod_key', 'wb') as f:
+              f.write(priv)
+          with open('/tmp/runpod_key.pub', 'wb') as f:
+              f.write(pub + b' ffa-oev-runpod-followcam\n')
+          os.chmod('/tmp/runpod_key', 0o600)
+          PY
+
+      - name: Launch RunPod GPU pod (NVDEC preflight retry, max 3 attempts, pinned datacenter)
+        id: launch
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          PINNED_DATACENTER: ${{ inputs.datacenter }}
+          VOLUME_MAP_JSON: ${{ vars.OEV_NETWORK_VOLUME_MAP }}
+        run: |
+          python3 -u - << 'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          api_key = os.environ['RUNPOD_API_KEY']
+          base = 'https://rest.runpod.io/v1'
+          headers = {
+              'Authorization': f'Bearer {api_key}',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+          }
+          pub_key = open('/tmp/runpod_key.pub').read().strip()
+
+          # Pinned single datacenter for this ticket -- the sample pack is
+          # only staged on EU-RO-1/EUR-IS-1's network volumes, so this run
+          # must never land anywhere else. Looked up from the same
+          # vars.OEV_NETWORK_VOLUME_MAP repo variable oev-populate-volume*
+          # workflows already use (datacenter_id -> networkVolumeId).
+          PINNED_DATACENTER = os.environ['PINNED_DATACENTER']
+          volume_map = json.loads(os.environ['VOLUME_MAP_JSON'])
+          pinned_volume_id = volume_map.get(PINNED_DATACENTER)
+          if not pinned_volume_id:
+              print(f'::error::datacenter={PINNED_DATACENTER!r} is not a key in '
+                    f'OEV_NETWORK_VOLUME_MAP={volume_map!r}. Run oev-network-volume-setup.yml '
+                    f'for this datacenter first.')
+              sys.exit(1)
+          print(f'Pinned datacenter: {PINNED_DATACENTER} (network volume {pinned_volume_id})')
+
+          MAX_ATTEMPTS = 3
+          POD_IDS_FILE = '/tmp/runpod_all_pod_ids.txt'
+          # Truncate at the start of this job -- the final cleanup step reads
+          # this file to sweep every pod created this run, regardless of
+          # which attempt (if any) ends up published downstream.
+          open(POD_IDS_FILE, 'w').close()
+
+          # Full documented RunPod data center list (from the REST v1 OpenAPI
+          # schema's dataCenterIds default/enum). Used only to steer AWAY from
+          # datacenters that already produced an NVDEC-failing host this run --
+          # not a permanent blacklist, not persisted between runs.
+          ALL_DATACENTERS = [
+              'EU-RO-1', 'CA-MTL-1', 'EU-SE-1', 'US-IL-1', 'EUR-IS-1', 'EU-CZ-1',
+              'US-TX-3', 'EUR-IS-2', 'US-KS-2', 'US-GA-2', 'US-WA-1', 'US-TX-1',
+              'CA-MTL-3', 'EU-NL-1', 'US-TX-4', 'US-CA-2', 'US-NC-1', 'OC-AU-1',
+              'US-DE-1', 'EUR-IS-3', 'CA-MTL-2', 'AP-JP-1', 'EUR-NO-1', 'EU-FR-1',
+              'US-KS-3', 'US-GA-1', 'AP-IN-1', 'US-MD-1',
+          ]
+
+          def request(method, url, data=None, timeout=30):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as response:
+                      raw = response.read()
+                      return json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as exc:
+                  err_body = exc.read().decode(errors='replace')[:500]
+                  raise RuntimeError(
+                      f'HTTP {exc.code} from {method} {url}: {err_body}'
+                  ) from exc
+
+          def delete_pod(pod_id):
+              # Best-effort only -- the final if:always() cleanup step reads
+              # POD_IDS_FILE and retries deletion for every pod created this
+              # run, so a failure here is not a leak, just a slower one.
+              try:
+                  request('DELETE', f'{base}/pods/{pod_id}', timeout=20)
+                  print(f'Deleted pod {pod_id} (attempt cleanup).')
+              except Exception as exc:
+                  print(f'Delete warning for pod {pod_id}: {exc} (final cleanup step will retry).')
+
+          def create_pod(exclude_datacenters):
+              create_body = {
+                  'name': 'oev-runpod-followcam',
+                  'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
+                  # GPU order/config deliberately UNCHANGED this cycle -- only
+                  # datacenter steering is under test, to isolate which lever
+                  # (if either) actually escapes the sticky-host allocator.
+                  'gpuTypeIds': [
+                      'NVIDIA GeForce RTX 4090',
+                      'NVIDIA RTX A5000',
+                      'NVIDIA GeForce RTX 3090',
+                      'NVIDIA L4',
+                  ],
+                  'gpuTypePriority': 'custom',
+                  'gpuCount': 1,
+                  'cloudType': 'SECURE',
+                  'containerDiskInGb': 120,
+                  'ports': ['22/tcp'],
+                  'supportPublicIp': True,
+                  'allowedCudaVersions': ['12.8'],
+                  'networkVolumeId': pinned_volume_id,
+                  'volumeMountPath': '/runpod-volume',
+                  # Pinned to the single requested datacenter, always --
+                  # deliberately NOT using the production workflow's
+                  # exclude/widen-to-ALL_DATACENTERS steering logic, since
+                  # the sample pack does not exist outside EU-RO-1/EUR-IS-1
+                  # and a widened fallback would silently land this run
+                  # somewhere the samples aren't staged.
+                  'dataCenterIds': [PINNED_DATACENTER],
+                  # RunPod documentation/templates use both names in different
+                  # SSH-key paths. Supplying both is harmless and makes this
+                  # ephemeral per-run key explicit for the stock image.
+                  'env': {
+                      'PUBLIC_KEY': pub_key,
+                      'SSH_PUBLIC_KEY': pub_key,
+                  },
+              }
+              printable = {k: v for k, v in create_body.items() if k != 'env'}
+              print(f'Creating pod: {json.dumps(printable)}')
+              pod = request('POST', f'{base}/pods', create_body)
+              pod_id = pod.get('id')
+              if not pod_id:
+                  raise RuntimeError(f'pod create response had no id: {pod}')
+              # Record immediately, before any polling/SSH work, so the final
+              # cleanup step knows about this pod even if this attempt crashes.
+              with open(POD_IDS_FILE, 'a') as f:
+                  f.write(pod_id + '\n')
+              print(f'Pod created: id={pod_id}')
+              return pod_id
+
+          def wait_for_network(pod_id, timeout_s=300):
+              deadline = time.time() + timeout_s
+              info = {}
+              while time.time() < deadline:
+                  info = request('GET', f'{base}/pods/{pod_id}?includeMachine=true')
+                  public_ip = info.get('publicIp')
+                  mappings = info.get('portMappings') or {}
+                  mapped_22 = None
+                  if isinstance(mappings, dict):
+                      mapped_22 = mappings.get('22') or mappings.get('22/tcp')
+                  if public_ip and mapped_22:
+                      return public_ip, mapped_22, info
+                  time.sleep(10)
+              raise RuntimeError(f'pod {pod_id} never reported a public IP + SSH mapping within {timeout_s}s')
+
+          def wait_for_ssh(ip, port, attempts=18, delay_s=5):
+              for i in range(1, attempts + 1):
+                  result = subprocess.run(
+                      ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
+                       '-i', '/tmp/runpod_key', '-p', str(port), f'root@{ip}', 'echo OK'],
+                      capture_output=True, text=True, timeout=15,
+                  )
+                  if 'OK' in result.stdout:
+                      return True
+                  print(f'SSH not ready ({i}/{attempts})')
+                  time.sleep(delay_s)
+              return False
+
+          def run_preflight(ip, port):
+              ssh_opts = ['-i', '/tmp/runpod_key', '-p', str(port), '-o', 'StrictHostKeyChecking=no',
+                          '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=30',
+                          '-o', 'ServerAliveCountMax=10', '-o', 'TCPKeepAlive=yes']
+              scp_opts = ['-i', '/tmp/runpod_key', '-P', str(port), '-o', 'StrictHostKeyChecking=no',
+                          '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=10',
+                          '-o', 'TCPKeepAlive=yes']
+              subprocess.run(['scp'] + scp_opts + ['runpod_gpu_preflight.sh', f'root@{ip}:/tmp/runpod_gpu_preflight.sh'],
+                              check=True, timeout=60)
+              subprocess.run(['ssh'] + ssh_opts + [f'root@{ip}', 'chmod +x /tmp/runpod_gpu_preflight.sh'],
+                              check=True, timeout=30)
+              result = subprocess.run(
+                  ['ssh'] + ssh_opts + [f'root@{ip}', 'stdbuf -oL -eL /tmp/runpod_gpu_preflight.sh'],
+                  capture_output=True, text=True, timeout=180,
+              )
+              output = result.stdout + result.stderr
+              passed = result.returncode == 0 and 'PREFLIGHT_RESULT=PASS' in output.splitlines()
+              return passed, output
+
+          winner = None
+          summary_lines = []
+          excluded_datacenters = set()
+          for attempt in range(1, MAX_ATTEMPTS + 1):
+              print(f'--- Pod allocation attempt {attempt}/{MAX_ATTEMPTS} ---')
+              try:
+                  pod_id = create_pod(excluded_datacenters)
+              except Exception as exc:
+                  print(f'::error::Attempt {attempt}: pod create failed: {exc}')
+                  summary_lines.append(f'attempt={attempt} pod_id=none result=CREATE_FAILED error={exc}')
+                  continue
+
+              try:
+                  ip, port, info = wait_for_network(pod_id)
+              except Exception as exc:
+                  print(f'Attempt {attempt}: {exc}')
+                  summary_lines.append(f'attempt={attempt} pod_id={pod_id} result=NETWORK_TIMEOUT')
+                  delete_pod(pod_id)
+                  continue
+
+              machine = info.get('machine') or {}
+              gpu_obj = info.get('gpu') or {}
+              gpu_type = (
+                  gpu_obj.get('displayName')
+                  or (machine.get('gpuType') or {}).get('displayName')
+                  or machine.get('gpuDisplayName')
+                  or machine.get('gpuTypeId')
+                  or 'unknown'
+              )
+              # FIXED this cycle: machineId is a top-level Pod field per RunPod's
+              # official OpenAPI schema, not nested under machine. dataCenterId
+              # is correctly nested under machine, confirmed against the same schema.
+              machine_id = info.get('machineId') or 'unknown'
+              data_center_id = machine.get('dataCenterId') or 'unknown'
+              cost_per_hr = info.get('costPerHr')
+              cost_str = f'{cost_per_hr}' if cost_per_hr is not None else 'unavailable'
+
+              if not wait_for_ssh(ip, port):
+                  print(f'Attempt {attempt}: SSH never came up on pod {pod_id} ({ip}:{port})')
+                  summary_lines.append(
+                      f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                      f'data_center_id={data_center_id} gpu={gpu_type} result=SSH_TIMEOUT'
+                  )
+                  delete_pod(pod_id)
+                  continue
+
+              try:
+                  passed, preflight_output = run_preflight(ip, port)
+              except Exception as exc:
+                  print(f'Attempt {attempt}: preflight upload/run failed: {exc}')
+                  summary_lines.append(
+                      f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                      f'data_center_id={data_center_id} gpu={gpu_type} result=PREFLIGHT_ERROR error={exc}'
+                  )
+                  delete_pod(pod_id)
+                  continue
+
+              with open(f'preflight_attempt_{attempt}.txt', 'w') as f:
+                  f.write(preflight_output)
+
+              driver_version = 'unknown'
+              for line in preflight_output.splitlines():
+                  if line.startswith('PREFLIGHT_DRIVER_VERSION='):
+                      driver_version = line.split('=', 1)[1]
+                      break
+
+              result_str = 'PASS' if passed else 'FAIL'
+              print(f'Attempt {attempt}: pod={pod_id} host_ip={ip} machine_id={machine_id} '
+                    f'data_center_id={data_center_id} gpu={gpu_type} driver={driver_version} preflight={result_str}')
+              summary_lines.append(
+                  f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                  f'data_center_id={data_center_id} gpu={gpu_type} driver={driver_version} '
+                  f'cost_per_hr={cost_str} result={result_str}'
+              )
+
+              if passed:
+                  with open('preflight_output.txt', 'w') as f:
+                      f.write(preflight_output)
+                  winner = {
+                      'pod_id': pod_id, 'ip': ip, 'port': port, 'gpu_type': gpu_type,
+                      'cost_per_hr': cost_str, 'machine_id': machine_id,
+                      'data_center_id': data_center_id, 'driver_version': driver_version,
+                  }
+                  break
+              else:
+                  print(f'Attempt {attempt}: NVDEC preflight FAILED on pod {pod_id} '
+                        f'(driver {driver_version}, machine {machine_id}, datacenter {data_center_id}, '
+                        f'host {ip}) -- deleting and steering next attempt away from this datacenter.')
+                  if data_center_id != 'unknown':
+                      excluded_datacenters.add(data_center_id)
+                  delete_pod(pod_id)
+
+          with open('pod_selection_summary.txt', 'w') as f:
+              f.write('\n'.join(summary_lines) + '\n')
+
+          if winner is None:
+              print(f'::error::All {MAX_ATTEMPTS} pod allocation attempts failed (NVDEC preflight, SSH, or network). '
+                    f'See pod_selection_summary.txt and preflight_attempt_*.txt for per-host evidence.')
+              sys.exit(1)
+
+          launch_time = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+          print(f'Selected healthy pod: {winner}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'pod_id={winner["pod_id"]}\n')
+              output.write(f'ip={winner["ip"]}\n')
+              output.write(f'port={winner["port"]}\n')
+              output.write(f'gpu_type={winner["gpu_type"]}\n')
+              output.write(f'cost_per_hr={winner["cost_per_hr"]}\n')
+              output.write(f'machine_id={winner["machine_id"]}\n')
+              output.write(f'data_center_id={winner["data_center_id"]}\n')
+              output.write(f'launch_time={launch_time}\n')
+          PY
+
+      - name: Upload + run environment bootstrap (must exit 0 before continuing)
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP runpod_bootstrap.sh root@$IP:/tmp/runpod_bootstrap.sh
+          $SSH root@$IP "chmod +x /tmp/runpod_bootstrap.sh"
+
+          set +e
+          $SSH root@$IP "stdbuf -oL -eL /tmp/runpod_bootstrap.sh" | tee bootstrap_output.txt
+          bootstrap_rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$bootstrap_rc" -ne 0 ]; then
+            echo "::error::runpod_bootstrap.sh failed (exit $bootstrap_rc) -- aborting before footage download."
+            exit 1
+          fi
+          echo 'Bootstrap PASSED (reco-cli built with --features cuda).'
+
+      - name: Verify exact validated Reco revision
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          EXPECTED_RECO_SHA='53fe10f548d5767ad94ef66aeaedf2d8c7161f27'
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          actual=$($SSH root@$IP "sed -n 's/^video-stitcher_sha=//p' /tmp/runpod_bootstrap_versions.log | tail -1")
+          echo "Reco SHA built by bootstrap: $actual"
+          if [ "$actual" != "$EXPECTED_RECO_SHA" ]; then
+            echo "::error::Expected validated Reco SHA $EXPECTED_RECO_SHA, got ${actual:-missing}. Aborting before footage download."
+            exit 1
+          fi
+          echo 'Reco revision gate PASSED.'
+
+      - name: Copy sample clips from network volume to pod workload path
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          SAMPLE_SET_ID: ${{ inputs.sample_set_id }}
+          SAMPLE_ID: ${{ inputs.sample_id }}
+          DURATION_S: ${{ inputs.duration_s }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SRC_DIR="/runpod-volume/oev-samples/$SAMPLE_SET_ID"
+          LEFT_SRC="$SRC_DIR/${SAMPLE_ID}_left_${DURATION_S}s.mp4"
+          RIGHT_SRC="$SRC_DIR/${SAMPLE_ID}_right_${DURATION_S}s.mp4"
+          # No download -- the volume is already attached to this pod
+          # (networkVolumeId set at launch). A local cp only, nothing goes
+          # over the network, so this step should be near-instant.
+          $SSH "mkdir -p /tmp/oev_run && test -s '$LEFT_SRC' && test -s '$RIGHT_SRC'" || {
+            echo "::error::Sample clip(s) not found on network volume: $LEFT_SRC / $RIGHT_SRC -- do not regenerate/restage, check sample_id/duration_s/sample_set_id inputs."
+            exit 1
+          }
+          $SSH "cp '$LEFT_SRC' /tmp/oev_run/left.mp4 && cp '$RIGHT_SRC' /tmp/oev_run/right.mp4"
+          $SSH "test -s /tmp/oev_run/left.mp4 && test -s /tmp/oev_run/right.mp4 && ls -lh /tmp/oev_run/left.mp4 /tmp/oev_run/right.mp4"
+
+      - name: Upload + run sample-baseline test script
+        id: run_followcam
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          SAMPLE_ID: ${{ inputs.sample_id }}
+          DURATION_S: ${{ inputs.duration_s }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP runpod_sample_baseline_remote.sh root@$IP:/tmp/oev_run/
+          $SSH "chmod +x /tmp/oev_run/runpod_sample_baseline_remote.sh"
+          LEFT_CLIP="${SAMPLE_ID}_left_${DURATION_S}s.mp4"
+          RIGHT_CLIP="${SAMPLE_ID}_right_${DURATION_S}s.mp4"
+
+          # Bootstrap exports live only in its SSH shell. Reconstruct the
+          # exact proven runtime environment in the shell that runs the real
+          # football workload; do not install anything here.
+          remote_cmd="test -d /usr/local/cuda-12.8/lib64 && test -f /tmp/nvidia_egl_icd.json || { echo 'FATAL: validated RunPod CUDA/Vulkan runtime files missing'; exit 10; }; export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}; export VK_DRIVER_FILES=/tmp/nvidia_egl_icd.json; export VK_ICD_FILENAMES=/tmp/nvidia_egl_icd.json; unset DISPLAY; SAMPLE_ID='$SAMPLE_ID' DURATION_S='$DURATION_S' LEFT_CLIP='$LEFT_CLIP' RIGHT_CLIP='$RIGHT_CLIP' stdbuf -oL -eL /tmp/oev_run/runpod_sample_baseline_remote.sh"
+          processing_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "processing_start=$processing_start" >> "$GITHUB_OUTPUT"
+          remote_rc=0
+          $SSH "$remote_cmd" || remote_rc=$?
+          processing_end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "processing_end=$processing_end" >> "$GITHUB_OUTPUT"
+          echo "remote_exit=$remote_rc" >> "$GITHUB_OUTPUT"
+          echo "Remote follow-cam script exit: $remote_rc"
+          echo "Processing window: $processing_start -> $processing_end"
+
+      - name: Pull back logs + outputs
+        if: always()
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          POD_ID: ${{ steps.launch.outputs.pod_id }}
+          GPU_TYPE: ${{ steps.launch.outputs.gpu_type }}
+          COST_PER_HR: ${{ steps.launch.outputs.cost_per_hr }}
+          MACHINE_ID: ${{ steps.launch.outputs.machine_id }}
+          DATA_CENTER_ID: ${{ steps.launch.outputs.data_center_id }}
+          LAUNCH_TIME: ${{ steps.launch.outputs.launch_time }}
+          PROCESSING_START: ${{ steps.run_followcam.outputs.processing_start }}
+          PROCESSING_END: ${{ steps.run_followcam.outputs.processing_end }}
+          SAMPLE_ID: ${{ inputs.sample_id }}
+          DURATION_S: ${{ inputs.duration_s }}
+          REQUESTED_DATACENTER: ${{ inputs.datacenter }}
+        run: |
+          mkdir -p followcam_artifacts
+          cp preflight_output.txt followcam_artifacts/ 2>/dev/null || true
+          cp bootstrap_output.txt followcam_artifacts/ 2>/dev/null || true
+          cp pod_selection_summary.txt followcam_artifacts/ 2>/dev/null || true
+          cp preflight_attempt_*.txt followcam_artifacts/ 2>/dev/null || true
+
+          duration_str="unavailable"
+          cost_str="unavailable"
+          if [ -n "$PROCESSING_START" ] && [ -n "$PROCESSING_END" ]; then
+            start_s=$(date -u -d "$PROCESSING_START" +%s 2>/dev/null || echo "")
+            end_s=$(date -u -d "$PROCESSING_END" +%s 2>/dev/null || echo "")
+            if [ -n "$start_s" ] && [ -n "$end_s" ]; then
+              dur_s=$((end_s - start_s))
+              duration_str="${dur_s}s"
+              if [ -n "$COST_PER_HR" ] && [ "$COST_PER_HR" != "unavailable" ]; then
+                cost_str=$(python3 -c "print(f'{$COST_PER_HR * $dur_s / 3600:.4f}')" 2>/dev/null || echo "unavailable")
+              fi
+            fi
+          fi
+
+          echo "RunPod job summary: gpu=$GPU_TYPE price_per_hr=$COST_PER_HR pod_id=$POD_ID machine_id=$MACHINE_ID data_center_id=$DATA_CENTER_ID launch_time=$LAUNCH_TIME processing_start=$PROCESSING_START processing_end=$PROCESSING_END duration=$duration_str approx_cost=$cost_str"
+
+          cat > followcam_artifacts/run_metadata.txt <<META
+          sample_id=$SAMPLE_ID
+          duration_s=$DURATION_S
+          requested_datacenter=$REQUESTED_DATACENTER
+          pod_id=$POD_ID
+          ip=$IP
+          port=$PORT
+          gpu_type=$GPU_TYPE
+          cost_per_hr=$COST_PER_HR
+          machine_id=$MACHINE_ID
+          data_center_id=$DATA_CENTER_ID
+          launch_time=$LAUNCH_TIME
+          processing_start=$PROCESSING_START
+          processing_end=$PROCESSING_END
+          processing_duration=$duration_str
+          approx_processing_cost=$cost_str
+          META
+
+          if [ -z "$IP" ] || [ -z "$PORT" ]; then
+            echo 'No SSH endpoint available; skipping remote artifact pull.'
+            exit 0
+          fi
+
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          for file in segment.log calibrate.log stitch.log acceptance.log match.json events.jsonl followcam.mp4; do
+            $SCP "root@$IP:/tmp/oev_run/$file" followcam_artifacts/ || echo "$file missing"
+          done
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-sample-baseline-${{ inputs.sample_id }}-${{ inputs.duration_s }}s-${{ github.run_id }}
+          path: followcam_artifacts/
+          retention-days: 14
+
+      - name: Upload sample-baseline result to OEV Drive Baseline/ folder
+        id: drive_upload
+        if: always()
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          SAMPLE_ID: ${{ inputs.sample_id }}
+          DURATION_S: ${{ inputs.duration_s }}
+        run: |
+          pip install -q google-auth google-auth-oauthlib google-api-python-client
+
+          if [ ! -s followcam_artifacts/followcam.mp4 ]; then
+            echo 'followcam.mp4 missing/empty -- nothing to upload (remote script did not produce output).'
+            echo 'drive_upload_verified=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+
+          set +e
+          python3 -u - << 'PY'
+          import json, sys
+          sys.path.insert(0, '.')
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+          import os
+
+          OEV_DRIVE_FOLDER_ID = "18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ"
+
+          try:
+              token_data = json.loads(open('/tmp/youtube_token.json').read())
+              creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+              creds = Credentials(
+                  token=None,
+                  refresh_token=token_data['refresh_token'],
+                  token_uri=token_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
+                  client_id=token_data.get('client_id') or creds_data['installed']['client_id'],
+                  client_secret=token_data.get('client_secret') or creds_data['installed']['client_secret'],
+              )
+              drive = build('drive', 'v3', credentials=creds)
+
+              res = drive.files().list(
+                  q=f"name='Baseline' and '{OEV_DRIVE_FOLDER_ID}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+                  fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True,
+              ).execute()
+              files = res.get('files', [])
+              if files:
+                  followcam_id = files[0]['id']
+              else:
+                  folder = drive.files().create(
+                      body={'name': 'Baseline', 'mimeType': 'application/vnd.google-apps.folder', 'parents': [OEV_DRIVE_FOLDER_ID]},
+                      fields='id',
+                  ).execute()
+                  followcam_id = folder['id']
+
+              sample_id = os.environ['SAMPLE_ID']
+              duration_s = os.environ['DURATION_S']
+              run_id = "${{ github.run_id }}"
+              local_size = os.path.getsize('followcam_artifacts/followcam.mp4')
+              out_name = f"followcam_{sample_id}_{duration_s}s_run{run_id}.mp4"
+              media = MediaFileUpload('followcam_artifacts/followcam.mp4', mimetype='video/mp4', resumable=True)
+              uploaded = drive.files().create(
+                  body={'name': out_name, 'parents': [followcam_id]},
+                  media_body=media, fields='id', supportsAllDrives=True,
+              ).execute()
+              file_id = uploaded['id']
+              print(f"Uploaded followcam.mp4 -> Drive file id {file_id}")
+
+              # Verify: fetch the uploaded file's metadata back and compare size.
+              verify = drive.files().get(
+                  fileId=file_id, fields='id,size', supportsAllDrives=True,
+              ).execute()
+              remote_size = int(verify.get('size', -1))
+              if remote_size != local_size:
+                  raise RuntimeError(
+                      f"Upload verification failed: local size {local_size} != Drive size {remote_size} (file id {file_id})"
+                  )
+              print(f"Verified: Drive file {file_id} size {remote_size} matches local.")
+
+              events_path = 'followcam_artifacts/events.jsonl'
+              if os.path.exists(events_path) and os.path.getsize(events_path) > 0:
+                  events_name = f"events_{sample_id}_{duration_s}s_run{run_id}.jsonl"
+                  events_media = MediaFileUpload(events_path, mimetype='application/json', resumable=True)
+                  events_uploaded = drive.files().create(
+                      body={'name': events_name, 'parents': [followcam_id]},
+                      media_body=events_media, fields='id', supportsAllDrives=True,
+                  ).execute()
+                  print(f"Uploaded events.jsonl -> Drive file id {events_uploaded['id']}")
+
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as gh_out:
+                  gh_out.write('drive_upload_verified=true\n')
+                  gh_out.write(f'drive_file_id={file_id}\n')
+          except Exception as exc:
+              print(f"::error::Drive upload/verification failed: {exc}", file=sys.stderr)
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as gh_out:
+                  gh_out.write('drive_upload_verified=false\n')
+              sys.exit(0)  # do not fail this step directly -- acceptance step reports it
+          PY
+          set -e
+
+      - name: Terminate RunPod pod(s)
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          POD_ID: ${{ steps.launch.outputs.pod_id }}
+        run: |
+          python3 -u - << 'PY'
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          # The launch step records every pod it creates (not just the
+          # winning one) to this file the moment each pod is created, so a
+          # pod that failed NVDEC preflight and whose best-effort in-loop
+          # delete_pod() call didn't land is still swept here -- no orphan
+          # can survive both safety nets.
+          pod_ids = []
+          try:
+              with open('/tmp/runpod_all_pod_ids.txt') as f:
+                  pod_ids = [line.strip() for line in f if line.strip()]
+          except FileNotFoundError:
+              pass
+
+          # Backward-compat fallback: if the tracking file is missing or
+          # empty (e.g. launch step crashed before creating it) but the
+          # winning-pod output exists, still attempt to clean that one up.
+          single = os.environ.get('POD_ID', '').strip()
+          if single and single not in pod_ids:
+              pod_ids.append(single)
+
+          pod_ids = list(dict.fromkeys(pod_ids))  # de-dupe, preserve order
+
+          if not pod_ids:
+              print('No pod IDs recorded -- nothing to terminate.')
+              raise SystemExit(0)
+
+          headers = {'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          failures = []
+
+          for pod_id in pod_ids:
+              url = f'https://rest.runpod.io/v1/pods/{pod_id}'
+              last_error = None
+              confirmed = False
+              for attempt in range(1, 4):
+                  req = urllib.request.Request(url, method='DELETE', headers=headers)
+                  try:
+                      with urllib.request.urlopen(req, timeout=20) as response:
+                          status = response.status
+                          if status in (200, 202, 204):
+                              print(f'Pod {pod_id} termination confirmed (HTTP {status}) on attempt {attempt}.')
+                              confirmed = True
+                              break
+                          last_error = f'unexpected HTTP {status}'
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          print(f'Pod {pod_id} already absent (HTTP 404) -- cleanup confirmed.')
+                          confirmed = True
+                          break
+                      body = exc.read().decode(errors='replace')[:300]
+                      last_error = f'HTTP {exc.code}: {body}'
+                  except Exception as exc:
+                      last_error = repr(exc)
+
+                  print(f'Pod {pod_id}: DELETE attempt {attempt}/3 failed: {last_error}')
+                  if attempt < 3:
+                      time.sleep(5)
+
+              if not confirmed:
+                  failures.append((pod_id, last_error))
+
+          if failures:
+              for pod_id, last_error in failures:
+                  print(f'::error::Pod {pod_id} termination NOT confirmed after 3 attempts: {last_error}')
+              print('::error::Check the RunPod console manually; workflow is failing cleanup rather than hiding a potentially billable pod.')
+              raise SystemExit(1)
+
+          print(f'All {len(pod_ids)} pod(s) created this run confirmed terminated.')
+          PY
+
+      - name: Evaluate acceptance
+        if: always()
+        env:
+          REMOTE_EXIT: ${{ steps.run_followcam.outputs.remote_exit }}
+          DRIVE_UPLOAD_VERIFIED: ${{ steps.drive_upload.outputs.drive_upload_verified }}
+          DRIVE_FILE_ID: ${{ steps.drive_upload.outputs.drive_file_id }}
+          POD_ID: ${{ steps.launch.outputs.pod_id }}
+        run: |
+          echo "Remote script exit code: ${REMOTE_EXIT:-unknown}"
+          echo "Drive upload verified: ${DRIVE_UPLOAD_VERIFIED:-unknown}"
+          if [ "${REMOTE_EXIT:-1}" != '0' ]; then
+            echo "::error::RunPod follow-cam test did NOT pass (remote exit ${REMOTE_EXIT:-unknown}). See artifact logs."
+            exit 1
+          fi
+          if [ "${DRIVE_UPLOAD_VERIFIED:-false}" != 'true' ]; then
+            echo "::error::Drive upload was not verified for pod ${POD_ID:-unknown} (already terminated). Recovery: the run's GitHub Actions artifact 'oev-sample-baseline-${{ inputs.sample_id }}-${{ inputs.duration_s }}s-${{ github.run_id }}' still holds followcam.mp4/events.jsonl locally -- download it and upload to Drive manually, or re-dispatch this workflow."
+            exit 1
+          fi
+          echo "Sample-baseline test PASSED acceptance (sample=${{ inputs.sample_id }} duration=${{ inputs.duration_s }}s datacenter=${{ inputs.datacenter }}; AI tracking confirmed; Drive upload verified as file ${DRIVE_FILE_ID:-unknown}; --no-zero-copy interim setting, see runpod_sample_baseline_remote.sh header)."
