@@ -1573,3 +1573,19 @@ Not yet done, next chat/session:
 5. Produce the deliverable: image size before (~19.7GB, 47 layers) vs after, pull time before vs after, ADOPT/DO-NOT-ADOPT verdict.
 
 **First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
+## OEV network-volume — populate-volume RESOLVED, volume populated (13 Aug 2026, run `31701565656`)
+
+Dispatched `oev-populate-volume.yml` on `main`. All 11 steps green, verified against logs (not just exit code):
+- `cargo build --release -p reco-cli --features cuda` — Finished in 1m34s, no errors.
+- All 4 YOLO26 models exported @1920 and written to `/runpod-volume/oev-runtime/models/`: `yolo26s.onnx` (37.8MB), `yolo26m.onnx` (79.4MB), `yolo26l.onnx` (96.3MB), `yolo26x.onnx` (214.2MB).
+- `manifest.json` written with sha256 checksums for all 4 models.
+- Pod `mp0ah6q6kkf13v` terminated confirmed (HTTP 204, attempt 1) — no leak.
+
+**Current state:** network volume `gdso18q8kw` (EU-RO-1, 100GB) now holds a built `reco-cli` binary + manifest + all 4 YOLO26 models.
+
+Not yet done, next chat/session:
+1. Dispatch `oev-test-runtime-build.yml` to publish the new `v1-lite` image to GHCR.
+2. Dispatch `oev-test-runtime-benchmark.yml` against the new lite image + volume. Verify pull time no longer hits near the 1200s `wait_for_network` ceiling, and calibration/tracking/detection/pan acceptance checks still pass.
+3. Produce the deliverable: image size before (~19.7GB, 47 layers) vs after, pull time before vs after (from `timing.json`), ADOPT/DO-NOT-ADOPT verdict.
+
+**First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
