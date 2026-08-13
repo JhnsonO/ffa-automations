@@ -1,0 +1,35 @@
+name: OEV — Check RunPod Network Volumes (list only, no pod, zero cost)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  list-volumes:
+    name: List RunPod network volumes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: List network volumes via RunPod REST API
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 -u - << 'PY'
+          import json
+          import os
+          import urllib.request
+
+          headers = {
+              'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}",
+              'Accept': 'application/json',
+          }
+          req = urllib.request.Request('https://rest.runpod.io/v1/networkvolumes', headers=headers)
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              volumes = json.loads(resp.read())
+
+          print(f'Total volumes: {len(volumes)}')
+          for v in volumes:
+              print(json.dumps(v, indent=2))
+          PY
