@@ -34,6 +34,11 @@ on:
         description: 'Sample set id to stage (must exist under OEV Drive Samples/, e.g. GX010197-seed12345)'
         required: true
         type: string
+      samples_filter:
+        description: 'Optional comma-separated sample_NN names to stage (e.g. sample_01,sample_02). Blank = whole set.'
+        required: false
+        default: ''
+        type: string
       force_repopulate:
         description: 'Re-download even if the volume already has this sample_set_id'
         required: false
@@ -272,6 +277,7 @@ jobs:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
           SAMPLE_SET_ID: ${{ inputs.sample_set_id }}
+          SAMPLES_FILTER: ${{ inputs.samples_filter }}
           FORCE_REPOPULATE: ${{ inputs.force_repopulate }}
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
@@ -282,7 +288,7 @@ jobs:
           $SSH "chmod +x /tmp/oev_populate_volume_samples_remote.sh"
 
           remote_rc=0
-          $SSH "cd /tmp && SAMPLE_SET_ID='$SAMPLE_SET_ID' YOUTUBE_TOKEN='$YOUTUBE_TOKEN' YOUTUBE_CREDENTIALS='$YOUTUBE_CREDENTIALS' VOLUME_MOUNT=/runpod-volume FORCE_REPOPULATE='$FORCE_REPOPULATE' stdbuf -oL -eL /tmp/oev_populate_volume_samples_remote.sh" || remote_rc=$?
+          $SSH "cd /tmp && SAMPLE_SET_ID='$SAMPLE_SET_ID' SAMPLES_FILTER='$SAMPLES_FILTER' YOUTUBE_TOKEN='$YOUTUBE_TOKEN' YOUTUBE_CREDENTIALS='$YOUTUBE_CREDENTIALS' VOLUME_MOUNT=/runpod-volume FORCE_REPOPULATE='$FORCE_REPOPULATE' stdbuf -oL -eL /tmp/oev_populate_volume_samples_remote.sh" || remote_rc=$?
           echo "remote_exit=$remote_rc" >> "$GITHUB_OUTPUT"
           echo "Remote populate-volume-samples script exit: $remote_rc"
 
