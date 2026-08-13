@@ -1554,4 +1554,22 @@ Frozen files confirmed untouched by diff: `oev-runpod-followcam.yml`, `runpod_bo
 4. Dispatch `oev-test-runtime-benchmark.yml` against the new lite image + volume. Verify pull time no longer hits anywhere near the 1200s `wait_for_network` ceiling, and that calibration/tracking/detection/pan acceptance checks still pass (same `oev_test_runtime_benchmark_remote.sh` logic, just repointed at the volume).
 5. Produce the deliverable: image size before (~19.7GB, 47 layers, confirmed via GHCR manifest earlier) vs after (new lite image, size TBD from step 3's run), pull time before vs after (from `timing.json`), and an ADOPT/DO-NOT-ADOPT verdict.
 
+
+
+## OEV network-volume-setup — RESOLVED, volume live (13 Aug 2026, follow-up session)
+
+RunPod account topped up above $5. Two more real bugs found and fixed this session (debug cycles 1-2 of 3):
+
+1. Run `31701097517` - FAILED. Datacenter auto-select picked `EU-CZ-1` (has RTX 4090 GPU availability, does NOT support network volumes) - `POST /v1/networkvolumes` returned `HTTP 500` naming the 19 actual volume-capable datacenters. Fixed by intersecting the GPU-availability candidates against that known volume-capable set before ranking. Commit `fc04715`.
+2. Run `31701250820` - datacenter selection now correctly picked `EU-RO-1` and the volume **was created** (`id=gdso18q8kw`, `EU-RO-1`, 100GB). The next step - writing `vars.OEV_NETWORK_VOLUME_ID` via the workflow's own `GITHUB_TOKEN` - got `HTTP 403 "Resource not accessible by integration"`. Root cause: repo's Settings -> Actions -> General -> "Workflow permissions" is set to read-only, which caps `GITHUB_TOKEN` regardless of the `permissions: actions: write` block in the yml. Not fixed at the repo-settings level (would need Johnson to flip that setting to "Read and write permissions" for future runs to self-heal this step). Worked around this run only by writing the variable directly via API with a PAT: `OEV_NETWORK_VOLUME_ID=gdso18q8kw` is now set and confirmed (`201` on create).
+
+Current state: `vars.OEV_NETWORK_VOLUME_ID = gdso18q8kw` (EU-RO-1, 100GB) is live and set. `oev-network-volume-setup.yml` itself will still 403 on the variable-write step on any future re-run until the repo Settings permission is changed - harmless since the variable is already correct and the step is idempotent/best-effort, but worth flagging to Johnson.
+
+Not yet done, next chat/session:
+1. (Optional, Johnson) Settings -> Actions -> General -> Workflow permissions -> "Read and write permissions", so `oev-network-volume-setup.yml` stops 403ing on re-runs.
+2. Dispatch `oev-populate-volume.yml` - one-time paid GPU cost (~15-20 min RTX 4090, roughly $0.20-0.25 at recent rates). Tell Johnson before dispatching (paid compute). Verify it writes a valid `manifest.json` + `reco` binary + 4 YOLO26 models to the volume.
+3. Dispatch `oev-test-runtime-build.yml` to publish the new `v1-lite` image to GHCR.
+4. Dispatch `oev-test-runtime-benchmark.yml` against the new lite image + volume. Verify pull time no longer hits near the 1200s `wait_for_network` ceiling, and calibration/tracking/detection/pan acceptance checks still pass.
+5. Produce the deliverable: image size before (~19.7GB, 47 layers) vs after, pull time before vs after, ADOPT/DO-NOT-ADOPT verdict.
+
 **First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
