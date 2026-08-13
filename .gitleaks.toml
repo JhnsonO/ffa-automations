@@ -107,3 +107,11 @@ paths = [
   '''usr/share/cmake-3\.28/Templates/Windows/Windows_TemporaryKey\.pfx$''',
   '''usr/share/vim/vim91/keymap/.*\.vim$''',
 ]
+
+[[allowlists]]
+description = "JupyterLab bundled/minified static JS (webpack chunks) -- generic-api-key false positive on the CodeMirror-vim FourKeyMap class name, mangled by minification into 't.FourKeyMap=...' assignment-like syntax. Not a secret."
+paths = [
+  '''usr/local/share/jupyter/lab/static/2880\.8483d51b11998bfe8e4b\.js$''',
+  '''usr/local/share/jupyter/lab/static/3799\.eaa0438bc5c41bad0516\.js$''',
+  '''usr/local/share/jupyter/lab/static/7856\.dd9523e57bed80f1f694\.js$''',
+]
