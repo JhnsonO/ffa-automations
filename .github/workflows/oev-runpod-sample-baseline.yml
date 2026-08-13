@@ -27,6 +27,17 @@ on:
         required: false
         default: 'GX010197-seed1384188843'
         type: string
+      model_variant:
+        description: 'Detector model. yolov8n = existing baseline (fresh export). yolo26* = A/B variant, requires the model already staged on the volume via oev-populate-volume.yml -- no fresh-export fallback.'
+        required: false
+        default: 'yolov8n'
+        type: choice
+        options:
+          - yolov8n
+          - yolo26s
+          - yolo26m
+          - yolo26l
+          - yolo26x
 
 permissions:
   contents: read
@@ -528,18 +539,24 @@ jobs:
           PORT: ${{ steps.launch.outputs.port }}
           SAMPLE_ID: ${{ inputs.sample_id }}
           DURATION_S: ${{ inputs.duration_s }}
+          MODEL_VARIANT: ${{ inputs.model_variant }}
         run: |
           SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
-          $SCP runpod_sample_baseline_remote.sh root@$IP:/tmp/oev_run/
-          $SSH "chmod +x /tmp/oev_run/runpod_sample_baseline_remote.sh"
+          if [ "$MODEL_VARIANT" = "yolov8n" ]; then
+            REMOTE_SCRIPT="runpod_sample_baseline_remote.sh"
+          else
+            REMOTE_SCRIPT="runpod_sample_baseline_yolo26_remote.sh"
+          fi
+          $SCP "$REMOTE_SCRIPT" root@$IP:/tmp/oev_run/
+          $SSH "chmod +x /tmp/oev_run/$REMOTE_SCRIPT"
           LEFT_CLIP="${SAMPLE_ID}_left_${DURATION_S}s.mp4"
           RIGHT_CLIP="${SAMPLE_ID}_right_${DURATION_S}s.mp4"
 
           # Bootstrap exports live only in its SSH shell. Reconstruct the
           # exact proven runtime environment in the shell that runs the real
           # football workload; do not install anything here.
-          remote_cmd="test -d /usr/local/cuda-12.8/lib64 && test -f /tmp/nvidia_egl_icd.json || { echo 'FATAL: validated RunPod CUDA/Vulkan runtime files missing'; exit 10; }; export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}; export VK_DRIVER_FILES=/tmp/nvidia_egl_icd.json; export VK_ICD_FILENAMES=/tmp/nvidia_egl_icd.json; unset DISPLAY; SAMPLE_ID='$SAMPLE_ID' DURATION_S='$DURATION_S' LEFT_CLIP='$LEFT_CLIP' RIGHT_CLIP='$RIGHT_CLIP' stdbuf -oL -eL /tmp/oev_run/runpod_sample_baseline_remote.sh"
+          remote_cmd="test -d /usr/local/cuda-12.8/lib64 && test -f /tmp/nvidia_egl_icd.json || { echo 'FATAL: validated RunPod CUDA/Vulkan runtime files missing'; exit 10; }; export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}; export VK_DRIVER_FILES=/tmp/nvidia_egl_icd.json; export VK_ICD_FILENAMES=/tmp/nvidia_egl_icd.json; unset DISPLAY; SAMPLE_ID='$SAMPLE_ID' DURATION_S='$DURATION_S' LEFT_CLIP='$LEFT_CLIP' RIGHT_CLIP='$RIGHT_CLIP' YOLO26_VARIANT='$MODEL_VARIANT' stdbuf -oL -eL /tmp/oev_run/$REMOTE_SCRIPT"
           processing_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           echo "processing_start=$processing_start" >> "$GITHUB_OUTPUT"
           remote_rc=0
