@@ -1,0 +1,408 @@
+name: OEV — Zero-Copy NV12 Corruption Diagnostic (throwaway pod, one-shot)
+
+# Diagnostic-only, isolated workflow. Does NOT touch any frozen file, the
+# production network volumes' reco binary/manifest, the baked GHCR image,
+# or any --no-zero-copy production setting.
+#
+# Fresh-builds JhnsonO/video-stitcher branch diag/zero-copy-frame0-readback
+# (commit 17108b05, +48/-0 over pinned prod SHA 53fe10f5 -- adds a single
+# env-gated readback block to crates/reco-io/src/zero_copy.rs, no other
+# change) on a throwaway pod, then runs `reco stitch` WITHOUT
+# --no-zero-copy (the exact configuration that produced the corrupted,
+# uniformly-flat-green followcam.mp4 in run 31557269688) with
+# RECO_DEBUG_DUMP_FRAME=1 set.
+#
+# Reuses the already-populated EU-RO-1 network volume (id 0hta9vhuue)
+# READ-ONLY for its yolo26m.onnx model only -- this pod's own script never
+# writes to /runpod-volume, so the volume's reco binary/manifest used by
+# production runs cannot be affected.
+#
+# Ticket: diagnose the zero-copy NV12 chroma-plane corruption bug
+# (docs/ai-project-state.md, "Open item ... diagnose/fix the NV12
+# chroma-plane bug in JhnsonO/video-stitcher's zero-copy encode path").
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zero-copy-diag:
+    name: Zero-Copy Diagnostic (RunPod, throwaway pod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Generate SSH key pair
+        run: |
+          pip install -q cryptography
+          python3 -u - << 'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+
+          key = Ed25519PrivateKey.generate()
+          priv = key.private_bytes(
+              serialization.Encoding.PEM,
+              serialization.PrivateFormat.OpenSSH,
+              serialization.NoEncryption(),
+          )
+          pub = key.public_key().public_bytes(
+              serialization.Encoding.OpenSSH,
+              serialization.PublicFormat.OpenSSH,
+          )
+          with open('/tmp/runpod_key', 'wb') as f:
+              f.write(priv)
+          with open('/tmp/runpod_key.pub', 'wb') as f:
+              f.write(pub + b' ffa-oev-zero-copy-diag\n')
+          os.chmod('/tmp/runpod_key', 0o600)
+          PY
+
+      - name: Launch RunPod GPU pod with EU-RO-1 volume attached (read-only model reuse, 3-round retry)
+        id: launch
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 -u - << 'PY'
+          import json
+          import os
+          import subprocess
+          import time
+          import urllib.error
+          import urllib.request
+
+          api_key = os.environ['RUNPOD_API_KEY']
+          volume_id = '0hta9vhuue'  # EU-RO-1, already populated, proven this session
+          base = 'https://rest.runpod.io/v1'
+          headers = {
+              'Authorization': f'Bearer {api_key}',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+          }
+          pub_key = open('/tmp/runpod_key.pub').read().strip()
+
+          ROUNDS = 3
+          SLEEP_BEFORE_ROUND = [0, 30, 60]
+          POD_IDS_FILE = '/tmp/diag_pod_id.txt'
+          open(POD_IDS_FILE, 'w').close()
+
+          GPU_TIER_ROUND1 = [
+              'NVIDIA GeForce RTX 4090',
+              'NVIDIA RTX A5000',
+              'NVIDIA GeForce RTX 3090',
+              'NVIDIA L4',
+          ]
+          GPU_TIER_WIDE = [
+              'NVIDIA GeForce RTX 4090',
+              'NVIDIA RTX A5000',
+              'NVIDIA GeForce RTX 3090',
+              'NVIDIA L4',
+              'NVIDIA L40S',
+              'NVIDIA GeForce RTX 5090',
+              'NVIDIA RTX 2000 Ada Generation',
+              'NVIDIA RTX PRO 6000 Blackwell Server Edition',
+          ]
+
+          def request(method, url, data=None, timeout=30):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as response:
+                      raw = response.read()
+                      return json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as exc:
+                  err_body = exc.read().decode(errors='replace')[:500]
+                  raise RuntimeError(f'HTTP {exc.code} from {method} {url}: {err_body}') from exc
+
+          def delete_pod(pod_id):
+              try:
+                  request('DELETE', f'{base}/pods/{pod_id}', timeout=20)
+                  print(f'Deleted pod {pod_id} (attempt cleanup).')
+              except Exception as exc:
+                  print(f'Delete warning for pod {pod_id}: {exc} (final cleanup step will retry).')
+
+          def create_pod(gpu_type_ids):
+              create_body = {
+                  'name': 'oev-zero-copy-diag',
+                  'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
+                  'gpuTypeIds': gpu_type_ids,
+                  'gpuTypePriority': 'custom',
+                  'gpuCount': 1,
+                  'cloudType': 'SECURE',
+                  'containerDiskInGb': 40,
+                  'networkVolumeId': volume_id,
+                  'volumeMountPath': '/runpod-volume',
+                  'ports': ['22/tcp'],
+                  'supportPublicIp': True,
+                  'allowedCudaVersions': ['12.8'],
+                  'env': {
+                      'PUBLIC_KEY': pub_key,
+                      'SSH_PUBLIC_KEY': pub_key,
+                  },
+              }
+              printable = {k: v for k, v in create_body.items() if k != 'env'}
+              print(f'Creating pod: {json.dumps(printable)}')
+              pod = request('POST', f'{base}/pods', create_body)
+              pod_id = pod.get('id')
+              if not pod_id:
+                  raise RuntimeError(f'pod create response had no id: {pod}')
+              print(f'Pod created: id={pod_id}')
+              return pod_id
+
+          def wait_for_network(pod_id, timeout_s=600):
+              deadline = time.time() + timeout_s
+              while time.time() < deadline:
+                  info = request('GET', f'{base}/pods/{pod_id}?includeMachine=true')
+                  public_ip = info.get('publicIp')
+                  mappings = info.get('portMappings') or {}
+                  mapped_22 = None
+                  if isinstance(mappings, dict):
+                      mapped_22 = mappings.get('22') or mappings.get('22/tcp')
+                  if public_ip and mapped_22:
+                      return public_ip, mapped_22
+                  time.sleep(10)
+              raise RuntimeError(f'pod {pod_id} never reported a public IP + SSH mapping within {timeout_s}s')
+
+          def wait_for_ssh(ip, port, attempts=18, delay_s=5):
+              for i in range(1, attempts + 1):
+                  result = subprocess.run(
+                      ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
+                       '-i', '/tmp/runpod_key', '-p', str(port), f'root@{ip}', 'echo OK'],
+                      capture_output=True, text=True, timeout=15,
+                  )
+                  if 'OK' in result.stdout:
+                      return True
+                  print(f'SSH not ready ({i}/{attempts})')
+                  time.sleep(delay_s)
+              return False
+
+          winner = None
+          for round_num in range(1, ROUNDS + 1):
+              sleep_s = SLEEP_BEFORE_ROUND[round_num - 1]
+              if sleep_s:
+                  print(f'Waiting {sleep_s}s before round {round_num}...')
+                  time.sleep(sleep_s)
+
+              gpu_type_ids = GPU_TIER_ROUND1 if round_num == 1 else GPU_TIER_WIDE
+              print(f'--- Round {round_num}/{ROUNDS} (EU-RO-1 pinned via volume, gpu_tier={"preferred-4" if round_num == 1 else "all-8"}) ---')
+              try:
+                  pod_id = create_pod(gpu_type_ids)
+              except Exception as exc:
+                  print(f'::error::Round {round_num}: pod create failed: {exc}')
+                  continue
+
+              with open(POD_IDS_FILE, 'w') as f:
+                  f.write(pod_id)
+
+              try:
+                  ip, port = wait_for_network(pod_id)
+                  if not wait_for_ssh(ip, port):
+                      raise RuntimeError(f'SSH never came up on pod {pod_id} ({ip}:{port})')
+              except Exception as exc:
+                  print(f'Round {round_num}: {exc} -- deleting pod and continuing to next round.')
+                  delete_pod(pod_id)
+                  continue
+
+              winner = {'pod_id': pod_id, 'ip': ip, 'port': port}
+              break
+
+          if winner is None:
+              raise RuntimeError(f'All {ROUNDS} rounds failed to allocate a reachable pod. See job log above.')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'pod_id={winner["pod_id"]}\n')
+              output.write(f'ip={winner["ip"]}\n')
+              output.write(f'port={winner["port"]}\n')
+          PY
+
+      - name: General GPU preflight (frozen script, unmodified, informational only)
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no"
+          $SCP runpod_gpu_preflight.sh root@$IP:/tmp/runpod_gpu_preflight.sh
+          $SSH "chmod +x /tmp/runpod_gpu_preflight.sh"
+          set +e
+          $SSH "stdbuf -oL -eL /tmp/runpod_gpu_preflight.sh"
+          rc=$?
+          set -e
+          echo "Preflight exit: $rc (informational for this diagnostic pod)"
+
+      - name: Resolve benchmark pack file IDs (OEV Drive Benchmarks/oev-test-runtime-v1/)
+        id: resolve
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -u - << 'PY'
+          import json
+          import urllib.parse
+          import urllib.request as req
+
+          OEV_DRIVE_FOLDER_ID = '18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ'
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          payload = json.dumps({
+              'client_id': token_data.get('client_id') or creds_data['installed']['client_id'],
+              'client_secret': token_data.get('client_secret') or creds_data['installed']['client_secret'],
+              'refresh_token': token_data['refresh_token'],
+              'grant_type': 'refresh_token',
+          }).encode()
+          response = req.urlopen(req.Request(
+              'https://oauth2.googleapis.com/token', data=payload,
+              headers={'Content-Type': 'application/json'}, method='POST',
+          ))
+          token = json.loads(response.read())
+          access_token = token['access_token']
+          open('/tmp/drive_token.txt', 'w').write(access_token)
+
+          def find_id(name, parent):
+              q = f"name='{name}' and '{parent}' in parents and trashed=false"
+              url = 'https://www.googleapis.com/drive/v3/files?' + urllib.parse.urlencode({
+                  'q': q, 'fields': 'files(id,name)',
+                  'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true',
+              })
+              r = req.urlopen(req.Request(url, headers={'Authorization': f'Bearer {access_token}'}))
+              files = json.loads(r.read()).get('files', [])
+              if not files:
+                  raise RuntimeError(f'{name} not found under parent {parent}')
+              return files[0]['id']
+
+          benchmarks_id = find_id('Benchmarks', OEV_DRIVE_FOLDER_ID)
+          pack_id = find_id('oev-test-runtime-v1', benchmarks_id)
+          left_id = find_id('left_2274_19s.mp4', pack_id)
+          right_id = find_id('right_2274_19s.mp4', pack_id)
+          import os
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'left_id={left_id}\nright_id={right_id}\n')
+          PY
+
+      - name: Download benchmark pack to pod
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          LEFT_ID: ${{ steps.resolve.outputs.left_id }}
+          RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          $SSH "mkdir -p /tmp/oev_run"
+          $SSH "set -o pipefail; aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=left.mp4 'https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media' 2>&1 | tail -5"
+          $SSH "set -o pipefail; aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=right.mp4 'https://www.googleapis.com/drive/v3/files/$RIGHT_ID?alt=media' 2>&1 | tail -5"
+          $SSH "test -s /tmp/oev_run/left.mp4 && test -s /tmp/oev_run/right.mp4 && ls -lh /tmp/oev_run/left.mp4 /tmp/oev_run/right.mp4"
+
+      - name: Confirm EU-RO-1 volume model is present (read-only check, no write)
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+          $SSH "ls -lh /runpod-volume/oev-runtime/models/yolo26m.onnx"
+
+      - name: Upload + run zero-copy diagnostic script
+        id: diag
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP oev_zero_copy_diag_remote.sh root@$IP:/tmp/oev_zero_copy_diag_remote.sh
+          $SSH "chmod +x /tmp/oev_zero_copy_diag_remote.sh"
+
+          remote_rc=0
+          $SSH "stdbuf -oL -eL /tmp/oev_zero_copy_diag_remote.sh" || remote_rc=$?
+          echo "remote_exit=$remote_rc" >> "$GITHUB_OUTPUT"
+          echo "Remote diagnostic script exit: $remote_rc (non-zero is expected/non-fatal, see step summary)"
+
+      - name: Pull back logs + diagnostic dump
+        if: always()
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          mkdir -p diag_artifacts
+          if [ -n "$IP" ] && [ -n "$PORT" ]; then
+            SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no"
+            $SCP -r "root@$IP:/tmp/oev_run/*.log" diag_artifacts/ || true
+            $SCP -r "root@$IP:/tmp/oev_run/diag_dump" diag_artifacts/ || true
+            $SCP "root@$IP:/tmp/oev_run/reco_version.txt" diag_artifacts/ || true
+          fi
+          echo "=== diag_summary.log ==="
+          cat diag_artifacts/diag_summary.log 2>/dev/null || echo "(not present)"
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-zero-copy-diag-${{ github.run_id }}
+          path: diag_artifacts/
+          retention-days: 30
+
+      - name: Terminate RunPod pod
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 -u - << 'PY'
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          try:
+              with open('/tmp/diag_pod_id.txt') as f:
+                  pod_id = f.read().strip()
+          except FileNotFoundError:
+              print('No pod ID recorded -- nothing to terminate.')
+              raise SystemExit(0)
+
+          if not pod_id:
+              print('No pod ID recorded -- nothing to terminate.')
+              raise SystemExit(0)
+
+          headers = {'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          url = f'https://rest.runpod.io/v1/pods/{pod_id}'
+          confirmed = False
+          last_error = None
+          for attempt in range(1, 4):
+              req = urllib.request.Request(url, method='DELETE', headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as response:
+                      if response.status in (200, 202, 204):
+                          print(f'Pod {pod_id} termination confirmed (HTTP {response.status}) on attempt {attempt}.')
+                          confirmed = True
+                          break
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      print(f'Pod {pod_id} already absent (HTTP 404) -- cleanup confirmed.')
+                      confirmed = True
+                      break
+                  last_error = f'HTTP {exc.code}: {exc.read().decode(errors="replace")[:300]}'
+              except Exception as exc:
+                  last_error = repr(exc)
+              print(f'Pod {pod_id}: DELETE attempt {attempt}/3 failed: {last_error}')
+              if attempt < 3:
+                  time.sleep(5)
+
+          if not confirmed:
+              print(f'::error::Pod {pod_id} termination NOT confirmed after 3 attempts: {last_error}')
+              raise SystemExit(1)
+          PY
+
+      - name: Evaluate diagnostic result
+        if: always()
+        run: |
+          if grep -q "Diagnostic block FIRED" diag_artifacts/diag_summary.log 2>/dev/null; then
+            echo "Diagnostic evidence captured -- see diag_summary.log and diag_dump/*.raw in the artifact."
+          else
+            echo "::warning::Diagnostic block did not clearly fire -- inspect diag_artifacts/stitch.log for the actual failure point."
+          fi
