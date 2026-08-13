@@ -104,13 +104,23 @@ jobs:
               data_center_id = dc_override
               if not data_center_id:
                   # Try to pick a HIGH-availability RTX 4090 datacenter live.
-                  # Endpoint shape confirmed from RunPod's public API-reference
-                  # example (catalog/list-gpu-types); if this account's key
-                  # doesn't expose that route or the shape differs, fall back
-                  # rather than guessing forever.
+                  # CORRECTED (this session): rest.runpod.io/v1 has no
+                  # GPU-catalog/availability route -- confirmed via a live
+                  # 400 ("path does not exist in the specification") on
+                  # /v1/gputypes. The catalog-with-availability endpoint only
+                  # exists on RunPod's newer API v2 (api.runpod.io/v2),
+                  # confirmed via that host's live openapi.json:
+                  # GET /v2/catalog/gpus?include=AVAILABILITY&product=POD,
+                  # same Bearer-token auth. This is a read-only GET used only
+                  # to pick a datacenter -- volume/pod creation below still
+                  # use rest.runpod.io/v1, matching this repo's other proven
+                  # working RunPod workflows (gpuTypeIds, networkVolumeId,
+                  # DELETE /v1/pods/{id} all confirmed working elsewhere in
+                  # this repo's history). If this call's shape ever changes
+                  # again, fall back rather than guessing forever.
                   candidates = []
                   try:
-                      gpu_types = request('GET', 'https://rest.runpod.io/v1/gputypes')
+                      gpu_types = request('GET', 'https://api.runpod.io/v2/catalog/gpus?include=AVAILABILITY&product=POD')
                       if isinstance(gpu_types, dict):
                           gpu_types = gpu_types.get('gpus') or gpu_types.get('data') or []
                       for g in gpu_types:
