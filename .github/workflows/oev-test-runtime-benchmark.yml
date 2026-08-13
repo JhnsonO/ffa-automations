@@ -56,7 +56,7 @@ jobs:
           os.chmod('/tmp/runpod_key', 0o600)
           PY
 
-      - name: Select datacenter + volume from OEV_NETWORK_VOLUME_MAP
+      - name: Select datacenter candidates from OEV_NETWORK_VOLUME_MAP
         id: volume
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
@@ -80,25 +80,28 @@ jobs:
               raise SystemExit(1)
 
           if dc_input:
-              dc = dc_input
-              volume_id = volume_map.get(dc)
+              # Explicit datacenter_id means "only this one, no fallback" --
+              # the person deliberately pinned it, so silently trying
+              # others would be surprising.
+              volume_id = volume_map.get(dc_input)
               if not volume_id:
-                  print(f'::error::datacenter_id={dc!r} is not a key in OEV_NETWORK_VOLUME_MAP={volume_map_json}. Valid keys: {list(volume_map.keys())}')
+                  print(f'::error::datacenter_id={dc_input!r} is not a key in OEV_NETWORK_VOLUME_MAP={volume_map_json}. Valid keys: {list(volume_map.keys())}')
                   raise SystemExit(1)
-              print(f'Using explicit datacenter_id={dc}, volume={volume_id}')
+              candidates_out = [{'dc': dc_input, 'volume_id': volume_id}]
+              print(f'Using explicit datacenter_id={dc_input}, volume={volume_id} (no cross-DC fallback)')
           else:
-              # Auto-select the best-ranked candidate among only the
-              # datacenters already present in the map (same live-query,
-              # HIGH/MEDIUM/LOW ranking logic as
-              # oev-network-volume-setup.yml -- no need to re-filter
-              # against the volume-capable set since map keys are
-              # volume-capable by construction).
+              # Auto-select mode: rank ALL map datacenters by live RTX 4090
+              # availability (same signal as oev-network-volume-setup.yml)
+              # and pass the whole ranked list through -- the launch step
+              # tries them in order, falling through to the next candidate
+              # if one is out of capacity, instead of failing the whole
+              # run over one DC's bad luck.
               headers = {
                   'Authorization': f'Bearer {os.environ["RUNPOD_API_KEY"]}',
                   'Accept': 'application/json',
                   'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) ffa-automations-oev-test-runtime-benchmark',
               }
-              candidates = []
+              live = []
               try:
                   req = urllib.request.Request(
                       'https://api.runpod.io/v2/catalog/gpus?include=AVAILABILITY&product=POD',
@@ -111,28 +114,26 @@ jobs:
                   for g in gpu_types:
                       if g.get('id') == 'NVIDIA GeForce RTX 4090' or g.get('name') == 'RTX 4090':
                           for entry in (g.get('dataCenters') or []):
-                              candidates.append((entry.get('availability', ''), entry.get('id')))
+                              live.append((entry.get('availability', ''), entry.get('id')))
               except Exception as exc:
                   print(f'GPU-type/datacenter availability query failed or unexpected shape: {exc}')
 
-              candidates = [c for c in candidates if c[1] in volume_map]
+              live = [c for c in live if c[1] in volume_map]
               rank = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
-              candidates.sort(key=lambda c: rank.get(c[0], 3))
+              live.sort(key=lambda c: rank.get(c[0], 3))
+              ranked_dcs = [dc for _, dc in live]
+              # Any map entries the live query didn't mention (e.g. NONE
+              # availability, omitted rather than listed) go last, in
+              # stable map order, rather than being dropped entirely.
+              for dc in volume_map:
+                  if dc not in ranked_dcs:
+                      ranked_dcs.append(dc)
 
-              if candidates:
-                  dc = candidates[0][1]
-                  volume_id = volume_map[dc]
-                  print(f'Auto-selected datacenter {dc!r} (availability={candidates[0][0]!r}) from {len(candidates)} candidate(s) restricted to map keys: {candidates}')
-              else:
-                  # No live signal restricted to the map's datacenters --
-                  # fall back to the first map entry rather than failing
-                  # outright, since the map is already known-volume-capable.
-                  dc, volume_id = next(iter(volume_map.items()))
-                  print(f'::warning::No live availability signal for any datacenter in the map -- falling back to first map entry: {dc}={volume_id}')
+              candidates_out = [{'dc': dc, 'volume_id': volume_map[dc]} for dc in ranked_dcs]
+              print(f'Ranked {len(candidates_out)} candidate datacenter(s) for fallback: {ranked_dcs}')
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f'volume_id={volume_id}\n')
-              f.write(f'data_center_id={dc}\n')
+              f.write(f'candidates={json.dumps(candidates_out)}\n')
           PY
 
       # Launch step: pod-allocation loop and its NVDEC-preflight retry are
@@ -152,17 +153,13 @@ jobs:
       # now only because nobody's gone back to it, not because it's
       # required. Restoring the fallback list here is a legitimate,
       # separate future improvement, not a re-opening of a settled bug.
-      - name: Launch RunPod GPU pod (NVDEC preflight retry, max 3 attempts)
+      - name: Launch RunPod GPU pod (per-DC retry with real delay, cross-DC fallback)
         id: launch
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           IMAGE_REF: ${{ inputs.image_ref }}
-          VOLUME_ID: ${{ steps.volume.outputs.volume_id }}
+          CANDIDATES: ${{ steps.volume.outputs.candidates }}
         run: |
-          if [ -z "$VOLUME_ID" ]; then
-            echo "::error::No volume_id resolved from OEV_NETWORK_VOLUME_MAP. Run oev-network-volume-setup.yml (and oev-populate-volume.yml) first."
-            exit 1
-          fi
           python3 -u - << 'PY'
           import json
           import os
@@ -174,7 +171,10 @@ jobs:
 
           api_key = os.environ['RUNPOD_API_KEY']
           image_ref = os.environ['IMAGE_REF']
-          volume_id = os.environ['VOLUME_ID']
+          candidates = json.loads(os.environ['CANDIDATES'])
+          if not candidates:
+              print('::error::No datacenter candidates resolved from OEV_NETWORK_VOLUME_MAP.')
+              sys.exit(1)
           base = 'https://rest.runpod.io/v1'
           headers = {
               'Authorization': f'Bearer {api_key}',
@@ -183,7 +183,16 @@ jobs:
           }
           pub_key = open('/tmp/runpod_key.pub').read().strip()
 
-          MAX_ATTEMPTS = 3
+          # Per-datacenter attempt budget, and a real delay between
+          # attempts. 13 Aug 2026: logs showed 3 "attempts" landing
+          # within ~2 seconds of each other -- since RunPod capacity
+          # fluctuates minute to minute (confirmed both from this
+          # project's own history and external reports), back-to-back
+          # calls are functionally one roll of the dice repeated, not
+          # three independent ones. A real gap gives each attempt an
+          # actual chance to land on a different market state.
+          MAX_ATTEMPTS_PER_DC = 3
+          RETRY_DELAY_S = 40
           POD_IDS_FILE = '/tmp/runpod_all_pod_ids.txt'
           open(POD_IDS_FILE, 'w').close()
 
@@ -212,24 +221,28 @@ jobs:
           # None on the last attempt = no floor, take whatever's available.
           MIN_DOWNLOAD_MBPS_BY_ATTEMPT = [800, 400, None]
 
-          def create_pod(min_download_mbps):
+          def create_pod(volume_id, min_download_mbps):
               create_body = {
                   'name': 'oev-test-runtime-benchmark',
                   'imageName': image_ref,
-                  # Restored multi-GPU fallback list (verbatim from the
-                  # frozen oev-runpod-followcam.yml, which already fixed
-                  # this same single-GPU-type problem) -- a single
-                  # gpuTypeIds entry means "no instances currently
-                  # available" any time that one type has zero capacity
-                  # in the selected datacenter, even if other compatible
-                  # GPUs are free there. 13 Aug 2026: confirmed live,
-                  # EU-RO-1 and EUR-IS-1 both 500'd on RTX-4090-only
-                  # requests despite the datacenter itself being up.
+                  # GPU fallback list, verbatim base from the frozen
+                  # oev-runpod-followcam.yml plus 4 more types confirmed
+                  # to show real (if thin) live availability across our
+                  # datacenters on 13 Aug 2026 (L40S in US-IL-1; RTX 5090,
+                  # RTX 2000 Ada, RTX PRO 6000 Blackwell Server Edition in
+                  # EUR-IS-1) -- more candidate GPU types means more
+                  # chances to match whatever a given host actually has
+                  # free, without changing cost meaningfully for a job
+                  # this short.
                   'gpuTypeIds': [
                       'NVIDIA GeForce RTX 4090',
                       'NVIDIA RTX A5000',
                       'NVIDIA GeForce RTX 3090',
                       'NVIDIA L4',
+                      'NVIDIA L40S',
+                      'NVIDIA GeForce RTX 5090',
+                      'NVIDIA RTX 2000 Ada Generation',
+                      'NVIDIA RTX PRO 6000 Blackwell Server Edition',
                   ],
                   'gpuTypePriority': 'custom',
                   'gpuCount': 1,
@@ -307,91 +320,102 @@ jobs:
 
           winner = None
           summary_lines = []
-          for attempt in range(1, MAX_ATTEMPTS + 1):
-              min_dl = MIN_DOWNLOAD_MBPS_BY_ATTEMPT[attempt - 1] if attempt - 1 < len(MIN_DOWNLOAD_MBPS_BY_ATTEMPT) else None
-              print(f'--- Pod allocation attempt {attempt}/{MAX_ATTEMPTS} (minDownloadMbps={min_dl}) ---')
-              pod_requested_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-              try:
-                  pod_id = create_pod(min_dl)
-              except Exception as exc:
-                  print(f'::error::Attempt {attempt}: pod create failed (min_dl={min_dl}): {exc}')
-                  summary_lines.append(f'attempt={attempt} pod_id=none min_download_mbps={min_dl} result=CREATE_FAILED error={exc}')
-                  continue
+          for dc_entry in candidates:
+              dc, volume_id = dc_entry['dc'], dc_entry['volume_id']
+              print(f'\n=== Trying datacenter {dc} (volume {volume_id}) ===')
+              for attempt in range(1, MAX_ATTEMPTS_PER_DC + 1):
+                  min_dl = MIN_DOWNLOAD_MBPS_BY_ATTEMPT[attempt - 1] if attempt - 1 < len(MIN_DOWNLOAD_MBPS_BY_ATTEMPT) else None
+                  print(f'--- {dc} attempt {attempt}/{MAX_ATTEMPTS_PER_DC} (minDownloadMbps={min_dl}) ---')
+                  pod_requested_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                  try:
+                      pod_id = create_pod(volume_id, min_dl)
+                  except Exception as exc:
+                      print(f'::error::{dc} attempt {attempt}: pod create failed (min_dl={min_dl}): {exc}')
+                      summary_lines.append(f'dc={dc} attempt={attempt} pod_id=none min_download_mbps={min_dl} result=CREATE_FAILED error={exc}')
+                      is_last_attempt_overall = (attempt == MAX_ATTEMPTS_PER_DC and dc_entry is candidates[-1])
+                      if not is_last_attempt_overall:
+                          print(f'Waiting {RETRY_DELAY_S}s before next attempt (real time gap, not an instant retry)...')
+                          time.sleep(RETRY_DELAY_S)
+                      continue
 
-              try:
-                  ip, port, info = wait_for_network(pod_id)
-              except Exception as exc:
-                  print(f'Attempt {attempt}: {exc}')
-                  summary_lines.append(f'attempt={attempt} pod_id={pod_id} result=NETWORK_TIMEOUT')
-                  delete_pod(pod_id)
-                  continue
+                  try:
+                      ip, port, info = wait_for_network(pod_id)
+                  except Exception as exc:
+                      print(f'{dc} attempt {attempt}: {exc}')
+                      summary_lines.append(f'dc={dc} attempt={attempt} pod_id={pod_id} result=NETWORK_TIMEOUT')
+                      delete_pod(pod_id)
+                      continue
 
-              machine = info.get('machine') or {}
-              gpu_obj = info.get('gpu') or {}
-              gpu_type = (
-                  gpu_obj.get('displayName')
-                  or (machine.get('gpuType') or {}).get('displayName')
-                  or machine.get('gpuDisplayName')
-                  or machine.get('gpuTypeId')
-                  or 'unknown'
-              )
-              machine_id = info.get('machineId') or 'unknown'
-              data_center_id = machine.get('dataCenterId') or 'unknown'
-              cost_per_hr = info.get('costPerHr')
-              cost_str = f'{cost_per_hr}' if cost_per_hr is not None else 'unavailable'
-              network_ready_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-
-              if not wait_for_ssh(ip, port):
-                  print(f'Attempt {attempt}: SSH never came up on pod {pod_id} ({ip}:{port})')
-                  summary_lines.append(
-                      f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
-                      f'data_center_id={data_center_id} gpu={gpu_type} result=SSH_TIMEOUT'
+                  machine = info.get('machine') or {}
+                  gpu_obj = info.get('gpu') or {}
+                  gpu_type = (
+                      gpu_obj.get('displayName')
+                      or (machine.get('gpuType') or {}).get('displayName')
+                      or machine.get('gpuDisplayName')
+                      or machine.get('gpuTypeId')
+                      or 'unknown'
                   )
-                  delete_pod(pod_id)
-                  continue
+                  machine_id = info.get('machineId') or 'unknown'
+                  data_center_id = machine.get('dataCenterId') or dc
+                  cost_per_hr = info.get('costPerHr')
+                  cost_str = f'{cost_per_hr}' if cost_per_hr is not None else 'unavailable'
+                  network_ready_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
-              try:
-                  passed, preflight_output = run_preflight(ip, port)
-              except Exception as exc:
-                  print(f'Attempt {attempt}: preflight upload/run failed: {exc}')
-                  summary_lines.append(
-                      f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
-                      f'data_center_id={data_center_id} gpu={gpu_type} result=PREFLIGHT_ERROR error={exc}'
-                  )
-                  delete_pod(pod_id)
-                  continue
+                  if not wait_for_ssh(ip, port):
+                      print(f'{dc} attempt {attempt}: SSH never came up on pod {pod_id} ({ip}:{port})')
+                      summary_lines.append(
+                          f'dc={dc} attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                          f'data_center_id={data_center_id} gpu={gpu_type} result=SSH_TIMEOUT'
+                      )
+                      delete_pod(pod_id)
+                      continue
 
-              with open(f'preflight_attempt_{attempt}.txt', 'w') as f:
-                  f.write(preflight_output)
+                  try:
+                      passed, preflight_output = run_preflight(ip, port)
+                  except Exception as exc:
+                      print(f'{dc} attempt {attempt}: preflight upload/run failed: {exc}')
+                      summary_lines.append(
+                          f'dc={dc} attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                          f'data_center_id={data_center_id} gpu={gpu_type} result=PREFLIGHT_ERROR error={exc}'
+                      )
+                      delete_pod(pod_id)
+                      continue
 
-              result_str = 'PASS' if passed else 'FAIL'
-              summary_lines.append(
-                  f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
-                  f'data_center_id={data_center_id} gpu={gpu_type} cost_per_hr={cost_str} result={result_str}'
-              )
-
-              if passed:
-                  with open('preflight_output.txt', 'w') as f:
+                  with open(f'preflight_attempt_{dc}_{attempt}.txt', 'w') as f:
                       f.write(preflight_output)
-                  ssh_ready_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-                  winner = {
-                      'pod_id': pod_id, 'ip': ip, 'port': port, 'gpu_type': gpu_type,
-                      'cost_per_hr': cost_str, 'machine_id': machine_id,
-                      'data_center_id': data_center_id,
-                      'pod_requested_at': pod_requested_at,
-                      'network_ready_at': network_ready_at,
-                      'ssh_ready_at': ssh_ready_at,
-                  }
+
+                  result_str = 'PASS' if passed else 'FAIL'
+                  summary_lines.append(
+                      f'dc={dc} attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                      f'data_center_id={data_center_id} gpu={gpu_type} cost_per_hr={cost_str} result={result_str}'
+                  )
+
+                  if passed:
+                      with open('preflight_output.txt', 'w') as f:
+                          f.write(preflight_output)
+                      ssh_ready_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                      winner = {
+                          'pod_id': pod_id, 'ip': ip, 'port': port, 'gpu_type': gpu_type,
+                          'cost_per_hr': cost_str, 'machine_id': machine_id,
+                          'data_center_id': data_center_id,
+                          'pod_requested_at': pod_requested_at,
+                          'network_ready_at': network_ready_at,
+                          'ssh_ready_at': ssh_ready_at,
+                      }
+                      break
+                  else:
+                      print(f'{dc} attempt {attempt}: NVDEC preflight FAILED on pod {pod_id} (host {ip}) -- deleting.')
+                      delete_pod(pod_id)
+              if winner is not None:
                   break
-              else:
-                  print(f'Attempt {attempt}: NVDEC preflight FAILED on pod {pod_id} (host {ip}) -- deleting.')
-                  delete_pod(pod_id)
+              print(f'=== {dc} exhausted after {MAX_ATTEMPTS_PER_DC} attempts, moving to next candidate datacenter (if any) ===')
 
           with open('pod_selection_summary.txt', 'w') as f:
               f.write('\n'.join(summary_lines) + '\n')
 
           if winner is None:
-              print(f'::error::All {MAX_ATTEMPTS} pod allocation attempts failed. See pod_selection_summary.txt.')
+              tried_dcs = [c['dc'] for c in candidates]
+              print(f'::error::All pod allocation attempts failed across {len(candidates)} datacenter(s): {tried_dcs}. See pod_selection_summary.txt.')
               sys.exit(1)
 
           launch_time = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
