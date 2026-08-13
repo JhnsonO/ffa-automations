@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       image_ref:
-        description: 'Full GHCR image ref to benchmark (immutable tag)'
+        description: 'Full GHCR image ref to benchmark (immutable tag) -- now the small runtime-lite image; heavy assets come from vars.OEV_NETWORK_VOLUME_ID instead of image layers'
         required: false
-        default: 'ghcr.io/jhnsono/oev-test-runtime:v1-reco-53fe10f5'
+        default: 'ghcr.io/jhnsono/oev-test-runtime:v1-lite'
         type: string
 
 permissions:
@@ -73,7 +73,12 @@ jobs:
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           IMAGE_REF: ${{ inputs.image_ref }}
+          VOLUME_ID: ${{ vars.OEV_NETWORK_VOLUME_ID }}
         run: |
+          if [ -z "$VOLUME_ID" ]; then
+            echo "::error::vars.OEV_NETWORK_VOLUME_ID is not set. Run oev-network-volume-setup.yml (and oev-populate-volume.yml) first."
+            exit 1
+          fi
           python3 -u - << 'PY'
           import json
           import os
@@ -85,6 +90,7 @@ jobs:
 
           api_key = os.environ['RUNPOD_API_KEY']
           image_ref = os.environ['IMAGE_REF']
+          volume_id = os.environ['VOLUME_ID']
           base = 'https://rest.runpod.io/v1'
           headers = {
               'Authorization': f'Bearer {api_key}',
@@ -130,6 +136,8 @@ jobs:
                   'gpuCount': 1,
                   'cloudType': 'SECURE',
                   'containerDiskInGb': 40,
+                  'networkVolumeId': volume_id,
+                  'volumeMountPath': '/runpod-volume',
                   'ports': ['22/tcp'],
                   'supportPublicIp': True,
                   'allowedCudaVersions': ['12.8'],
@@ -301,7 +309,7 @@ jobs:
               output.write(f'ssh_ready_at={winner["ssh_ready_at"]}\n')
           PY
 
-      - name: Image acceptance checks (manifest, models, reco version -- no build/export)
+      - name: Volume acceptance checks (manifest, models, reco version -- no build/export)
         id: image_check
         env:
           IP: ${{ steps.launch.outputs.ip }}
@@ -310,9 +318,10 @@ jobs:
           echo "image_check_start=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" >> "$GITHUB_OUTPUT"
           SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           $SSH "nvidia-smi -L"
-          $SSH "cat /opt/oev-runtime/manifest.json"
-          $SSH "cd /opt/oev-runtime/models && sha256sum -c models.sha256"
-          $SSH "/opt/oev-runtime/bin/reco --version"
+          $SSH "test -f /runpod-volume/oev-runtime/manifest.json || { echo 'FATAL: manifest.json not found on mounted volume -- was oev-populate-volume.yml run for this volume?'; exit 1; }"
+          $SSH "cat /runpod-volume/oev-runtime/manifest.json"
+          $SSH "cd /runpod-volume/oev-runtime/models && sha256sum -c models.sha256"
+          $SSH "/runpod-volume/oev-runtime/bin/reco --version"
           $SSH "python3 -c 'import onnxruntime; print(onnxruntime.get_available_providers())'"
           echo "image_check_end=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" >> "$GITHUB_OUTPUT"
 

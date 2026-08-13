@@ -1,0 +1,318 @@
+name: OEV — Populate RunPod Network Volume
+
+# One-time (or rare re-run) paid-GPU workflow: attaches the persistent
+# OEV_NETWORK_VOLUME_ID network volume to a throwaway RunPod pod, builds
+# reco-cli at the pinned SHA (--features cuda) and pre-exports YOLO26
+# s/m/l/x @1920 ONNX models onto the volume via
+# oev_populate_volume_remote.sh, then terminates the pod. Idempotent --
+# the remote script skips the build entirely if the volume's
+# manifest.json already matches the requested reco_sha/ultralytics
+# version, unless force_rebuild is set.
+#
+# Requires ${{ vars.OEV_NETWORK_VOLUME_ID }} to already exist -- run
+# oev-network-volume-setup.yml first if it doesn't.
+#
+# Attaching a network volume constrains this pod to the volume's
+# datacenter, trading some GPU-availability flexibility for the
+# pull-time win the volume exists to deliver -- expected and accepted
+# per the ticket this workflow was built for.
+
+on:
+  workflow_dispatch:
+    inputs:
+      reco_sha:
+        description: 'Pinned video-stitcher (Reco) commit SHA to build'
+        required: false
+        default: '53fe10f548d5767ad94ef66aeaedf2d8c7161f27'
+        type: string
+      reco_repo:
+        description: 'video-stitcher repo URL'
+        required: false
+        default: 'https://github.com/JhnsonO/video-stitcher'
+        type: string
+      ultralytics_version:
+        description: 'ultralytics pip version for YOLO26 export'
+        required: false
+        default: '8.4.118'
+        type: string
+      force_rebuild:
+        description: 'Rebuild even if the volume manifest already matches'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  populate-volume:
+    name: Build reco-cli + YOLO26 models onto the OEV network volume
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Verify OEV_NETWORK_VOLUME_ID is set
+        run: |
+          if [ -z "${{ vars.OEV_NETWORK_VOLUME_ID }}" ]; then
+            echo "::error::vars.OEV_NETWORK_VOLUME_ID is not set. Run oev-network-volume-setup.yml first."
+            exit 1
+          fi
+          echo "Using network volume: ${{ vars.OEV_NETWORK_VOLUME_ID }}"
+
+      - name: Generate SSH key pair
+        run: |
+          pip install -q cryptography
+          python3 -u - << 'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+
+          key = Ed25519PrivateKey.generate()
+          priv = key.private_bytes(
+              serialization.Encoding.PEM,
+              serialization.PrivateFormat.OpenSSH,
+              serialization.NoEncryption(),
+          )
+          pub = key.public_key().public_bytes(
+              serialization.Encoding.OpenSSH,
+              serialization.PublicFormat.OpenSSH,
+          )
+          with open('/tmp/runpod_key', 'wb') as f:
+              f.write(priv)
+          with open('/tmp/runpod_key.pub', 'wb') as f:
+              f.write(pub + b' ffa-oev-populate-volume\n')
+          os.chmod('/tmp/runpod_key', 0o600)
+          PY
+
+      # Launch mechanics deliberately kept simple (single attempt, no
+      # NVDEC-preflight retry loop) -- this pod only needs to build
+      # reco-cli and export ONNX models, neither of which requires a
+      # working NVDEC/render-capable GPU (confirmed: reco-cli's CUDA
+      # feature compiles against a compute-capability list, not a live
+      # device; yolo export is a CPU-fine pytorch->onnx conversion).
+      # A cheap general GPU-preflight check still runs (via the frozen,
+      # unmodified runpod_gpu_preflight.sh) so a genuinely broken host
+      # doesn't silently eat the ~15-20min build before failing later.
+      - name: Launch RunPod GPU pod with network volume attached
+        id: launch
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          VOLUME_ID: ${{ vars.OEV_NETWORK_VOLUME_ID }}
+        run: |
+          python3 -u - << 'PY'
+          import json
+          import os
+          import subprocess
+          import time
+          import urllib.error
+          import urllib.request
+
+          api_key = os.environ['RUNPOD_API_KEY']
+          volume_id = os.environ['VOLUME_ID']
+          base = 'https://rest.runpod.io/v1'
+          headers = {
+              'Authorization': f'Bearer {api_key}',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+          }
+          pub_key = open('/tmp/runpod_key.pub').read().strip()
+
+          def request(method, url, data=None, timeout=30):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as response:
+                      raw = response.read()
+                      return json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as exc:
+                  err_body = exc.read().decode(errors='replace')[:500]
+                  raise RuntimeError(f'HTTP {exc.code} from {method} {url}: {err_body}') from exc
+
+          create_body = {
+              'name': 'oev-populate-volume',
+              'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
+              'gpuTypeIds': ['NVIDIA GeForce RTX 4090'],
+              'gpuCount': 1,
+              'cloudType': 'SECURE',
+              'containerDiskInGb': 40,
+              'networkVolumeId': volume_id,
+              'volumeMountPath': '/runpod-volume',
+              'ports': ['22/tcp'],
+              'supportPublicIp': True,
+              'env': {
+                  'PUBLIC_KEY': pub_key,
+                  'SSH_PUBLIC_KEY': pub_key,
+              },
+          }
+          printable = {k: v for k, v in create_body.items() if k != 'env'}
+          print(f'Creating pod: {json.dumps(printable)}')
+          pod = request('POST', f'{base}/pods', create_body)
+          pod_id = pod.get('id')
+          if not pod_id:
+              raise RuntimeError(f'pod create response had no id: {pod}')
+          print(f'Pod created: id={pod_id}')
+          with open('/tmp/populate_pod_id.txt', 'w') as f:
+              f.write(pod_id)
+
+          deadline = time.time() + 1200
+          ip = port = None
+          while time.time() < deadline:
+              info = request('GET', f'{base}/pods/{pod_id}?includeMachine=true')
+              public_ip = info.get('publicIp')
+              mappings = info.get('portMappings') or {}
+              mapped_22 = None
+              if isinstance(mappings, dict):
+                  mapped_22 = mappings.get('22') or mappings.get('22/tcp')
+              if public_ip and mapped_22:
+                  ip, port = public_ip, mapped_22
+                  break
+              time.sleep(10)
+          if not ip:
+              raise RuntimeError(f'pod {pod_id} never reported a public IP + SSH mapping within 1200s')
+
+          ssh_ok = False
+          for i in range(1, 19):
+              result = subprocess.run(
+                  ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
+                   '-i', '/tmp/runpod_key', '-p', str(port), f'root@{ip}', 'echo OK'],
+                  capture_output=True, text=True, timeout=15,
+              )
+              if 'OK' in result.stdout:
+                  ssh_ok = True
+                  break
+              print(f'SSH not ready ({i}/18)')
+              time.sleep(5)
+          if not ssh_ok:
+              raise RuntimeError(f'SSH never came up on pod {pod_id} ({ip}:{port})')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'pod_id={pod_id}\n')
+              output.write(f'ip={ip}\n')
+              output.write(f'port={port}\n')
+          PY
+
+      - name: General GPU preflight (frozen script, unmodified)
+        id: preflight
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no"
+          $SCP runpod_gpu_preflight.sh root@$IP:/tmp/runpod_gpu_preflight.sh
+          $SSH "chmod +x /tmp/runpod_gpu_preflight.sh"
+          set +e
+          $SSH "stdbuf -oL -eL /tmp/runpod_gpu_preflight.sh"
+          rc=$?
+          set -e
+          echo "Preflight exit: $rc (informational for this build-only pod -- not gating, since build doesn't need a fully working NVDEC/render path)"
+
+      - name: Upload + run populate-volume script
+        id: populate
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          RECO_SHA: ${{ inputs.reco_sha }}
+          RECO_REPO: ${{ inputs.reco_repo }}
+          ULTRALYTICS_VERSION: ${{ inputs.ultralytics_version }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP oev_populate_volume_remote.sh root@$IP:/tmp/oev_populate_volume_remote.sh
+          $SSH "chmod +x /tmp/oev_populate_volume_remote.sh"
+
+          remote_rc=0
+          $SSH "cd /tmp && RECO_SHA='$RECO_SHA' RECO_REPO='$RECO_REPO' ULTRALYTICS_VERSION='$ULTRALYTICS_VERSION' VOLUME_MOUNT=/runpod-volume FORCE_REBUILD='$FORCE_REBUILD' stdbuf -oL -eL /tmp/oev_populate_volume_remote.sh" || remote_rc=$?
+          echo "remote_exit=$remote_rc" >> "$GITHUB_OUTPUT"
+          echo "Remote populate-volume script exit: $remote_rc"
+
+      - name: Pull back logs
+        if: always()
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          mkdir -p populate_artifacts
+          if [ -n "$IP" ] && [ -n "$PORT" ]; then
+            SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no"
+            $SCP "root@$IP:/tmp/build.log" populate_artifacts/ || true
+            $SCP "root@$IP:/tmp/timing.log" populate_artifacts/ || true
+          fi
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-populate-volume-${{ github.run_id }}
+          path: populate_artifacts/
+          retention-days: 30
+
+      - name: Terminate RunPod pod
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 -u - << 'PY'
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          try:
+              with open('/tmp/populate_pod_id.txt') as f:
+                  pod_id = f.read().strip()
+          except FileNotFoundError:
+              print('No pod ID recorded -- nothing to terminate.')
+              raise SystemExit(0)
+
+          if not pod_id:
+              print('No pod ID recorded -- nothing to terminate.')
+              raise SystemExit(0)
+
+          headers = {'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          url = f'https://rest.runpod.io/v1/pods/{pod_id}'
+          confirmed = False
+          last_error = None
+          for attempt in range(1, 4):
+              req = urllib.request.Request(url, method='DELETE', headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as response:
+                      if response.status in (200, 202, 204):
+                          print(f'Pod {pod_id} termination confirmed (HTTP {response.status}) on attempt {attempt}.')
+                          confirmed = True
+                          break
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      print(f'Pod {pod_id} already absent (HTTP 404) -- cleanup confirmed.')
+                      confirmed = True
+                      break
+                  last_error = f'HTTP {exc.code}: {exc.read().decode(errors="replace")[:300]}'
+              except Exception as exc:
+                  last_error = repr(exc)
+              print(f'Pod {pod_id}: DELETE attempt {attempt}/3 failed: {last_error}')
+              if attempt < 3:
+                  time.sleep(5)
+
+          if not confirmed:
+              print(f'::error::Pod {pod_id} termination NOT confirmed after 3 attempts: {last_error}')
+              raise SystemExit(1)
+          PY
+
+      - name: Evaluate result
+        if: always()
+        env:
+          REMOTE_EXIT: ${{ steps.populate.outputs.remote_exit }}
+        run: |
+          echo "Remote script exit code: ${REMOTE_EXIT:-unknown}"
+          if [ "${REMOTE_EXIT:-1}" = '0' ]; then
+            echo "Populate-volume: build ran and wrote reco+models+manifest to the volume."
+          elif [ "${REMOTE_EXIT:-1}" = '2' ]; then
+            echo "Populate-volume: volume already current for this reco_sha/ultralytics_version -- no rebuild needed."
+          else
+            echo "::error::Populate-volume FAILED (remote exit ${REMOTE_EXIT:-unknown}). See artifact logs."
+            exit 1
+          fi
