@@ -132,8 +132,8 @@ jobs:
           test -s left.mp4 && test -s right.mp4
 
           {
-            echo "left_duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 left.mp4)"
-            echo "right_duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 right.mp4)"
+            echo "left_duration=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 left.mp4)"
+            echo "right_duration=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 right.mp4)"
             echo "left_size_bytes=$(stat -c%s left.mp4)"
             echo "right_size_bytes=$(stat -c%s right.mp4)"
           } | tee equivalence_check.txt
@@ -146,7 +146,7 @@ jobs:
           # ~143554kB muxed, duration ~18.99s at -ss 2274 -t 19 -c copy
           # against the same GX010197.MP4/GX010173.MP4 sources. This step
           # fails loudly rather than silently accepting a different cut.
-          right_dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 right.mp4)
+          right_dur=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 right.mp4)
           right_size=$(stat -c%s right.mp4)
           python3 - << PY
           dur = float("$right_dur")
