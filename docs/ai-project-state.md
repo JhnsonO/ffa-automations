@@ -1775,3 +1775,24 @@ Frozen files confirmed untouched: `oev-runpod-followcam.yml`, `runpod_bootstrap.
 1. Redispatch `sample_01_30s` (yolo26m) — still blocked on the same sticky-bad-host issue in `EU-RO-1`, unchanged.
 2. Run `sample_01_180s` with `model_variant=yolo26m` (the workflow already supports this via the `model_variant` input added today) to get a real apples-to-apples comparison against the now-verified YOLOv8n 180s result (80 losses/180s).
 3. Panner-smoothing lag (`cluster_alpha`) is a separate, real, model-independent finding — worth its own ticket regardless of detector choice.
+
+## YOLO26m vs YOLOv8n — CONCLUDED, real apples-to-apples on sample_01_180s (13 Aug 2026)
+
+**Real comparison, both full 180s clip, same sample, `EU-RO-1`:**
+
+| metric | YOLOv8n (`31746711839`) | YOLO26m (`31750846382`) |
+|---|---|---|
+| track lost events | 80 | 38 |
+| reacquires | 81/81 | 39/39 |
+| processing time | 1761s | 1892s |
+| fps | ~6.1 | ~5.7 |
+| cost | $0.362 | $0.389 |
+| detection confidence: median / below-0.3% | 0.819 / 2.8% | 0.907 / 11.8% |
+
+**Verdict: YOLO26m is a real, moderate improvement — roughly half the track-loss rate (38 vs 80) for ~7% more processing time and ~$0.03 more cost.** Not dramatic, but genuine and cheap. Interestingly this holds despite YOLO26m having a noisier low-confidence tail (11.8% of raw detections <0.3 vs YOLOv8n's 2.8%) — its higher top-end confidence (median 0.907 vs 0.819) evidently wins out for actual tracking stability.
+
+This closes the YOLO26-vs-YOLOv8n AB ticket (the one originally left unconcluded from run `31608010277`). No further model-size testing (s/l/x) done — only `m` verified. Panner-smoothing lag (`cluster_alpha`) remains a separate, real, unresolved finding, independent of detector choice.
+
+**Not yet done:**
+1. `sample_01_30s` yolo26m still blocked on sticky-bad-host NVDEC in `EU-RO-1` (unchanged, low priority now that 180s gives a solid verdict).
+2. If pursuing further: `yolo26s/l/x` size sweep, or the panner-smoothing-lag ticket, are the two real open threads — neither started.
