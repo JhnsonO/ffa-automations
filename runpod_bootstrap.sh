@@ -117,7 +117,16 @@ log "Build dependencies installed."
 
 FFMPEG_VER=$(ffmpeg -version 2>&1 | head -1)
 log_version "ffmpeg_after_install" "$FFMPEG_VER"
-if ! ffmpeg -version 2>&1 | head -1 | grep -qE 'ffmpeg version (4\.[3-9]|[5-9]\.|[1-9][0-9]\.)'; then
+# Check against the already-captured $FFMPEG_VER via a here-string, not a
+# second "ffmpeg -version | head -1 | grep -q" pipe. Same SIGPIPE-under-
+# pipefail false-negative class documented 12 Aug 2026 (vulkaninfo/CUDA/
+# NVDEC/ORT checks): head -1 closing its read end early can SIGPIPE the
+# still-writing ffmpeg process on a long real build-config output, and
+# with pipefail that flips this check to FATAL even when the version is
+# genuinely fine. Re-checking the value already in hand avoids the
+# second invocation (and the pipe) entirely rather than relying on a
+# race between head's read and ffmpeg's write completing.
+if ! grep -qE 'ffmpeg version (4\.[3-9]|[5-9]\.|[1-9][0-9]\.)' <<< "$FFMPEG_VER"; then
   fail "FFmpeg version too old after install ('$FFMPEG_VER') -- reco-io needs 4.3+ (Pixel::VAAPI). This is the exact failure class that blocked the Ubuntu 20.04 desktop-image attempt." 2
 fi
 
