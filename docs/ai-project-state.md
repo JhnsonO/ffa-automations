@@ -1643,3 +1643,40 @@ GPU: RTX 4090 @ $0.74/hr → this run cost ≈ 432s × $0.74/3600 ≈ **$0.09**.
 **Not yet done, optional follow-up:** (1) decide whether to deprecate/stop publishing the old `v1-reco-53fe10f5` full-baked-image build path now that `v1-lite` is proven; (2) the repo Settings → Actions → Workflow permissions read-only issue (from the network-volume-setup 403, still un-flipped) remains a minor, non-blocking annoyance on any future `oev-network-volume-setup.yml` re-run.
 
 **First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
+
+## OEV network volume — multi-DC migration, 2/4 volumes live+populated, 1/2 benchmark-verified (13 Aug 2026)
+
+**Ticket:** replace the single 100GB `gdso18q8kw` (EU-RO-1) network volume with several small (10GB) volumes across multiple datacenters, so a GPU-availability shortage in one DC no longer blocks the whole OEV Test Runtime pipeline. Base: `main` @ `b910ebf`.
+
+**Merged to `main`:**
+- `551fce7` — `oev-network-volume-setup.yml` now creates up to `volume_count` volumes (one per distinct volume-capable DC with live GPU availability) and writes `vars.OEV_NETWORK_VOLUME_MAP` (JSON `{dc: volumeId}`), replacing the old single-id `vars.OEV_NETWORK_VOLUME_ID`. `oev-populate-volume.yml` now takes a required `datacenter_id` input and looks up that DC's volume from the map (one dispatch per DC). `oev-test-runtime-benchmark.yml` takes an optional `datacenter_id` input; blank auto-selects the best-available DC restricted to the map's keys.
+- `94438ed` — `oev-populate-volume.yml`: added `allowedCudaVersions: ['12.8']` to pod create. Real bug, confirmed live: a `US-IL-1` host had CUDA driver 12.4 (image needs ≥12.8), container stuck in a permanent create-crash loop until this filter was added.
+- `c8f4cf3` — both `oev-populate-volume.yml` and `oev-test-runtime-benchmark.yml`: restored the multi-GPU fallback list (`RTX 4090`, `RTX A5000`, `RTX 3090`, `L4` + `gpuTypePriority: custom`), copied verbatim from the frozen `oev-runpod-followcam.yml`. Single-GPU-type requests were 500ing with "no instances currently available" even when the datacenter itself was up.
+
+Frozen files confirmed untouched: `oev-runpod-followcam.yml`, `runpod_bootstrap.sh`, `runpod_gpu_preflight.sh`, `runpod_followcam_remote.sh`, `oev-benchmark-pack-prep.yml`.
+
+**Live state, `vars.OEV_NETWORK_VOLUME_MAP`:**
+```json
+{"EU-RO-1": "0hta9vhuue", "EUR-IS-1": "yssxw5c673", "US-IL-1": "n71p3nlmcz", "AP-JP-1": "6668h25wco"}
+```
+All 4 volumes are 10GB, created in run `31715262161`. Note: this workflow's own `GITHUB_TOKEN` still 403s on the repo-variable write step (same pre-existing repo Settings → Actions → Workflow permissions issue as the old `OEV_NETWORK_VOLUME_ID` migration) — worked around this session by writing the variable directly via PAT. Harmless/idempotent, not yet fixed at the repo-settings level.
+
+**Populate-volume status:**
+- `EU-RO-1` — **populated** (run `31715349563`, all 11 steps green, manifest+reco+4 models confirmed written).
+- `EUR-IS-1` — **populated** (run `31715865378`, all 11 steps green).
+- `US-IL-1` — **NOT populated.** First attempt hit the CUDA-driver-mismatch bug (fixed, see `94438ed`). Second and third attempts (after both fixes) hit `HTTP 500 "There are no instances currently available"` / `"could not find any pods with required specifications"` across all 4 fallback GPU types — genuine live capacity shortage in this DC, not a code defect. Volume exists (`n71p3nlmcz`) but is empty.
+- `AP-JP-1` — **NOT populated.** Every attempt (before and after the GPU-fallback fix) hit the same "no instances currently available" 500 across all 4 GPU types — genuine live capacity shortage. Volume exists (`6668h25wco`) but is empty.
+
+**Benchmark verification status (need ≥2 passing before old volume can be deleted):**
+- `EU-RO-1` — **PASSED** (run `31717848765`, all 15 steps green). Real evidence, not just exit code: `manifest.json` present, `reco --version` readable, both decoders `NVDEC (CUDA) (3840x2160)`, `Acceptance OK: AI tracking confirmed active; zero rebuild/re-export/re-install evidence confirmed`, `model_export_s`/`reco_build_s` both `0` (served from volume, no rebuild tax). Same acceptance shape as the original single-volume migration.
+- `EUR-IS-1` — **NOT YET PASSED.** Volume is populated and ready, but every benchmark dispatch (3 attempts total, before and after the GPU-fallback fix) hit the same "no instances currently available" 500 on pod creation — capacity, not code. Re-dispatchable anytime with no further changes: `oev-test-runtime-benchmark.yml` with `datacenter_id: EUR-IS-1`.
+
+**Old volume `gdso18q8kw` (100GB, EU-RO-1, $7/mo) — NOT yet deleted.** Per the original ticket's irreversible-action gate, deletion is blocked on ≥2 verified benchmark passes; only 1 of 2 confirmed so far. Currently running both old (100GB) and new (4×10GB) volumes simultaneously = ~$9.80/mo combined until the old one is deleted.
+
+**Not yet done, next chat/session:**
+1. Re-dispatch `oev-test-runtime-benchmark.yml` for `EUR-IS-1` (volume already populated, no code changes needed) — this alone would satisfy the ≥2-verified-passes bar.
+2. Once ≥2 DCs are benchmark-verified: delete `gdso18q8kw` (100GB, EU-RO-1) — confirm with Johnson first (irreversible).
+3. Optional, when RunPod capacity frees up: re-dispatch `oev-populate-volume.yml` for `US-IL-1` and `AP-JP-1` (no code changes needed, same capacity-shortage pattern as above — just retry later).
+4. Update this doc with final per-datacenter monthly storage cost vs the old $7/mo once the old volume is deleted (expected: 4×10GB×$0.07/GB = $2.80/mo, ~60% reduction).
+
+**First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
