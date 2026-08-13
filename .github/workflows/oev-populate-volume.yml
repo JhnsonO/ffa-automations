@@ -161,7 +161,22 @@ jobs:
           create_body = {
               'name': 'oev-populate-volume',
               'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
-              'gpuTypeIds': ['NVIDIA GeForce RTX 4090'],
+              # Restored multi-GPU fallback list (verbatim from the
+              # frozen oev-runpod-followcam.yml) -- same fix as
+              # oev-test-runtime-benchmark.yml, same reason: a single
+              # gpuTypeIds entry 500s with "no instances currently
+              # available" whenever that one type is out of capacity in
+              # the selected datacenter, even if other compatible GPUs
+              # are free there. This pod only builds reco-cli + exports
+              # ONNX models (no NVDEC/render requirement), so any of
+              # these GPU types is equally fine for the job itself.
+              'gpuTypeIds': [
+                  'NVIDIA GeForce RTX 4090',
+                  'NVIDIA RTX A5000',
+                  'NVIDIA GeForce RTX 3090',
+                  'NVIDIA L4',
+              ],
+              'gpuTypePriority': 'custom',
               'gpuCount': 1,
               'cloudType': 'SECURE',
               'containerDiskInGb': 40,
