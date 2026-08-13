@@ -1,0 +1,115 @@
+name: OEV DEBUG — Capacity probe (temporary, remove after use)
+
+# TEMPORARY diagnostic, not part of the production pipeline. Tries
+# several gpuTypeIds/allowedCudaVersions combinations against the same
+# datacenter's volume, back to back, to isolate whether "no instances
+# currently available" is genuine zero capacity or an artifact of our
+# filters. Any pod that actually gets created is deleted within seconds
+# -- this only tests the scheduler response, not a real workload.
+
+on:
+  workflow_dispatch:
+    inputs:
+      datacenter_id:
+        description: 'Datacenter id to probe (key in vars.OEV_NETWORK_VOLUME_MAP)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Compare scheduler results across filter combinations
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe combinations
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          VOLUME_MAP: ${{ vars.OEV_NETWORK_VOLUME_MAP }}
+          DATACENTER_ID: ${{ inputs.datacenter_id }}
+        run: |
+          python3 -u - << 'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          api_key = os.environ['RUNPOD_API_KEY']
+          dc = os.environ['DATACENTER_ID']
+          volume_map = json.loads(os.environ['VOLUME_MAP'])
+          volume_id = volume_map[dc]
+          base = 'https://rest.runpod.io/v1'
+          headers = {
+              'Authorization': f'Bearer {api_key}',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+          }
+
+          def request(method, url, data=None, timeout=30):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as response:
+                      raw = response.read()
+                      return json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as exc:
+                  err_body = exc.read().decode(errors='replace')[:300]
+                  raise RuntimeError(f'HTTP {exc.code}: {err_body}') from exc
+
+          def delete_pod(pod_id):
+              try:
+                  request('DELETE', f'{base}/pods/{pod_id}', timeout=20)
+              except Exception:
+                  pass
+
+          FOUR_GPU = [
+              'NVIDIA GeForce RTX 4090',
+              'NVIDIA RTX A5000',
+              'NVIDIA GeForce RTX 3090',
+              'NVIDIA L4',
+          ]
+
+          combos = [
+              ('4090-only, no CUDA filter',      ['NVIDIA GeForce RTX 4090'], False),
+              ('4090-only, CUDA>=12.8',          ['NVIDIA GeForce RTX 4090'], True),
+              ('4-GPU fallback, no CUDA filter', FOUR_GPU,                    False),
+              ('4-GPU fallback, CUDA>=12.8',     FOUR_GPU,                    True),
+          ]
+
+          results = []
+          for label, gpu_ids, cuda_filter in combos:
+              body = {
+                  'name': 'oev-debug-capacity-probe',
+                  'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
+                  'gpuTypeIds': gpu_ids,
+                  'gpuCount': 1,
+                  'cloudType': 'SECURE',
+                  'containerDiskInGb': 10,
+                  'networkVolumeId': volume_id,
+                  'volumeMountPath': '/runpod-volume',
+                  'ports': ['22/tcp'],
+                  'supportPublicIp': True,
+              }
+              if len(gpu_ids) > 1:
+                  body['gpuTypePriority'] = 'custom'
+              if cuda_filter:
+                  body['allowedCudaVersions'] = ['12.8']
+
+              try:
+                  pod = request('POST', f'{base}/pods', body)
+                  pod_id = pod.get('id')
+                  results.append((label, 'SUCCESS', pod_id, ''))
+                  if pod_id:
+                      delete_pod(pod_id)
+              except RuntimeError as exc:
+                  results.append((label, 'FAILED', None, str(exc)))
+
+          print(f'\n=== Capacity probe results for {dc} ===')
+          for label, outcome, pod_id, err in results:
+              if outcome == 'SUCCESS':
+                  print(f'{outcome:8s} | {label:35s} | pod_id={pod_id} (deleted)')
+              else:
+                  print(f'{outcome:8s} | {label:35s} | {err}')
+          PY
