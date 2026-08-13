@@ -1,0 +1,57 @@
+name: OEV DEBUG — GPU catalog listing (temporary, remove after use)
+
+on:
+  workflow_dispatch:
+    inputs:
+      datacenter_id:
+        description: 'Datacenter id to list GPU availability for'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  list-catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: List GPU catalog for datacenter
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          DATACENTER_ID: ${{ inputs.datacenter_id }}
+        run: |
+          python3 -u - << 'PY'
+          import json
+          import os
+          import urllib.request
+
+          api_key = os.environ['RUNPOD_API_KEY']
+          dc = os.environ['DATACENTER_ID']
+          headers = {
+              'Authorization': f'Bearer {api_key}',
+              'Accept': 'application/json',
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) ffa-debug-catalog',
+          }
+          req = urllib.request.Request(
+              'https://api.runpod.io/v2/catalog/gpus?include=AVAILABILITY&product=POD',
+              headers=headers,
+          )
+          with urllib.request.urlopen(req, timeout=30) as response:
+              gpu_types = json.loads(response.read())
+          if isinstance(gpu_types, dict):
+              gpu_types = gpu_types.get('gpus') or gpu_types.get('data') or []
+
+          rows = []
+          for g in gpu_types:
+              gid = g.get('id') or g.get('name')
+              for entry in (g.get('dataCenters') or []):
+                  if entry.get('id') == dc:
+                      rows.append((entry.get('availability', ''), gid, g.get('memoryInGb')))
+
+          rank = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2, 'NONE': 3}
+          rows.sort(key=lambda r: rank.get(r[0], 4))
+          print(f'\n=== GPU catalog for {dc} ===')
+          for availability, gid, vram in rows:
+              print(f'{availability:8s} | {gid:35s} | vram={vram}GB')
+          PY
