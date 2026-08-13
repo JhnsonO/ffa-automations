@@ -114,14 +114,15 @@ jobs:
           os.chmod('/tmp/runpod_key', 0o600)
           PY
 
-      # Retry loop with a real delay between attempts (not NVDEC preflight
-      # -- this pod only builds reco-cli and exports ONNX models, neither
-      # of which needs a working NVDEC/render-capable GPU). Added 13 Aug
-      # 2026: pod-create can 500 with "no instances currently available"
-      # purely from live market capacity, unrelated to this job's needs;
-      # a real gap between attempts (not back-to-back calls) gives each
-      # one an actual chance to land on a different market state.
-      - name: Launch RunPod GPU pod with network volume attached (retry with real delay)
+      # Round schedule replaces the old flat MAX_ATTEMPTS retry: 3 rounds
+      # at 0/30/60s gaps, matching the benchmark workflow's round timing.
+      # This DC never changes (network volumes are DC-pinned) -- only the
+      # attempt/round structure, GPU tier, and delay are affected. Round 1
+      # offers the preferred 4 GPU types; rounds 2-3 widen to all 8
+      # (unchanged from main). No NVDEC preflight gating here -- this pod
+      # only builds reco-cli and exports ONNX models, neither of which
+      # needs a working NVDEC/render-capable GPU.
+      - name: Launch RunPod GPU pod with network volume attached (round-robin retry, pinned DC)
         id: launch
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
@@ -145,10 +146,27 @@ jobs:
           }
           pub_key = open('/tmp/runpod_key.pub').read().strip()
 
-          MAX_ATTEMPTS = 3
-          RETRY_DELAY_S = 40
+          ROUNDS = 3
+          SLEEP_BEFORE_ROUND = [0, 30, 60]
           POD_IDS_FILE = '/tmp/populate_pod_id.txt'
           open(POD_IDS_FILE, 'w').close()
+
+          GPU_TIER_ROUND1 = [
+              'NVIDIA GeForce RTX 4090',
+              'NVIDIA RTX A5000',
+              'NVIDIA GeForce RTX 3090',
+              'NVIDIA L4',
+          ]
+          GPU_TIER_WIDE = [
+              'NVIDIA GeForce RTX 4090',
+              'NVIDIA RTX A5000',
+              'NVIDIA GeForce RTX 3090',
+              'NVIDIA L4',
+              'NVIDIA L40S',
+              'NVIDIA GeForce RTX 5090',
+              'NVIDIA RTX 2000 Ada Generation',
+              'NVIDIA RTX PRO 6000 Blackwell Server Edition',
+          ]
 
           def request(method, url, data=None, timeout=30):
               body = json.dumps(data).encode() if data is not None else None
@@ -168,28 +186,11 @@ jobs:
               except Exception as exc:
                   print(f'Delete warning for pod {pod_id}: {exc} (final cleanup step will retry).')
 
-          def create_pod():
+          def create_pod(gpu_type_ids):
               create_body = {
                   'name': 'oev-populate-volume',
                   'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
-                  # GPU fallback list, verbatim base from the frozen
-                  # oev-runpod-followcam.yml plus 4 more types confirmed
-                  # to show real (if thin) live availability on 13 Aug
-                  # 2026 (L40S in US-IL-1; RTX 5090, RTX 2000 Ada, RTX PRO
-                  # 6000 Blackwell Server Edition in EUR-IS-1). This pod
-                  # only builds reco-cli + exports ONNX models (no
-                  # NVDEC/render requirement), so any of these types is
-                  # equally fine for the job itself.
-                  'gpuTypeIds': [
-                      'NVIDIA GeForce RTX 4090',
-                      'NVIDIA RTX A5000',
-                      'NVIDIA GeForce RTX 3090',
-                      'NVIDIA L4',
-                      'NVIDIA L40S',
-                      'NVIDIA GeForce RTX 5090',
-                      'NVIDIA RTX 2000 Ada Generation',
-                      'NVIDIA RTX PRO 6000 Blackwell Server Edition',
-                  ],
+                  'gpuTypeIds': gpu_type_ids,
                   'gpuTypePriority': 'custom',
                   'gpuCount': 1,
                   'cloudType': 'SECURE',
@@ -246,15 +247,18 @@ jobs:
               return False
 
           winner = None
-          for attempt in range(1, MAX_ATTEMPTS + 1):
-              print(f'--- Pod allocation attempt {attempt}/{MAX_ATTEMPTS} ---')
+          for round_num in range(1, ROUNDS + 1):
+              sleep_s = SLEEP_BEFORE_ROUND[round_num - 1]
+              if sleep_s:
+                  print(f'Waiting {sleep_s}s before round {round_num} (real gap, not an instant retry)...')
+                  time.sleep(sleep_s)
+
+              gpu_type_ids = GPU_TIER_ROUND1 if round_num == 1 else GPU_TIER_WIDE
+              print(f'--- Round {round_num}/{ROUNDS} (same pinned datacenter, gpu_tier={"preferred-4" if round_num == 1 else "all-8"}) ---')
               try:
-                  pod_id = create_pod()
+                  pod_id = create_pod(gpu_type_ids)
               except Exception as exc:
-                  print(f'::error::Attempt {attempt}: pod create failed: {exc}')
-                  if attempt < MAX_ATTEMPTS:
-                      print(f'Waiting {RETRY_DELAY_S}s before next attempt (real time gap, not an instant retry)...')
-                      time.sleep(RETRY_DELAY_S)
+                  print(f'::error::Round {round_num}: pod create failed: {exc}')
                   continue
 
               with open(POD_IDS_FILE, 'w') as f:
@@ -265,17 +269,17 @@ jobs:
                   if not wait_for_ssh(ip, port):
                       raise RuntimeError(f'SSH never came up on pod {pod_id} ({ip}:{port})')
               except Exception as exc:
-                  print(f'Attempt {attempt}: {exc} -- deleting pod and retrying.')
+                  # No DC to fall back to (volume is DC-pinned) -- delete
+                  # and simply try again next round against the same DC.
+                  print(f'Round {round_num}: {exc} -- deleting pod and continuing to next round.')
                   delete_pod(pod_id)
-                  if attempt < MAX_ATTEMPTS:
-                      time.sleep(RETRY_DELAY_S)
                   continue
 
               winner = {'pod_id': pod_id, 'ip': ip, 'port': port}
               break
 
           if winner is None:
-              raise RuntimeError(f'All {MAX_ATTEMPTS} pod allocation attempts failed. See job log above.')
+              raise RuntimeError(f'All {ROUNDS} rounds failed to allocate a reachable pod. See job log above.')
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'pod_id={winner["pod_id"]}\n')
