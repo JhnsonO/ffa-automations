@@ -56,10 +56,18 @@ jobs:
       # .github/workflows/oev-runpod-followcam.yml's "Launch RunPod GPU
       # pod" step, with exactly two changes: (1) imageName points at the
       # OEV Test Runtime v1 image instead of stock runpod/pytorch,
-      # (2) gpuTypeIds is a single RTX 4090 with no gpuTypePriority (the
-      # multi-id + gpuTypePriority:'custom' combination is a confirmed
-      # NVDEC-breaking request shape on RunPod's allocator -- do not
-      # restore it here).
+      # (2) gpuTypeIds is a single RTX 4090, no gpuTypePriority.
+      # CORRECTED 13 Aug 2026: this used to be single-GPU because the
+      # multi-id + gpuTypePriority:'custom' shape was thought to break
+      # NVDEC. That theory was later falsified by run 31590998085 (same
+      # single-type request, NVDEC failed anyway) -- the real pattern is
+      # per-host/per-driver (certain hosts on driver 570.158.01 have
+      # broken NVDEC regardless of request shape). oev-runpod-followcam.yml
+      # already restored the 4-GPU fallback list on this corrected
+      # understanding; this workflow still hasn't -- left single-type for
+      # now only because nobody's gone back to it, not because it's
+      # required. Restoring the fallback list here is a legitimate,
+      # separate future improvement, not a re-opening of a settled bug.
       - name: Launch RunPod GPU pod (NVDEC preflight retry, max 3 attempts)
         id: launch
         env:
@@ -107,7 +115,14 @@ jobs:
               except Exception as exc:
                   print(f'Delete warning for pod {pod_id}: {exc} (final cleanup step will retry).')
 
-          def create_pod():
+          # Tiered download-speed floor: try a fast-host requirement first,
+          # ease off on later attempts so a slow-but-available host still
+          # gets used rather than the whole run striking out. Mirrors the
+          # same start-strict-then-relax pattern as GPU fallback lists.
+          # None on the last attempt = no floor, take whatever's available.
+          MIN_DOWNLOAD_MBPS_BY_ATTEMPT = [800, 400, None]
+
+          def create_pod(min_download_mbps):
               create_body = {
                   'name': 'oev-test-runtime-benchmark',
                   'imageName': image_ref,
@@ -123,6 +138,8 @@ jobs:
                       'SSH_PUBLIC_KEY': pub_key,
                   },
               }
+              if min_download_mbps is not None:
+                  create_body['minDownloadMbps'] = min_download_mbps
               printable = {k: v for k, v in create_body.items() if k != 'env'}
               print(f'Creating pod: {json.dumps(printable)}')
               pod = request('POST', f'{base}/pods', create_body)
@@ -184,13 +201,14 @@ jobs:
           winner = None
           summary_lines = []
           for attempt in range(1, MAX_ATTEMPTS + 1):
-              print(f'--- Pod allocation attempt {attempt}/{MAX_ATTEMPTS} ---')
+              min_dl = MIN_DOWNLOAD_MBPS_BY_ATTEMPT[attempt - 1] if attempt - 1 < len(MIN_DOWNLOAD_MBPS_BY_ATTEMPT) else None
+              print(f'--- Pod allocation attempt {attempt}/{MAX_ATTEMPTS} (minDownloadMbps={min_dl}) ---')
               pod_requested_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
               try:
-                  pod_id = create_pod()
+                  pod_id = create_pod(min_dl)
               except Exception as exc:
-                  print(f'::error::Attempt {attempt}: pod create failed: {exc}')
-                  summary_lines.append(f'attempt={attempt} pod_id=none result=CREATE_FAILED error={exc}')
+                  print(f'::error::Attempt {attempt}: pod create failed (min_dl={min_dl}): {exc}')
+                  summary_lines.append(f'attempt={attempt} pod_id=none min_download_mbps={min_dl} result=CREATE_FAILED error={exc}')
                   continue
 
               try:
