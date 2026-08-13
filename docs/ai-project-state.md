@@ -1604,3 +1604,42 @@ Not yet done, next chat/session:
 2. Produce the deliverable: image size before (~19.7GB, 47 layers) vs after (v1-lite, size TBD — check via GHCR manifest), pull time before vs after (from `timing.json`), ADOPT/DO-NOT-ADOPT verdict.
 
 **First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
+
+## OEV Test Runtime v1-lite — BENCHMARK COMPLETE, ADOPT (13 Aug 2026, run `31713169685`)
+
+Dispatched `oev-test-runtime-benchmark.yml` against `v1-lite` + populated network volume `gdso18q8kw`. All 14 steps green. Volume acceptance gate confirmed `manifest.json` + `reco --version` readable from the mounted volume before any render started (no rebuild/re-export — `model_export_s=0`, `reco_build_s=0` in `timing.json`, confirmed).
+
+**Image size, confirmed via GHCR manifest (not estimated):**
+| | layers | size |
+|---|---|---|
+| old baked image (`v1-reco-53fe10f5`) | 47 | 19.66GB (confirmed earlier session) |
+| new `v1-lite` + volume | 38 | 10.57GB (image only; heavy assets — reco binary + 4 YOLO26 models — live on the 100GB network volume instead) |
+
+**Timing breakdown (`timing.json`, full):**
+```
+job_start_to_pod_requested_s:        74.6
+pod_requested_to_network_ready_s:    13.0
+network_ready_to_ssh_preflight_pass_s: 27.0
+image_acceptance_check_s:            15.0
+benchmark_pack_download_s:           42.5
+render_total_wrapper_s:              260.3  (env_sanity 0.3 + calibrate 8.3 + render 249.3)
+model_export_s:                      0
+reco_build_s:                        0
+total_wall_clock_s:                  432.3  (~7.2 min)
+```
+GPU: RTX 4090 @ $0.74/hr → this run cost ≈ 432s × $0.74/3600 ≈ **$0.09**.
+
+**Compared to the ~40min/44GB old full-download-and-build baseline: ~5.5x faster wall clock, ~1.9x smaller image.** The old path's ~40min included a full `cargo build`+model-export cycle on every run; this run did neither (both `_s` fields are 0) because the volume already carries the built binary/models.
+
+**Acceptance checks (from job log, real evidence not just exit code):**
+- `left/right decoder: NVDEC (CUDA) (3840x2160)` — real hardware decode confirmed on both streams.
+- `reco_calibrate`: 193 matched points, confidence 1.00.
+- Render GPU backend: `llvmpipe` (software Vulkan) — matches the long-standing, already-accepted pattern (NVDEC decode is real GPU; render/calibrate backend software-only is a known, non-blocking characteristic of this pipeline, not a regression from the volume-migration work).
+- `Acceptance OK: AI tracking confirmed active; zero rebuild/re-export/re-install evidence confirmed.`
+- Pod `ks8i8npxhh9qd7` termination confirmed (HTTP 204, attempt 1).
+
+**Verdict: ADOPT.** `v1-lite` image + network-volume architecture is confirmed working end-to-end, materially faster and smaller than the old fully-baked image, no rebuild tax on any run. This closes the OEV Test Runtime network-volume migration ticket.
+
+**Not yet done, optional follow-up:** (1) decide whether to deprecate/stop publishing the old `v1-reco-53fe10f5` full-baked-image build path now that `v1-lite` is proven; (2) the repo Settings → Actions → Workflow permissions read-only issue (from the network-volume-setup 403, still un-flipped) remains a minor, non-blocking annoyance on any future `oev-network-volume-setup.yml` re-run.
+
+**First action in next chat: fetch and read `CLAUDE.md` and `docs/ai-project-state.md` from the repo before doing anything else.**
