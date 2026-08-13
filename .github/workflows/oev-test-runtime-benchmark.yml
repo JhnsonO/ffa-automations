@@ -209,7 +209,6 @@ jobs:
           ROUNDS = 3
           SLEEP_BEFORE_ROUND = [0, 30, 60]
           MIN_DOWNLOAD_MBPS_BY_ROUND = [800, 400, None]
-          ROUND1_DC_COUNT = 4
           POD_IDS_FILE = '/tmp/runpod_all_pod_ids.txt'
           open(POD_IDS_FILE, 'w').close()
 
@@ -353,13 +352,14 @@ jobs:
                   print(f'\nWaiting {sleep_s}s before round {round_num} (real gap, not a blind retry)...')
                   time.sleep(sleep_s)
 
-              eligible = [dc for dc in order if dc not in removed_dcs]
-              if round_num == 1:
-                  round_dcs = eligible[:ROUND1_DC_COUNT]
-                  gpu_type_ids = GPU_TIER_ROUND1
-              else:
-                  round_dcs = eligible
-                  gpu_type_ids = GPU_TIER_WIDE
+              # Round 1 = every currently-eligible mapped DC, in ranked
+              # order -- not capped to a fixed count, so this scales
+              # correctly if a 5th+ DC is added to the map later. Only
+              # the GPU tier and download-speed floor differ by round;
+              # the DC set itself is the same full eligible set in every
+              # round (minus anything removed for bad-host reasons).
+              round_dcs = [dc for dc in order if dc not in removed_dcs]
+              gpu_type_ids = GPU_TIER_ROUND1 if round_num == 1 else GPU_TIER_WIDE
               min_dl = MIN_DOWNLOAD_MBPS_BY_ROUND[round_num - 1]
 
               if not round_dcs:
