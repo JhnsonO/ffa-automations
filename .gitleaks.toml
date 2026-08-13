@@ -124,3 +124,9 @@ paths = [
   '''root/\.rustup/toolchains/stable-x86_64-unknown-linux-gnu/share/doc/rust/html/core/arch/x86/sidebar-items1\.97\.1\.js$''',
   '''root/\.rustup/toolchains/stable-x86_64-unknown-linux-gnu/share/doc/rust/html/core/arch/x86_64/sidebar-items1\.97\.1\.js$''',
 ]
+
+[[allowlists]]
+description = "mozilla/mp4parse-rust (cargo-vendored git dependency) test_encryption.rs -- generic-api-key false positive on a hardcoded CENC test key_id/key pair (7e571d04.../7e574444...), a well-known public dummy test vector used across Bento4/mp4box-style MP4-encryption test suites, also present in mp4parse-rust's own public.rs on GitHub. Not a real secret."
+paths = [
+  '''root/\.cargo/git/checkouts/mp4parse-rust-f4865e61c02cef6e/ff910c6/mp4parse_capi/tests/test_encryption\.rs$''',
+]
