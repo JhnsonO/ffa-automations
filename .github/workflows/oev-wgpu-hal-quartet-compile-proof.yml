@@ -1,0 +1,344 @@
+name: OEV — wgpu-hal #9461 Quartet-Patch Compile Proof (throwaway pod, one-shot, ticket 1c)
+
+# Compile/integration proof ONLY. Does not touch any frozen file, the
+# production network volumes' reco binary/manifest, the baked GHCR image,
+# or any --no-zero-copy production setting. No CUDA semaphore code, no
+# zero-copy behavioral change, no render run, no GoPro processing, no
+# production merge.
+#
+# 1b (run 31811114786) patched wgpu-hal's SOURCE alone and cargo check
+# failed with 101 errors: rustc E0308 "two different versions of crate
+# `wgpu_types` are being used" -- the forked wgpu-hal pulled its own
+# workspace-locked wgpu-types, distinct from the crates.io copy
+# wgpu-core used. This run tests the fix: patch the whole tightly-
+# coupled quartet (wgpu, wgpu-core, wgpu-hal, wgpu-types) to the same
+# fork/rev, so only one wgpu-types instance exists in the graph.
+#
+# Fresh-builds JhnsonO/video-stitcher branch
+# diag/wgpu-hal-patch-compile-proof (commit 9df865dc, second commit on
+# that branch, off diag/zero-copy-frame0-readback @ 79667aac). Vs its
+# 1b parent (9497b5af), this commit changes exactly one file:
+#   - Cargo.toml: [patch.crates-io] now redirects wgpu/wgpu-core/
+#     wgpu-hal/wgpu-types SOURCE (all four) to JhnsonO/wgpu@62e15ce1.
+#     No version bump on any of the four.
+#
+# Ticket: 1c (quartet-patch compile proof, hard decision gate) -- see
+# docs/ai-project-state.md, "zero-copy NV12 corruption" thread.
+#
+# Acceptance criteria (stricter than 1b -- job conclusion must reflect
+# the actual compile result, not just "steps ran"):
+#   1. All four wgpu crates resolve from JhnsonO/wgpu@62e15ce1.
+#   2. cargo tree -d shows no duplicate wgpu-family source split.
+#   3. add_wait_semaphore() call compiles.
+#   4. cargo check exit code is exactly 0.
+#   5. This workflow's own conclusion is driven by the remote script's
+#      real exit code (job fails if it failed) -- not a log-file grep
+#      that can silently no-op if the log never made it back.
+#
+# Cost guard: no network volume attached, pod terminated unconditionally
+# in an always() step. Approved budget ~$0.50 at ~$0.74/hr (RTX 4090
+# preferred tier).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wgpu-hal-compile-proof:
+    name: wgpu-hal Backport Compile Proof (RunPod, throwaway pod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Generate SSH key pair
+        run: |
+          pip install -q cryptography
+          python3 -u - << 'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+
+          key = Ed25519PrivateKey.generate()
+          priv = key.private_bytes(
+              serialization.Encoding.PEM,
+              serialization.PrivateFormat.OpenSSH,
+              serialization.NoEncryption(),
+          )
+          pub = key.public_key().public_bytes(
+              serialization.Encoding.OpenSSH,
+              serialization.PublicFormat.OpenSSH,
+          )
+          with open('/tmp/runpod_key', 'wb') as f:
+              f.write(priv)
+          with open('/tmp/runpod_key.pub', 'wb') as f:
+              f.write(pub + b' ffa-oev-wgpu-hal-quartet-compile-proof\n')
+          os.chmod('/tmp/runpod_key', 0o600)
+          PY
+
+      - name: Launch RunPod GPU pod (no network volume, 3-round retry)
+        id: launch
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 -u - << 'PY'
+          import json
+          import os
+          import subprocess
+          import time
+          import urllib.error
+          import urllib.request
+
+          api_key = os.environ['RUNPOD_API_KEY']
+          base = 'https://rest.runpod.io/v1'
+          headers = {
+              'Authorization': f'Bearer {api_key}',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+          }
+          pub_key = open('/tmp/runpod_key.pub').read().strip()
+
+          ROUNDS = 3
+          SLEEP_BEFORE_ROUND = [0, 30, 60]
+          POD_IDS_FILE = '/tmp/compile_proof_pod_id.txt'
+          open(POD_IDS_FILE, 'w').close()
+
+          GPU_TIER_ROUND1 = [
+              'NVIDIA GeForce RTX 4090',
+              'NVIDIA RTX A5000',
+              'NVIDIA GeForce RTX 3090',
+              'NVIDIA L4',
+          ]
+          GPU_TIER_WIDE = [
+              'NVIDIA GeForce RTX 4090',
+              'NVIDIA RTX A5000',
+              'NVIDIA GeForce RTX 3090',
+              'NVIDIA L4',
+              'NVIDIA L40S',
+              'NVIDIA GeForce RTX 5090',
+              'NVIDIA RTX 2000 Ada Generation',
+              'NVIDIA RTX PRO 6000 Blackwell Server Edition',
+          ]
+
+          def request(method, url, data=None, timeout=30):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as response:
+                      raw = response.read()
+                      return json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as exc:
+                  err_body = exc.read().decode(errors='replace')[:500]
+                  raise RuntimeError(f'HTTP {exc.code} from {method} {url}: {err_body}') from exc
+
+          def delete_pod(pod_id):
+              try:
+                  request('DELETE', f'{base}/pods/{pod_id}', timeout=20)
+                  print(f'Deleted pod {pod_id} (attempt cleanup).')
+              except Exception as exc:
+                  print(f'Delete warning for pod {pod_id}: {exc} (final cleanup step will retry).')
+
+          def create_pod(gpu_type_ids):
+              create_body = {
+                  'name': 'oev-wgpu-hal-quartet-compile-proof',
+                  'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
+                  'gpuTypeIds': gpu_type_ids,
+                  'gpuTypePriority': 'custom',
+                  'gpuCount': 1,
+                  'cloudType': 'SECURE',
+                  'containerDiskInGb': 40,
+                  'ports': ['22/tcp'],
+                  'supportPublicIp': True,
+                  'allowedCudaVersions': ['12.8'],
+                  'env': {
+                      'PUBLIC_KEY': pub_key,
+                      'SSH_PUBLIC_KEY': pub_key,
+                  },
+              }
+              printable = {k: v for k, v in create_body.items() if k != 'env'}
+              print(f'Creating pod: {json.dumps(printable)}')
+              pod = request('POST', f'{base}/pods', create_body)
+              pod_id = pod.get('id')
+              if not pod_id:
+                  raise RuntimeError(f'pod create response had no id: {pod}')
+              print(f'Pod created: id={pod_id}')
+              return pod_id
+
+          def wait_for_network(pod_id, timeout_s=600):
+              deadline = time.time() + timeout_s
+              while time.time() < deadline:
+                  info = request('GET', f'{base}/pods/{pod_id}?includeMachine=true')
+                  public_ip = info.get('publicIp')
+                  mappings = info.get('portMappings') or {}
+                  mapped_22 = None
+                  if isinstance(mappings, dict):
+                      mapped_22 = mappings.get('22') or mappings.get('22/tcp')
+                  if public_ip and mapped_22:
+                      return public_ip, mapped_22
+                  time.sleep(10)
+              raise RuntimeError(f'pod {pod_id} never reported a public IP + SSH mapping within {timeout_s}s')
+
+          def wait_for_ssh(ip, port, attempts=18, delay_s=5):
+              for i in range(1, attempts + 1):
+                  result = subprocess.run(
+                      ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
+                       '-i', '/tmp/runpod_key', '-p', str(port), f'root@{ip}', 'echo OK'],
+                      capture_output=True, text=True, timeout=15,
+                  )
+                  if 'OK' in result.stdout:
+                      return True
+                  print(f'SSH not ready ({i}/{attempts})')
+                  time.sleep(delay_s)
+              return False
+
+          winner = None
+          for round_num in range(1, ROUNDS + 1):
+              sleep_s = SLEEP_BEFORE_ROUND[round_num - 1]
+              if sleep_s:
+                  print(f'Waiting {sleep_s}s before round {round_num}...')
+                  time.sleep(sleep_s)
+
+              gpu_type_ids = GPU_TIER_ROUND1 if round_num == 1 else GPU_TIER_WIDE
+              print(f'--- Round {round_num}/{ROUNDS} (gpu_tier={"preferred-4" if round_num == 1 else "all-8"}) ---')
+              try:
+                  pod_id = create_pod(gpu_type_ids)
+              except Exception as exc:
+                  print(f'::error::Round {round_num}: pod create failed: {exc}')
+                  continue
+
+              with open(POD_IDS_FILE, 'w') as f:
+                  f.write(pod_id)
+
+              try:
+                  ip, port = wait_for_network(pod_id)
+                  if not wait_for_ssh(ip, port):
+                      raise RuntimeError(f'SSH never came up on pod {pod_id} ({ip}:{port})')
+              except Exception as exc:
+                  print(f'Round {round_num}: {exc} -- deleting pod and continuing to next round.')
+                  delete_pod(pod_id)
+                  continue
+
+              winner = {'pod_id': pod_id, 'ip': ip, 'port': port}
+              break
+
+          if winner is None:
+              raise RuntimeError(f'All {ROUNDS} rounds failed to allocate a reachable pod. See job log above.')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'pod_id={winner["pod_id"]}\n')
+              output.write(f'ip={winner["ip"]}\n')
+              output.write(f'port={winner["port"]}\n')
+          PY
+
+      - name: Upload + run compile-proof script
+        id: probe
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SSH "mkdir -p /tmp/oev_run"
+          $SCP oev_wgpu_hal_quartet_compile_probe_remote.sh root@$IP:/tmp/oev_wgpu_hal_quartet_compile_probe_remote.sh
+          $SSH "chmod +x /tmp/oev_wgpu_hal_quartet_compile_probe_remote.sh"
+
+          remote_rc=0
+          $SSH "stdbuf -oL -eL /tmp/oev_wgpu_hal_quartet_compile_probe_remote.sh" || remote_rc=$?
+          echo "remote_exit=$remote_rc" >> "$GITHUB_OUTPUT"
+          echo "Remote compile-proof script exit: $remote_rc"
+
+      - name: Pull back logs
+        if: always()
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          mkdir -p proof_artifacts
+          if [ -n "$IP" ] && [ -n "$PORT" ]; then
+            SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15"
+            for attempt in 1 2 3; do
+              $SCP -r "root@$IP:/tmp/oev_run/*.log" proof_artifacts/ 2>&1 && break
+              echo "log pull attempt $attempt failed, retrying in 5s..."
+              sleep 5
+            done
+          fi
+          echo "=== diag_summary.log ==="
+          cat proof_artifacts/diag_summary.log 2>/dev/null || echo "(not present -- see remote_exit from the run-script step, which is authoritative regardless of whether logs made it back)"
+          echo "=== timing.log ==="
+          cat proof_artifacts/timing.log 2>/dev/null || echo "(not present)"
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-wgpu-hal-quartet-compile-proof-${{ github.run_id }}
+          path: proof_artifacts/
+          retention-days: 30
+
+      - name: Terminate RunPod pod
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 -u - << 'PY'
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          try:
+              with open('/tmp/compile_proof_pod_id.txt') as f:
+                  pod_id = f.read().strip()
+          except FileNotFoundError:
+              print('No pod ID recorded -- nothing to terminate.')
+              raise SystemExit(0)
+
+          if not pod_id:
+              print('No pod ID recorded -- nothing to terminate.')
+              raise SystemExit(0)
+
+          headers = {'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          url = f'https://rest.runpod.io/v1/pods/{pod_id}'
+          confirmed = False
+          last_error = None
+          for attempt in range(1, 4):
+              req = urllib.request.Request(url, method='DELETE', headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as response:
+                      if response.status in (200, 202, 204):
+                          print(f'Pod {pod_id} termination confirmed (HTTP {response.status}) on attempt {attempt}.')
+                          confirmed = True
+                          break
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      print(f'Pod {pod_id} already absent (HTTP 404) -- cleanup confirmed.')
+                      confirmed = True
+                      break
+                  last_error = f'HTTP {exc.code}: {exc.read().decode(errors="replace")[:300]}'
+              except Exception as exc:
+                  last_error = repr(exc)
+              print(f'Pod {pod_id}: DELETE attempt {attempt}/3 failed: {last_error}')
+              if attempt < 3:
+                  time.sleep(5)
+
+          if not confirmed:
+              print(f'::error::Pod {pod_id} termination NOT confirmed after 3 attempts: {last_error}')
+              raise SystemExit(1)
+          PY
+
+      - name: Evaluate compile-proof result
+        if: always()
+        env:
+          REMOTE_EXIT: ${{ steps.probe.outputs.remote_exit }}
+        run: |
+          echo "Remote script exit code (authoritative): ${REMOTE_EXIT:-unset}"
+          if [ "${REMOTE_EXIT:-1}" = "0" ] && grep -q "cargo check: PASS" proof_artifacts/diag_summary.log 2>/dev/null; then
+            echo "Compile proof PASSED -- see diag_summary.log and resolution.log in the artifact."
+          else
+            echo "::error::Compile proof FAILED (remote_exit=${REMOTE_EXIT:-unset}) -- inspect proof_artifacts/build.log and resolution.log for the failure point."
+            exit 1
+          fi
