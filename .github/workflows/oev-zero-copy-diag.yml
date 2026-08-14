@@ -336,6 +336,8 @@ jobs:
             $SCP -r "root@$IP:/tmp/oev_run/*.log" diag_artifacts/ || true
             $SCP -r "root@$IP:/tmp/oev_run/diag_dump" diag_artifacts/ || true
             $SCP "root@$IP:/tmp/oev_run/reco_version.txt" diag_artifacts/ || true
+            $SCP "root@$IP:/tmp/oev_run/followcam_diag.mp4" diag_artifacts/ || true
+            $SCP "root@$IP:/tmp/oev_run/events_diag.jsonl" diag_artifacts/ || true
           fi
           echo "=== diag_summary.log ==="
           cat diag_artifacts/diag_summary.log 2>/dev/null || echo "(not present)"
