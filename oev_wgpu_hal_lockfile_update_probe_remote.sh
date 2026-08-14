@@ -21,9 +21,16 @@
 # If the quartet isn't unified post-`cargo update`, this script stops
 # immediately without running cargo check at all.
 #
-# Compile/integration proof ONLY:
-#   - no CUDA external semaphore implementation
-#   - no zero-copy behavioral change
+# Compile/integration proof ONLY (Ticket 2 re-run, 14 Aug 2026):
+#   - this run's video-stitcher branch (diag/cuda-vulkan-semaphore)
+#     DOES contain the diagnostic CUDA<->Vulkan external semaphore
+#     implementation and a corresponding wgpu-hal extension-enable
+#     patch (JhnsonO/wgpu@c8b6f2f, adds VK_KHR_external_semaphore_fd
+#     to the optional device-extension list, version-gated) -- this
+#     script still only proves it COMPILES, same as every prior use
+#     of this gate. No render run, no GoPro fixture, no production
+#     merge in this dispatch.
+#   - no zero-copy behavioral change beyond what's described above
 #   - no render run (no benchmark pack, no model, no `reco stitch`)
 #   - no GoPro processing
 #   - no production merge
@@ -37,9 +44,9 @@ set -uo pipefail
 cd /tmp/oev_run || exit 1
 
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
-RECO_BRANCH="diag/wgpu-hal-patch-compile-proof"
-EXPECTED_RECO_SHA="d44df777fbfba19284e2d7d9506ba5dcb8eab91f"
-EXPECTED_WGPU_REV="62e15ce1cc94929235d27b59962abb511622fb4e"
+RECO_BRANCH="diag/cuda-vulkan-semaphore"
+EXPECTED_RECO_SHA="2d7233953af9b68e3b65f12714dba652b5a2c013"
+EXPECTED_WGPU_REV="c8b6f2f00895210857f77f2a10fc1a32a80d5148"
 WGPU_CRATES=("wgpu" "wgpu-core" "wgpu-hal" "wgpu-types")
 
 ts() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
