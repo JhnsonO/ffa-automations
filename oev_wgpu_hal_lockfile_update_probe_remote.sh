@@ -46,7 +46,7 @@ cd /tmp/oev_run || exit 1
 
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
 RECO_BRANCH="diag/wgpu-initial-state-backport"
-EXPECTED_RECO_SHA="187025410b395326169db9fd4204e966e65b708b"
+EXPECTED_RECO_SHA="1361770abd334eeb48799bd812bb4092968af72a"
 EXPECTED_WGPU_REV="0750ea88863e6e4e8acd9128ce820d71f44e968f"
 WGPU_CRATES=("wgpu" "wgpu-core" "wgpu-hal" "wgpu-types")
 
