@@ -32,7 +32,7 @@
 set -uo pipefail
 cd /tmp/oev_run || exit 1
 
-RECO_SHA="30c7eb23809219041ee169dda34bb291fd4986c8"
+RECO_SHA="024ce664e1abc1b2223e04951f6797cc52c2e85c"
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
 MODEL_PATH="/runpod-volume/oev-runtime/models/yolo26m.onnx"
 
