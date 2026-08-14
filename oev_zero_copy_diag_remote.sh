@@ -5,7 +5,7 @@
 # Purpose: prove/disprove whether the CUDA decode -> shared-texture copy
 # in reco-io's zero-copy path ever writes real pixel data, independent of
 # anything wgpu/Vulkan does with that memory afterward. Uses the
-# diag/zero-copy-frame0-readback branch (commit 17108b05) of
+# diag/zero-copy-frame0-readback branch (commit 470df780) of
 # JhnsonO/video-stitcher, which adds a single env-gated readback block to
 # crates/reco-io/src/zero_copy.rs -- no other behavior change.
 #
@@ -32,7 +32,7 @@
 set -uo pipefail
 cd /tmp/oev_run || exit 1
 
-RECO_SHA="17108b05ba6976461c15b31a7f70543d331f41d9"
+RECO_SHA="470df7801d73f67e3a25590efba771b20eba6e3b"
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
 MODEL_PATH="/runpod-volume/oev-runtime/models/yolo26m.onnx"
 
