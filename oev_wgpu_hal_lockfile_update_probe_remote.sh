@@ -38,7 +38,7 @@ cd /tmp/oev_run || exit 1
 
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
 RECO_BRANCH="diag/wgpu-hal-patch-compile-proof"
-EXPECTED_RECO_SHA="9df865dc96ae0e61f66af1005218098d972bbcd0"
+EXPECTED_RECO_SHA="d44df777fbfba19284e2d7d9506ba5dcb8eab91f"
 EXPECTED_WGPU_REV="62e15ce1cc94929235d27b59962abb511622fb4e"
 WGPU_CRATES=("wgpu" "wgpu-core" "wgpu-hal" "wgpu-types")
 
