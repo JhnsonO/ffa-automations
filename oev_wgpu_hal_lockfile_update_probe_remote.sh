@@ -73,7 +73,7 @@ echo "=== build.log: clone + checkout compile-proof branch (unchanged since 1c) 
 rm -rf /tmp/video-stitcher
 git clone "$RECO_REPO" /tmp/video-stitcher 2>&1 | tee -a build.log
 cd /tmp/video-stitcher || exit 1
-git checkout "$RECO_BRANCH" 2>&1 | tee -a build.log
+git checkout "$RECO_BRANCH" 2>&1 | tee -a /tmp/oev_run/build.log
 ACTUAL_RECO_SHA=$(git rev-parse HEAD)
 echo "video_stitcher_sha=$ACTUAL_RECO_SHA" | tee -a /tmp/oev_run/build.log
 if [ "$ACTUAL_RECO_SHA" != "$EXPECTED_RECO_SHA" ]; then
@@ -82,10 +82,10 @@ if [ "$ACTUAL_RECO_SHA" != "$EXPECTED_RECO_SHA" ]; then
 fi
 
 echo "=== update.log: cargo update -p wgpu --precise 28.0.1 (lockfile-only, no fork edits) ===" | tee /tmp/oev_run/update.log
-echo "timing_update_start=$(ts)" | tee -a timing.log
+echo "timing_update_start=$(ts)" | tee -a /tmp/oev_run/timing.log
 cargo update -p wgpu --precise 28.0.1 2>&1 | tee -a /tmp/oev_run/update.log
 update_rc=${PIPESTATUS[0]}
-echo "timing_update_end=$(ts)" | tee -a timing.log
+echo "timing_update_end=$(ts)" | tee -a /tmp/oev_run/timing.log
 if [ "$update_rc" -ne 0 ]; then
   echo "FATAL: cargo update -p wgpu --precise 28.0.1 failed (exit $update_rc)" | tee -a /tmp/oev_run/update.log
   exit 6
@@ -140,14 +140,14 @@ if [ "$ALL_UNIFIED" -ne 1 ]; then
 fi
 echo "GATE PASS: all four wgpu-family crates resolve as a single unified instance from JhnsonO/wgpu@$EXPECTED_WGPU_REV." | tee -a /tmp/oev_run/resolution.log
 
-echo "=== build.log: cargo check -p reco-cli --features cuda (post cargo-update, gate passed) ===" | tee -a build.log
-echo "timing_check_start=$(ts)" | tee -a timing.log
-cargo check --release -p reco-cli --features cuda 2>&1 | tee -a build.log
+echo "=== build.log: cargo check -p reco-cli --features cuda (post cargo-update, gate passed) ===" | tee -a /tmp/oev_run/build.log
+echo "timing_check_start=$(ts)" | tee -a /tmp/oev_run/timing.log
+cargo check --release -p reco-cli --features cuda 2>&1 | tee -a /tmp/oev_run/build.log
 check_rc=${PIPESTATUS[0]}
-echo "timing_check_end=$(ts)" | tee -a timing.log
+echo "timing_check_end=$(ts)" | tee -a /tmp/oev_run/timing.log
 echo "cargo_check_exit_code=$check_rc" | tee -a /tmp/oev_run/build.log
 if [ "$check_rc" -ne 0 ]; then
-  echo "FATAL: cargo check failed (exit $check_rc)" | tee -a build.log
+  echo "FATAL: cargo check failed (exit $check_rc)" | tee -a /tmp/oev_run/build.log
   echo "=== DIAG SUMMARY ===" | tee /tmp/oev_run/diag_summary.log
   echo "GATE PASS (quartet unified) but cargo check FAILED (exit $check_rc) -- see build.log." | tee -a /tmp/oev_run/diag_summary.log
   exit 3
