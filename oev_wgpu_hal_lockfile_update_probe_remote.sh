@@ -45,7 +45,7 @@ cd /tmp/oev_run || exit 1
 
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
 RECO_BRANCH="diag/cuda-vulkan-semaphore"
-EXPECTED_RECO_SHA="2d7233953af9b68e3b65f12714dba652b5a2c013"
+EXPECTED_RECO_SHA="30c7eb23809219041ee169dda34bb291fd4986c8"
 EXPECTED_WGPU_REV="c8b6f2f00895210857f77f2a10fc1a32a80d5148"
 WGPU_CRATES=("wgpu" "wgpu-core" "wgpu-hal" "wgpu-types")
 
