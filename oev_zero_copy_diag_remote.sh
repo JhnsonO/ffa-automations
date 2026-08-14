@@ -32,7 +32,7 @@
 set -uo pipefail
 cd /tmp/oev_run || exit 1
 
-RECO_SHA="1361770abd334eeb48799bd812bb4092968af72a"
+RECO_SHA="1ccc4694e5e776a4e94dbd1acf55eda2965b94c2"
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
 MODEL_PATH="/runpod-volume/oev-runtime/models/yolo26m.onnx"
 
@@ -88,7 +88,7 @@ if [ "$update_rc" -ne 0 ]; then
   exit 3
 fi
 
-EXPECTED_WGPU_REV="0750ea88863e6e4e8acd9128ce820d71f44e968f"
+EXPECTED_WGPU_REV="c8b6f2f00895210857f77f2a10fc1a32a80d5148"
 WGPU_CRATES=("wgpu" "wgpu-core" "wgpu-hal" "wgpu-types")
 echo "=== resolution.log: post-update quartet resolution gate (BEFORE any compile) ===" | tee /tmp/oev_run/resolution.log
 ALL_UNIFIED=1
