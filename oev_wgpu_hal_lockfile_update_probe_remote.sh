@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# REUSE NOTE (this dispatch): same proven gate mechanics as 1d below,
+# now pointed at a NEW pair of commits -- the wgpu-side #9496
+# initial_state backport (JhnsonO/wgpu) and the corresponding Reco-side
+# layout-transition fix (diag/wgpu-initial-state-backport branch, video-
+# stitcher). Only the three EXPECTED_*/RECO_BRANCH constants below
+# changed; every gate, exit code, and check below is untouched from the
+# 1d version that passed clean in run 31816341111.
+#
 # OEV -- ticket 1d: test whether 1c's "patch `wgpu` was not used in the
 # crate graph" warning was a Cargo.lock selection issue rather than a
 # genuine version-string incompatibility.
@@ -37,9 +45,9 @@ set -uo pipefail
 cd /tmp/oev_run || exit 1
 
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
-RECO_BRANCH="diag/wgpu-hal-patch-compile-proof"
-EXPECTED_RECO_SHA="d44df777fbfba19284e2d7d9506ba5dcb8eab91f"
-EXPECTED_WGPU_REV="62e15ce1cc94929235d27b59962abb511622fb4e"
+RECO_BRANCH="diag/wgpu-initial-state-backport"
+EXPECTED_RECO_SHA="187025410b395326169db9fd4204e966e65b708b"
+EXPECTED_WGPU_REV="0750ea88863e6e4e8acd9128ce820d71f44e968f"
 WGPU_CRATES=("wgpu" "wgpu-core" "wgpu-hal" "wgpu-types")
 
 ts() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
