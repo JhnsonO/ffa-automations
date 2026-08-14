@@ -32,7 +32,7 @@
 set -uo pipefail
 cd /tmp/oev_run || exit 1
 
-RECO_SHA="79667aace4a93275f153958d84042116b1522c08"
+RECO_SHA="1361770abd334eeb48799bd812bb4092968af72a"
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
 MODEL_PATH="/runpod-volume/oev-runtime/models/yolo26m.onnx"
 
@@ -70,6 +70,47 @@ git clone "$RECO_REPO" /tmp/video-stitcher 2>&1 | tee -a build.log
 cd /tmp/video-stitcher || exit 3
 git checkout "$RECO_SHA" 2>&1 | tee -a build.log
 echo "video_stitcher_sha=$(git rev-parse HEAD)" | tee -a /tmp/oev_run/build.log
+
+# This commit's Cargo.toml carries a [patch.crates-io] quartet pointing
+# wgpu/wgpu-core/wgpu-hal/wgpu-types at the JhnsonO/wgpu fork (ZC_EXP5's
+# initial_state backport) -- unlike the diagnostic branch's original base
+# commit, which had no fork patch at all. Reusing the exact proven
+# lockfile-update + hard resolution gate from
+# oev_wgpu_hal_lockfile_update_probe_remote.sh (run 31841623350, PASSED)
+# verbatim, so this real-fixture dispatch doesn't burn a full GoPro
+# decode+calibrate+stitch cycle on the same already-solved
+# crates.io-vs-fork version-split failure mode ticket 1c diagnosed.
+echo "=== update.log: cargo update -p wgpu --precise 28.0.1 (lockfile-only, no fork edits) ===" | tee /tmp/oev_run/update.log
+cargo update -p wgpu --precise 28.0.1 2>&1 | tee -a /tmp/oev_run/update.log
+update_rc=${PIPESTATUS[0]}
+if [ "$update_rc" -ne 0 ]; then
+  echo "FATAL: cargo update -p wgpu --precise 28.0.1 failed (exit $update_rc)" | tee -a /tmp/oev_run/update.log
+  exit 3
+fi
+
+EXPECTED_WGPU_REV="0750ea88863e6e4e8acd9128ce820d71f44e968f"
+WGPU_CRATES=("wgpu" "wgpu-core" "wgpu-hal" "wgpu-types")
+echo "=== resolution.log: post-update quartet resolution gate (BEFORE any compile) ===" | tee /tmp/oev_run/resolution.log
+ALL_UNIFIED=1
+for CRATE in "${WGPU_CRATES[@]}"; do
+  COUNT=$(awk -v name="\"$CRATE\"" '/^\[\[package\]\]$/{p=0} $0 ~ ("name = " name) {p=1} p' Cargo.lock | grep -c '^name =')
+  SOURCE=$(awk -v name="\"$CRATE\"" '/^\[\[package\]\]$/{p=0} $0 ~ ("name = " name) {p=1} p && /^source/{print; exit}' Cargo.lock)
+  echo "${CRATE}_instance_count=$COUNT" | tee -a /tmp/oev_run/resolution.log
+  echo "${CRATE}_source_line=$SOURCE" | tee -a /tmp/oev_run/resolution.log
+  if [ "$COUNT" -ne 1 ]; then
+    echo "GATE FAIL: expected exactly 1 $CRATE instance in Cargo.lock, found $COUNT" | tee -a /tmp/oev_run/resolution.log
+    ALL_UNIFIED=0
+  fi
+  if ! echo "$SOURCE" | grep -q "JhnsonO/wgpu" || ! echo "$SOURCE" | grep -q "$EXPECTED_WGPU_REV"; then
+    echo "GATE FAIL: $CRATE source line does not reference the expected fork+rev. Got: $SOURCE" | tee -a /tmp/oev_run/resolution.log
+    ALL_UNIFIED=0
+  fi
+done
+if [ "$ALL_UNIFIED" -ne 1 ]; then
+  echo "GATE: quartet NOT unified after cargo update -- stopping WITHOUT compiling or spending decode/render time. See resolution.log." | tee -a /tmp/oev_run/resolution.log
+  exit 3
+fi
+echo "GATE PASS: all four wgpu-family crates resolve as a single unified instance from JhnsonO/wgpu@$EXPECTED_WGPU_REV." | tee -a /tmp/oev_run/resolution.log
 
 cargo build --release -p reco-cli --features cuda 2>&1 | tee -a build.log
 build_rc=${PIPESTATUS[0]}
@@ -221,10 +262,34 @@ echo "reco stitch exit code: $stitch_rc (non-zero is EXPECTED/ACCEPTABLE for thi
 echo "=== DIAG SUMMARY ===" | tee diag_summary.log
 if grep -q "DIAG frame0 Y-plane readback" stitch.log; then
   grep "DIAG frame0 Y-plane readback\|DIAG dumped raw Y plane\|DIAG readback failed" stitch.log | tee -a diag_summary.log
-  echo "Diagnostic block FIRED -- see readback stats above and diag_dump/*.raw for the actual bytes." | tee -a diag_summary.log
+  echo "CUDA-side diagnostic block FIRED (already-known-good baseline)." | tee -a diag_summary.log
 else
-  echo "Diagnostic block DID NOT FIRE -- decode thread never reached frame 0 with RECO_DEBUG_DUMP_FRAME set (check stitch.log for an earlier fatal error, e.g. decoder open failure)." | tee -a diag_summary.log
+  echo "CUDA-side diagnostic block DID NOT FIRE -- decode thread never reached frame 0 with RECO_DEBUG_DUMP_FRAME set (check stitch.log for an earlier fatal error, e.g. decoder open failure)." | tee -a diag_summary.log
 fi
 
-echo "=== All stages completed (diagnostic run -- non-zero stitch exit is not itself a failure) ==="
+echo "--- ZC_EXP5: one-time layout transition (should fire 8x, once per shared texture, at setup, before any decode) ---" | tee -a diag_summary.log
+ZC_EXP5_COUNT=$(grep -c "ZC_EXP5: transitioned imported VkImage" stitch.log || true)
+echo "ZC_EXP5 transition fired ${ZC_EXP5_COUNT}x (expected 8: left/right x Y/UV x double-buffer)" | tee -a diag_summary.log
+grep "ZC_EXP5" stitch.log | tee -a diag_summary.log || echo "(no ZC_EXP5 lines found)" | tee -a diag_summary.log
+
+echo "--- ZC_EXP4: Vulkan-side readback -- THE decisive evidence for this experiment ---" | tee -a diag_summary.log
+if grep -q "ZC_EXP4:" stitch.log; then
+  grep "ZC_EXP4:" stitch.log | tee -a diag_summary.log
+  # Decisive check: any *_vram_src line (the CUDA-shared source textures,
+  # read via Vulkan's own copy path) with nonzero_bytes=0/... means the
+  # hypothesis under test did NOT hold for that texture. Report per-plane,
+  # don't collapse to a single pass/fail -- left/right or Y/UV could differ.
+  echo "--- per-plane zero/nonzero verdict (source planes only, vram_src) ---" | tee -a diag_summary.log
+  grep "ZC_EXP4:.*vram_src.*nonzero_bytes" stitch.log | while read -r line; do
+    if echo "$line" | grep -qE "nonzero_bytes=0/"; then
+      echo "STILL ZERO: $line" | tee -a diag_summary.log
+    else
+      echo "NONZERO (hypothesis supported): $line" | tee -a diag_summary.log
+    fi
+  done
+else
+  echo "ZC_EXP4 block DID NOT FIRE -- no readback evidence at all for this run. Check stitch.log for a fatal error before frame 0, or confirm RECO_DEBUG_DUMP_FRAME propagated." | tee -a diag_summary.log
+fi
+
+echo "=== All stages completed (diagnostic run -- non-zero stitch exit is not itself a failure) ===" | tee -a diag_summary.log
 exit 0
