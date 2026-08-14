@@ -83,6 +83,53 @@ RECO_BIN="/tmp/video-stitcher/target/release/reco"
 "$RECO_BIN" --version 2>&1 | tee /tmp/oev_run/reco_version.txt
 cd /tmp/oev_run || exit 1
 
+echo "=== gpu_env.log: NVIDIA Vulkan runtime reconstruction (harness fix, cycle 2) ===" | tee gpu_env.log
+# Reuses the exact proven mechanism from runpod_bootstrap.sh (frozen script)
+# -- do not hand-roll a new ICD setup. This diagnostic script previously
+# skipped this step entirely, which let wgpu/Vulkan silently fall back to
+# llvmpipe (software) while CUDA allocated from the real NVIDIA GPU --
+# root cause of cycle 1's ERROR_INVALID_EXTERNAL_HANDLE, not a genuine
+# CUDA/Vulkan external-handle bug.
+CUDA_LIB_DIR=$(find /usr/local -maxdepth 1 -type d -name "cuda-12.*" 2>/dev/null | sort -V | tail -1)
+if [ -z "$CUDA_LIB_DIR" ]; then
+  echo "FATAL: no /usr/local/cuda-12.* dir found" | tee -a gpu_env.log
+  exit 5
+fi
+export LD_LIBRARY_PATH="${CUDA_LIB_DIR}/lib64:${LD_LIBRARY_PATH:-}"
+echo "CUDA lib dir: $CUDA_LIB_DIR" | tee -a gpu_env.log
+
+EGL_ICD_PATH="/tmp/nvidia_egl_icd.json"
+if [ -f "$EGL_ICD_PATH" ]; then
+  echo "$EGL_ICD_PATH already present, reusing" | tee -a gpu_env.log
+else
+  EGL_LIB=$(find /usr/lib/x86_64-linux-gnu /usr/lib -iname "libEGL_nvidia.so.0" 2>/dev/null | head -1)
+  if [ -z "$EGL_LIB" ]; then
+    echo "FATAL: libEGL_nvidia.so.0 not found -- cannot construct Vulkan ICD override. NVIDIA driver may not be properly passed into this container." | tee -a gpu_env.log
+    exit 5
+  fi
+  cat > "$EGL_ICD_PATH" <<JSONEOF
+{
+    "file_format_version" : "1.0.1",
+    "ICD": {
+        "library_path": "libEGL_nvidia.so.0",
+        "api_version" : "1.4.312"
+    }
+}
+JSONEOF
+  echo "EGL ICD override written to $EGL_ICD_PATH" | tee -a gpu_env.log
+fi
+export VK_DRIVER_FILES="$EGL_ICD_PATH"
+export VK_ICD_FILENAMES="$EGL_ICD_PATH"
+unset DISPLAY
+
+VULKAN_CHECK=$(env -u DISPLAY vulkaninfo 2>&1 | grep -iE 'deviceName|deviceType' | head -4)
+echo "$VULKAN_CHECK" | tee -a gpu_env.log
+if ! grep -q 'DISCRETE_GPU' <<< "$VULKAN_CHECK"; then
+  echo "FATAL: Vulkan check after EGL ICD override did not report a DISCRETE_GPU device -- aborting before calibrate/stitch. Output: $VULKAN_CHECK" | tee -a gpu_env.log
+  exit 5
+fi
+echo "Vulkan confirmed NVIDIA discrete GPU: $(echo "$VULKAN_CHECK" | tr '\n' ' ')" | tee -a gpu_env.log
+
 echo "=== calibrate.log: reco calibrate ===" | tee calibrate.log
 echo "timing_calibrate_start=$(ts)" | tee -a timing.log
 LENS_PROFILE_URL="https://raw.githubusercontent.com/gyroflow/lens_profiles/main/GoPro/GoPro_HERO10%20Black_Wide_16by9.json"
@@ -101,6 +148,16 @@ if [ "$calibrate_rc" -ne 0 ] || [ ! -f match.json ]; then
   exit 5
 fi
 echo "Calibrate OK: match.json written" | tee -a calibrate.log
+
+if grep -qi "Selected GPU: llvmpipe" calibrate.log; then
+  echo "FATAL: reco calibrate selected llvmpipe (software Vulkan), not the NVIDIA GPU -- aborting before stitch. Any zero-copy result under this condition is not valid evidence for the CUDA/Vulkan import hypothesis." | tee -a calibrate.log
+  exit 5
+fi
+if ! grep -qi "Selected GPU:" calibrate.log; then
+  echo "FATAL: could not find a \"Selected GPU:\" line in calibrate.log -- cannot confirm which Vulkan device reco used, aborting rather than guessing." | tee -a calibrate.log
+  exit 5
+fi
+echo "Vulkan device gate: $(grep -i 'Selected GPU:' calibrate.log | head -1)" | tee -a calibrate.log
 
 # Same St Margaret's field ROI as production, reproduced verbatim from
 # oev_test_runtime_benchmark_remote.sh -- do not re-derive. Not load-bearing
@@ -156,7 +213,7 @@ STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam_diag.mp4
   --events events_diag.jsonl
   --width 1920 --height 1080)
 echo "reco stitch args (zero-copy path, --no-zero-copy deliberately omitted): ${STITCH_ARGS[*]}" | tee -a stitch.log
-RUST_LOG=warn stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
+RUST_LOG=warn,reco_core=info stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
 stitch_rc=${PIPESTATUS[0]}
 echo "timing_render_end=$(ts)" | tee -a timing.log
 echo "reco stitch exit code: $stitch_rc (non-zero is EXPECTED/ACCEPTABLE for this diagnostic -- the readback evidence we need is emitted from the decode thread on frame 0, before/independent of whatever happens later in the job)" | tee -a stitch.log
