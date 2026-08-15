@@ -1,0 +1,300 @@
+                .command_buffer_count(1);
+            let cmd_buf = raw_device
+                .allocate_command_buffers(&alloc_info)
+                .map_err(|e| {
+                    CudaInteropError::VulkanError(format!(
+                        "vkAllocateCommandBuffers (ZC_EXP5 transition): {e:?}"
+                    ))
+                })?[0];
+
+            let begin_info = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+            raw_device
+                .begin_command_buffer(cmd_buf, &begin_info)
+                .map_err(|e| {
+                    CudaInteropError::VulkanError(format!(
+                        "vkBeginCommandBuffer (ZC_EXP5 transition): {e:?}"
+                    ))
+                })?;
+
+            let barrier = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::PREINITIALIZED)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(vk_image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                // There is no real prior GPU-visible write to synchronize
+                // against yet (the image is freshly allocated/bound, CUDA
+                // hasn't written anything through it), so HOST_WRITE is
+                // the conventional (if imperfect) srcAccessMask for a
+                // transition away from PREINITIALIZED -- see Vulkan spec
+                // 11.4, "Layout Transitions".
+                .src_access_mask(vk::AccessFlags::HOST_WRITE)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+
+            raw_device.cmd_pipeline_barrier(
+                cmd_buf,
+                vk::PipelineStageFlags::HOST,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                std::slice::from_ref(&barrier),
+            );
+
+            raw_device.end_command_buffer(cmd_buf).map_err(|e| {
+                CudaInteropError::VulkanError(format!(
+                    "vkEndCommandBuffer (ZC_EXP5 transition): {e:?}"
+                ))
+            })?;
+
+            let fence = raw_device
+                .create_fence(&vk::FenceCreateInfo::default(), None)
+                .map_err(|e| {
+                    CudaInteropError::VulkanError(format!(
+                        "vkCreateFence (ZC_EXP5 transition): {e:?}"
+                    ))
+                })?;
+
+            let submit_info =
+                vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd_buf));
+            raw_device
+                .queue_submit(raw_queue, std::slice::from_ref(&submit_info), fence)
+                .map_err(|e| {
+                    CudaInteropError::VulkanError(format!(
+                        "vkQueueSubmit (ZC_EXP5 transition): {e:?}"
+                    ))
+                })?;
+
+            raw_device
+                .wait_for_fences(&[fence], true, u64::MAX)
+                .map_err(|e| {
+                    CudaInteropError::VulkanError(format!(
+                        "vkWaitForFences (ZC_EXP5 transition): {e:?}"
+                    ))
+                })?;
+
+            // Destroying the pool implicitly frees the command buffer
+            // allocated from it -- no separate free_command_buffers call.
+            raw_device.destroy_fence(fence, None);
+            raw_device.destroy_command_pool(cmd_pool, None);
+
+            log::info!(
+                "ZC_EXP5: transitioned imported VkImage PREINITIALIZED -> \
+                 TRANSFER_SRC_OPTIMAL (one-time, before any CUDA write)"
+            );
+        }
+
+        log::info!(
+            "Vulkan image created: {}x{} {:?}, pitch={}, imported fd={}",
+            width,
+            height,
+            format,
+            actual_pitch,
+            fd
+        );
+
+        (vk_image, device_memory, actual_pitch)
+    };
+
+    // Wrap the VkImage into a wgpu texture via HAL.
+    //
+    // We provide a drop_callback that destroys the VkImage and frees the
+    // imported VkDeviceMemory. This way wgpu won't try to manage the memory
+    // through its own allocator, and cleanup happens when the texture is dropped.
+    // Build the drop callback outside the unsafe block to avoid nested-unsafe warning.
+    // This closure is called by wgpu when the texture is dropped.
+    let device_for_drop = gpu.device.clone();
+    let drop_image = vk_image;
+    let drop_memory = device_memory;
+    let drop_callback: Box<dyn FnOnce() + Send + Sync> = Box::new(move || {
+        // SAFETY: these Vulkan resources are no longer referenced after
+        // the wgpu texture is dropped.
+        unsafe {
+            if let Some(hal_device) = device_for_drop.as_hal::<Vulkan>() {
+                let raw = hal_device.raw_device();
+                raw.destroy_image(drop_image, None);
+                raw.free_memory(drop_memory, None);
+            }
+        }
+    });
+
+    // SAFETY: we've created a valid VkImage backed by imported CUDA memory,
+    // and the drop_callback will clean up both when the texture is released.
+    let wgpu_texture = unsafe {
+        let hal_device_guard = gpu
+            .device
+            .as_hal::<Vulkan>()
+            .ok_or(CudaInteropError::NotVulkan)?;
+
+        let hal_texture = hal_device_guard.texture_from_raw(
+            vk_image,
+            &wgpu::hal::TextureDescriptor {
+                label: Some("cuda_shared"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUses::RESOURCE | wgpu::TextureUses::COPY_DST,
+                memory_flags: wgpu::hal::MemoryFlags::empty(),
+                view_formats: vec![],
+            },
+            Some(drop_callback),
+            wgpu::hal::vulkan::TextureMemory::External,
+        );
+
+        // Drop the HAL device guard before calling create_texture_from_hal
+        drop(hal_device_guard);
+
+        gpu.device.create_texture_from_hal::<Vulkan>(
+            hal_texture,
+            &wgpu::TextureDescriptor {
+                label: Some("cuda_shared"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            },
+            // ZC_EXP5 (diagnostic): tell wgpu the true state of this
+            // imported texture instead of letting it assume UNINITIALIZED
+            // (which, per Vulkan spec, permits wgpu to discard the
+            // contents CUDA already wrote on first use -- see the
+            // one-time PREINITIALIZED -> TRANSFER_SRC_OPTIMAL transition
+            // performed above, immediately before this call). COPY_SRC
+            // because the first real operation on this texture is always
+            // a copy-out (zc_exp4_readback_texture's copy_texture_to_buffer,
+            // then VramPool::copy_from_textures' copy_texture_to_texture)
+            // -- confirmed by direct inspection of both call sites, this
+            // texture is never sampled or copy-dst'd before being read.
+            wgpu::TextureUses::COPY_SRC,
+        )
+    };
+
+    // ZC_EXP7: optional abort-before-decode. `ZC_EXP7_ABORT_AFTER=<n>` exits
+    // cleanly once n shared textures have been probed, so the diagnostic
+    // never spends decode/render/encode time. n=2 covers one camera's Y+UV
+    // pair plus the once-only buffer control -- everything this experiment
+    // needs. Unset (the default) = no behavioural change.
+    zc_exp7_maybe_abort();
+
+    Ok(SharedTexture {
+        texture: wgpu_texture,
+        cuda_ptr,
+        pitch: actual_pitch,
+        _shared_mem: shared_mem,
+    })
+}
+
+// ── ZC_EXP7 (diagnostic-only, avenue 3) ─────────────────────────────
+//
+// Avenue 2 (run 31854089581) established that the synchronized Vulkan
+// IMAGE path failed to observe a CUDA-written sentinel that a CUDA-side
+// readback confirmed byte-exact at the same offsets. That is NOT the same
+// as proving CUDA and Vulkan are definitively on different physical pages
+// -- an image-specific external-memory requirement or layout/semantics
+// mismatch would produce the identical symptom. Distinguishing those two
+// explanations is exactly what EXP7 exists to do. Every API call in the
+// import path returns VK_SUCCESS, so success codes are known not to be
+// evidence here.
+//
+// This block adds three things, all read-only or self-contained:
+//   A. Does the driver actually declare this exact external IMAGE config
+//      importable from OPAQUE_FD, and does it require a dedicated alloc?
+//   B. Modern requirements2 path incl. VkMemoryDedicatedRequirements.
+//   C. A runtime VkBuffer control mirroring NVIDIA's simpleVulkanMMAP --
+//      the only official NVIDIA implementation of the CUDA-VMM-export ->
+//      Vulkan-import direction, which imports into a VkBuffer, never a
+//      VkImage, and passes memRequirements.size as allocationSize.
+//
+// Reference: NVIDIA/cuda-samples @ v11.8,
+// Samples/5_Domain_Specific/simpleVulkanMMAP/VulkanBaseApp.cpp,
+// importExternalBuffer(), lines ~1624-1676.
+//
+// Classification is pre-registered in docs/ai-project-state.md; do not
+// re-derive it after seeing the numbers.
+
+#[cfg(target_os = "linux")]
+static ZC_EXP7_BUFFER_CONTROL_RAN: std::sync::Once = std::sync::Once::new();
+
+#[cfg(target_os = "linux")]
+static ZC_EXP7_TEXTURES_PROBED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// ZC_EXP7 master gate. With `ZC_EXP7` unset or != "1", every probe in this
+/// block is skipped and behaviour is byte-identical to the base commit.
+#[cfg(target_os = "linux")]
+fn zc_exp7_enabled() -> bool {
+    std::env::var("ZC_EXP7").as_deref() == Ok("1")
+}
+
+/// ZC_EXP7: `vkGetPhysicalDeviceImageFormatProperties2`,
+/// `vkGetImageMemoryRequirements2` and
+/// `vkGetPhysicalDeviceExternalBufferProperties` are Vulkan 1.1 CORE, not
+/// extensions. On a 1.0 instance their function pointers are null and
+/// calling them segfaults rather than returning an error, so the instance
+/// API version is checked and logged before any of them is invoked.
+#[cfg(target_os = "linux")]
+fn zc_exp7_vulkan_11_available(api_version: u32) -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static LOGGED: AtomicBool = AtomicBool::new(false);
+
+    let ok = api_version >= ash::vk::API_VERSION_1_1;
+    if !LOGGED.swap(true, Ordering::SeqCst) {
+        log::info!(
+            "ZC_EXP7_API: instance_api_version={}.{}.{} (raw={api_version}) \
+             vulkan_1_1_core_available={ok}{}",
+            ash::vk::api_version_major(api_version),
+            ash::vk::api_version_minor(api_version),
+            ash::vk::api_version_patch(api_version),
+            if ok {
+                ""
+            } else {
+                " -- SKIPPING all ZC_EXP7 1.1-core queries; this run yields NO \
+                 capability evidence and must not be classified"
+            }
+        );
+    }
+    ok
+}
+
+/// ZC_EXP7 step A: query external-memory capabilities for this exact image
+/// configuration. Never fatal -- `VK_ERROR_FORMAT_NOT_SUPPORTED` is itself
+/// a first-class result for this experiment, not an error to unwrap on.
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn zc_exp7_image_caps(
+    instance: &ash::Instance,
+    physical_device: ash::vk::PhysicalDevice,
+    vk_format: ash::vk::Format,
+    tiling: ash::vk::ImageTiling,
+    usage: ash::vk::ImageUsageFlags,
+    handle_type: ash::vk::ExternalMemoryHandleTypeFlags,
+    width: u32,
+    height: u32,
+    wgpu_format: wgpu::TextureFormat,
+) {
+    use ash::vk;
+
+    let mut external_info =
+        vk::PhysicalDeviceExternalImageFormatInfo::default().handle_type(handle_type);
