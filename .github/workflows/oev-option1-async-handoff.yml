@@ -1,0 +1,173 @@
+name: OEV — Option1 Async Handoff A/B (RTX4090, bounded)
+
+on:
+  push:
+    branches:
+      - diag/option1-async-handoff
+    paths:
+      - .github/workflows/oev-option1-async-handoff.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  option1-ab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v5
+
+      - name: Generate ephemeral SSH key
+        run: |
+          ssh-keygen -q -t ed25519 -N '' -f /tmp/runpod_key
+          chmod 600 /tmp/runpod_key
+
+      - name: Allocate NVDEC-valid RTX4090 pod
+        id: launch
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 -u - <<'PY'
+          import json, os, subprocess, time, urllib.request, urllib.error
+          base='https://rest.runpod.io/v1'
+          headers={'Authorization':f"Bearer {os.environ['RUNPOD_API_KEY']}",'Content-Type':'application/json','Accept':'application/json'}
+          pub=open('/tmp/runpod_key.pub').read().strip()
+          pod_file='/tmp/option1_pods.txt'; open(pod_file,'w').close()
+          def req(method,url,data=None,timeout=30):
+              r=urllib.request.Request(url,data=(json.dumps(data).encode() if data is not None else None),method=method,headers=headers)
+              with urllib.request.urlopen(r,timeout=timeout) as x:
+                  raw=x.read(); return json.loads(raw) if raw else {}
+          def delete(pid):
+              try: req('DELETE',f'{base}/pods/{pid}',timeout=20); print(f'deleted rejected pod {pid}')
+              except Exception as e: print(f'cleanup warning {pid}: {e}')
+          def ssh_ready(ip,port):
+              for _ in range(24):
+                  try:
+                      p=subprocess.run(['ssh','-i','/tmp/runpod_key','-p',str(port),'-o','StrictHostKeyChecking=no','-o','ConnectTimeout=8',f'root@{ip}','echo OK'],capture_output=True,text=True,timeout=15)
+                      if 'OK' in p.stdout: return True
+                  except Exception: pass
+                  time.sleep(5)
+              return False
+          winner=None
+          for attempt in range(1,6):
+              print(f'RTX4090 allocation attempt {attempt}/5')
+              pid=None
+              try:
+                  body={
+                    'name':'oev-option1-async-ab',
+                    'imageName':'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
+                    'gpuTypeIds':['NVIDIA GeForce RTX 4090'],'gpuTypePriority':'custom','gpuCount':1,
+                    'cloudType':'SECURE','containerDiskInGb':80,
+                    'networkVolumeId':'0hta9vhuue','volumeMountPath':'/runpod-volume',
+                    'ports':['22/tcp'],'supportPublicIp':True,'allowedCudaVersions':['12.8'],
+                    'env':{'PUBLIC_KEY':pub,'SSH_PUBLIC_KEY':pub},
+                  }
+                  pod=req('POST',f'{base}/pods',body); pid=pod['id']
+                  with open(pod_file,'a') as f: f.write(pid+'\n')
+                  started=time.time(); deadline=time.time()+600
+                  while time.time()<deadline:
+                      info=req('GET',f'{base}/pods/{pid}?includeMachine=true')
+                      ip=info.get('publicIp'); m=info.get('portMappings') or {}; port=m.get('22') or m.get('22/tcp')
+                      if ip and port: break
+                      time.sleep(10)
+                  else: raise RuntimeError('no public IP/SSH mapping')
+                  if not ssh_ready(ip,port): raise RuntimeError('SSH not ready')
+                  subprocess.run(['scp','-i','/tmp/runpod_key','-P',str(port),'-o','StrictHostKeyChecking=no','runpod_gpu_preflight.sh',f'root@{ip}:/tmp/preflight.sh'],check=True,timeout=30)
+                  p=subprocess.run(['ssh','-i','/tmp/runpod_key','-p',str(port),'-o','StrictHostKeyChecking=no',f'root@{ip}','chmod +x /tmp/preflight.sh && stdbuf -oL -eL /tmp/preflight.sh'],capture_output=True,text=True,timeout=240)
+                  print(p.stdout); print(p.stderr)
+                  needed=['PREFLIGHT_GPU_MODEL=NVIDIA GeForce RTX 4090','PREFLIGHT_VULKAN=PASS','PREFLIGHT_CUDA_INIT=PASS','PREFLIGHT_NVDEC=PASS','PREFLIGHT_ORT_CUDA=PASS','PREFLIGHT_RESULT=PASS']
+                  if p.returncode or any(x not in p.stdout for x in needed): raise RuntimeError('4090 preflight failed')
+                  winner=(pid,ip,port,info.get('costPerHr'),started)
+                  break
+              except Exception as e:
+                  print(f'attempt {attempt} rejected: {e}')
+                  if pid: delete(pid)
+                  if attempt<5: time.sleep(15)
+          if not winner: raise SystemExit('No NVDEC-valid RTX4090 found')
+          pid,ip,port,cost,started=winner
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write(f'pod_id={pid}\nip={ip}\nport={port}\ncost_per_hr={cost}\nlaunch_epoch={started}\n')
+          print(f'ACCEPTED RTX4090 pod={pid} ip={ip}:{port} cost_per_hr={cost}')
+          PY
+
+      - name: Run option1 hardware A/B
+        id: remote
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no"
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=20 root@$IP"
+          $SCP oev_option1_async_handoff_remote.sh root@$IP:/tmp/option1.sh
+          set +e
+          $SSH 'chmod +x /tmp/option1.sh && stdbuf -oL -eL /tmp/option1.sh'
+          rc=$?
+          set -e
+          echo "remote_rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "remote_rc=$rc"
+
+      - name: Pull evidence
+        if: always()
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          mkdir -p option1_artifacts/frames
+          if [ -n "$IP" ] && [ -n "$PORT" ]; then
+            SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no"
+            for f in summary.log timing.log ab_metrics.txt input_probe.log gpu_env.log calibrate.log build_base.log build_async.log base1.log base2.log async1.log async2.log; do
+              $SCP "root@$IP:/tmp/oev_option1/$f" option1_artifacts/ 2>/dev/null || true
+            done
+            $SCP "root@$IP:/tmp/oev_option1/frames/*.png" option1_artifacts/frames/ 2>/dev/null || true
+          fi
+          echo '=== summary.log ==='
+          cat option1_artifacts/summary.log 2>/dev/null || true
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-option1-async-ab-${{ github.run_id }}
+          path: option1_artifacts/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Terminate RunPod pods
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os,time,urllib.request,urllib.error
+          try: pids=[x.strip() for x in open('/tmp/option1_pods.txt') if x.strip()]
+          except FileNotFoundError: pids=[]
+          headers={'Authorization':f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          for pid in dict.fromkeys(pids):
+              url=f'https://rest.runpod.io/v1/pods/{pid}'
+              for i in range(3):
+                  try:
+                      with urllib.request.urlopen(urllib.request.Request(url,method='DELETE',headers=headers),timeout=20) as r:
+                          print(f'pod {pid} termination HTTP {r.status}'); break
+                  except urllib.error.HTTPError as e:
+                      if e.code==404: print(f'pod {pid} already absent'); break
+                  except Exception as e: print(f'cleanup retry {pid}: {e}')
+                  time.sleep(5)
+              else: raise SystemExit(f'pod termination not confirmed: {pid}')
+          PY
+
+      - name: Evaluate option1 result
+        if: always()
+        env:
+          REMOTE_RC: ${{ steps.remote.outputs.remote_rc }}
+        run: |
+          test "$REMOTE_RC" = "0"
+          test -f option1_artifacts/summary.log
+          grep -q '^OPTION1_CORRECT=PASS$' option1_artifacts/summary.log
+          grep -q '^OPTION1_RUNTIME=PASS$' option1_artifacts/summary.log
+          if grep -q '^OPTION1_PERF=REGRESSION$' option1_artifacts/summary.log; then
+            echo '::error::Option1 is correct but has a measured performance regression.'
+            exit 1
+          fi
+          echo 'OPTION1 HARDWARE ACCEPTANCE PASSED'
