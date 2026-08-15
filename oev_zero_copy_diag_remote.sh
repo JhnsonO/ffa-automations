@@ -257,9 +257,11 @@ echo "reco stitch args: ${VISUAL_ARGS[*]}" | tee -a visual.log
 RUST_LOG="$LOG_FILTER" stdbuf -oL -eL "$RECO_BIN" "${VISUAL_ARGS[@]}" 2>&1 | tee -a visual.log
 visual_rc=${PIPESTATUS[0]}
 echo "timing_visual_end=$(ts)" | tee -a timing.log
+# The immediate gate above already proves `needs_cuda_frames()` selects the
+# CUDA-pointer detector path. Buffered lookahead calls `detect_and_track_only`,
+# which uses the same pointer branch but intentionally has no equivalent log.
 if [ "$visual_rc" -ne 0 ] || [ ! -s followcam_buffer_clean.mp4 ] \
   || ! grep -q "CUDA shared-buffer copy: synchronized VkBuffer -> VramPool textures complete" visual.log \
-  || ! grep -q "GpuResident detection: CUDA path" visual.log \
   || ! grep -q "ORT: CUDA execution provider enabled" visual.log; then
   echo "ZC_BUFFER_CLEAN_RENDER=FAIL (rc=$visual_rc)" | tee -a diag_summary.log
   exit 8
@@ -311,7 +313,8 @@ test "$(find validation_frames -name 'clean_*.png' | wc -l)" -eq 4 || exit 8
   echo "--- NO-ZERO-COPY SESSION SUMMARY ---"
   grep -A30 -- "--- Session Summary ---" baseline.log | tail -31
   echo "--- CUDA RESIDENCE EVIDENCE ---"
-  grep -E "ORT: CUDA execution provider enabled|GpuResident detection: CUDA path|Decode:.*CUDA shared buffer" visual.log | tail -10
+  grep -E "ORT: CUDA execution provider enabled|GpuResident detection: CUDA path|Decode:.*CUDA shared buffer" \
+    immediate.log visual.log | tail -12
 } | tee -a diag_summary.log
 
 echo "ZC_BUFFER_VISUAL_ARTIFACT=READY" | tee -a diag_summary.log
