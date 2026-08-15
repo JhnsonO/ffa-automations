@@ -1,0 +1,55 @@
+name: OEV — Repair stale network-volume map (temporary)
+
+on:
+  push:
+    branches:
+      - rollout/shared-buffer-main
+    paths:
+      - '.github/workflows/_repair-network-volume-map.yml'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Dispatch canonical network-volume setup for surviving volumes
+        shell: bash
+        run: |
+          python3 -u - <<'PY'
+          import json, os, time, urllib.parse, urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; api=f'https://api.github.com/repos/{repo}'
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          wf='oev-network-volume-setup.yml'; branch='rollout/shared-buffer-main'
+          def req(method,url,data=None):
+              r=urllib.request.Request(url,data=(json.dumps(data).encode() if data is not None else None),method=method,headers=headers)
+              with urllib.request.urlopen(r,timeout=30) as x:
+                  raw=x.read(); return json.loads(raw) if raw else {}
+          def runs():
+              q=urllib.parse.urlencode({'branch':branch,'event':'workflow_dispatch','per_page':20})
+              return req('GET',f'{api}/actions/workflows/{wf}/runs?{q}')['workflow_runs']
+          before={r['id'] for r in runs()}
+          req('POST',f'{api}/actions/workflows/{wf}/dispatches',{'ref':branch,'inputs':{
+              'volume_name':'oev-runtime-volume','volume_size_gb':'10','volume_count':'3',
+              'datacenter_id_override':'EU-RO-1,EUR-IS-1,US-IL-1'}})
+          rid=None
+          for _ in range(60):
+              time.sleep(2); fresh=[r for r in runs() if r['id'] not in before]
+              if fresh: rid=max(fresh,key=lambda r:r['id'])['id']; break
+          if rid is None: raise RuntimeError('could not resolve network-volume setup run')
+          print(f'REPAIR_RUN_ID={rid}',flush=True)
+          end=time.time()+900
+          while time.time()<end:
+              r=req('GET',f'{api}/actions/runs/{rid}')
+              if r['status']=='completed':
+                  print(f'REPAIR_CONCLUSION={r["conclusion"]} {r["html_url"]}',flush=True)
+                  if r['conclusion']!='success': raise RuntimeError('canonical volume-map repair failed')
+                  break
+              time.sleep(10)
+          else: raise TimeoutError('volume-map repair timed out')
+          PY
