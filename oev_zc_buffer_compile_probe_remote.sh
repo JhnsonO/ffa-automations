@@ -56,8 +56,9 @@ echo 'SCOPE GATE PASS: expected seven production-shaped buffer-copy files only.'
 echo "=== cargo update / wgpu resolution ===" | tee /tmp/oev_run/resolution.log
 cargo update -p wgpu --precise 28.0.1 2>&1 | tee -a /tmp/oev_run/resolution.log
 for crate in wgpu wgpu-core wgpu-hal wgpu-types; do
-  cargo tree -p "$crate" 2>&1 | head -12 | tee -a /tmp/oev_run/resolution.log
-  SOURCE_COUNT=$(awk -v name="\"$crate\"" '/^\[\[package\]\]$/{p=0} $0 ~ ("name = " name) {p=1} p && /^source = /{print}' Cargo.lock | grep -c "$EXPECTED_WGPU_REV" || true)
+  SOURCE_LINES=$(awk -v name="\"$crate\"" '/^\[\[package\]\]$/{p=0} $0 ~ ("name = " name) {p=1} p && /^source = /{print}' Cargo.lock)
+  printf '%s_source=%s\n' "$crate" "$SOURCE_LINES" | tee -a /tmp/oev_run/resolution.log
+  SOURCE_COUNT=$(printf '%s\n' "$SOURCE_LINES" | grep -c "$EXPECTED_WGPU_REV" || true)
   test "$SOURCE_COUNT" -eq 1 || { echo "FATAL: $crate not pinned to expected wgpu fork" | tee -a /tmp/oev_run/resolution.log; exit 11; }
 done
 echo 'RESOLUTION GATE PASS' | tee -a /tmp/oev_run/resolution.log

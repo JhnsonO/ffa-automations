@@ -1,1 +1,1 @@
-Compile proof retry 2 for video-stitcher d429ce7f8bade1523f41d338200797fa282388af (60-minute harness cap).
+Compile proof retry 3 for video-stitcher d429ce7f8bade1523f41d338200797fa282388af (Cargo.lock gate, no pipe truncation).
