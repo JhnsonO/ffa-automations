@@ -5,7 +5,7 @@ set -euo pipefail
 cd /tmp/oev_run
 
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
-RECO_SHA="d429ce7f8bade1523f41d338200797fa282388af"
+RECO_SHA="acdcc61ece2f1d9bda453dea32ec3be10d34172a"
 RECO_BASE="9059470f01065d5336af8c94bac27a860156dfec"
 EXPECTED_WGPU_REV="c8b6f2f00895210857f77f2a10fc1a32a80d5148"
 
@@ -34,6 +34,7 @@ test "$ACTUAL" = "$RECO_SHA"
 echo "video_stitcher_sha=$ACTUAL" | tee -a /tmp/oev_run/build.log
 
 EXPECTED_FILES=$(printf '%s\n' \
+  crates/reco-core/src/interop/cuda.rs \
   crates/reco-core/src/interop/vulkan.rs \
   crates/reco-core/src/session/frame_processing.rs \
   crates/reco-core/src/session/mod.rs \
@@ -51,7 +52,7 @@ if grep -qF 'get_memory_fd_properties' crates/reco-core/src/interop/vulkan.rs; t
   echo 'FATAL: forbidden vkGetMemoryFdPropertiesKHR-equivalent call found for OPAQUE_FD' | tee -a /tmp/oev_run/build.log
   exit 10
 fi
-echo 'SCOPE GATE PASS: expected seven production-shaped buffer-copy files only.' | tee -a /tmp/oev_run/build.log
+echo 'SCOPE GATE PASS: expected eight production-shaped buffer-copy/sync files only.' | tee -a /tmp/oev_run/build.log
 
 echo "=== cargo update / wgpu resolution ===" | tee /tmp/oev_run/resolution.log
 cargo update -p wgpu --precise 28.0.1 2>&1 | tee -a /tmp/oev_run/resolution.log
