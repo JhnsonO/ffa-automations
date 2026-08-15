@@ -223,6 +223,7 @@ STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
   --panner-preset broadcast
   --lookahead "${LOOKAHEAD}"
   --detection-interval 1
+  --frame-stride 3
   --events events.jsonl
   --width 1920 --height 1080)
 

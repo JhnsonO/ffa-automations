@@ -241,6 +241,7 @@ STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
   --panner-preset broadcast
   --lookahead 1.5
   --detection-interval 1
+  --frame-stride 3
   --events events.jsonl
   --width 1920 --height 1080)
 echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch.log
