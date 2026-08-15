@@ -1,0 +1,81 @@
+name: EXP7 — record verified state
+
+on:
+  push:
+    branches:
+      - diag/zc-exp7-real-fixture
+    paths:
+      - '.github/workflows/exp7-record-state.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Prepend verified EXP7 result
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('docs/ai-project-state.md')
+          s = p.read_text()
+          marker = '## OEV zero-copy NV12 corruption — EXP7: generic CUDA↔Vulkan OPAQUE_FD sharing PASSES; failure is image-specific'
+          if marker in s:
+              print('EXP7 state entry already present; no-op')
+              raise SystemExit(0)
+          entry = '''## OEV zero-copy NV12 corruption — EXP7: generic CUDA↔Vulkan OPAQUE_FD sharing PASSES; failure is image-specific — real hardware, decisive (15 Aug 2026)
+
+**Correction to the immediately-following Avenue-2 entry:** run `31854089581` proved that the synchronized Vulkan **image** path did not observe a CUDA-written sentinel that CUDA itself read back byte-exact. It did **not** prove the broader statement that CUDA and Vulkan cannot alias the same physical backing pages at all. EXP7 below directly tests the generic CUDA-VMM-export -> Vulkan-import direction using a `VkBuffer`, with real cross-API semaphore synchronization, and it passes byte-exact. Therefore do not carry forward the old generic conclusion "physical aliasing does NOT hold"; the proven failure boundary is now specifically the imported **VkImage** path.
+
+**Compile proof before hardware dispatch:** `JhnsonO/video-stitcher@9059470f01065d5336af8c94bac27a860156dfec` on branch `diag/zc-exp7-external-memory-caps`, based on `e810a04e`. Exact reviewed sources: `vulkan.rs` 1476 lines, SHA-256 `4da792382d954f5ffe68865d5ae84db9e778c2f6e452917a7749149f50c41089`; `cuda.rs` 1312 lines, SHA-256 `e81e693071608caef213eb34e68335d064e3aded6c58214147f2b6be4ac303b7`. Compile gate run `31871577622` passed the exact-payload hash gate, unified all four wgpu-family crates on `JhnsonO/wgpu@c8b6f2f00895210857f77f2a10fc1a32a80d5148`, and `cargo check --release -p reco-cli --features cuda` exited 0. The first compile attempt (`31870775061`) had only five ash `push_next()` borrow-scope E0503 errors; fixed by shortening builder lifetimes, with no experiment-semantic change.
+
+**Real EXP7 hardware run:** `31872745393`, `ffa-automations` branch `diag/zc-exp7-real-fixture`, head `3d51d19c414638c11f66d1a57d82705bef56f6d8`. EU-RO-1 RunPod one-shot workflow, NVIDIA preflight passed, Reco SHA exactly `9059470f...`, wgpu resolution gate passed, EXP7 `ZC_EXP7_ABORT_AFTER=2` exited during shared-texture setup before decode, and RunPod pod termination was confirmed. Artifact `oev-zero-copy-diag-31872745393` captured the evidence.
+
+**EXP7 buffer control — PASS, byte-exact.** Vulkan 1.3.275. `vkGetPhysicalDeviceExternalBufferProperties` for `TRANSFER_SRC|TRANSFER_DST + OPAQUE_FD` reported `EXPORTABLE=true`, `IMPORTABLE=true`, `DEDICATED_ONLY=false`, compatible handle types including `OPAQUE_FD`. The control uses production `allocate_shared_memory()` (`cuMemCreate` + POSIX-FD export), imports into a `VkBuffer`, writes the same deterministic 1024-byte sentinel through CUDA at offsets 0 / 524288 / 1047552, verifies CUDA ground truth, signals an imported external semaphore after `cuda_synchronize()`, and makes the exact Vulkan `shared_buffer -> staging_buffer` transfer submission wait at `TRANSFER`. All three offsets returned `cuda_byte_exact=true` **and** Vulkan `byte_exact=true`; final marker `ZC_EXP7_BUF_ALIAS_RESULT=PASS`.
+
+**Conclusion from buffer PASS:** generic CUDA VMM -> Vulkan `OPAQUE_FD` external-memory sharing and cross-API visibility work on this exact RTX/driver/runtime stack. The CUDA allocation/export mechanism, POSIX fd handle type, Vulkan import mechanism in principle, and semaphore visibility mechanism are therefore not generically broken. The remaining corruption must involve something specific to how the external allocation is used as a **linear VkImage** (or a semantic difference between image and buffer import/binding), not the mere fact that CUDA created/exported the allocation.
+
+**EXP7 image capability queries — no obvious capability/dedicated-allocation red flag.** Both real production plane configurations were queried before import:
+- Y: `R8_UNORM`, LINEAR, `TRANSFER_SRC|TRANSFER_DST|SAMPLED`, 3840x2160: query success; `EXPORTABLE=true`, `IMPORTABLE=true`, `DEDICATED_ONLY=false`, `OPAQUE_FD` compatible; `requiresDedicatedAllocation=false`, `prefersDedicatedAllocation=false`; Vulkan requirement size 8,294,400, alignment 128, `memoryTypeBits=0xf`; CUDA VMM allocation rounded to 8,388,608.
+- UV: `R8G8_UNORM`, LINEAR, same usages, 1920x1080: same capability flags; no dedicated allocation required/preferred; Vulkan requirement size 4,147,200, alignment 128, `memoryTypeBits=0xf`; CUDA VMM allocation rounded to 4,194,304.
+Existing `ZC_DIAG` still confirms actual row pitch 3840, subresource offset 0, subresource size exactly pitch*height, and allocation size >= Vulkan requirements for both planes. `EXP7_IMAGE_CAPABILITY_RED_FLAG=NO` under the pre-registered criteria.
+
+**Important Vulkan API correction preserved:** do **not** use `vkGetMemoryFdPropertiesKHR` with `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT`; VUID-00674 forbids that handle type. A prior diagnostic draft briefly added that query, then removed it before compile/hardware testing after Khronos verification. No `fd_bits` / intersection conclusion is valid or retained.
+
+**What is now ruled out unless contradictory evidence appears:**
+- ZC_EXP4 readback mechanism failure (Avenue 1 control passed byte-exact).
+- wgpu imported-texture UNINITIALIZED/layout-discard hypothesis A.
+- missing CUDA->Vulkan semaphore synchronization hypothesis B.
+- generic CUDA-VMM -> Vulkan OPAQUE_FD sharing failure (EXP7 VkBuffer control passes byte-exact with proper semaphore sync).
+- obvious external-image capability rejection, OPAQUE_FD incompatibility, or dedicated-allocation requirement for the exact Y/UV image configurations on this hardware.
+
+**Remaining failure boundary:** the imported **linear VkImage** representation/binding/visibility semantics. One concrete difference now measured (not yet claimed as root cause) is allocation sizing: production imports the CUDA VMM granularity-rounded allocation size (8,388,608 / 4,194,304), whereas Vulkan image memory requirements are the smaller exact sizes (8,294,400 / 4,147,200), and NVIDIA's `simpleVulkanMMAP` buffer reference passes the Vulkan requirement size verbatim. This is evidence for a bounded next experiment, not a conclusion. Other image-specific semantics must remain evidence-driven; do not reopen generic semaphore/readback/handle-sharing theories without new contradictory evidence.
+
+**Standing stop point:** EXP7 result recorded; no production code merged and no next hypothesis started in this run. Discuss the next single image-specific experiment before proceeding.
+
+'''
+          p.write_text(entry + s)
+          PY
+          git diff --check
+          git diff -- docs/ai-project-state.md | head -220
+
+      - name: Commit verified state to main
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- docs/ai-project-state.md; then
+            echo 'No state change required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/ai-project-state.md
+          git commit -m 'docs: record EXP7 image-specific zero-copy boundary'
+          git push origin HEAD:main
