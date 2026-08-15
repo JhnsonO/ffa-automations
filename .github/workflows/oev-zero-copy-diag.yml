@@ -1,37 +1,42 @@
-name: OEV — Zero-Copy NV12 Corruption Diagnostic (throwaway pod, one-shot)
+name: OEV — Shared-Buffer Zero-Copy Proof (throwaway pod, one-shot)
 
 # Diagnostic-only, isolated workflow. Does NOT touch any frozen file, the
 # production network volumes' reco binary/manifest, the baked GHCR image,
 # or any --no-zero-copy production setting.
 #
-# Fresh-builds JhnsonO/video-stitcher branch diag/zero-copy-frame0-readback
-# (commit 17108b05, +48/-0 over pinned prod SHA 53fe10f5 -- adds a single
-# env-gated readback block to crates/reco-io/src/zero_copy.rs, no other
-# change) on a throwaway pod, then runs `reco stitch` WITHOUT
-# --no-zero-copy (the exact configuration that produced the corrupted,
-# uniformly-flat-green followcam.mp4 in run 31557269688) with
-# RECO_DEBUG_DUMP_FRAME=1 set.
+# Fresh-builds the isolated option-2 Reco branch on a throwaway pod, proves
+# CUDA-VMM shared VkBuffer -> synchronized Vulkan/wgpu buffer-to-texture
+# transfer with real decoded bytes and byte-exact sentinels, then captures a
+# short clean stereo MP4 for manual visual inspection. `--no-zero-copy` is
+# deliberately omitted; no CPU pixel round-trip is introduced.
 #
 # Reuses the already-populated EU-RO-1 network volume (id 0hta9vhuue)
 # READ-ONLY for its yolo26m.onnx model only -- this pod's own script never
 # writes to /runpod-volume, so the volume's reco binary/manifest used by
 # production runs cannot be affected.
 #
-# Ticket: diagnose the zero-copy NV12 chroma-plane corruption bug
-# (docs/ai-project-state.md, "Open item ... diagnose/fix the NV12
-# chroma-plane bug in JhnsonO/video-stitcher's zero-copy encode path").
+# Ticket: replace the failed direct shared-VkImage path with CUDA-shared
+# buffers feeding ordinary wgpu textures (docs/ai-project-state.md).
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - agent/zc-buffer-copy-proof
+    paths:
+      - triggers/zc-buffer-fixture-1
 
 permissions:
   contents: read
 
 jobs:
   zero-copy-diag:
-    name: Zero-Copy Diagnostic (RunPod, throwaway pod)
+    name: Shared-Buffer Proof (RunPod, throwaway pod)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Dependency fetches alone exceeded 30 minutes in compile-proof run
+    # 31883596926. The frame workload remains bounded (5-frame byte proof,
+    # then 180-frame render); this cap only preserves cleanup headroom.
+    timeout-minutes: 75
 
     steps:
       - name: Checkout
@@ -163,7 +168,7 @@ jobs:
                   if isinstance(mappings, dict):
                       mapped_22 = mappings.get('22') or mappings.get('22/tcp')
                   if public_ip and mapped_22:
-                      return public_ip, mapped_22
+                      return public_ip, mapped_22, info
                   time.sleep(10)
               raise RuntimeError(f'pod {pod_id} never reported a public IP + SSH mapping within {timeout_s}s')
 
@@ -180,6 +185,11 @@ jobs:
                   time.sleep(delay_s)
               return False
 
+          # A candidate is not a winner until the existing frozen GPU
+          # preflight passes. If a model fails NVDEC preflight, exclude that
+          # model from later rounds so the bounded run does not repeatedly
+          # land on the same incompatible host class.
+          failed_gpu_models = set()
           winner = None
           for round_num in range(1, ROUNDS + 1):
               sleep_s = SLEEP_BEFORE_ROUND[round_num - 1]
@@ -187,10 +197,15 @@ jobs:
                   print(f'Waiting {sleep_s}s before round {round_num}...')
                   time.sleep(sleep_s)
 
-              gpu_type_ids = GPU_TIER_ROUND1 if round_num == 1 else GPU_TIER_WIDE
-              print(f'--- Round {round_num}/{ROUNDS} (EU-RO-1 pinned via volume, gpu_tier={"preferred-4" if round_num == 1 else "all-8"}) ---')
+              base_gpu_type_ids = GPU_TIER_ROUND1 if round_num == 1 else GPU_TIER_WIDE
+              gpu_type_ids = [g for g in base_gpu_type_ids if g not in failed_gpu_models]
+              if not gpu_type_ids:
+                  print(f'::error::Round {round_num}: every eligible GPU model was rejected by preflight')
+                  continue
+              print(f'--- Round {round_num}/{ROUNDS} (EU-RO-1 pinned via volume, gpu_tier={"preferred-4" if round_num == 1 else "all-8"}, excluded={sorted(failed_gpu_models)}) ---')
               try:
                   pod_id = create_pod(gpu_type_ids)
+                  pod_created_epoch = time.time()
               except Exception as exc:
                   print(f'::error::Round {round_num}: pod create failed: {exc}')
                   continue
@@ -199,15 +214,79 @@ jobs:
                   f.write(pod_id)
 
               try:
-                  ip, port = wait_for_network(pod_id)
+                  ip, port, pod_info = wait_for_network(pod_id)
                   if not wait_for_ssh(ip, port):
                       raise RuntimeError(f'SSH never came up on pod {pod_id} ({ip}:{port})')
+
+                  # Hard precondition for this real-frame proof. Reuse the
+                  # checked-in preflight verbatim instead of duplicating its
+                  # NVDEC and CUDA checks here.
+                  scp = subprocess.run(
+                      ['scp', '-i', '/tmp/runpod_key', '-P', str(port),
+                       '-o', 'StrictHostKeyChecking=no', 'runpod_gpu_preflight.sh',
+                       f'root@{ip}:/tmp/runpod_gpu_preflight.sh'],
+                      capture_output=True, text=True, timeout=30,
+                  )
+                  if scp.returncode != 0:
+                      raise RuntimeError(f'preflight upload failed: {scp.stderr[-500:]}')
+                  subprocess.run(
+                      ['ssh', '-i', '/tmp/runpod_key', '-p', str(port),
+                       '-o', 'StrictHostKeyChecking=no', f'root@{ip}',
+                       'chmod +x /tmp/runpod_gpu_preflight.sh'],
+                      check=True, timeout=20,
+                  )
+                  preflight = subprocess.run(
+                      ['ssh', '-i', '/tmp/runpod_key', '-p', str(port),
+                       '-o', 'StrictHostKeyChecking=no', f'root@{ip}',
+                       'stdbuf -oL -eL /tmp/runpod_gpu_preflight.sh'],
+                      capture_output=True, text=True, timeout=180,
+                  )
+                  print(preflight.stdout, end='')
+                  if preflight.stderr:
+                      print(preflight.stderr, end='')
+                  model = None
+                  for line in preflight.stdout.splitlines():
+                      if line.startswith('PREFLIGHT_GPU_MODEL='):
+                          model = line.split('=', 1)[1].strip()
+                          break
+                  if preflight.returncode != 0 or 'PREFLIGHT_NVDEC=PASS' not in preflight.stdout:
+                      if model:
+                          failed_gpu_models.add(model)
+                      raise RuntimeError(
+                          f'GPU preflight rejected candidate: rc={preflight.returncode} '
+                          f'model={model!r} nvdec_pass={"PREFLIGHT_NVDEC=PASS" in preflight.stdout}'
+                      )
+                  machine = pod_info.get('machine') or {}
+                  gpu_obj = pod_info.get('gpu') or {}
+                  gpu_type = (
+                      gpu_obj.get('displayName')
+                      or (machine.get('gpuType') or {}).get('displayName')
+                      or machine.get('gpuDisplayName')
+                      or machine.get('gpuTypeId')
+                      or model
+                      or 'unknown'
+                  )
+                  cost_per_hr = pod_info.get('costPerHr')
+                  cost_str = str(cost_per_hr) if cost_per_hr is not None else 'unavailable'
+                  print(
+                      f'Candidate accepted by hard preflight: model={model!r} '
+                      f'gpu={gpu_type!r} cost_per_hr={cost_str} pod={pod_id}'
+                  )
               except Exception as exc:
                   print(f'Round {round_num}: {exc} -- deleting pod and continuing to next round.')
                   delete_pod(pod_id)
                   continue
 
-              winner = {'pod_id': pod_id, 'ip': ip, 'port': port}
+              winner = {
+                  'pod_id': pod_id,
+                  'ip': ip,
+                  'port': port,
+                  'gpu_type': gpu_type,
+                  'cost_per_hr': cost_str,
+                  'launch_time': time.strftime(
+                      '%Y-%m-%dT%H:%M:%SZ', time.gmtime(pod_created_epoch)
+                  ),
+              }
               break
 
           if winner is None:
@@ -217,6 +296,9 @@ jobs:
               output.write(f'pod_id={winner["pod_id"]}\n')
               output.write(f'ip={winner["ip"]}\n')
               output.write(f'port={winner["port"]}\n')
+              output.write(f'gpu_type={winner["gpu_type"]}\n')
+              output.write(f'cost_per_hr={winner["cost_per_hr"]}\n')
+              output.write(f'launch_time={winner["launch_time"]}\n')
           PY
 
       - name: General GPU preflight (frozen script, unmodified, informational only)
@@ -322,13 +404,16 @@ jobs:
           remote_rc=0
           $SSH "stdbuf -oL -eL /tmp/oev_zero_copy_diag_remote.sh" || remote_rc=$?
           echo "remote_exit=$remote_rc" >> "$GITHUB_OUTPUT"
-          echo "Remote diagnostic script exit: $remote_rc (non-zero is expected/non-fatal, see step summary)"
+          echo "Remote buffer-to-texture proof exit: $remote_rc"
 
       - name: Pull back logs + diagnostic dump
         if: always()
         env:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
+          GPU_TYPE: ${{ steps.launch.outputs.gpu_type }}
+          COST_PER_HR: ${{ steps.launch.outputs.cost_per_hr }}
+          LAUNCH_TIME: ${{ steps.launch.outputs.launch_time }}
         run: |
           mkdir -p diag_artifacts
           if [ -n "$IP" ] && [ -n "$PORT" ]; then
@@ -336,11 +421,41 @@ jobs:
             $SCP -r "root@$IP:/tmp/oev_run/*.log" diag_artifacts/ || true
             $SCP -r "root@$IP:/tmp/oev_run/diag_dump" diag_artifacts/ || true
             $SCP "root@$IP:/tmp/oev_run/reco_version.txt" diag_artifacts/ || true
-            $SCP "root@$IP:/tmp/oev_run/followcam_diag.mp4" diag_artifacts/ || true
-            $SCP "root@$IP:/tmp/oev_run/events_diag.jsonl" diag_artifacts/ || true
+            $SCP "root@$IP:/tmp/oev_run/Cargo.lock.resolved" diag_artifacts/ || true
+            $SCP "root@$IP:/tmp/oev_run/followcam*.mp4" diag_artifacts/ || true
+            $SCP "root@$IP:/tmp/oev_run/events*.jsonl" diag_artifacts/ || true
           fi
           echo "=== diag_summary.log ==="
           cat diag_artifacts/diag_summary.log 2>/dev/null || echo "(not present)"
+          python3 - <<'PYMETA'
+          import datetime
+          import os
+
+          launch_raw = os.environ.get('LAUNCH_TIME', '')
+          now = datetime.datetime.now(datetime.timezone.utc)
+          try:
+              launch = datetime.datetime.fromisoformat(launch_raw.replace('Z', '+00:00'))
+              duration_s = max(0.0, (now - launch).total_seconds())
+          except ValueError:
+              duration_s = 0.0
+          try:
+              rate = float(os.environ.get('COST_PER_HR', ''))
+              cost = rate * duration_s / 3600.0
+              cost_text = f'{cost:.4f}'
+          except ValueError:
+              cost_text = 'unavailable'
+          lines = [
+              f'gpu_type={os.environ.get("GPU_TYPE", "unknown")}',
+              f'cost_per_hr={os.environ.get("COST_PER_HR", "unavailable")}',
+              f'launch_time={launch_raw or "unknown"}',
+              f'metadata_time={now.isoformat()}',
+              f'pod_duration_s={duration_s:.1f}',
+              f'approx_cost_usd={cost_text}',
+          ]
+          with open('diag_artifacts/run_metadata.txt', 'w') as f:
+              f.write('\n'.join(lines) + '\n')
+          print('Run metadata: ' + ' '.join(lines))
+          PYMETA
 
       - name: Upload run artifacts
         if: always()
@@ -404,8 +519,12 @@ jobs:
       - name: Evaluate diagnostic result
         if: always()
         run: |
-          if grep -q "Diagnostic block FIRED" diag_artifacts/diag_summary.log 2>/dev/null; then
-            echo "Diagnostic evidence captured -- see diag_summary.log and diag_dump/*.raw in the artifact."
-          else
-            echo "::warning::Diagnostic block did not clearly fire -- inspect diag_artifacts/stitch.log for the actual failure point."
+          remote_exit='${{ steps.diag.outputs.remote_exit }}'
+          if [ "$remote_exit" = "0" ] \
+            && grep -q '^ZC_BUFFER_TEXTURE_PROOF=PASS$' diag_artifacts/diag_summary.log 2>/dev/null \
+            && grep -q '^ZC_BUFFER_SHORT_RENDER=COMPLETED_VISUAL_REVIEW_REQUIRED$' diag_artifacts/diag_summary.log 2>/dev/null; then
+            echo "CUDA shared-buffer to normal-texture proof passed; short MP4 captured for visual review."
+            exit 0
           fi
+          echo "::error::Buffer-to-texture proof failed (remote_exit=${remote_exit:-missing}). Inspect diag_summary.log and stitch.log."
+          exit 1

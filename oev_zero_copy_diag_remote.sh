@@ -2,37 +2,30 @@
 # OEV -- zero-copy NV12 corruption diagnostic, executed INSIDE a throwaway
 # RunPod pod (NOT the production network volume, NOT the baked image).
 #
-# Purpose: prove/disprove whether the CUDA decode -> shared-texture copy
-# in reco-io's zero-copy path ever writes real pixel data, independent of
-# anything wgpu/Vulkan does with that memory afterward. Uses the
-# diag/zero-copy-frame0-readback branch (commit 79667aac, adds ZC_EXP4 Vulkan-side src+dst readback at the real VRAM-pool copy site) of
-# JhnsonO/video-stitcher, which adds a single env-gated readback block to
-# crates/reco-io/src/zero_copy.rs -- no other behavior change.
+# Purpose: prove the option-2 production primitive with real footage:
+# NVDEC -> CUDA-VMM shared VkBuffers -> external semaphore -> Vulkan/wgpu
+# buffer-to-ordinary-texture copy. The script checks all four destination
+# planes and a byte-exact sentinel, then records a short clean stereo render.
 #
 # Fresh cargo build (~90s, proven recipe from oev_populate_volume_remote.sh)
 # -- deliberately NOT touching /runpod-volume, so this cannot desync the
 # production network-volume manifest.
 #
-# Runs `reco stitch` WITHOUT --no-zero-copy (zero-copy path active, the
-# same configuration that produced the corrupted followcam.mp4 in run
-# 31557269688) with RECO_DEBUG_DUMP_FRAME=1 and RECO_DEBUG_DUMP_DIR set,
-# so the decode thread's diagnostic block fires and dumps its readback.
+# Runs `reco stitch` WITHOUT --no-zero-copy. The first bounded invocation
+# enables the existing diagnostics; only after that proof passes does a
+# second 180-frame invocation run without sentinel mutation.
 #
 # Diagnostic only -- no production script touched, no --no-zero-copy
 # removed anywhere outside this throwaway script.
 #
 # Exit codes: 1=env sanity, 2=apt/rust setup, 3=reco-cli build,
-#             4=benchmark pack missing, 5=calibrate/field_roi,
-#             6=stitch invocation itself failed to run at all
-# (stitch exiting non-zero due to detector-setup issues downstream of
-# frame 0 is NOT fatal here -- the diagnostic evidence we need is
-# emitted before that point, so this script tees logs either way and
-# reports the diagnostic finding regardless of final stitch exit code.)
+# 4=benchmark pack/model missing, 5=calibrate/GPU environment,
+# 7=byte-exact buffer-to-texture proof failed, 8=short render failed.
 
 set -uo pipefail
 cd /tmp/oev_run || exit 1
 
-RECO_SHA="79667aace4a93275f153958d84042116b1522c08"
+RECO_SHA="acdcc61ece2f1d9bda453dea32ec3be10d34172a"
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
 MODEL_PATH="/runpod-volume/oev-runtime/models/yolo26m.onnx"
 
@@ -70,6 +63,33 @@ git clone "$RECO_REPO" /tmp/video-stitcher 2>&1 | tee -a build.log
 cd /tmp/video-stitcher || exit 3
 git checkout "$RECO_SHA" 2>&1 | tee -a build.log
 echo "video_stitcher_sha=$(git rev-parse HEAD)" | tee -a /tmp/oev_run/build.log
+
+# The Reco branch pins the unified wgpu quartet to the semaphore-enabled
+# fork. Resolve the lockfile before compiling and hard-gate all four crates.
+echo "=== update.log: cargo update -p wgpu --precise 28.0.1 ===" | tee /tmp/oev_run/update.log
+cargo update -p wgpu --precise 28.0.1 2>&1 | tee -a /tmp/oev_run/update.log
+update_rc=${PIPESTATUS[0]}
+if [ "$update_rc" -ne 0 ]; then
+  echo "FATAL: cargo update failed (exit $update_rc)" | tee -a /tmp/oev_run/update.log
+  exit 3
+fi
+
+EXPECTED_WGPU_REV="c8b6f2f00895210857f77f2a10fc1a32a80d5148"
+for CRATE in wgpu wgpu-core wgpu-hal wgpu-types; do
+  COUNT=$(awk -v name="\"$CRATE\"" '/^\[\[package\]\]$/{p=0} $0 ~ ("name = " name) {p=1} p' Cargo.lock | grep -c '^name =')
+  SOURCE=$(awk -v name="\"$CRATE\"" '/^\[\[package\]\]$/{p=0} $0 ~ ("name = " name) {p=1} p && /^source/{print; exit}' Cargo.lock)
+  echo "${CRATE}_instance_count=$COUNT" | tee -a /tmp/oev_run/update.log
+  echo "${CRATE}_source_line=$SOURCE" | tee -a /tmp/oev_run/update.log
+  if [ "$COUNT" -ne 1 ] || ! echo "$SOURCE" | grep -q "$EXPECTED_WGPU_REV"; then
+    echo "FATAL: $CRATE is not uniquely pinned to the expected wgpu fork" | tee -a /tmp/oev_run/update.log
+    exit 3
+  fi
+done
+echo "WGPU RESOLUTION GATE PASS: $EXPECTED_WGPU_REV" | tee -a /tmp/oev_run/update.log
+# Preserve Cargo's exact resolved lockfile for the clean production branch.
+# This is an output artifact only; the diagnostic Reco checkout stays on the
+# throwaway pod and no production pin is changed here.
+cp Cargo.lock /tmp/oev_run/Cargo.lock.resolved
 
 cargo build --release -p reco-cli --features cuda 2>&1 | tee -a build.log
 build_rc=${PIPESTATUS[0]}
@@ -208,23 +228,127 @@ STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam_diag.mp4
   --model "$MODEL_PATH"
   --tracking field
   --panner-preset broadcast
-  --lookahead 1.5
+  --lookahead 0.1
   --detection-interval 1
   --events events_diag.jsonl
-  --width 1920 --height 1080)
+  --width 1920 --height 1080
+  --max-frames 5)
 echo "reco stitch args (zero-copy path, --no-zero-copy deliberately omitted): ${STITCH_ARGS[*]}" | tee -a stitch.log
 RUST_LOG=warn,reco_core=info stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
 stitch_rc=${PIPESTATUS[0]}
 echo "timing_render_end=$(ts)" | tee -a timing.log
-echo "reco stitch exit code: $stitch_rc (non-zero is EXPECTED/ACCEPTABLE for this diagnostic -- the readback evidence we need is emitted from the decode thread on frame 0, before/independent of whatever happens later in the job)" | tee -a stitch.log
+echo "reco stitch exit code: $stitch_rc (byte-level evidence below remains authoritative; the clean short render must still pass afterward)" | tee -a stitch.log
 
 echo "=== DIAG SUMMARY ===" | tee diag_summary.log
 if grep -q "DIAG frame0 Y-plane readback" stitch.log; then
   grep "DIAG frame0 Y-plane readback\|DIAG dumped raw Y plane\|DIAG readback failed" stitch.log | tee -a diag_summary.log
-  echo "Diagnostic block FIRED -- see readback stats above and diag_dump/*.raw for the actual bytes." | tee -a diag_summary.log
+  echo "CUDA-side diagnostic block FIRED." | tee -a diag_summary.log
 else
-  echo "Diagnostic block DID NOT FIRE -- decode thread never reached frame 0 with RECO_DEBUG_DUMP_FRAME set (check stitch.log for an earlier fatal error, e.g. decoder open failure)." | tee -a diag_summary.log
+  echo "CUDA-side diagnostic block DID NOT FIRE." | tee -a diag_summary.log
 fi
 
-echo "=== All stages completed (diagnostic run -- non-zero stitch exit is not itself a failure) ==="
+proof_ok=1
+if ! grep -q "ZC_BUFFER_COPY: synchronized shared VkBuffer -> normal VramPool textures complete" stitch.log; then
+  echo "FAIL: synchronized buffer-to-texture completion marker missing" | tee -a diag_summary.log
+  proof_ok=0
+fi
+
+DST_LINES=$(grep "ZC_EXP4:.*_vram_dst.*nonzero_bytes" stitch.log || true)
+DST_COUNT=$(printf '%s\n' "$DST_LINES" | grep -c "ZC_EXP4:" || true)
+echo "destination_readback_count=$DST_COUNT (expected 4)" | tee -a diag_summary.log
+printf '%s\n' "$DST_LINES" | tee -a diag_summary.log
+if [ "$DST_COUNT" -ne 4 ]; then
+  echo "FAIL: did not capture all four normal destination textures" | tee -a diag_summary.log
+  proof_ok=0
+fi
+if printf '%s\n' "$DST_LINES" | grep -qE 'nonzero_bytes=0/'; then
+  echo "FAIL: at least one normal destination texture is all-zero" | tee -a diag_summary.log
+  proof_ok=0
+fi
+
+python3 - <<'PYBUF' | tee -a diag_summary.log
+import pathlib
+import re
+
+log = pathlib.Path('/tmp/oev_run/stitch.log').read_text(errors='replace')
+match = re.search(
+    r'ZC_EXP7: wrote 3x1024B sentinel .* byte_offsets=\[(\d+), (\d+), (\d+)\] y_pitch=(\d+) height=(\d+)',
+    log,
+)
+if not match:
+    print('BUFFER_TEXTURE_SENTINEL=FAIL (sentinel write log missing)')
+    raise SystemExit(1)
+
+offsets = [int(match.group(i)) for i in (1, 2, 3)]
+pitch = int(match.group(4))
+expected = bytes((j & 0xFF) ^ 0xC3 for j in range(1024))
+dump_dir = pathlib.Path('/tmp/oev_run/diag_dump')
+
+def exact(path, tag):
+    if not path.exists():
+        print(f'{tag}=FAIL (missing {path.name})')
+        return False
+    data = path.read_bytes()
+    ok = True
+    for offset in offsets:
+        row, col = divmod(offset, pitch)
+        tight_offset = row * 3840 + col
+        same = data[tight_offset:tight_offset + 1024] == expected
+        print(f'{tag} offset={offset} byte_exact={same}')
+        ok &= same
+    return ok
+
+cuda_ok = exact(dump_dir / 'left_frame0_y_3840x2160.raw', 'CUDA_SENTINEL')
+texture_ok = exact(dump_dir / 'left_y_vram_dst_3840x2160.raw', 'NORMAL_TEXTURE_SENTINEL')
+print(f'BUFFER_TEXTURE_SENTINEL={"PASS" if cuda_ok and texture_ok else "FAIL"}')
+raise SystemExit(0 if cuda_ok and texture_ok else 1)
+PYBUF
+sentinel_rc=${PIPESTATUS[0]}
+if [ "$sentinel_rc" -ne 0 ]; then
+  proof_ok=0
+fi
+
+if [ "$proof_ok" -eq 1 ]; then
+  echo "ZC_BUFFER_TEXTURE_PROOF=PASS" | tee -a diag_summary.log
+else
+  echo "ZC_BUFFER_TEXTURE_PROOF=FAIL" | tee -a diag_summary.log
+  exit 7
+fi
+
+# The byte-exact primitive has passed. Continue in the same already-paid-for
+# pod with a short, clean stereo render (no diagnostic sentinel mutation) so
+# the resulting MP4 can be inspected before any production integration.
+unset RECO_DEBUG_DUMP_FRAME
+unset RECO_DEBUG_DUMP_DIR
+echo "=== visual.log: short stereo render after byte-exact proof ===" | tee visual.log
+echo "timing_visual_start=$(ts)" | tee -a timing.log
+VISUAL_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam_buffer_visual.mp4
+  --model "$MODEL_PATH"
+  --tracking field
+  --panner-preset broadcast
+  --lookahead 0.1
+  --detection-interval 1
+  --events events_buffer_visual.jsonl
+  --width 1920 --height 1080
+  --max-frames 180)
+echo "reco stitch args (short shared-buffer render): ${VISUAL_ARGS[*]}" | tee -a visual.log
+RUST_LOG=warn,reco_core=info stdbuf -oL -eL "$RECO_BIN" "${VISUAL_ARGS[@]}" 2>&1 | tee -a visual.log
+visual_rc=${PIPESTATUS[0]}
+echo "timing_visual_end=$(ts)" | tee -a timing.log
+echo "short stereo render exit code: $visual_rc" | tee -a visual.log
+
+if [ "$visual_rc" -ne 0 ] || [ ! -s followcam_buffer_visual.mp4 ]; then
+  echo "ZC_BUFFER_SHORT_RENDER=FAIL (rc=$visual_rc output_present=$([ -s followcam_buffer_visual.mp4 ] && echo yes || echo no))" | tee -a diag_summary.log
+  exit 8
+fi
+
+if command -v ffprobe >/dev/null 2>&1; then
+  ffprobe -v error -select_streams v:0 \
+    -show_entries stream=codec_name,width,height,nb_frames,duration \
+    -of default=noprint_wrappers=1 followcam_buffer_visual.mp4 \
+    | tee -a diag_summary.log
+fi
+grep -E "Processed [0-9]+ frames|GpuResident detection|CUDAExecutionProvider|TensorRT" visual.log \
+  | tail -20 | tee -a diag_summary.log || true
+echo "ZC_BUFFER_SHORT_RENDER=COMPLETED_VISUAL_REVIEW_REQUIRED" | tee -a diag_summary.log
 exit 0
