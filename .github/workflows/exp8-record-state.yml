@@ -1,0 +1,75 @@
+name: EXP8 record verified state
+
+on:
+  push:
+    branches:
+      - diag/zc-exp8-image-alloc-size
+    paths:
+      - '.github/workflows/exp8-record-state.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Prepend verified EXP8 result
+        env:
+          EXP8_ENTRY_B64: IyMgT0VWIHplcm8tY29weSBOVjEyIGNvcnJ1cHRpb24g4oCUIEVYUDggYWxsb2NhdGlvbi1zaXplIEEvQiBGQUxTSUZJRUQ7IHN0b3AtbG9zcyByZWFjaGVkICgxNSBBdWcgMjAyNikKCi**Question tested:** whether the failing CUDA-VMM -> imported linear `VkImage` path was caused by passing CUDA's granularity-rounded allocation size into `VkMemoryAllocateInfo::allocationSize` instead of Vulkan's exact `memRequirements.size`.
+
+**Single-variable Reco change:** `JhnsonO/video-stitcher@58542bbb9b91560e533ccc846a5eb3bd6e9d9db4` on `diag/zc-exp8-image-alloc-size`, based directly on Avenue-2 `e810a04ee29452b3cd6647cc98875033a2e0d1a0`. `crates/reco-core/src/interop/vulkan.rs` changed exactly one line: `.allocation_size(shared_mem.alloc_size as u64)` -> `.allocation_size(mem_reqs.size)`. No other Reco behaviour changed.
+
+**Valid real-hardware result:** ffa run `31876438503`, job `94992772328`, branch `diag/zc-exp8-image-alloc-size`, head `4ad4d71e3aba8b4da923a0021570da527986d4ae`, artifact `9244919570`. NVIDIA GeForce RTX 4090, driver `570.195.03`. The hardened launcher required `PREFLIGHT_VULKAN=PASS`, `PREFLIGHT_CUDA_INIT=PASS`, `PREFLIGHT_NVDEC=PASS`, and `PREFLIGHT_ORT_CUDA=PASS` before accepting the pod. Reco `58542bbb...` then built successfully and the real GoPro fixture decoded frame 0.
+
+**Controls remained valid:** native Vulkan/wgpu readback control passed byte-exact (`min=0 max=255 mean=127.50 nonzero=16320/16384`), and CUDA frame-0 Y/UV data remained correct (`left Y mean=89.51`, `right Y mean=76.65`). The deterministic CUDA sentinel at byte offsets `0`, `4,147,200`, and `8,290,560` was present byte-exact in CUDA at all three offsets.
+
+**Decisive Vulkan result:** after using Vulkan's exact `memRequirements.size` for the imported image allocation, every imported source plane still read back all-zero:
+- `left_y_vram_src`: `0/8,294,400` non-zero bytes
+- `left_uv_vram_src`: `0/4,147,200`
+- `right_y_vram_src`: all-zero
+- `right_uv_vram_src`: all-zero
+The Vulkan sentinel readback was also absent at all three tested offsets (`0/1024` non-zero each).
+
+**Conclusion:** allocation-size mismatch is falsified. Exact Vulkan allocation sizing does not repair CUDA visibility through the imported linear `VkImage`.
+
+**Infrastructure notes:** the earlier compile-only run `31874496979` timed out during `cargo update` before Rust compilation and was not hypothesis evidence. The first two real-fixture attempts under run `31875839603` landed on hosts with `PREFLIGHT_NVDEC=FAIL` / `CUDA_ERROR_NO_DEVICE`, produced zero frames, and were correctly treated as inconclusive. The diagnostic launcher was then hardened on the branch to reject NVDEC-broken hosts before downloads/build; attempt 3 is the valid result above.
+
+**Standing evidence boundary:** CUDA producer data is correct; readback is correct; wgpu initial-state/layout discard is ruled out; CUDA->Vulkan semaphore synchronization is ruled out; generic CUDA-VMM -> Vulkan OPAQUE_FD sharing works byte-exact through a `VkBuffer`; the exact external image formats are reported importable with no dedicated-allocation requirement; and exact Vulkan allocation sizing still fails. The unresolved defect is therefore specific to the CUDA-created external allocation being used as an imported linear `VkImage` (or equivalent image-specific representation/binding semantics).
+
+**Stop-loss / next architecture:** do not continue parameter-by-parameter tweaking of the current imported-`VkImage` path without new external evidence. The next bounded prototype should use the path already proven to alias correctly: CUDA/NVDEC -> shared external `VkBuffer` Y/UV planes -> CUDA signals external semaphore -> Vulkan waits -> GPU `VkBuffer`->normal Vulkan/wgpu texture copy -> existing render/tracking pipeline. First prove one Y plane byte-exact end-to-end on a diagnostic branch; then test a short real GoPro render before integrating Y+UV/double-buffering.
+
+**Production status:** no EXP8 Reco change is merged to production.
+
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, os
+          from pathlib import Path
+          p = Path('docs/ai-project-state.md')
+          s = p.read_text()
+          entry = base64.b64decode(os.environ['EXP8_ENTRY_B64']).decode()
+          marker = '## OEV zero-copy NV12 corruption — EXP8 allocation-size A/B FALSIFIED; stop-loss reached'
+          if marker not in s:
+              p.write_text(entry + s)
+          PY
+          git diff --check
+
+      - name: Commit verified state to main
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- docs/ai-project-state.md; then
+            echo 'No state change required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/ai-project-state.md
+          git commit -m 'docs: record EXP8 allocation-size falsification'
+          git push origin HEAD:main
