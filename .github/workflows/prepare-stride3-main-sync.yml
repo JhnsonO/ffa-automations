@@ -1,0 +1,68 @@
+name: Prepare stride3 main sync
+
+on:
+  push:
+    branches: [feature/frame-stride-testing]
+    paths:
+      - .github/workflows/prepare-stride3-main-sync.yml
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - name: Generate exact patched file blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64
+
+          old='f27cbb6d0d65fcf9a11fb4d82d119ae214695318'
+          new='b2fc622f4b07dfa0c43e3ad9a96ac85b4f450085'
+          workflow_paths=[
+              '.github/workflows/oev-runpod-followcam.yml',
+              '.github/workflows/oev-runpod-sample-baseline.yml',
+              '.github/workflows/oev-runpod-followcam-ab-yolo26.yml',
+              '.github/workflows/oev-populate-volume.yml',
+          ]
+          script_paths=[
+              'runpod_followcam_remote.sh',
+              'runpod_sample_baseline_remote.sh',
+              'runpod_sample_baseline_yolo26_remote.sh',
+          ]
+          for path in workflow_paths:
+              p=Path(path)
+              t=p.read_text()
+              count=t.count(old)
+              if count < 1:
+                  raise SystemExit(f'{path}: expected old Reco SHA not found')
+              t=t.replace(old,new)
+              if old in t or new not in t:
+                  raise SystemExit(f'{path}: SHA replacement validation failed')
+              p.write_text(t)
+          for path in script_paths:
+              p=Path(path)
+              t=p.read_text()
+              if '--frame-stride 3' not in t:
+                  needle='  --detection-interval 1\n'
+                  if needle not in t:
+                      raise SystemExit(f'{path}: stitch detection-interval anchor missing')
+                  t=t.replace(needle, needle+'  --frame-stride 3\n', 1)
+              if '--frame-stride 3' not in t:
+                  raise SystemExit(f'{path}: stride insertion validation failed')
+              p.write_text(t)
+          for path in script_paths:
+              import subprocess
+              subprocess.run(['bash','-n',path], check=True)
+          print('VALIDATION=PASS')
+          for path in workflow_paths+script_paths:
+              data=Path(path).read_bytes()
+              print('FILE_B64 '+path+' '+base64.b64encode(data).decode())
+          PY
