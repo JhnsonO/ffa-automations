@@ -1,41 +1,12 @@
-name: OEV — wgpu-hal #9461 Lockfile-Update Resolution Gate (throwaway pod, one-shot, ticket 1d)
+name: OEV — Clean Shared-Buffer Integration Compile Gate (throwaway pod, one-shot)
 
-# Compile/integration proof ONLY. Does not touch any frozen file, the
-# production network volumes' reco binary/manifest, the baked GHCR image,
-# or any --no-zero-copy production setting. No CUDA semaphore code, no
-# zero-copy behavioral change, no render run, no GoPro processing, no
-# production merge, no fork source/version changes.
+# Compile/integration proof ONLY. It checks the clean video-stitcher branch's
+# exact file scope, committed lockfile, unified semaphore-enabled wgpu fork,
+# formatting, release CUDA build, and NV12/P010 pitch test. It does not attach
+# a network volume, process footage, alter a production pin, or merge code.
 #
-# 1c (run 31813040183) kept the quartet [patch.crates-io] (Cargo.toml
-# unchanged since, commit 9df865dc) but `cargo check` alone left the
-# top-level `wgpu` crate resolved from crates.io 28.0.0 (unpatched)
-# while wgpu-core/wgpu-hal resolved from the git fork 28.0.1 -- Cargo
-# warned "patch `wgpu v28.0.1` was not used in the crate graph", and
-# that mismatched pairing produced ~40 type errors.
-#
-# Cargo's own unused-patch diagnostic attributes this to Cargo.lock
-# already having a version selected that differs from the patch
-# candidate, fixable via `cargo update`. This run tests exactly that --
-# `cargo update -p wgpu --precise 28.0.1` against the SAME quartet
-# patch, SAME fork commit, NO fork edits -- with a hard resolution gate
-# BEFORE compiling: if `cargo tree` doesn't show all four wgpu-family
-# crates unified on the fork afterward, the remote script stops without
-# running cargo check at all.
-#
-# Ticket: 1d (lockfile-resolution experiment, hard gate before compile)
-# -- see docs/ai-project-state.md, "zero-copy NV12 corruption" thread.
-#
-# Acceptance criteria:
-#   1. wgpu itself resolves from JhnsonO/wgpu@62e15ce1, not crates.io.
-#   2. wgpu-core, wgpu-hal, wgpu-types resolve from the same git rev.
-#   3. No crates.io/git split of the wgpu-family crates (cargo tree -d).
-#   4. Only if 1-3 hold: cargo check exit code is exactly 0.
-#   5. This workflow's own conclusion is driven by the remote script's
-#      real exit code -- not a log-file grep that can silently no-op.
-#
-# Cost guard: no network volume attached, pod terminated unconditionally
-# in an always() step. Approved budget ~$0.50 at ~$0.74/hr (RTX 4090
-# preferred tier) -- 1b+1c together cost ~$0.10, well under budget.
+# The pod is terminated unconditionally in an always() step. This gate must
+# pass before the bounded real-frame integration render is dispatched.
 
 on:
   workflow_dispatch:
@@ -43,14 +14,14 @@ on:
     branches:
       - agent/zc-buffer-copy-proof
     paths:
-      - triggers/zc-buffer-compile-1
+      - triggers/zc-buffer-clean-compile-1
 
 permissions:
   contents: read
 
 jobs:
   wgpu-hal-compile-proof:
-    name: wgpu-hal Backport Compile Proof (RunPod, throwaway pod)
+    name: Clean Shared-Buffer Compile Proof (RunPod, throwaway pod)
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -339,7 +310,9 @@ jobs:
           REMOTE_EXIT: ${{ steps.probe.outputs.remote_exit }}
         run: |
           echo "Remote script exit code (authoritative): ${REMOTE_EXIT:-unset}"
-          if [ "${REMOTE_EXIT:-1}" = "0" ] && grep -q "cargo check: PASS" proof_artifacts/diag_summary.log 2>/dev/null; then
+          if [ "${REMOTE_EXIT:-1}" = "0" ] \
+            && grep -q "cargo check: PASS" proof_artifacts/diag_summary.log 2>/dev/null \
+            && grep -q "NV12/P010 pitch test: PASS" proof_artifacts/diag_summary.log 2>/dev/null; then
             echo "Compile proof PASSED -- see diag_summary.log and resolution.log in the artifact."
           else
             echo "::error::Compile proof FAILED (remote_exit=${REMOTE_EXIT:-unset}) -- inspect proof_artifacts/build.log and resolution.log for the failure point."
