@@ -57,5 +57,5 @@ Quality basis remains the earlier same-sample stride matrix (`31904505904`): str
 - Before treating the feature as final visual sign-off, retain one full-rate stride-3 artifact on the next healthy RunPod allocation and inspect the interpolated output. This is an evidence-quality follow-up, not a known Reco crash/correctness failure.
 - No production/main merge performed in this ticket without explicit owner approval.
 '''
-p.write_text(t.rstrip()+section+'\n')
+p.write_text(t.rstrip()+section.rstrip()+'\n')
 print('appended production stride state section')
