@@ -1,0 +1,45 @@
+name: EXP8 — pin Avenue-2 fixture to allocation-size SHA
+
+on:
+  push:
+    branches:
+      - diag/zc-exp8-image-alloc-size
+    paths:
+      - '.github/workflows/exp8-pin-fixture.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: diag/zc-exp8-image-alloc-size
+      - name: Change only Reco SHA in real-fixture remote script
+        run: |
+          set -euo pipefail
+          FILE=oev_zero_copy_diag_remote.sh
+          python3 - "$FILE" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text()
+          old='RECO_SHA="e810a04ee29452b3cd6647cc98875033a2e0d1a0"'
+          new='RECO_SHA="58542bbb9b91560e533ccc846a5eb3bd6e9d9db4"'
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one Avenue-2 RECO_SHA pin, found {s.count(old)}')
+          p.write_text(s.replace(old,new,1))
+          PY
+          git diff --check
+          test "$(git diff --numstat -- "$FILE" | awk '{print $1+$2}')" -eq 2
+          git diff -- "$FILE"
+      - name: Commit branch-only fixture pin
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add oev_zero_copy_diag_remote.sh
+          git commit -m 'EXP8: replay Avenue-2 fixture at allocation-size SHA'
+          git push origin HEAD:diag/zc-exp8-image-alloc-size
