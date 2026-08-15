@@ -1,3 +1,19 @@
+## OEV zero-copy NV12 corruption — EXP8 allocation-size A/B FALSIFIED; stop-loss reached (15 Aug 2026)
+
+**Single-variable test:** `video-stitcher@58542bbb9b91560e533ccc846a5eb3bd6e9d9db4` (branch `diag/zc-exp8-image-alloc-size`, based directly on Avenue-2 `e810a04e`) changes only Vulkan image import `allocation_size(shared_mem.alloc_size as u64)` -> `allocation_size(mem_reqs.size)`.
+
+**Valid hardware run:** ffa run `31876438503`, job `94992772328`, artifact `9244919570`, RTX 4090 / driver `570.195.03`. Hardened selection required Vulkan, CUDA init, NVDEC and ORT CUDA all PASS before accepting the pod. Reco built successfully and the real GoPro fixture decoded frame 0.
+
+**Controls:** CUDA frame-0 data remained correct (`left Y mean=89.51`, `right Y mean=76.65`). The deterministic CUDA sentinel at offsets `0i`, `4,147,200`, `8,290,560` was present byte-exact in CUDA. The native Vulkan/wgpu readback control also passed byte-exact.
+
+**Decisive result:** despite exact Vulkan allocation sizing, all imported image source planes remained all-zero (`left_y_vram_src 0/8,294,400`, `left_uv_vram_src 0/4,147,200`, right Y/UV similarly zero), and Vulkan saw `0/1024` sentinel bytes at all three offsets. **Allocation-size mismatch is falsified.**
+
+**Infra notes:** compile-only run `31874496979` timed out during `cargo update` before Rust compilation and is not hypothesis evidence. The first two fixture attempts under `31875839603` had broken NVDEC (`CUDA_ERROR_NO_DEVICE`) and were inconclusive. The branch-only launcher was then hardened to reject NVDEC-broken hosts before download/build; attempt 3 above is the valid result.
+
+**Evidence boundary / stop-loss:** CUDA producer, readback, wgpu initial-state/layout, semaphore sync, generic CUDA-VMM -> Vulkan OPAQUE_FD sharing (VkBuffer), external-image capability/dedicated-allocation checks, and allocation sizing have all been addressed. The unresolved defect is image-specific to the CUDA-created allocation being used as an imported linear `VkImage`. Stop parameter-by-parameter tweaking of that path absent new external evidence.
+
+**Next bounded architecture:** CUDA/NVDEC -> shared external `VkBuffer` Y/UV -> CUDA signals external semaphore -> Vulkan waits -> GPU buffer-to-normal-texture copy -> existing render/tracking. First prove one Y plane byte-exact on a diagnostic branch, then a short real GoPro render before integrating Y+UV/double-buffering. No EXP8 Reco change is merged to production.
+
 ## OEV zero-copy NV12 corruption — EXP7: generic CUDA↔Vulkan OPAQUE_FD sharing PASSES; failure is image-specific — real hardware, decisive (15 Aug 2026)
 
 **Correction to the immediately-following Avenue-2 entry:** run `31854089581` proved that the synchronized Vulkan **image** path did not observe a CUDA-written sentinel that CUDA itself read back byte-exact. It did **not** prove that CUDA and Vulkan cannot share the same backing allocation in general. EXP7 directly tests CUDA-VMM-export -> Vulkan-import with a `VkBuffer` and passes byte-exact, so the proven failure boundary is now specifically the imported **VkImage** path.
