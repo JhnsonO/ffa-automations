@@ -32,7 +32,7 @@
 set -uo pipefail
 cd /tmp/oev_run || exit 1
 
-RECO_SHA="e810a04ee29452b3cd6647cc98875033a2e0d1a0"
+RECO_SHA="9059470f01065d5336af8c94bac27a860156dfec"
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
 MODEL_PATH="/runpod-volume/oev-runtime/models/yolo26m.onnx"
 
@@ -240,9 +240,15 @@ if [ $? -ne 0 ]; then
 fi
 echo "timing_calibrate_end=$(ts)" | tee -a timing.log
 
-echo "=== stitch.log: reco stitch (ZERO-COPY ACTIVE, no --no-zero-copy, diagnostic readback armed) ===" | tee stitch.log
+echo "=== stitch.log: EXP7 external-memory diagnostic (ZERO-COPY ACTIVE; abort-before-decode armed) ===" | tee stitch.log
 echo "timing_render_start=$(ts)" | tee -a timing.log
 mkdir -p /tmp/oev_run/diag_dump
+# EXP7 master gate + cost guard: run the synchronized VkBuffer control,
+# query Y+UV external-image capabilities/requirements, then exit before
+# decode/render/encode. Old frame-dump env remains harmless but should
+# not fire because EXP7 exits during shared-texture setup.
+export ZC_EXP7=1
+export ZC_EXP7_ABORT_AFTER=2
 export RECO_DEBUG_DUMP_FRAME=1
 export RECO_DEBUG_DUMP_DIR=/tmp/oev_run/diag_dump
 STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam_diag.mp4
@@ -257,91 +263,58 @@ echo "reco stitch args (zero-copy path, --no-zero-copy deliberately omitted): ${
 RUST_LOG=warn,reco_core=info stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
 stitch_rc=${PIPESTATUS[0]}
 echo "timing_render_end=$(ts)" | tee -a timing.log
-echo "reco stitch exit code: $stitch_rc (non-zero is EXPECTED/ACCEPTABLE for this diagnostic -- the readback evidence we need is emitted from the decode thread on frame 0, before/independent of whatever happens later in the job)" | tee -a stitch.log
+echo "reco stitch exit code: $stitch_rc (EXP7 should exit cleanly during shared-texture setup after two image probes; no decode is expected)" | tee -a stitch.log
 
 echo "=== DIAG SUMMARY ===" | tee diag_summary.log
-if grep -q "DIAG frame0 Y-plane readback" stitch.log; then
-  grep "DIAG frame0 Y-plane readback\|DIAG dumped raw Y plane\|DIAG readback failed" stitch.log | tee -a diag_summary.log
-  echo "CUDA-side diagnostic block FIRED (already-known-good baseline)." | tee -a diag_summary.log
-else
-  echo "CUDA-side diagnostic block DID NOT FIRE -- decode thread never reached frame 0 with RECO_DEBUG_DUMP_FRAME set (check stitch.log for an earlier fatal error, e.g. decoder open failure)." | tee -a diag_summary.log
-fi
-
-echo "--- ZC_EXP5: one-time layout transition (should fire 8x, once per shared texture, at setup, before any decode) ---" | tee -a diag_summary.log
-ZC_EXP5_COUNT=$(grep -c "ZC_EXP5: transitioned imported VkImage" stitch.log || true)
-echo "ZC_EXP5 transition fired ${ZC_EXP5_COUNT}x (expected 8: left/right x Y/UV x double-buffer)" | tee -a diag_summary.log
-grep "ZC_EXP5" stitch.log | tee -a diag_summary.log || echo "(no ZC_EXP5 lines found)" | tee -a diag_summary.log
-
-echo "--- ZC_EXP4: Vulkan-side readback -- THE decisive evidence for this experiment ---" | tee -a diag_summary.log
-if grep -q "ZC_EXP4:" stitch.log; then
-  grep "ZC_EXP4:" stitch.log | tee -a diag_summary.log
-  # Decisive check: any *_vram_src line (the CUDA-shared source textures,
-  # read via Vulkan's own copy path) with nonzero_bytes=0/... means the
-  # hypothesis under test did NOT hold for that texture. Report per-plane,
-  # don't collapse to a single pass/fail -- left/right or Y/UV could differ.
-  echo "--- per-plane zero/nonzero verdict (source planes only, vram_src) ---" | tee -a diag_summary.log
-  grep "ZC_EXP4:.*vram_src.*nonzero_bytes" stitch.log | while read -r line; do
-    if echo "$line" | grep -qE "nonzero_bytes=0/"; then
-      echo "STILL ZERO: $line" | tee -a diag_summary.log
-    else
-      echo "NONZERO (hypothesis supported): $line" | tee -a diag_summary.log
-    fi
-  done
-else
-  echo "ZC_EXP4 block DID NOT FIRE -- no readback evidence at all for this run. Check stitch.log for a fatal error before frame 0, or confirm RECO_DEBUG_DUMP_FRAME propagated." | tee -a diag_summary.log
-fi
-
-echo "--- ZC_EXP6: native-texture readback CONTROL (avenue 1 -- validates the measurement itself) ---" | tee -a diag_summary.log
-grep "ZC_EXP6\|zc_exp6_control" stitch.log | tee -a diag_summary.log || echo "(no ZC_EXP6 lines found -- control did not fire)" | tee -a diag_summary.log
-python3 - <<'PYV' | tee -a diag_summary.log
-import pathlib
-d = pathlib.Path('/tmp/oev_run/diag_dump')
-expected = bytes(i % 256 for i in range(256 * 64))
-for name in ('zc_exp6_control_native_256x64.raw', 'zc_exp6_control_copy_dst_256x64.raw'):
-    p = d / name
-    if not p.exists():
-        print(f'ZC_EXP6 VERDICT: {name} MISSING (dump not written)')
-        continue
-    got = p.read_bytes()
-    if got == expected:
-        print(f'ZC_EXP6 VERDICT: {name} PASS byte-exact ({len(got)} bytes)')
-    else:
-        diffs = [i for i in range(min(len(got), len(expected))) if got[i] != expected[i]][:8]
-        print(f'ZC_EXP6 VERDICT: {name} FAIL len={len(got)} first_diff_offsets={diffs} got={[got[i] for i in diffs]} expected={[expected[i] for i in diffs]}')
-PYV
-
-echo "--- ZC_EXP7: CUDA->Vulkan physical-aliasing sentinel (avenue 2 -- THE decisive evidence this run) ---" | tee -a diag_summary.log
-grep "ZC_EXP7" stitch.log | tee -a diag_summary.log || echo "(no ZC_EXP7 lines found -- sentinel did not fire)" | tee -a diag_summary.log
+echo "--- EXP7 external-memory capability + synchronized VkBuffer alias control ---" | tee -a diag_summary.log
+grep -E "ZC_EXP7_(API|IMG|REQ2|BUF_CAPS|BUF_SYNC|BUF_ALIAS|BUF_ALIAS_RESULT|COMPLETE)" stitch.log \
+  | tee -a diag_summary.log || true
 grep "ZC_DIAG" stitch.log | tee -a diag_summary.log || true
-python3 - <<'PYS' | tee -a diag_summary.log
-import pathlib, re
-log = pathlib.Path('/tmp/oev_run/stitch.log').read_text(errors='replace')
-m = re.search(r'ZC_EXP7: wrote 3x1024B sentinel .* byte_offsets=\[(\d+), (\d+), (\d+)\] y_pitch=(\d+) height=(\d+)', log)
-if not m:
-    print('ZC_EXP7 VERDICT: sentinel log line not found -- cannot verify')
-    raise SystemExit(0)
-offsets = [int(m.group(i)) for i in (1, 2, 3)]
-pitch = int(m.group(4)); h = int(m.group(5))
-expected = bytes((j & 0xFF) ^ 0xC3 for j in range(1024))
-d = pathlib.Path('/tmp/oev_run/diag_dump')
-W = 3840  # dump row width for the Y plane (bytes_per_row of the readback/dtoh dumps)
-def check(fname, tag):
-    p = d / fname
-    if not p.exists():
-        print(f'ZC_EXP7 {tag}: {fname} MISSING'); return
-    data = p.read_bytes()
-    for off in offsets:
-        row, col = off // pitch, off % pitch
-        do = row * W + col
-        got = data[do:do + 1024]
-        if got == expected:
-            print(f'ZC_EXP7 {tag}: offset {off} (row {row}) SENTINEL PRESENT byte-exact')
-        else:
-            nz = sum(1 for b in got if b)
-            print(f'ZC_EXP7 {tag}: offset {off} (row {row}) sentinel ABSENT -- first16={list(got[:16])} nonzero={nz}/1024')
-check('left_frame0_y_3840x2160.raw', 'CUDA-side ground truth')
-check('left_y_vram_src_3840x2160.raw', 'VULKAN-side readback')
-PYS
 
-echo "=== All stages completed (diagnostic run -- non-zero stitch exit is not itself a failure) ===" | tee -a diag_summary.log
+BUFFER_RESULT=$(grep -oE 'ZC_EXP7_BUF_ALIAS_RESULT=[A-Z_]+' stitch.log | tail -1 | cut -d= -f2 || true)
+IMG_COUNT=$(grep -c 'ZC_EXP7_IMG:' stitch.log || true)
+REQ2_COUNT=$(grep -c 'ZC_EXP7_REQ2:' stitch.log || true)
+COMPLETE_COUNT=$(grep -c 'ZC_EXP7_COMPLETE:' stitch.log || true)
+
+echo "EXP7 evidence counts: image_caps=$IMG_COUNT req2=$REQ2_COUNT complete=$COMPLETE_COUNT buffer_result=${BUFFER_RESULT:-MISSING}" | tee -a diag_summary.log
+
+if [ "$COMPLETE_COUNT" -lt 1 ]; then
+  echo "EXP7_HARNESS_VERDICT=INCOMPLETE -- abort-before-decode completion marker missing." | tee -a diag_summary.log
+  exit 21
+fi
+if [ "$IMG_COUNT" -lt 2 ] || [ "$REQ2_COUNT" -lt 2 ]; then
+  echo "EXP7_HARNESS_VERDICT=INCOMPLETE -- expected Y+UV image capability/requirements evidence not captured." | tee -a diag_summary.log
+  exit 22
+fi
+if [ -z "$BUFFER_RESULT" ]; then
+  echo "EXP7_HARNESS_VERDICT=INCOMPLETE -- no buffer alias result." | tee -a diag_summary.log
+  exit 23
+fi
+
+case "$BUFFER_RESULT" in
+  PASS)
+    echo "EXP7_CLASSIFICATION=A_BUFFER_PASS -- generic CUDA-VMM -> Vulkan OPAQUE_FD buffer sharing works; focus next on image-specific external-memory semantics if the image path remains broken." | tee -a diag_summary.log
+    ;;
+  FAIL)
+    echo "EXP7_CLASSIFICATION=B_BUFFER_FAIL -- synchronized Vulkan buffer read did not observe the CUDA sentinel despite CUDA ground truth; broader external-memory path issue remains." | tee -a diag_summary.log
+    ;;
+  CONFIG_UNSUPPORTED|SKIPPED_NO_VK11)
+    echo "EXP7_CLASSIFICATION=CONTROL_NOT_RUN -- buffer configuration/API gate prevented a valid alias test; do not classify aliasing." | tee -a diag_summary.log
+    ;;
+  HARNESS_ERROR)
+    echo "EXP7_CLASSIFICATION=HARNESS_ERROR -- buffer control did not validly exercise the hypothesis." | tee -a diag_summary.log
+    ;;
+  *)
+    echo "EXP7_CLASSIFICATION=UNKNOWN -- unexpected buffer result '$BUFFER_RESULT'." | tee -a diag_summary.log
+    exit 24
+    ;;
+esac
+
+if grep -Eq 'ZC_EXP7_IMG:.*query_result=FORMAT_NOT_SUPPORTED|ZC_EXP7_IMG:.*IMPORTABLE=false|ZC_EXP7_IMG:.*opaque_fd_in_compatible=false|ZC_EXP7_IMG:.*DEDICATED_ONLY=true|ZC_EXP7_REQ2:.*requiresDedicatedAllocation=true' stitch.log; then
+  echo "EXP7_IMAGE_CAPABILITY_RED_FLAG=YES -- image-specific external-memory capability/dedicated-allocation evidence is a strong root-cause candidate. Do not patch production in this run." | tee -a diag_summary.log
+else
+  echo "EXP7_IMAGE_CAPABILITY_RED_FLAG=NO -- queried image capability/dedicated-allocation flags did not expose an obvious incompatibility." | tee -a diag_summary.log
+fi
+
+echo "=== EXP7 diagnostic complete (abort-before-decode by design) ===" | tee -a diag_summary.log
 exit 0
