@@ -39,6 +39,11 @@ name: OEV — wgpu-hal #9461 Lockfile-Update Resolution Gate (throwaway pod, one
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - agent/zc-buffer-copy-proof
+    paths:
+      - triggers/zc-buffer-compile-1
 
 permissions:
   contents: read
@@ -241,11 +246,11 @@ jobs:
           SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           $SSH "mkdir -p /tmp/oev_run"
-          $SCP oev_wgpu_hal_lockfile_update_probe_remote.sh root@$IP:/tmp/oev_wgpu_hal_lockfile_update_probe_remote.sh
-          $SSH "chmod +x /tmp/oev_wgpu_hal_lockfile_update_probe_remote.sh"
+          $SCP oev_zc_buffer_compile_probe_remote.sh root@$IP:/tmp/oev_zc_buffer_compile_probe_remote.sh
+          $SSH "chmod +x /tmp/oev_zc_buffer_compile_probe_remote.sh"
 
           remote_rc=0
-          $SSH "stdbuf -oL -eL /tmp/oev_wgpu_hal_lockfile_update_probe_remote.sh" || remote_rc=$?
+          $SSH "stdbuf -oL -eL /tmp/oev_zc_buffer_compile_probe_remote.sh" || remote_rc=$?
           echo "remote_exit=$remote_rc" >> "$GITHUB_OUTPUT"
           echo "Remote compile-proof script exit: $remote_rc"
 
