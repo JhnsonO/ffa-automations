@@ -11,7 +11,7 @@ RECO_SHA="e810a04ee29452b3cd6647cc98875033a2e0d1a0"
 FFA_REPO="https://github.com/JhnsonO/ffa-automations"
 FFA_BRANCH="diag/zc-exp7-compile-proof"
 EXPECTED_WGPU_REV="c8b6f2f00895210857f77f2a10fc1a32a80d5148"
-EXPECTED_VULKAN_SHA256="3e21c4cbfa6b14ed0924f1038c033c844f24326ca514486b0c0a693fa84ea4c7"
+EXPECTED_VULKAN_SHA256="4da792382d954f5ffe68865d5ae84db9e778c2f6e452917a7749149f50c41089"
 EXPECTED_CUDA_SHA256="e81e693071608caef213eb34e68335d064e3aded6c58214147f2b6be4ac303b7"
 
 rm -f build.log update.log resolution.log diag_summary.log timing.log
@@ -69,7 +69,7 @@ CUDA_LINES=$(wc -l < "$CUDA")
   echo "cuda_lines=$CUDA_LINES cuda_sha256=$CUDA_SHA"
 } | tee -a build.log
 
-[ "$VULKAN_LINES" -eq 1472 ] || { echo "FATAL: vulkan line count != 1472" | tee -a build.log; exit 12; }
+[ "$VULKAN_LINES" -eq 1476 ] || { echo "FATAL: vulkan line count != 1476" | tee -a build.log; exit 12; }
 [ "$VULKAN_SHA" = "$EXPECTED_VULKAN_SHA256" ] || { echo "FATAL: vulkan payload hash mismatch" | tee -a build.log; exit 13; }
 [ "$CUDA_SHA" = "$EXPECTED_CUDA_SHA256" ] || { echo "FATAL: cuda payload hash mismatch" | tee -a build.log; exit 14; }
 if grep -Eq 'zc_exp7_fd_memory_type_bits|ZC_EXP7_FD_IMG|eligible_bits|fd_bits|get_memory_fd_properties' "$VULKAN"; then
@@ -82,7 +82,7 @@ done
 echo "PAYLOAD GATE PASS: exact reviewed EXP7 files reconstructed." | tee -a build.log
 
 cd /tmp/video-stitcher
-echo "=== Cargo lockfile unification ===" | tee update.log
+echo "=== Cargo lockfile unification ===" | tee /tmp/oev_run/update.log
 echo "timing_update_start=$(ts)" | tee -a /tmp/oev_run/timing.log
 cargo update -p wgpu --precise 28.0.1 2>&1 | tee -a /tmp/oev_run/update.log
 echo "timing_update_end=$(ts)" | tee -a /tmp/oev_run/timing.log
@@ -95,15 +95,15 @@ echo "timing_update_end=$(ts)" | tee -a /tmp/oev_run/timing.log
   done
   echo "--- Cargo.lock expected rev occurrences ---"
   grep -n "$EXPECTED_WGPU_REV" Cargo.lock || true
-} | tee resolution.log
+} | tee /tmp/oev_run/resolution.log
 COUNT=$(grep -c "$EXPECTED_WGPU_REV" Cargo.lock || true)
-[ "$COUNT" -ge 4 ] || { echo "FATAL: expected wgpu fork rev not present for quartet (count=$COUNT)" | tee -a resolution.log; exit 17; }
+[ "$COUNT" -ge 4 ] || { echo "FATAL: expected wgpu fork rev not present for quartet (count=$COUNT)" | tee -a /tmp/oev_run/resolution.log; exit 17; }
 if cargo tree -d 2>&1 | grep -Eq '^wgpu(-core|-hal|-types)? v'; then
-  echo "FATAL: duplicate wgpu-family crates remain after cargo update" | tee -a resolution.log
-  cargo tree -d 2>&1 | tee -a resolution.log
+  echo "FATAL: duplicate wgpu-family crates remain after cargo update" | tee -a /tmp/oev_run/resolution.log
+  cargo tree -d 2>&1 | tee -a /tmp/oev_run/resolution.log
   exit 18
 fi
-echo "RESOLUTION GATE PASS" | tee -a resolution.log
+echo "RESOLUTION GATE PASS" | tee -a /tmp/oev_run/resolution.log
 
 echo "=== cargo check -p reco-cli --features cuda ===" | tee -a /tmp/oev_run/build.log
 echo "timing_check_start=$(ts)" | tee -a /tmp/oev_run/timing.log
@@ -122,7 +122,13 @@ echo "cargo_check_exit_code=$RC" | tee -a /tmp/oev_run/build.log
   echo "forbidden OPAQUE_FD fd-properties probe: ABSENT"
   echo "wgpu fork rev: $EXPECTED_WGPU_REV"
   echo "cargo check exit: $RC"
-  if [ "$RC" -eq 0 ]; then echo "VERDICT: PASS"; else echo "VERDICT: FAIL"; fi
-} | tee diag_summary.log
+  if [ "$RC" -eq 0 ]; then
+    echo "cargo check: PASS (exit 0)"
+    echo "VERDICT: PASS"
+  else
+    echo "cargo check: FAIL (exit $RC)"
+    echo "VERDICT: FAIL"
+  fi
+} | tee /tmp/oev_run/diag_summary.log
 
 exit "$RC"
