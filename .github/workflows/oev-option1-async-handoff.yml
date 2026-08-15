@@ -1,4 +1,4 @@
-name: OEV — Option1 Async Handoff A/B (RTX4090, bounded)
+name: OEV — Option1 Async Handoff A/B (preferred GPU, bounded)
 
 on:
   push:
@@ -24,17 +24,24 @@ jobs:
           ssh-keygen -q -t ed25519 -N '' -f /tmp/runpod_key
           chmod 600 /tmp/runpod_key
 
-      - name: Allocate NVDEC-valid RTX4090 pod
+      - name: Allocate NVDEC-valid preferred GPU pod
         id: launch
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
           python3 -u - <<'PY'
-          import json, os, subprocess, time, urllib.request, urllib.error
+          import json, os, subprocess, time, urllib.request
           base='https://rest.runpod.io/v1'
           headers={'Authorization':f"Bearer {os.environ['RUNPOD_API_KEY']}",'Content-Type':'application/json','Accept':'application/json'}
           pub=open('/tmp/runpod_key.pub').read().strip()
           pod_file='/tmp/option1_pods.txt'; open(pod_file,'w').close()
+          preferred=[
+            'NVIDIA GeForce RTX 4090',
+            'NVIDIA L4',
+            'NVIDIA RTX A5000',
+            'NVIDIA GeForce RTX 3090',
+          ]
+          failed_models=set()
           def req(method,url,data=None,timeout=30):
               r=urllib.request.Request(url,data=(json.dumps(data).encode() if data is not None else None),method=method,headers=headers)
               with urllib.request.urlopen(r,timeout=timeout) as x:
@@ -43,7 +50,7 @@ jobs:
               try: req('DELETE',f'{base}/pods/{pid}',timeout=20); print(f'deleted rejected pod {pid}')
               except Exception as e: print(f'cleanup warning {pid}: {e}')
           def ssh_ready(ip,port):
-              for _ in range(24):
+              for _ in range(18):
                   try:
                       p=subprocess.run(['ssh','-i','/tmp/runpod_key','-p',str(port),'-o','StrictHostKeyChecking=no','-o','ConnectTimeout=8',f'root@{ip}','echo OK'],capture_output=True,text=True,timeout=15)
                       if 'OK' in p.stdout: return True
@@ -52,13 +59,16 @@ jobs:
               return False
           winner=None
           for attempt in range(1,6):
-              print(f'RTX4090 allocation attempt {attempt}/5')
+              gpu_ids=[g for g in preferred if g not in failed_models]
+              if not gpu_ids: break
+              print(f'allocation attempt {attempt}/5 gpu_ids={gpu_ids} excluded={sorted(failed_models)}')
               pid=None
+              model=None
               try:
                   body={
                     'name':'oev-option1-async-ab',
                     'imageName':'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
-                    'gpuTypeIds':['NVIDIA GeForce RTX 4090'],'gpuTypePriority':'custom','gpuCount':1,
+                    'gpuTypeIds':gpu_ids,'gpuTypePriority':'custom','gpuCount':1,
                     'cloudType':'SECURE','containerDiskInGb':80,
                     'networkVolumeId':'0hta9vhuue','volumeMountPath':'/runpod-volume',
                     'ports':['22/tcp'],'supportPublicIp':True,'allowedCudaVersions':['12.8'],
@@ -66,30 +76,35 @@ jobs:
                   }
                   pod=req('POST',f'{base}/pods',body); pid=pod['id']
                   with open(pod_file,'a') as f: f.write(pid+'\n')
-                  started=time.time(); deadline=time.time()+600
+                  started=time.time(); deadline=time.time()+180
                   while time.time()<deadline:
                       info=req('GET',f'{base}/pods/{pid}?includeMachine=true')
                       ip=info.get('publicIp'); m=info.get('portMappings') or {}; port=m.get('22') or m.get('22/tcp')
                       if ip and port: break
                       time.sleep(10)
-                  else: raise RuntimeError('no public IP/SSH mapping')
+                  else: raise RuntimeError('no public IP/SSH mapping within 180s')
                   if not ssh_ready(ip,port): raise RuntimeError('SSH not ready')
                   subprocess.run(['scp','-i','/tmp/runpod_key','-P',str(port),'-o','StrictHostKeyChecking=no','runpod_gpu_preflight.sh',f'root@{ip}:/tmp/preflight.sh'],check=True,timeout=30)
                   p=subprocess.run(['ssh','-i','/tmp/runpod_key','-p',str(port),'-o','StrictHostKeyChecking=no',f'root@{ip}','chmod +x /tmp/preflight.sh && stdbuf -oL -eL /tmp/preflight.sh'],capture_output=True,text=True,timeout=240)
                   print(p.stdout); print(p.stderr)
-                  needed=['PREFLIGHT_GPU_MODEL=NVIDIA GeForce RTX 4090','PREFLIGHT_VULKAN=PASS','PREFLIGHT_CUDA_INIT=PASS','PREFLIGHT_NVDEC=PASS','PREFLIGHT_ORT_CUDA=PASS','PREFLIGHT_RESULT=PASS']
-                  if p.returncode or any(x not in p.stdout for x in needed): raise RuntimeError('4090 preflight failed')
-                  winner=(pid,ip,port,info.get('costPerHr'),started)
+                  for line in p.stdout.splitlines():
+                      if line.startswith('PREFLIGHT_GPU_MODEL='):
+                          model=line.split('=',1)[1].strip(); break
+                  needed=['PREFLIGHT_VULKAN=PASS','PREFLIGHT_CUDA_INIT=PASS','PREFLIGHT_NVDEC=PASS','PREFLIGHT_ORT_CUDA=PASS','PREFLIGHT_RESULT=PASS']
+                  if p.returncode or any(x not in p.stdout for x in needed):
+                      if model: failed_models.add(model)
+                      raise RuntimeError(f'preflight failed model={model!r}')
+                  winner=(pid,ip,port,info.get('costPerHr'),started,model)
                   break
               except Exception as e:
                   print(f'attempt {attempt} rejected: {e}')
                   if pid: delete(pid)
-                  if attempt<5: time.sleep(15)
-          if not winner: raise SystemExit('No NVDEC-valid RTX4090 found')
-          pid,ip,port,cost,started=winner
+                  if attempt<5: time.sleep(10)
+          if not winner: raise SystemExit(f'No NVDEC-valid preferred GPU found; excluded={sorted(failed_models)}')
+          pid,ip,port,cost,started,model=winner
           with open(os.environ['GITHUB_OUTPUT'],'a') as f:
-              f.write(f'pod_id={pid}\nip={ip}\nport={port}\ncost_per_hr={cost}\nlaunch_epoch={started}\n')
-          print(f'ACCEPTED RTX4090 pod={pid} ip={ip}:{port} cost_per_hr={cost}')
+              f.write(f'pod_id={pid}\nip={ip}\nport={port}\ncost_per_hr={cost}\nlaunch_epoch={started}\ngpu_model={model}\n')
+          print(f'ACCEPTED pod={pid} model={model} ip={ip}:{port} cost_per_hr={cost}')
           PY
 
       - name: Run option1 hardware A/B
