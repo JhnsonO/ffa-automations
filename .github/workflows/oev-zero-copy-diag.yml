@@ -1,13 +1,13 @@
-name: OEV — Clean Shared-Buffer Integration + A/B (throwaway pod, bounded)
+name: OEV — No-Zero-Copy Teardown Regression Control (throwaway pod, bounded)
 
 # Diagnostic-only, isolated workflow. Does NOT touch any frozen file, the
 # production network volumes' reco binary/manifest, the baked GHCR image,
 # or any --no-zero-copy production setting.
 #
-# Fresh-builds the clean option-2 Reco branch on a throwaway pod, exercises
-# start-time skips and immediate mode, captures a 180-frame buffered visual
-# artifact, then benchmarks the same 180-frame workload with --no-zero-copy.
-# The pixel pipeline remains GPU-only on the new path.
+# Fresh-builds the clean option-2 Reco branch and its production base on one
+# throwaway pod, then runs the identical 180-frame --no-zero-copy workload on
+# each. This isolates whether the post-output teardown crash from runtime run
+# 31893154739 is a branch regression or existing host/base behavior.
 #
 # Reuses the already-populated EU-RO-1 network volume (id 0hta9vhuue)
 # READ-ONLY for its yolo26m.onnx model only -- this pod's own script never
@@ -30,11 +30,11 @@ permissions:
 
 jobs:
   zero-copy-diag:
-    name: Clean Shared-Buffer Integration + A/B (RunPod)
+    name: No-Zero-Copy Teardown Regression Control (RunPod)
     runs-on: ubuntu-latest
     # Dependency fetches alone exceeded 30 minutes in compile-proof run
-    # 31883596926. Runtime work remains bounded (12-frame smoke + two
-    # 180-frame A/B renders); this cap preserves cleanup headroom.
+    # 31883596926. Runtime work remains bounded to two 180-frame controls;
+    # this cap preserves cleanup headroom.
     timeout-minutes: 75
 
     steps:
@@ -389,7 +389,7 @@ jobs:
           SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
           $SSH "ls -lh /runpod-volume/oev-runtime/models/yolo26m.onnx"
 
-      - name: Upload + run clean integration and A/B script
+      - name: Upload + run no-zero-copy regression control
         id: diag
         env:
           IP: ${{ steps.launch.outputs.ip }}
@@ -403,9 +403,9 @@ jobs:
           remote_rc=0
           $SSH "stdbuf -oL -eL /tmp/oev_zero_copy_diag_remote.sh" || remote_rc=$?
           echo "remote_exit=$remote_rc" >> "$GITHUB_OUTPUT"
-          echo "Remote clean integration/A-B exit: $remote_rc"
+          echo "Remote no-zero-copy regression-control exit: $remote_rc"
 
-      - name: Pull back logs + visual artifacts
+      - name: Pull back control logs + outputs
         if: always()
         env:
           IP: ${{ steps.launch.outputs.ip }}
@@ -418,7 +418,6 @@ jobs:
           if [ -n "$IP" ] && [ -n "$PORT" ]; then
             SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no"
             $SCP -r "root@$IP:/tmp/oev_run/*.log" diag_artifacts/ || true
-            $SCP -r "root@$IP:/tmp/oev_run/validation_frames" diag_artifacts/ || true
             $SCP "root@$IP:/tmp/oev_run/reco_version.txt" diag_artifacts/ || true
             $SCP "root@$IP:/tmp/oev_run/Cargo.lock.resolved" diag_artifacts/ || true
             $SCP "root@$IP:/tmp/oev_run/followcam*.mp4" diag_artifacts/ || true
@@ -515,17 +514,17 @@ jobs:
               raise SystemExit(1)
           PY
 
-      - name: Evaluate clean integration and A/B result
+      - name: Evaluate no-zero-copy regression control
         if: always()
         run: |
           remote_exit='${{ steps.diag.outputs.remote_exit }}'
           if [ "$remote_exit" = "0" ] \
-            && grep -q '^ZC_BUFFER_IMMEDIATE_SMOKE=PASS$' diag_artifacts/diag_summary.log 2>/dev/null \
-            && grep -q '^ZC_BUFFER_CLEAN_RENDER=PASS$' diag_artifacts/diag_summary.log 2>/dev/null \
-            && grep -q '^NO_ZERO_COPY_AB=PASS$' diag_artifacts/diag_summary.log 2>/dev/null \
-            && grep -q '^ZC_BUFFER_INTEGRATION_AB=PASS$' diag_artifacts/diag_summary.log 2>/dev/null; then
-            echo "Clean CUDA shared-buffer integration and same-pod A/B passed; visual frames captured."
+            && grep -q '^NO_ZERO_COPY_CLEAN_COMPLETE=PASS$' diag_artifacts/diag_summary.log 2>/dev/null \
+            && grep -q '^NO_ZERO_COPY_BASE_BUILD=PASS$' diag_artifacts/diag_summary.log 2>/dev/null \
+            && grep -q '^NO_ZERO_COPY_BASE_COMPLETE=PASS$' diag_artifacts/diag_summary.log 2>/dev/null \
+            && grep -q '^NO_ZERO_COPY_REGRESSION_CONTROL=PASS' diag_artifacts/diag_summary.log 2>/dev/null; then
+            echo "No-zero-copy teardown regression control passed."
             exit 0
           fi
-          echo "::error::Clean shared-buffer integration/A-B failed (remote_exit=${remote_exit:-missing}). Inspect artifacts."
+          echo "::error::No-zero-copy regression control failed (remote_exit=${remote_exit:-missing}). Inspect artifacts."
           exit 1

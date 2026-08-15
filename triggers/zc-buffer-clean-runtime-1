@@ -1,1 +1,1 @@
-Run 2: accept CUDA-pointer detection evidence from the immediate-path log; buffered detection has no equivalent log site.
+Run 3: compare clean-branch and production-base --no-zero-copy teardown on the same preflighted host.

@@ -1,32 +1,33 @@
 #!/usr/bin/env bash
-# OEV -- clean shared-buffer integration + bounded A/B benchmark, executed
+# OEV -- bounded --no-zero-copy teardown regression control, executed
 # INSIDE a throwaway RunPod pod (NOT the production volume binary/image).
 #
-# Purpose: validate the clean option-2 integration with real footage:
-# NVDEC -> CUDA-VMM shared VkBuffers -> external semaphore -> Vulkan/wgpu
-# buffer-to-ordinary-texture copy -> existing render/detection pipeline.
+# Purpose: compare the post-output --no-zero-copy teardown behavior of the
+# clean option-2 branch against its exact production base on one GPU host.
+# Runtime run 31893154739 already completed all 180 frames for both the new
+# path and --no-zero-copy, but the latter segfaulted during CUDA teardown.
 #
 # Fresh cargo build (~90s, proven recipe from oev_populate_volume_remote.sh)
 # -- deliberately NOT touching /runpod-volume, so this cannot desync the
 # production network-volume manifest.
 #
-# Runs an immediate-mode/start-time smoke test, a 180-frame clean buffered
-# render, then the same 180-frame workload with --no-zero-copy for an A/B.
-# The clean branch has no sentinel/readback instrumentation; the byte-exact
-# destination-texture primitive was already proven in run 31888822303.
+# Runs the identical 180-frame --no-zero-copy workload first at the clean
+# branch SHA and then at the production base SHA. Both outputs must be complete
+# before exit-code/fingerprint comparison is accepted as regression evidence.
 #
 # Diagnostic only -- no production script touched, no --no-zero-copy
 # removed anywhere outside this throwaway script.
 #
-# Exit codes: 1=env sanity, 2=apt/rust setup, 3=reco-cli build,
+# Exit codes: 1=env sanity, 2=apt/rust setup, 3=clean reco build,
 # 4=benchmark pack/model missing, 5=calibrate/GPU environment,
-# 6=immediate/start-time smoke, 8=clean render, 9=no-zero-copy A/B.
+# 12=production-base build, 13=branch regression, 14=inconclusive control.
 
 set -uo pipefail
 cd /tmp/oev_run || exit 1
 RUN_DIR="/tmp/oev_run"
 
 RECO_SHA="61aced9687d2c441c48d11e29d3aa28df18b3beb"
+RECO_BASE="53fe10f548d5767ad94ef66aeaedf2d8c7161f27"
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
 MODEL_PATH="/runpod-volume/oev-runtime/models/yolo26m.onnx"
 
@@ -211,112 +212,115 @@ fi
 echo "timing_calibrate_end=$(ts)" | tee -a timing.log
 
 LOG_FILTER="warn,reco_core=info,reco_autocam=info,reco_detect=info"
-echo "=== CLEAN INTEGRATION + A/B SUMMARY ===" | tee diag_summary.log
+echo "=== NO-ZERO-COPY TEARDOWN REGRESSION CONTROL ===" | tee diag_summary.log
 
-# First exercise both special ownership cases omitted by the buffered proof:
-# start-time skips must consume binary semaphore signals before slot reuse,
-# and lookahead=0 must allocate/reuse the one-slot ordinary-texture pool.
-echo "=== immediate.log: start-time skip + lookahead=0 smoke ===" | tee immediate.log
-echo "timing_immediate_start=$(ts)" | tee -a timing.log
-IMMEDIATE_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam_buffer_immediate.mp4
-  --model "$MODEL_PATH"
-  --tracking field
-  --panner-preset broadcast
-  --lookahead 0
-  --start-time 0.2
-  --detection-interval 1
-  --events events_buffer_immediate.jsonl
-  --width 1920 --height 1080
-  --max-frames 12)
-echo "reco stitch args: ${IMMEDIATE_ARGS[*]}" | tee -a immediate.log
-RUST_LOG="$LOG_FILTER" stdbuf -oL -eL "$RECO_BIN" "${IMMEDIATE_ARGS[@]}" 2>&1 | tee -a immediate.log
-immediate_rc=${PIPESTATUS[0]}
-echo "timing_immediate_end=$(ts)" | tee -a timing.log
-if [ "$immediate_rc" -ne 0 ] || [ ! -s followcam_buffer_immediate.mp4 ] \
-  || ! grep -q "CUDA shared-buffer copy: synchronized VkBuffer -> VramPool textures complete" immediate.log \
-  || ! grep -q "GpuResident detection: CUDA path" immediate.log; then
-  echo "ZC_BUFFER_IMMEDIATE_SMOKE=FAIL (rc=$immediate_rc)" | tee -a diag_summary.log
-  exit 6
-fi
-echo "ZC_BUFFER_IMMEDIATE_SMOKE=PASS" | tee -a diag_summary.log
+validate_complete_output() {
+  local output="$1"
+  local log_file="$2"
+  [ -s "$output" ] || return 1
+  grep -q "Done: 180 frames" "$log_file" || return 1
+  grep -q "Frames:    180 processed" "$log_file" || return 1
+  local frames
+  frames=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames \
+    -of default=noprint_wrappers=1:nokey=1 "$output")
+  [ "$frames" = "180" ]
+}
 
-# Clean buffered render: this is both the visual integration artifact and the
-# new-path side of the same-pod performance A/B.
-echo "=== visual.log: 180-frame clean buffered render ===" | tee visual.log
-echo "timing_visual_start=$(ts)" | tee -a timing.log
-VISUAL_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam_buffer_clean.mp4
+# First reproduce on the clean option-2 branch. This is deliberately the same
+# workload that completed before rc=139 in runtime attempt 31893154739.
+echo "=== branch_nozero.log: clean branch --no-zero-copy ===" | tee branch_nozero.log
+echo "timing_branch_nozero_start=$(ts)" | tee -a timing.log
+BRANCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam_branch_nozero.mp4
   --model "$MODEL_PATH"
   --tracking field
   --panner-preset broadcast
   --lookahead 0.1
   --detection-interval 1
-  --events events_buffer_clean.jsonl
-  --width 1920 --height 1080
-  --max-frames 180)
-echo "reco stitch args: ${VISUAL_ARGS[*]}" | tee -a visual.log
-RUST_LOG="$LOG_FILTER" stdbuf -oL -eL "$RECO_BIN" "${VISUAL_ARGS[@]}" 2>&1 | tee -a visual.log
-visual_rc=${PIPESTATUS[0]}
-echo "timing_visual_end=$(ts)" | tee -a timing.log
-# The immediate gate above already proves `needs_cuda_frames()` selects the
-# CUDA-pointer detector path. Buffered lookahead calls `detect_and_track_only`,
-# which uses the same pointer branch but intentionally has no equivalent log.
-if [ "$visual_rc" -ne 0 ] || [ ! -s followcam_buffer_clean.mp4 ] \
-  || ! grep -q "CUDA shared-buffer copy: synchronized VkBuffer -> VramPool textures complete" visual.log \
-  || ! grep -q "ORT: CUDA execution provider enabled" visual.log; then
-  echo "ZC_BUFFER_CLEAN_RENDER=FAIL (rc=$visual_rc)" | tee -a diag_summary.log
-  exit 8
-fi
-echo "ZC_BUFFER_CLEAN_RENDER=PASS" | tee -a diag_summary.log
-
-# Same binary, inputs, calibration, model, detector interval, tracking,
-# panner, lookahead, output size, and frame cap. Only --no-zero-copy differs.
-echo "=== baseline.log: 180-frame --no-zero-copy A/B ===" | tee baseline.log
-echo "timing_baseline_start=$(ts)" | tee -a timing.log
-BASELINE_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam_no_zero_copy.mp4
-  --model "$MODEL_PATH"
-  --tracking field
-  --panner-preset broadcast
-  --lookahead 0.1
-  --detection-interval 1
-  --events events_no_zero_copy.jsonl
+  --events events_branch_nozero.jsonl
   --no-zero-copy
   --width 1920 --height 1080
   --max-frames 180)
-echo "reco stitch args: ${BASELINE_ARGS[*]}" | tee -a baseline.log
-RUST_LOG="$LOG_FILTER" stdbuf -oL -eL "$RECO_BIN" "${BASELINE_ARGS[@]}" 2>&1 | tee -a baseline.log
-baseline_rc=${PIPESTATUS[0]}
-echo "timing_baseline_end=$(ts)" | tee -a timing.log
-if [ "$baseline_rc" -ne 0 ] || [ ! -s followcam_no_zero_copy.mp4 ]; then
-  echo "NO_ZERO_COPY_AB=FAIL (rc=$baseline_rc)" | tee -a diag_summary.log
-  exit 9
-fi
-echo "NO_ZERO_COPY_AB=PASS" | tee -a diag_summary.log
-
-if command -v ffprobe >/dev/null 2>&1; then
-  for output in followcam_buffer_immediate.mp4 followcam_buffer_clean.mp4 followcam_no_zero_copy.mp4; do
-    echo "ffprobe_file=$output" | tee -a diag_summary.log
-    ffprobe -v error -select_streams v:0 \
-      -show_entries stream=codec_name,width,height,nb_frames,duration \
-      -of default=noprint_wrappers=1 "$output" | tee -a diag_summary.log
-  done
+RUST_LOG="$LOG_FILTER" stdbuf -oL -eL "$RECO_BIN" "${BRANCH_ARGS[@]}" 2>&1 | tee -a branch_nozero.log
+branch_rc=${PIPESTATUS[0]}
+echo "timing_branch_nozero_end=$(ts)" | tee -a timing.log
+if validate_complete_output followcam_branch_nozero.mp4 branch_nozero.log; then
+  echo "NO_ZERO_COPY_CLEAN_COMPLETE=PASS" | tee -a diag_summary.log
+else
+  echo "NO_ZERO_COPY_CLEAN_COMPLETE=FAIL (rc=$branch_rc)" | tee -a diag_summary.log
+  exit 14
 fi
 
-mkdir -p validation_frames
-ffmpeg -y -v error -i followcam_buffer_clean.mp4 \
-  -vf "select='eq(n,0)+eq(n,60)+eq(n,120)+eq(n,179)'" -fps_mode vfr \
-  validation_frames/clean_%02d.png
-test "$(find validation_frames -name 'clean_*.png' | wc -l)" -eq 4 || exit 8
+# Build the unchanged production base on the same pod, with the same global
+# Cargo cache but a separate source/target tree. No production ref is mutated.
+echo "=== base_build.log: production base $RECO_BASE ===" | tee base_build.log
+echo "timing_base_build_start=$(ts)" | tee -a timing.log
+rm -rf /tmp/video-stitcher-base
+git clone "$RECO_REPO" /tmp/video-stitcher-base 2>&1 | tee -a base_build.log
+cd /tmp/video-stitcher-base || exit 12
+git checkout "$RECO_BASE" 2>&1 | tee -a "$RUN_DIR/base_build.log"
+test "$(git rev-parse HEAD)" = "$RECO_BASE" || exit 12
+cargo build --release --locked -p reco-cli --features cuda 2>&1 | tee -a "$RUN_DIR/base_build.log"
+base_build_rc=${PIPESTATUS[0]}
+echo "timing_base_build_end=$(ts)" | tee -a "$RUN_DIR/timing.log"
+if [ "$base_build_rc" -ne 0 ]; then
+  echo "NO_ZERO_COPY_BASE_BUILD=FAIL (rc=$base_build_rc)" | tee -a "$RUN_DIR/diag_summary.log"
+  exit 12
+fi
+echo "NO_ZERO_COPY_BASE_BUILD=PASS" | tee -a "$RUN_DIR/diag_summary.log"
+
+BASE_BIN="/tmp/video-stitcher-base/target/release/reco"
+cd "$RUN_DIR" || exit 1
+echo "=== base_nozero.log: production base --no-zero-copy ===" | tee base_nozero.log
+echo "timing_base_nozero_start=$(ts)" | tee -a timing.log
+BASE_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam_base_nozero.mp4
+  --model "$MODEL_PATH"
+  --tracking field
+  --panner-preset broadcast
+  --lookahead 0.1
+  --detection-interval 1
+  --events events_base_nozero.jsonl
+  --no-zero-copy
+  --width 1920 --height 1080
+  --max-frames 180)
+RUST_LOG="$LOG_FILTER" stdbuf -oL -eL "$BASE_BIN" "${BASE_ARGS[@]}" 2>&1 | tee -a base_nozero.log
+base_rc=${PIPESTATUS[0]}
+echo "timing_base_nozero_end=$(ts)" | tee -a timing.log
+if validate_complete_output followcam_base_nozero.mp4 base_nozero.log; then
+  echo "NO_ZERO_COPY_BASE_COMPLETE=PASS" | tee -a diag_summary.log
+else
+  echo "NO_ZERO_COPY_BASE_COMPLETE=FAIL (rc=$base_rc)" | tee -a diag_summary.log
+  exit 14
+fi
 
 {
-  echo "--- NEW PATH SESSION SUMMARY ---"
-  grep -A30 -- "--- Session Summary ---" visual.log | tail -31
-  echo "--- NO-ZERO-COPY SESSION SUMMARY ---"
-  grep -A30 -- "--- Session Summary ---" baseline.log | tail -31
-  echo "--- CUDA RESIDENCE EVIDENCE ---"
-  grep -E "ORT: CUDA execution provider enabled|GpuResident detection: CUDA path|Decode:.*CUDA shared buffer" \
-    immediate.log visual.log | tail -12
+  echo "clean_branch_rc=$branch_rc"
+  echo "production_base_rc=$base_rc"
+  echo "--- CLEAN BRANCH SESSION SUMMARY ---"
+  grep -A30 -- "--- Session Summary ---" branch_nozero.log | tail -31
+  echo "--- PRODUCTION BASE SESSION SUMMARY ---"
+  grep -A30 -- "--- Session Summary ---" base_nozero.log | tail -31
+  echo "--- CLEAN BRANCH TEARDOWN ---"
+  tail -12 branch_nozero.log
+  echo "--- PRODUCTION BASE TEARDOWN ---"
+  tail -12 base_nozero.log
 } | tee -a diag_summary.log
 
-echo "ZC_BUFFER_VISUAL_ARTIFACT=READY" | tee -a diag_summary.log
-echo "ZC_BUFFER_INTEGRATION_AB=PASS" | tee -a diag_summary.log
-exit 0
+if [ "$branch_rc" -eq 0 ]; then
+  echo "NO_ZERO_COPY_REGRESSION_CONTROL=PASS (clean branch exited normally)" | tee -a diag_summary.log
+  exit 0
+fi
+
+if [ "$base_rc" -eq "$branch_rc" ] \
+  && grep -q "cuCtxPopCurrent" branch_nozero.log \
+  && grep -q "cuCtxPopCurrent" base_nozero.log; then
+  echo "NO_ZERO_COPY_REGRESSION_CONTROL=PASS (same rc/fingerprint on production base)" | tee -a diag_summary.log
+  exit 0
+fi
+
+if [ "$base_rc" -eq 0 ]; then
+  echo "NO_ZERO_COPY_REGRESSION_CONTROL=FAIL (clean branch regression)" | tee -a diag_summary.log
+  exit 13
+fi
+
+echo "NO_ZERO_COPY_REGRESSION_CONTROL=INCONCLUSIVE (different teardown failures)" | tee -a diag_summary.log
+exit 14
