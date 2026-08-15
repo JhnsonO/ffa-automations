@@ -1,0 +1,318 @@
+name: OEV — Shared-buffer production rollout (temporary)
+
+on:
+  push:
+    branches:
+      - rollout/shared-buffer-main
+    paths:
+      - '.github/workflows/_rollout-shared-buffer-main.yml'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  rollout:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ROLLOUT_BRANCH: rollout/shared-buffer-main
+      RECO_SHA: f27cbb6d0d65fcf9a11fb4d82d119ae214695318
+      OLD_RECO_SHA: 53fe10f548d5767ad94ef66aeaedf2d8c7161f27
+      VOLUME_MAP_JSON: ${{ vars.OEV_NETWORK_VOLUME_MAP }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout rollout branch
+        uses: actions/checkout@v5
+        with:
+          ref: rollout/shared-buffer-main
+          fetch-depth: 0
+
+      - name: Apply production rollout changes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          old = '53fe10f548d5767ad94ef66aeaedf2d8c7161f27'
+          new = 'f27cbb6d0d65fcf9a11fb4d82d119ae214695318'
+
+          pin_files = [
+              Path('.github/workflows/oev-populate-volume.yml'),
+              Path('.github/workflows/oev-runpod-followcam.yml'),
+              Path('.github/workflows/oev-runpod-sample-baseline.yml'),
+              Path('.github/workflows/oev-runpod-followcam-ab-yolo26.yml'),
+              Path('runpod_sample_baseline_yolo26_remote.sh'),
+          ]
+          pin_replacements = 0
+          for p in pin_files:
+              if not p.exists():
+                  raise SystemExit(f'missing expected rollout file: {p}')
+              s = p.read_text()
+              n = s.count(old)
+              if n:
+                  s = s.replace(old, new)
+                  p.write_text(s)
+                  pin_replacements += n
+                  print(f'{p}: replaced {n} old Reco pin/reference(s)')
+          if pin_replacements == 0:
+              raise SystemExit('expected at least one old Reco pin/reference to replace')
+
+          scripts = [
+              Path('runpod_followcam_remote.sh'),
+              Path('runpod_sample_baseline_remote.sh'),
+              Path('runpod_sample_baseline_yolo26_remote.sh'),
+          ]
+          new_header = (
+              '# Linux shared-buffer GPU path is production-enabled as of 2026-08-15.\n'
+              '# Reco main f27cbb6d replaces the broken direct shared-VkImage path with\n'
+              '# CUDA-VMM shared VkBuffers -> Vulkan GPU buffer-to-texture copies.\n'
+              '# Verified on real GoPro NV12 and real P010/10-bit fixtures; CUDA detection\n'
+              '# remains GPU-resident. Do not re-add --no-zero-copy except as an explicit\n'
+              '# fallback/diagnostic comparison.\n'
+              '#\n'
+          )
+          new_stitch_note = (
+              '# Shared-buffer zero-copy is intentionally enabled here (no --no-zero-copy).\n'
+              '# The merged path was hardware-verified on RTX 4090 and L4 without the old\n'
+              '# green/corrupt direct-shared-VkImage failure.\n'
+          )
+
+          for p in scripts:
+              if not p.exists():
+                  raise SystemExit(f'missing expected RunPod script: {p}')
+              s = p.read_text()
+              before = s
+
+              # Replace the obsolete file-header fallback paragraph.
+              s, count = re.subn(
+                  r'# --no-zero-copy IS PASSED HERE.*?(?=# Deliberately does NOT pass)',
+                  new_header,
+                  s,
+                  count=1,
+                  flags=re.S,
+              )
+              if count != 1:
+                  raise SystemExit(f'{p}: expected exactly one obsolete header block, got {count}')
+
+              # Replace the obsolete stitch-site fallback paragraph, allowing the
+              # YOLO26 variant's LOOKAHEAD default to sit between the comment and array.
+              s, count = re.subn(
+                  r'# --no-zero-copy: see.*?(?=(?:STITCH_ARGS=|: "\$\{LOOKAHEAD))',
+                  new_stitch_note,
+                  s,
+                  count=1,
+                  flags=re.S,
+              )
+              if count != 1:
+                  raise SystemExit(f'{p}: expected exactly one obsolete stitch note, got {count}')
+
+              s = s.replace(
+                  '=== stitch.log: reco stitch (field follow-cam, l-shape, --no-zero-copy interim) ===',
+                  '=== stitch.log: reco stitch (field follow-cam, l-shape, shared-buffer GPU path) ===',
+              )
+
+              lines = s.splitlines(keepends=True)
+              removed = 0
+              kept = []
+              for line in lines:
+                  if line.strip() == '--no-zero-copy':
+                      removed += 1
+                      continue
+                  kept.append(line)
+              if removed != 1:
+                  raise SystemExit(f'{p}: expected exactly one functional --no-zero-copy argument, removed {removed}')
+              s = ''.join(kept)
+
+              if s == before:
+                  raise SystemExit(f'{p}: no rollout change applied')
+              p.write_text(s)
+              print(f'{p}: shared-buffer path enabled; removed fallback flag')
+
+          # Operational safety assertions.
+          for p in scripts:
+              active = [ln for ln in p.read_text().splitlines() if ln.strip() == '--no-zero-copy']
+              if active:
+                  raise SystemExit(f'{p}: functional --no-zero-copy still present')
+
+          print(f'rollout source edit complete; total old-pin replacements={pin_replacements}')
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/oev-populate-volume.yml \
+                  .github/workflows/oev-runpod-followcam.yml \
+                  .github/workflows/oev-runpod-sample-baseline.yml \
+                  .github/workflows/oev-runpod-followcam-ab-yolo26.yml \
+                  runpod_followcam_remote.sh \
+                  runpod_sample_baseline_remote.sh \
+                  runpod_sample_baseline_yolo26_remote.sh
+          git diff --cached --check
+          git commit -m 'rollout: enable verified shared-buffer GPU path [rollout-bot]'
+          git push origin HEAD:rollout/shared-buffer-main
+
+      - name: Populate EU-RO-1 with merged Reco SHA
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, time, urllib.parse, urllib.request
+
+          token=os.environ['GH_TOKEN']; repo='JhnsonO/ffa-automations'; branch=os.environ['ROLLOUT_BRANCH']
+          base=f'https://api.github.com/repos/{repo}'
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+
+          def req(method,url,data=None):
+              r=urllib.request.Request(url,data=(json.dumps(data).encode() if data is not None else None),method=method,headers=headers)
+              with urllib.request.urlopen(r,timeout=30) as x:
+                  raw=x.read(); return json.loads(raw) if raw else None
+          def runs(workflow):
+              q=urllib.parse.urlencode({'branch':branch,'event':'workflow_dispatch','per_page':30})
+              return req('GET',f'{base}/actions/workflows/{workflow}/runs?{q}')['workflow_runs']
+          def dispatch(workflow,inputs):
+              before={r['id'] for r in runs(workflow)}
+              req('POST',f'{base}/actions/workflows/{workflow}/dispatches',{'ref':branch,'inputs':inputs})
+              for _ in range(60):
+                  time.sleep(2)
+                  new=[r for r in runs(workflow) if r['id'] not in before]
+                  if new:
+                      run=max(new,key=lambda r:r['id']); print(f'dispatched {workflow}: run {run["id"]}')
+                      return run['id']
+              raise RuntimeError(f'could not resolve dispatched run for {workflow}')
+          def wait(run_id, timeout=3600):
+              end=time.time()+timeout
+              while time.time()<end:
+                  r=req('GET',f'{base}/actions/runs/{run_id}')
+                  if r['status']=='completed':
+                      print(f'run {run_id} completed: {r["conclusion"]}')
+                      if r['conclusion']!='success': raise RuntimeError(f'run {run_id} failed: {r["html_url"]}')
+                      return r
+                  time.sleep(10)
+              raise TimeoutError(f'run {run_id} timed out')
+
+          rid=dispatch('oev-populate-volume.yml',{
+              'datacenter_id':'EU-RO-1','reco_sha':os.environ['RECO_SHA'],
+              'reco_repo':'https://github.com/JhnsonO/video-stitcher',
+              'ultralytics_version':'8.4.118','force_rebuild':'false'})
+          wait(rid)
+          open('/tmp/eu_populate_run','w').write(str(rid))
+          PY
+
+      - name: Run standard 30s YOLO26m production canary on EU-RO-1
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, time, urllib.parse, urllib.request
+          token=os.environ['GH_TOKEN']; repo='JhnsonO/ffa-automations'; branch=os.environ['ROLLOUT_BRANCH']; workflow='oev-runpod-sample-baseline.yml'
+          base=f'https://api.github.com/repos/{repo}'
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          def req(method,url,data=None):
+              r=urllib.request.Request(url,data=(json.dumps(data).encode() if data is not None else None),method=method,headers=headers)
+              with urllib.request.urlopen(r,timeout=30) as x:
+                  raw=x.read(); return json.loads(raw) if raw else None
+          def runs():
+              q=urllib.parse.urlencode({'branch':branch,'event':'workflow_dispatch','per_page':30})
+              return req('GET',f'{base}/actions/workflows/{workflow}/runs?{q}')['workflow_runs']
+          before={r['id'] for r in runs()}
+          req('POST',f'{base}/actions/workflows/{workflow}/dispatches',{'ref':branch,'inputs':{
+              'datacenter':'EU-RO-1','sample_id':'sample_01','duration_s':'30',
+              'sample_set_id':'GX010197-seed1384188843','model_variant':'yolo26m',
+              'lookahead':'1.5','cluster_alpha_override':'0.05'}})
+          rid=None
+          for _ in range(60):
+              time.sleep(2); new=[r for r in runs() if r['id'] not in before]
+              if new: rid=max(new,key=lambda r:r['id'])['id']; break
+          if rid is None: raise RuntimeError('could not resolve canary run id')
+          print(f'canary run {rid}')
+          end=time.time()+3600
+          while time.time()<end:
+              r=req('GET',f'{base}/actions/runs/{rid}')
+              if r['status']=='completed':
+                  print(f'canary completed: {r["conclusion"]} {r["html_url"]}')
+                  if r['conclusion']!='success': raise RuntimeError(f'production canary failed: {r["html_url"]}')
+                  open('/tmp/canary_run','w').write(str(rid)); break
+              time.sleep(10)
+          else: raise TimeoutError('canary timed out')
+          PY
+
+      - name: Repopulate every remaining mapped RunPod volume
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, time, urllib.parse, urllib.request
+          volume_map=json.loads(os.environ['VOLUME_MAP_JSON'])
+          dcs=[dc for dc in volume_map if dc!='EU-RO-1']
+          print('remaining datacenters:', dcs)
+          token=os.environ['GH_TOKEN']; repo='JhnsonO/ffa-automations'; branch=os.environ['ROLLOUT_BRANCH']; workflow='oev-populate-volume.yml'
+          base=f'https://api.github.com/repos/{repo}'
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          def req(method,url,data=None):
+              r=urllib.request.Request(url,data=(json.dumps(data).encode() if data is not None else None),method=method,headers=headers)
+              with urllib.request.urlopen(r,timeout=30) as x:
+                  raw=x.read(); return json.loads(raw) if raw else None
+          def list_runs():
+              q=urllib.parse.urlencode({'branch':branch,'event':'workflow_dispatch','per_page':100})
+              return req('GET',f'{base}/actions/workflows/{workflow}/runs?{q}')['workflow_runs']
+          dispatched={}
+          for dc in dcs:
+              before={r['id'] for r in list_runs()}
+              req('POST',f'{base}/actions/workflows/{workflow}/dispatches',{'ref':branch,'inputs':{
+                  'datacenter_id':dc,'reco_sha':os.environ['RECO_SHA'],
+                  'reco_repo':'https://github.com/JhnsonO/video-stitcher',
+                  'ultralytics_version':'8.4.118','force_rebuild':'false'}})
+              rid=None
+              for _ in range(60):
+                  time.sleep(2); new=[r for r in list_runs() if r['id'] not in before and r['id'] not in dispatched.values()]
+                  if new: rid=max(new,key=lambda r:r['id'])['id']; break
+              if rid is None: raise RuntimeError(f'could not resolve populate run for {dc}')
+              dispatched[dc]=rid; print(f'{dc}: run {rid}')
+          pending=dict(dispatched); failures=[]; deadline=time.time()+3600
+          while pending and time.time()<deadline:
+              for dc,rid in list(pending.items()):
+                  r=req('GET',f'{base}/actions/runs/{rid}')
+                  if r['status']=='completed':
+                      print(f'{dc}: {r["conclusion"]} {r["html_url"]}')
+                      if r['conclusion']!='success': failures.append((dc,rid,r['conclusion']))
+                      pending.pop(dc)
+              if pending: time.sleep(15)
+          if pending: raise TimeoutError(f'populate runs timed out: {pending}')
+          if failures: raise RuntimeError(f'volume repopulation failures: {failures}')
+          open('/tmp/remaining_populate_runs.json','w').write(json.dumps(dispatched,sort_keys=True))
+          PY
+
+      - name: Record verified rollout and remove temporary workflow
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, os, datetime
+          eu=Path('/tmp/eu_populate_run').read_text().strip()
+          canary=Path('/tmp/canary_run').read_text().strip()
+          remaining=json.loads(Path('/tmp/remaining_populate_runs.json').read_text()) if Path('/tmp/remaining_populate_runs.json').exists() else {}
+          state=Path('docs/ai-project-state.md')
+          s=state.read_text()
+          marker='## Shared-buffer production rollout — VERIFIED (15 Aug 2026)'
+          if marker not in s:
+              lines=[
+                  '', marker, '',
+                  '- `JhnsonO/video-stitcher` shared-buffer architecture is merged on `main` at `f27cbb6d0d65fcf9a11fb4d82d119ae214695318`.',
+                  '- Exact merged SHA was hardware-canary tested on RTX 4090 in option-1 A/B run `31898658490`: two 180-frame renders, exit 0, visually correct, 8.643 fps average.',
+                  f'- Standard FFA network-volume/sample canary after rollout: run `{canary}` — SUCCESS on EU-RO-1, YOLO26m, 30s sample, shared-buffer path enabled (no `--no-zero-copy`).',
+                  f'- EU-RO-1 runtime volume repopulated for merged Reco SHA: run `{eu}` — SUCCESS.',
+              ]
+              for dc,rid in sorted(remaining.items()):
+                  lines.append(f'- {dc} runtime volume repopulated for merged Reco SHA: run `{rid}` — SUCCESS.')
+              lines += [
+                  '- Production RunPod scripts now enable the verified shared-buffer GPU path by default; the CPU-transfer `--no-zero-copy` path remains available only as an explicit fallback/diagnostic CLI option.',
+                  '- Option 1 (async reverse-semaphore slot handoff) remains intentionally unmerged: same-pod RTX 4090 A/B measured 0.0% improvement; PR #4 closed without merge.',
+                  '- Zero-copy/shared-buffer rollout ticket is closed. Next ticket: stage-by-stage RTX 4090 profiling to choose detector optimization vs broader pipeline scheduling.',
+                  ''
+              ]
+              state.write_text(s.rstrip()+'\n'+'\n'.join(lines))
+          PY
+          rm -f .github/workflows/_rollout-shared-buffer-main.yml
+          git add docs/ai-project-state.md .github/workflows/_rollout-shared-buffer-main.yml
+          git diff --cached --check
+          git commit -m 'docs: record verified shared-buffer production rollout [rollout-bot]'
+          git push origin HEAD:rollout/shared-buffer-main
