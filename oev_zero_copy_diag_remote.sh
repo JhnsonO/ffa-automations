@@ -32,7 +32,7 @@
 set -uo pipefail
 cd /tmp/oev_run || exit 1
 
-RECO_SHA="1ccc4694e5e776a4e94dbd1acf55eda2965b94c2"
+RECO_SHA="a6f12c061d241b215ab1f979d4278b342ec26b99"
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
 MODEL_PATH="/runpod-volume/oev-runtime/models/yolo26m.onnx"
 
@@ -290,6 +290,25 @@ if grep -q "ZC_EXP4:" stitch.log; then
 else
   echo "ZC_EXP4 block DID NOT FIRE -- no readback evidence at all for this run. Check stitch.log for a fatal error before frame 0, or confirm RECO_DEBUG_DUMP_FRAME propagated." | tee -a diag_summary.log
 fi
+
+echo "--- ZC_EXP6: native-texture readback CONTROL (avenue 1 -- validates the measurement itself) ---" | tee -a diag_summary.log
+grep "ZC_EXP6\|zc_exp6_control" stitch.log | tee -a diag_summary.log || echo "(no ZC_EXP6 lines found -- control did not fire)" | tee -a diag_summary.log
+python3 - <<'PYV' | tee -a diag_summary.log
+import pathlib
+d = pathlib.Path('/tmp/oev_run/diag_dump')
+expected = bytes(i % 256 for i in range(256 * 64))
+for name in ('zc_exp6_control_native_256x64.raw', 'zc_exp6_control_copy_dst_256x64.raw'):
+    p = d / name
+    if not p.exists():
+        print(f'ZC_EXP6 VERDICT: {name} MISSING (dump not written)')
+        continue
+    got = p.read_bytes()
+    if got == expected:
+        print(f'ZC_EXP6 VERDICT: {name} PASS byte-exact ({len(got)} bytes)')
+    else:
+        diffs = [i for i in range(min(len(got), len(expected))) if got[i] != expected[i]][:8]
+        print(f'ZC_EXP6 VERDICT: {name} FAIL len={len(got)} first_diff_offsets={diffs} got={[got[i] for i in diffs]} expected={[expected[i] for i in diffs]}')
+PYV
 
 echo "=== All stages completed (diagnostic run -- non-zero stitch exit is not itself a failure) ===" | tee -a diag_summary.log
 exit 0
