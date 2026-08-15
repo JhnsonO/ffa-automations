@@ -1,71 +1,60 @@
 #!/usr/bin/env bash
-# TEST-ONLY v4 runner wrapper.
-# Fetches the exact successful v3 test runner and changes only experiment
-# labelling plus the diagnostic gate; clip/model/panner inputs remain identical.
+# TEST-ONLY stride-3 adapter for the successful v4 180s sample runner.
+# Fetches the exact v4 stride-1 runner and changes only detector cadence plus
+# experiment labelling. All v4 panner/containment/micro-damping settings stay
+# identical for a clean stride-1 vs stride-3 comparison.
 set -euo pipefail
 cd /tmp/oev_run
 
-V3_FFA_SHA="c91314eaca8e2cbb0b6813f6e8204e4da23f408c"
-V3_RUNNER="/tmp/oev_run/runpod_sample_baseline_yolo26_v3_exact.sh"
+V4_FFA_SHA="8febf7a90e048170b7c677e6b341545089d5b774"
+V4_RUNNER="/tmp/oev_run/runpod_sample_baseline_yolo26_v4_stride1_exact.sh"
 
 curl -fsSL \
-  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${V3_FFA_SHA}/runpod_sample_baseline_yolo26_remote.sh" \
-  -o "$V3_RUNNER"
-test -s "$V3_RUNNER"
+  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${V4_FFA_SHA}/runpod_sample_baseline_yolo26_remote.sh" \
+  -o "$V4_RUNNER"
+test -s "$V4_RUNNER"
 
-python3 - "$V3_RUNNER" <<'PY'
+python3 - "$V4_RUNNER" <<'PY'
 from pathlib import Path
 import sys
 
 p = Path(sys.argv[1])
 s = p.read_text()
+marker = 'exec "$V3_RUNNER"\n'
+if s.count(marker) != 1:
+    raise SystemExit(f"expected one v4 runner final exec marker, found {s.count(marker)}")
 
-replacements = {
-    "stable_ball_guard=v3_trajectory_hysteresis_accel_limit":
-        "stable_ball_guard=v4_trajectory_hysteresis_accel_limit_micro_damping",
-    "TEST_ONLY_PANNER_PROFILE=lookahead_ball_containment_03 cluster_alpha=${CLUSTER_ALPHA_OVERRIDE:-unset} fixed_fov=44.0 lookahead=${LOOKAHEAD:-unset} innovation_gate_deg=3.0 switch_confirm_frames=18 max_yaw_step_deg=0.75 yaw_accel_deg_per_frame2=0.08":
-        "TEST_ONLY_PANNER_PROFILE=lookahead_ball_containment_04_micro_damping cluster_alpha=${CLUSTER_ALPHA_OVERRIDE:-unset} fixed_fov=44.0 lookahead=${LOOKAHEAD:-unset} innovation_gate_deg=3.0 switch_confirm_frames=18 max_yaw_step_deg=0.75 yaw_accel_deg_per_frame2=0.08 micro_zone_deg=4.0 micro_hold_deg=0.35",
-    "FATAL: events.jsonl missing; cannot measure v3 experiment":
-        "FATAL: events.jsonl missing; cannot measure v4 micro-damping experiment",
-    '"experiment": "lookahead_ball_containment_03_trajectory_hysteresis_accel_limit"':
-        '"experiment": "lookahead_ball_containment_04_micro_damping"',
-    '"definition": "upstream stabilized WorldState ball + post-smoothing containment + acceleration-limited final camera"':
-        '"definition": "v3 upstream stabilized ball and global dynamics + adaptive damping only inside 4deg final-camera error"',
-}
-for old, new in replacements.items():
-    if old not in s:
-        raise SystemExit(f"v4 runner marker not found: {old}")
-    s = s.replace(old, new)
+adapter = r'''python3 - "$V3_RUNNER" <<'PY_STRIDE'
+from pathlib import Path
+import sys
 
-# v3's video was good but its workflow was marked failed by one isolated
-# max-acceleration sample (0.407 deg/frame^2) while p99 was only ~0.115.
-# For polish testing, gate the distribution rather than one boundary outlier.
-old_gate = '''if metrics["camera_max_abs_yaw_accel_deg_per_frame2"] > 0.30:
-    raise SystemExit(
-        f"FATAL: yaw acceleration change {metrics['camera_max_abs_yaw_accel_deg_per_frame2']:.3f} deg/frame^2 exceeds 0.30"
-    )'''
-new_gate = '''if metrics["camera_p99_abs_yaw_accel_deg_per_frame2"] > 0.20:
-    raise SystemExit(
-        f"FATAL: p99 yaw acceleration {metrics['camera_p99_abs_yaw_accel_deg_per_frame2']:.3f} deg/frame^2 exceeds 0.20"
-    )'''
-if s.count(old_gate) != 1:
-    raise SystemExit(f"expected one v3 acceleration gate, found {s.count(old_gate)}")
-s = s.replace(old_gate, new_gate)
+p = Path(sys.argv[1])
+t = p.read_text()
+old = "  --detection-interval 1\n  --events events.jsonl\n"
+new = "  --detection-interval 1\n  --frame-stride 3\n  --events events.jsonl\n"
+if t.count(old) != 1:
+    raise SystemExit(f"expected one stitch cadence marker, found {t.count(old)}")
+t = t.replace(old, new, 1)
 
-# Preserve the JSON metrics in a file the standard workflow already pulls.
-s += '''
-if [ -s containment_metrics.json ]; then
-  {
-    echo "--- v4 micro-damping metrics ---"
-    cat containment_metrics.json
-  } >> acceptance.log
-fi
+t = t.replace(
+    'lookahead_ball_containment_04_micro_damping',
+    'lookahead_ball_containment_04_micro_damping_stride3',
+)
+t = t.replace(
+    'v4_micro_damping_same_180s_sample',
+    'v4_micro_damping_stride3_same_180s_sample',
+)
+
+p.write_text(t)
+print("stride-3 runner prepared: exact v4 settings + --frame-stride 3 only")
+PY_STRIDE
+exec "$V3_RUNNER"
 '''
 
+s = s.replace(marker, adapter, 1)
 p.write_text(s)
-print("v4 runner prepared from exact v3 runner; same test inputs, micro-damping labels + robust p99 diagnostic gate")
 PY
 
-chmod +x "$V3_RUNNER"
-echo "TEST_ONLY_RUNNER_DELTA=v4_micro_damping_same_180s_sample base_v3_sha=${V3_FFA_SHA}"
-exec "$V3_RUNNER"
+chmod +x "$V4_RUNNER"
+echo "TEST_ONLY_RUNNER=v4_micro_damping_stride3 same_sample=sample_01 duration_s=180"
+exec "$V4_RUNNER"
