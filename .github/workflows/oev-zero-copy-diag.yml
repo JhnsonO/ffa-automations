@@ -1,14 +1,13 @@
-name: OEV — Shared-Buffer Zero-Copy Proof (throwaway pod, one-shot)
+name: OEV — Clean Shared-Buffer Integration + A/B (throwaway pod, bounded)
 
 # Diagnostic-only, isolated workflow. Does NOT touch any frozen file, the
 # production network volumes' reco binary/manifest, the baked GHCR image,
 # or any --no-zero-copy production setting.
 #
-# Fresh-builds the isolated option-2 Reco branch on a throwaway pod, proves
-# CUDA-VMM shared VkBuffer -> synchronized Vulkan/wgpu buffer-to-texture
-# transfer with real decoded bytes and byte-exact sentinels, then captures a
-# short clean stereo MP4 for manual visual inspection. `--no-zero-copy` is
-# deliberately omitted; no CPU pixel round-trip is introduced.
+# Fresh-builds the clean option-2 Reco branch on a throwaway pod, exercises
+# start-time skips and immediate mode, captures a 180-frame buffered visual
+# artifact, then benchmarks the same 180-frame workload with --no-zero-copy.
+# The pixel pipeline remains GPU-only on the new path.
 #
 # Reuses the already-populated EU-RO-1 network volume (id 0hta9vhuue)
 # READ-ONLY for its yolo26m.onnx model only -- this pod's own script never
@@ -24,18 +23,18 @@ on:
     branches:
       - agent/zc-buffer-copy-proof
     paths:
-      - triggers/zc-buffer-fixture-1
+      - triggers/zc-buffer-clean-runtime-1
 
 permissions:
   contents: read
 
 jobs:
   zero-copy-diag:
-    name: Shared-Buffer Proof (RunPod, throwaway pod)
+    name: Clean Shared-Buffer Integration + A/B (RunPod)
     runs-on: ubuntu-latest
     # Dependency fetches alone exceeded 30 minutes in compile-proof run
-    # 31883596926. The frame workload remains bounded (5-frame byte proof,
-    # then 180-frame render); this cap only preserves cleanup headroom.
+    # 31883596926. Runtime work remains bounded (12-frame smoke + two
+    # 180-frame A/B renders); this cap preserves cleanup headroom.
     timeout-minutes: 75
 
     steps:
@@ -390,7 +389,7 @@ jobs:
           SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
           $SSH "ls -lh /runpod-volume/oev-runtime/models/yolo26m.onnx"
 
-      - name: Upload + run zero-copy diagnostic script
+      - name: Upload + run clean integration and A/B script
         id: diag
         env:
           IP: ${{ steps.launch.outputs.ip }}
@@ -404,9 +403,9 @@ jobs:
           remote_rc=0
           $SSH "stdbuf -oL -eL /tmp/oev_zero_copy_diag_remote.sh" || remote_rc=$?
           echo "remote_exit=$remote_rc" >> "$GITHUB_OUTPUT"
-          echo "Remote buffer-to-texture proof exit: $remote_rc"
+          echo "Remote clean integration/A-B exit: $remote_rc"
 
-      - name: Pull back logs + diagnostic dump
+      - name: Pull back logs + visual artifacts
         if: always()
         env:
           IP: ${{ steps.launch.outputs.ip }}
@@ -419,7 +418,7 @@ jobs:
           if [ -n "$IP" ] && [ -n "$PORT" ]; then
             SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no"
             $SCP -r "root@$IP:/tmp/oev_run/*.log" diag_artifacts/ || true
-            $SCP -r "root@$IP:/tmp/oev_run/diag_dump" diag_artifacts/ || true
+            $SCP -r "root@$IP:/tmp/oev_run/validation_frames" diag_artifacts/ || true
             $SCP "root@$IP:/tmp/oev_run/reco_version.txt" diag_artifacts/ || true
             $SCP "root@$IP:/tmp/oev_run/Cargo.lock.resolved" diag_artifacts/ || true
             $SCP "root@$IP:/tmp/oev_run/followcam*.mp4" diag_artifacts/ || true
@@ -516,15 +515,17 @@ jobs:
               raise SystemExit(1)
           PY
 
-      - name: Evaluate diagnostic result
+      - name: Evaluate clean integration and A/B result
         if: always()
         run: |
           remote_exit='${{ steps.diag.outputs.remote_exit }}'
           if [ "$remote_exit" = "0" ] \
-            && grep -q '^ZC_BUFFER_TEXTURE_PROOF=PASS$' diag_artifacts/diag_summary.log 2>/dev/null \
-            && grep -q '^ZC_BUFFER_SHORT_RENDER=COMPLETED_VISUAL_REVIEW_REQUIRED$' diag_artifacts/diag_summary.log 2>/dev/null; then
-            echo "CUDA shared-buffer to normal-texture proof passed; short MP4 captured for visual review."
+            && grep -q '^ZC_BUFFER_IMMEDIATE_SMOKE=PASS$' diag_artifacts/diag_summary.log 2>/dev/null \
+            && grep -q '^ZC_BUFFER_CLEAN_RENDER=PASS$' diag_artifacts/diag_summary.log 2>/dev/null \
+            && grep -q '^NO_ZERO_COPY_AB=PASS$' diag_artifacts/diag_summary.log 2>/dev/null \
+            && grep -q '^ZC_BUFFER_INTEGRATION_AB=PASS$' diag_artifacts/diag_summary.log 2>/dev/null; then
+            echo "Clean CUDA shared-buffer integration and same-pod A/B passed; visual frames captured."
             exit 0
           fi
-          echo "::error::Buffer-to-texture proof failed (remote_exit=${remote_exit:-missing}). Inspect diag_summary.log and stitch.log."
+          echo "::error::Clean shared-buffer integration/A-B failed (remote_exit=${remote_exit:-missing}). Inspect artifacts."
           exit 1
