@@ -1,3 +1,26 @@
+## OEV zero-copy NV12 corruption — EXP7: generic CUDA↔Vulkan OPAQUE_FD sharing PASSES; failure is image-specific — real hardware, decisive (15 Aug 2026)
+
+**Correction to the immediately-following Avenue-2 entry:** run `31854089581` proved that the synchronized Vulkan **image** path did not observe a CUDA-written sentinel that CUDA itself read back byte-exact. It did **not** prove that CUDA and Vulkan cannot share the same backing allocation in general. EXP7 directly tests CUDA-VMM-export -> Vulkan-import with a `VkBuffer` and passes byte-exact, so the proven failure boundary is now specifically the imported **VkImage** path.
+
+**Compile proof:** `JhnsonO/video-stitcher@9059470f01065d5336af8c94bac27a860156dfec` (`diag/zc-exp7-external-memory-caps`) compiled against `JhnsonO/wgpu@c8b6f2f00895210857f77f2a10fc1a32a80d5148` in run `31871577622`. Exact compile-proven sources: `vulkan.rs` 1476 lines / SHA-256 `4da792382d954f5ffe68865d5ae84db9e778c2f6e452917a7749149f50c41089`; `cuda.rs` 1312 lines / SHA-256 `e81e693071608caef213eb34e68335d064e3aded6c58214147f2b6be4ac303b7`.
+
+**Real EXP7 run:** `31872745393`, `ffa-automations` branch `diag/zc-exp7-real-fixture`, head `3d51d19c414638c11f66d1a57d82705bef56f6d8`. NVIDIA preflight passed, Reco SHA `9059470f...`, wgpu resolution gate passed, EXP7 exited after two shared-texture probes before decode, artifact `oev-zero-copy-diag-31872745393` captured the evidence, and RunPod termination was confirmed.
+
+**VkBuffer control: PASS byte-exact.** Vulkan 1.3.275. External-buffer capabilities for `TRANSFER_SRC|TRANSFER_DST + OPAQUE_FD`: `EXPORTABLE=true`, `IMPORTABLE=true`, `DEDICATED_ONLY=false`, OPAQUE_FD compatible. CUDA wrote the deterministic 1024-byte sentinel at offsets 0 / 524288 / 1047552, CUDA ground truth was byte-exact, CUDA signalled the external semaphore after synchronization, and the exact Vulkan transfer waited on it at `TRANSFER`. Vulkan returned `byte_exact=true` at all three offsets; `ZC_EXP7_BUF_ALIAS_RESULT=PASS`.
+
+**Image capability queries: no obvious compatibility/dedicated-allocation red flag.**
+- Y `R8_UNORM` LINEAR 3840x2160: `IMPORTABLE=true`, `DEDICATED_ONLY=false`, OPAQUE_FD compatible, `requiresDedicatedAllocation=false`, `prefersDedicatedAllocation=false`; Vulkan requirement 8,294,400 bytes / alignment 128 / `memoryTypeBits=0xf`; CUDA allocation 8,388,608.
+- UV `R8G8_UNORM` LINEAR 1920x1080: same flags; Vulkan requirement 4,147,200 bytes / alignment 128 / `memoryTypeBits=0xf`; CUDA allocation 4,194,304.
+`ZC_DIAG` still reports row pitch 3840, subresource offset 0, subresource size exactly pitch*height, and allocation size >= requirements. `EXP7_IMAGE_CAPABILITY_RED_FLAG=NO`.
+
+**Important API correction:** do not use `vkGetMemoryFdPropertiesKHR` with `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT`; VUID-00674 forbids it. The temporary draft using that query was removed before compile/hardware testing.
+
+**Now ruled out unless contradictory evidence appears:** readback-mechanism failure; wgpu UNINITIALIZED/layout discard; missing CUDA->Vulkan semaphore synchronization; generic CUDA-VMM -> Vulkan OPAQUE_FD sharing failure; obvious external-image capability rejection / OPAQUE_FD incompatibility / dedicated-allocation requirement.
+
+**Remaining failure boundary:** imported **linear VkImage** representation/binding/visibility semantics. One measured difference, not yet a root-cause claim, is allocation sizing: production imports CUDA's VMM granularity-rounded sizes (8,388,608 / 4,194,304) while Vulkan image requirements are smaller exact sizes (8,294,400 / 4,147,200). This is a bounded next experiment candidate, not a conclusion.
+
+**Stop point:** EXP7 recorded; no production merge and no next hypothesis started.
+
 ## OEV zero-copy NV12 corruption — Avenue 1 CLOSED (readback mechanism sound), Avenue 2 FALSIFIED (physical aliasing does NOT hold) — real hardware evidence, decisive (15 Aug 2026)
 
 **Ticket context:** continuation of the zero-copy NV12 corruption thread (entries below). Both prior hypotheses (A: wgpu layout-discard, B: missing CUDA->Vulkan semaphore sync) were already falsified with real post-wait pixel evidence -- CUDA writes proven correct (mean=89.51/76.65), Vulkan-side readback of the same imported textures still all-zero. This entry runs the two-avenue search order from that point: (1) is the ZC_EXP4 readback mechanism itself trustworthy, and if so (2) do CUDA and Vulkan actually alias the same physical memory.
