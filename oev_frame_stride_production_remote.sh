@@ -3,28 +3,45 @@
 # Same 30s stereo sample, same pod/GPU/model/settings, stride 1 vs stride 3.
 # Production invariant: AI may run sparsely, but EVERY source frame is rendered.
 # No post-hoc retiming is allowed in this harness.
-set -euo pipefail
+set -Eeuo pipefail
+trap 'rc=$?; echo "HARNESS_ERR line=$LINENO rc=$rc cmd=$BASH_COMMAND" >&2' ERR
 
 ROOT=/tmp/oev_stride_prod
 RECO=/tmp/video-stitcher/target/release/reco
 MODEL="$ROOT/yolo26m.onnx"
 mkdir -p "$ROOT/results"
 cd "$ROOT"
-for f in left.mp4 right.mp4 "$MODEL"; do
-  test -s "$f" || { echo "FATAL: required input missing/empty: $f" >&2; exit 2; }
-done
-test -x "$RECO" || { echo "FATAL: Reco binary missing: $RECO" >&2; exit 2; }
 
-SOURCE_FPS=$(ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of default=nw=1:nk=1 left.mp4)
-SOURCE_FRAMES=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 left.mp4)
-RIGHT_FRAMES=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 right.mp4)
-SOURCE_DURATION=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 left.mp4)
-if [ -z "$SOURCE_FRAMES" ] || [ "$SOURCE_FRAMES" = N/A ] || [ -z "$RIGHT_FRAMES" ] || [ "$RIGHT_FRAMES" = N/A ]; then
-  echo "FATAL: ffprobe could not count source frames" >&2; exit 2
-fi
-if [ "$SOURCE_FRAMES" -ne "$RIGHT_FRAMES" ]; then
-  echo "FATAL: stereo source counts differ: left=$SOURCE_FRAMES right=$RIGHT_FRAMES" >&2; exit 2
-fi
+fatal() { echo "FATAL: $*" >&2; exit 20; }
+require_log() {
+  local label="$1" pattern="$2" file="$3"
+  if grep -qiE "$pattern" "$file"; then
+    echo "GATE PASS: $label"
+  else
+    fatal "$label evidence missing in $file"
+  fi
+}
+probe_value() {
+  local label="$1"; shift
+  local value
+  if ! value=$(ffprobe -v error "$@"); then
+    fatal "ffprobe failed for $label"
+  fi
+  value=$(printf '%s' "$value" | tr -d '\r\n')
+  [ -n "$value" ] && [ "$value" != N/A ] || fatal "ffprobe returned empty/N/A for $label"
+  printf '%s' "$value"
+}
+
+for f in left.mp4 right.mp4 "$MODEL"; do
+  test -s "$f" || fatal "required input missing/empty: $f"
+done
+test -x "$RECO" || fatal "Reco binary missing: $RECO"
+
+SOURCE_FPS=$(probe_value source_fps -select_streams v:0 -show_entries stream=avg_frame_rate -of default=nw=1:nk=1 left.mp4)
+SOURCE_FRAMES=$(probe_value left_source_frames -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 left.mp4)
+RIGHT_FRAMES=$(probe_value right_source_frames -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 right.mp4)
+SOURCE_DURATION=$(probe_value source_duration -show_entries format=duration -of default=nw=1:nk=1 left.mp4)
+[ "$SOURCE_FRAMES" -eq "$RIGHT_FRAMES" ] || fatal "stereo source counts differ: left=$SOURCE_FRAMES right=$RIGHT_FRAMES"
 cat > source_metadata.txt <<META
 source_fps=$SOURCE_FPS
 container_source_frames=$SOURCE_FRAMES
@@ -49,7 +66,8 @@ json.dump(m,open(p,'w'),indent=2)
 PY
 
 for stride in 1 3; do
-  out="$ROOT/results/stride_${stride}"; mkdir -p "$out/stills"
+  out="$ROOT/results/stride_${stride}"
+  mkdir -p "$out/stills"
   echo "=== PRODUCTION STRIDE $stride: source=$SOURCE_FRAMES, lookahead=1.5s ===" | tee "$out/benchmark.log"
   start_ns=$(date +%s%N)
   set +e
@@ -58,7 +76,8 @@ for stride in 1 3; do
     --panner-preset broadcast --lookahead 1.5 --detection-interval 1 \
     --frame-stride "$stride" --events "$out/events.jsonl" \
     --width 1920 --height 1080 2>&1 | tee "$out/stitch.log"
-  rc=${PIPESTATUS[0]}; set -e
+  rc=${PIPESTATUS[0]}
+  set -e
   end_ns=$(date +%s%N)
   wall_s=$(python3 - "$start_ns" "$end_ns" <<'PY'
 import sys
@@ -66,57 +85,62 @@ print(f"{(int(sys.argv[2])-int(sys.argv[1]))/1e9:.6f}")
 PY
 )
   echo "wall_seconds=$wall_s" | tee -a "$out/benchmark.log"
-  [ "$rc" -eq 0 ] || { echo "FATAL: stride $stride Reco exit $rc" >&2; exit 10; }
-  test -s "$out/output.mp4" && test -s "$out/events.jsonl" || { echo "FATAL: stride $stride output missing" >&2; exit 11; }
+  [ "$rc" -eq 0 ] || fatal "stride $stride Reco exit $rc"
+  test -s "$out/output.mp4" || fatal "stride $stride output.mp4 missing/empty"
+  test -s "$out/events.jsonl" || fatal "stride $stride events.jsonl missing/empty"
 
-  grep -q 'Autocam: tracking enabled' "$out/stitch.log" || { echo "FATAL: stride $stride tracking not active" >&2; exit 12; }
-  grep -qiE 'GPU zero-copy|zero-copy|zero copy' "$out/stitch.log" || { echo "FATAL: stride $stride zero-copy evidence missing" >&2; exit 12; }
-  grep -qiE 'NVDEC.*CUDA|NVDEC \(CUDA\)|cuvid' "$out/stitch.log" || { echo "FATAL: stride $stride NVDEC evidence missing" >&2; exit 12; }
-  grep -q 'CUDAExecutionProvider' "$out/stitch.log" || { echo "FATAL: stride $stride CUDA EP evidence missing" >&2; exit 12; }
-  ! grep -q 'No execution providers from session options registered successfully' "$out/stitch.log" || { echo "FATAL: stride $stride CUDA EP fallback" >&2; exit 12; }
+  require_log "stride $stride tracking" 'Autocam: tracking enabled' "$out/stitch.log"
+  require_log "stride $stride zero-copy" 'GPU zero-copy|zero-copy|zero copy' "$out/stitch.log"
+  require_log "stride $stride NVDEC" 'NVDEC.*CUDA|NVDEC \(CUDA\)|cuvid' "$out/stitch.log"
+  require_log "stride $stride CUDA EP" 'CUDAExecutionProvider' "$out/stitch.log"
+  if grep -q 'No execution providers from session options registered successfully' "$out/stitch.log"; then
+    fatal "stride $stride CUDA EP fell back"
+  fi
+  echo "GATE PASS: stride $stride CUDA EP no-fallback"
   if [ "$stride" -eq 3 ]; then
-    grep -q 'Frame stride: analyze 1/3, render every source frame' "$out/stitch.log" || { echo "FATAL: production stride CLI evidence missing" >&2; exit 12; }
-    grep -q 'analyze every 3 frames' "$out/stitch.log" || { echo "FATAL: production sparse-analysis loop evidence missing" >&2; exit 12; }
+    require_log "production stride CLI" 'Frame stride: analyze 1/3, render every source frame' "$out/stitch.log"
+    require_log "production sparse-analysis loop" 'analyze every 3 frames' "$out/stitch.log"
   fi
 
-  output_frames=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 "$out/output.mp4")
-  output_fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of default=nw=1:nk=1 "$out/output.mp4")
-  output_duration=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$out/output.mp4")
-  world_events=$(python3 - "$out/events.jsonl" <<'PY'
+  echo "POSTCHECK: probing stride $stride output"
+  output_frames=$(probe_value "stride_${stride}_output_frames" -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 "$out/output.mp4")
+  output_fps=$(probe_value "stride_${stride}_output_fps" -select_streams v:0 -show_entries stream=avg_frame_rate -of default=nw=1:nk=1 "$out/output.mp4")
+  output_duration=$(probe_value "stride_${stride}_output_duration" -show_entries format=duration -of default=nw=1:nk=1 "$out/output.mp4")
+  read -r world_events pan_events pose_events < <(python3 - "$out/events.jsonl" <<'PY'
 import json,sys
-n=0
+counts={'world_state':0,'pan_decision':0,'pose_presented':0}
 for line in open(sys.argv[1]):
     try: e=json.loads(line)
     except Exception: continue
-    n += e.get('kind') == 'world_state'
-print(n)
+    k=e.get('kind')
+    if k in counts: counts[k]+=1
+print(counts['world_state'], counts['pan_decision'], counts['pose_presented'])
 PY
 )
-  pan_events=$(python3 - "$out/events.jsonl" <<'PY'
-import json,sys
-n=0
-for line in open(sys.argv[1]):
-    try: e=json.loads(line)
-    except Exception: continue
-    n += e.get('kind') == 'pan_decision'
-print(n)
-PY
-)
+  echo "POSTCHECK stride=$stride output_frames=$output_frames output_fps=$output_fps output_duration=$output_duration world_state_events=$world_events pan_decision_events=$pan_events pose_presented_events=$pose_events"
   cat >> "$out/benchmark.log" <<META
 output_frames=$output_frames
 output_fps=$output_fps
 output_duration=$output_duration
 world_state_events=$world_events
 pan_decision_events=$pan_events
+pose_presented_events=$pose_events
 META
 
+  # Stills are useful visual evidence, but a thumbnail extraction problem must
+  # not invalidate the mechanical full-rate production gates.
   for t in 3 9 15 24 27; do
-    ffmpeg -y -v error -ss "$t" -i "$out/output.mp4" -frames:v 1 "$out/stills/t${t}.jpg"
+    if ffmpeg -y -v error -ss "$t" -i "$out/output.mp4" -frames:v 1 "$out/stills/t${t}.jpg"; then
+      echo "STILL PASS: stride=$stride t=${t}s"
+    else
+      echo "STILL WARN: stride=$stride t=${t}s extraction failed" >&2
+    fi
   done
 done
 
+echo "POSTCHECK: evaluating production gates"
 python3 - <<'PY'
-import json,math,re,statistics
+import json,math,statistics
 from fractions import Fraction
 from pathlib import Path
 root=Path('/tmp/oev_stride_prod/results')
@@ -126,15 +150,14 @@ for line in open('/tmp/oev_stride_prod/source_metadata.txt'):
         k,v=line.strip().split('=',1); source[k]=v
 
 def parse_log(s):
-    t=(root/f'stride_{s}'/'benchmark.log').read_text()
     vals={}
-    for line in t.splitlines():
+    for line in (root/f'stride_{s}'/'benchmark.log').read_text().splitlines():
         if '=' in line:
             k,v=line.split('=',1); vals[k]=v
     return vals
 
 def load_events(s):
-    worlds={}; pans={}
+    worlds={}; pans={}; poses={}
     for line in open(root/f'stride_{s}'/'events.jsonl'):
         try:e=json.loads(line)
         except Exception:continue
@@ -142,7 +165,8 @@ def load_events(s):
         if i is None: continue
         if e.get('kind')=='world_state': worlds[int(i)]=e
         elif e.get('kind')=='pan_decision': pans[int(i)]=e.get('pose') or {}
-    return worlds,pans
+        elif e.get('kind')=='pose_presented': poses[int(i)]=e.get('pose') or {}
+    return worlds,pans,poses
 
 def pct(xs,p):
     if not xs:return None
@@ -160,6 +184,7 @@ for s in (1,3):
         'output_duration':float(x['output_duration']),
         'world_state_events':int(x['world_state_events']),
         'pan_decision_events':int(x['pan_decision_events']),
+        'pose_presented_events':int(x['pose_presented_events']),
     })
 base=rows[0]; fast=rows[1]
 fast['speedup_vs_stride1']=base['wall_seconds']/fast['wall_seconds']
@@ -167,8 +192,7 @@ fast['wall_reduction_pct']=100*(1-fast['wall_seconds']/base['wall_seconds'])
 fast['output_frame_ratio_vs_stride1']=fast['output_frames']/base['output_frames']
 fast['duration_delta_s_vs_stride1']=fast['output_duration']-base['output_duration']
 
-# Compare sparse analysis decisions directly to every-third baseline decision.
-bw,bp=load_events(1); sw,sp=load_events(3)
+bw,bp,_=load_events(1); sw,sp,_=load_events(3)
 ball_err=[]; pan_err=[]; fov_err=[]; lost_vs=0; baseline_ball=0
 for i,w in sw.items():
     b=bw.get(i*3)
@@ -198,32 +222,30 @@ quality={
     'fov_mean_delta_deg':statistics.fmean(fov_err) if fov_err else None,
 }
 
-# Hard production gates. Output must remain full-rate/full-duration; no retime.
-if fast['output_frame_ratio_vs_stride1'] < 0.995:
-    raise SystemExit(f"FAIL: stride3 dropped rendered frames: ratio={fast['output_frame_ratio_vs_stride1']:.6f}")
-if abs(fast['duration_delta_s_vs_stride1']) > 0.10:
-    raise SystemExit(f"FAIL: stride3 output duration changed: delta={fast['duration_delta_s_vs_stride1']:.6f}s")
-if Fraction(fast['output_fps']) != Fraction(base['output_fps']):
-    raise SystemExit(f"FAIL: stride3 output FPS changed: s1={base['output_fps']} s3={fast['output_fps']}")
-# AI cadence should be sparse: roughly one third as many analysis events.
-ratio=fast['world_state_events']/max(1,base['world_state_events'])
-if not 0.30 <= ratio <= 0.37:
-    raise SystemExit(f"FAIL: stride3 analysis cadence not ~1/3: ratio={ratio:.6f}")
+gates={}
+gates['full_rate_render']=fast['output_frame_ratio_vs_stride1'] >= 0.995
+gates['same_duration']=abs(fast['duration_delta_s_vs_stride1']) <= 0.10
+gates['same_output_fps']=Fraction(fast['output_fps']) == Fraction(base['output_fps'])
+analysis_ratio=fast['world_state_events']/max(1,base['world_state_events'])
+gates['sparse_analysis_cadence']=0.30 <= analysis_ratio <= 0.37
+gates['posthoc_retime_used']=False
+# PosePresented is emitted on render/output cadence and should stay full-rate.
+pose_ratio=fast['pose_presented_events']/max(1,base['pose_presented_events'])
+gates['full_rate_pose_presentation']=pose_ratio >= 0.995
 
 result={
     'source':source,
     'rows':rows,
+    'analysis_event_ratio_stride3_vs_stride1':analysis_ratio,
+    'pose_event_ratio_stride3_vs_stride1':pose_ratio,
     'quality_stride3_vs_stride1':quality,
-    'production_gates':{
-        'full_rate_render':True,
-        'same_duration':True,
-        'same_output_fps':True,
-        'sparse_analysis_cadence':True,
-        'posthoc_retime_used':False,
-    },
+    'production_gates':gates,
 }
 json.dump(result,open(root/'production_results.json','w'),indent=2)
 print(json.dumps(result,indent=2))
+failed=[k for k,v in gates.items() if k!='posthoc_retime_used' and v is not True]
+if failed:
+    raise SystemExit('FAIL production gates: '+', '.join(failed))
 PY
 
 echo 'FRAME_STRIDE_PRODUCTION_ACCEPTANCE=PASS'
