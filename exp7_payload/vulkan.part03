@@ -1,0 +1,300 @@
+        };
+
+        // OPAQUE_FD note (Khronos VUID-00674 / issue #1783):
+        // `vkGetMemoryFdPropertiesKHR` must NOT be called with OPAQUE_FD,
+        // so there is no fd-side memoryTypeBits query available for this
+        // CUDA-created payload. For OPAQUE_FD imported from outside Vulkan,
+        // the external-memory-fd spec does not provide a second runtime
+        // memory-type/size oracle equivalent to the DMA_BUF path.
+        // Therefore this control follows NVIDIA's simpleVulkanMMAP pattern:
+        // choose from the VkBuffer's own `memRequirements.memoryTypeBits`,
+        // prefer DEVICE_LOCAL, then fall back to any permitted type.
+        // The runtime sentinel comparison is the actual aliasing evidence.
+        // If this buffer control passes while the imported image path still
+        // fails, that points toward image-specific external-memory semantics
+        // rather than a generic CUDA-VMM -> Vulkan OPAQUE_FD failure.
+        // Do not reintroduce vkGetMemoryFdPropertiesKHR for OPAQUE_FD here.
+        // Capability/dedicated-allocation queries above remain the queryable
+        // evidence for whether this buffer configuration is importable.
+        //
+        let memory_type_index = pick_memory_type(
+            buf_reqs.memory_type_bits,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )
+        .or_else(|| pick_memory_type(buf_reqs.memory_type_bits, vk::MemoryPropertyFlags::empty()))
+        .ok_or_else(|| {
+            CudaInteropError::VulkanError("EXP7: no compatible memory type for imported buffer".into())
+        })?;
+
+        // NVIDIA passes memRequirements.size verbatim -- not the CUDA
+        // granularity-rounded size, which is what the image path uses.
+        let mut import_info = vk::ImportMemoryFdInfoKHR::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD)
+            .fd(fd);
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(buf_reqs.size)
+            .memory_type_index(memory_type_index)
+            .push_next(&mut import_info);
+
+        let shared_memory = raw_device.allocate_memory(&alloc_info, None).map_err(|e| {
+            CudaInteropError::VulkanError(format!("vkAllocateMemory (EXP7 import fd): {e:?}"))
+        })?;
+
+        raw_device
+            .bind_buffer_memory(shared_buffer, shared_memory, 0)
+            .map_err(|e| {
+                CudaInteropError::VulkanError(format!("vkBindBufferMemory (EXP7): {e:?}"))
+            })?;
+
+        log::info!(
+            "ZC_EXP7_BUF: imported OPAQUE_FD into VkBuffer -- vk_mem_reqs_size={} \
+             alignment={} cuda_alloc_size={} allocationSize_used={} \
+             size_exact_match={} memory_type_index={memory_type_index}",
+            buf_reqs.size,
+            buf_reqs.alignment,
+            shared_mem.alloc_size,
+            buf_reqs.size,
+            shared_mem.alloc_size as u64 == buf_reqs.size,
+        );
+
+        // --- CUDA->Vulkan sync: diagnostic external semaphore ---
+        // Without this the copy submit races the CUDA writes and a byte
+        // mismatch would be inconclusive. Created here (not earlier) so the
+        // capability gates above can bail without leaking semaphore state.
+        let (vk_semaphore, sem_fd) = create_export_semaphore(gpu)?;
+        // Takes ownership of sem_fd on success; closes it itself on failure.
+        let cuda_semaphore = crate::interop::cuda::cuda_import_external_semaphore(sem_fd)?;
+
+        // --- CUDA writes the sentinel at the three offsets ---
+        for off in OFFSETS {
+            crate::interop::cuda::cuda_memcpy_htod_2d(
+                cuda_ptr + off as u64,
+                SENTINEL_LEN,
+                sentinel.as_ptr(),
+                SENTINEL_LEN,
+                SENTINEL_LEN,
+                1,
+            )?;
+        }
+        // Ordered after the writes have *completed*, not merely been
+        // submitted, so the semaphore signal cannot precede the data.
+        crate::interop::cuda::cuda_synchronize()?;
+        crate::interop::cuda::cuda_signal_external_semaphore(cuda_semaphore)?;
+        log::info!(
+            "ZC_EXP7_BUF_SYNC: sentinel writes complete, CUDA signalled the \
+             imported external semaphore; the shared->staging copy submit below \
+             waits on it at TRANSFER"
+        );
+
+        // --- CUDA-side ground truth (control for the control) ---
+        // If this fails the harness is broken, not the hypothesis.
+        let mut cuda_nonzero = [0usize; OFFSETS.len()];
+        let mut cuda_exact = [false; OFFSETS.len()];
+        for (i, off) in OFFSETS.iter().enumerate() {
+            let mut host = vec![0u8; SENTINEL_LEN];
+            crate::interop::cuda::cuda_memcpy_dtoh(
+                host.as_mut_ptr() as *mut std::ffi::c_void,
+                cuda_ptr + *off as u64,
+                SENTINEL_LEN,
+            )?;
+            cuda_nonzero[i] = host.iter().filter(|b| **b != 0).count();
+            cuda_exact[i] = host == sentinel;
+        }
+
+        // --- Vulkan-side read: copy shared buffer -> host-visible staging ---
+        let staging_info = vk::BufferCreateInfo::default()
+            .size(CONTROL_SIZE as u64)
+            .usage(vk::BufferUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let staging_buffer = raw_device.create_buffer(&staging_info, None).map_err(|e| {
+            CudaInteropError::VulkanError(format!("vkCreateBuffer (EXP7 staging): {e:?}"))
+        })?;
+        let staging_reqs = raw_device.get_buffer_memory_requirements(staging_buffer);
+        let staging_type = pick_memory_type(
+            staging_reqs.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )
+        .ok_or_else(|| {
+            CudaInteropError::VulkanError("EXP7: no HOST_VISIBLE|HOST_COHERENT memory type".into())
+        })?;
+        let staging_alloc = vk::MemoryAllocateInfo::default()
+            .allocation_size(staging_reqs.size)
+            .memory_type_index(staging_type);
+        let staging_memory = raw_device
+            .allocate_memory(&staging_alloc, None)
+            .map_err(|e| {
+                CudaInteropError::VulkanError(format!("vkAllocateMemory (EXP7 staging): {e:?}"))
+            })?;
+        raw_device
+            .bind_buffer_memory(staging_buffer, staging_memory, 0)
+            .map_err(|e| {
+                CudaInteropError::VulkanError(format!("vkBindBufferMemory (EXP7 staging): {e:?}"))
+            })?;
+
+        let (raw_queue, queue_family_index) = gpu
+            .queue
+            .as_hal::<Vulkan>()
+            .map(|hal_queue| (hal_queue.as_raw(), hal_queue.family_index()))
+            .ok_or(CudaInteropError::NotVulkan)?;
+
+        let pool_info = vk::CommandPoolCreateInfo::default().queue_family_index(queue_family_index);
+        let cmd_pool = raw_device
+            .create_command_pool(&pool_info, None)
+            .map_err(|e| {
+                CudaInteropError::VulkanError(format!("vkCreateCommandPool (EXP7): {e:?}"))
+            })?;
+        let cmd_alloc = vk::CommandBufferAllocateInfo::default()
+            .command_pool(cmd_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        let cmd_buf = raw_device
+            .allocate_command_buffers(&cmd_alloc)
+            .map_err(|e| {
+                CudaInteropError::VulkanError(format!("vkAllocateCommandBuffers (EXP7): {e:?}"))
+            })?[0];
+
+        let begin_info =
+            vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        raw_device
+            .begin_command_buffer(cmd_buf, &begin_info)
+            .map_err(|e| {
+                CudaInteropError::VulkanError(format!("vkBeginCommandBuffer (EXP7): {e:?}"))
+            })?;
+        let region = vk::BufferCopy::default()
+            .src_offset(0)
+            .dst_offset(0)
+            .size(CONTROL_SIZE as u64);
+        raw_device.cmd_copy_buffer(
+            cmd_buf,
+            shared_buffer,
+            staging_buffer,
+            std::slice::from_ref(&region),
+        );
+        raw_device.end_command_buffer(cmd_buf).map_err(|e| {
+            CudaInteropError::VulkanError(format!("vkEndCommandBuffer (EXP7): {e:?}"))
+        })?;
+
+        let fence = raw_device
+            .create_fence(&vk::FenceCreateInfo::default(), None)
+            .map_err(|e| CudaInteropError::VulkanError(format!("vkCreateFence (EXP7): {e:?}")))?;
+        // THE synchronized submit: waits on the CUDA-signalled semaphore at
+        // TRANSFER before the shared->staging copy executes. PASS/FAIL may
+        // only be classified from bytes read after this completes.
+        let wait_semaphores = [vk_semaphore];
+        let wait_stages = [vk::PipelineStageFlags::TRANSFER];
+        let submit_info = vk::SubmitInfo::default()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .command_buffers(std::slice::from_ref(&cmd_buf));
+        raw_device
+            .queue_submit(raw_queue, std::slice::from_ref(&submit_info), fence)
+            .map_err(|e| CudaInteropError::VulkanError(format!("vkQueueSubmit (EXP7): {e:?}")))?;
+        raw_device
+            .wait_for_fences(&[fence], true, u64::MAX)
+            .map_err(|e| CudaInteropError::VulkanError(format!("vkWaitForFences (EXP7): {e:?}")))?;
+
+        let mapped = raw_device
+            .map_memory(
+                staging_memory,
+                0,
+                CONTROL_SIZE as u64,
+                vk::MemoryMapFlags::empty(),
+            )
+            .map_err(|e| CudaInteropError::VulkanError(format!("vkMapMemory (EXP7): {e:?}")))?;
+        let host_view = std::slice::from_raw_parts(mapped as *const u8, CONTROL_SIZE);
+
+        let mut all_pass = true;
+        for (i, off) in OFFSETS.iter().enumerate() {
+            let window = &host_view[*off..*off + SENTINEL_LEN];
+            let vk_nonzero = window.iter().filter(|b| **b != 0).count();
+            let byte_exact = window == sentinel.as_slice();
+            if !byte_exact {
+                all_pass = false;
+            }
+            log::info!(
+                "ZC_EXP7_BUF_ALIAS: offset={off} expected_nonzero={SENTINEL_LEN} \
+                 cuda_nonzero={} cuda_byte_exact={} vk_nonzero={vk_nonzero} \
+                 byte_exact={byte_exact}",
+                cuda_nonzero[i],
+                cuda_exact[i],
+            );
+        }
+
+        let cuda_ground_truth_ok = cuda_exact.iter().all(|v| *v);
+        raw_device.unmap_memory(staging_memory);
+
+        if !cuda_ground_truth_ok {
+            log::error!(
+                "ZC_EXP7_BUF_ALIAS_RESULT=HARNESS_ERROR -- the CUDA-side ground-truth \
+                 readback did not return the sentinel, so the intended mechanism was \
+                 never exercised. This says NOTHING about buffer aliasing."
+            );
+        } else {
+            log::info!(
+                "ZC_EXP7_BUF_ALIAS_RESULT={}",
+                if all_pass { "PASS" } else { "FAIL" }
+            );
+        }
+
+        // --- Teardown ---
+        // The wait above consumed the binary semaphore's signal, so it is
+        // unsignalled and has no pending operations; safe to destroy. The
+        // CUDA handle is destroyed separately from the VkSemaphore, and the
+        // exported fd was consumed by the import.
+        if let Err(e) = crate::interop::cuda::cuda_destroy_external_semaphore(cuda_semaphore) {
+            log::warn!("ZC_EXP7: cuDestroyExternalSemaphore failed: {e:?}");
+        }
+        raw_device.destroy_semaphore(vk_semaphore, None);
+        raw_device.destroy_fence(fence, None);
+        raw_device.destroy_command_pool(cmd_pool, None);
+        raw_device.destroy_buffer(staging_buffer, None);
+        raw_device.free_memory(staging_memory, None);
+        raw_device.destroy_buffer(shared_buffer, None);
+        // Frees the imported memory and, with it, the fd Vulkan took
+        // ownership of at import time.
+        raw_device.free_memory(shared_memory, None);
+    }
+
+    drop(shared_mem);
+    Ok(())
+}
+
+/// Bytes per pixel for the texture formats we use.
+fn format_bytes_per_pixel(format: wgpu::TextureFormat) -> usize {
+    match format {
+        wgpu::TextureFormat::R8Unorm => 1,
+        wgpu::TextureFormat::Rg8Unorm => 2,
+        wgpu::TextureFormat::R16Unorm => 2,
+        wgpu::TextureFormat::Rg16Unorm => 4,
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => 4,
+        _ => panic!("unsupported format for CUDA interop: {format:?}"),
+    }
+}
+
+/// Map wgpu texture format to Vulkan format.
+fn wgpu_format_to_vk(format: wgpu::TextureFormat) -> ash::vk::Format {
+    match format {
+        wgpu::TextureFormat::R8Unorm => ash::vk::Format::R8_UNORM,
+        wgpu::TextureFormat::Rg8Unorm => ash::vk::Format::R8G8_UNORM,
+        wgpu::TextureFormat::R16Unorm => ash::vk::Format::R16_UNORM,
+        wgpu::TextureFormat::Rg16Unorm => ash::vk::Format::R16G16_UNORM,
+        wgpu::TextureFormat::Rgba8Unorm => ash::vk::Format::R8G8B8A8_UNORM,
+        wgpu::TextureFormat::Rgba8UnormSrgb => ash::vk::Format::R8G8B8A8_SRGB,
+        _ => panic!("unsupported format for Vulkan interop: {format:?}"),
+    }
+}
+
+/// NV12 plane identifier for [`create_nv12_shared_texture`].
+#[derive(Debug, Clone, Copy)]
+pub enum Nv12Plane {
+    /// Luminance plane (full resolution, `R8Unorm` or `R16Unorm` for 10-bit).
+    Y,
+    /// Chrominance plane (half resolution in each dimension, `Rg8Unorm` or `Rg16Unorm` for 10-bit).
+    Uv,
+}
+
+/// Create a shared texture sized and formatted for an NV12 plane.
+///
+/// This is a convenience wrapper around [`create_shared_texture`] that
+/// infers the wgpu format and dimensions from the plane type and pixel
+/// format. The texture formats are determined by
