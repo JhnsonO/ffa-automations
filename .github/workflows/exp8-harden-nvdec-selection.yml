@@ -18,6 +18,7 @@ jobs:
         with:
           ref: diag/zc-exp8-image-alloc-size
           fetch-depth: 1
+          token: ${{ secrets.GH_PAT }}
 
       - name: Apply guarded harness patch
         run: python3 scripts/exp8_patch_nvdec_gate.py
