@@ -1,0 +1,256 @@
+name: OEV — Frame Stride Diagnostic
+
+on:
+  push:
+    branches:
+      - feature/frame-stride-testing
+    paths:
+      - .github/workflows/oev-frame-stride-diag.yml
+      - oev_frame_stride_benchmark_remote.sh
+
+permissions:
+  contents: read
+
+jobs:
+  frame-stride-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      RECO_SHA: c647cd101370887eabdf50059dd70eea3d9e730c
+      RECO_BRANCH: feature/frame-stride-testing
+      SAMPLE_SET_ID: GX010197-seed1384188843
+      SAMPLE_ID: sample_01
+      DURATION_S: '30'
+      DATACENTER: EU-RO-1
+
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v5
+
+      - name: Generate ephemeral SSH key
+        run: |
+          pip install -q cryptography
+          python3 - <<'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+          key=Ed25519PrivateKey.generate()
+          open('/tmp/runpod_key','wb').write(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.OpenSSH,serialization.NoEncryption()))
+          open('/tmp/runpod_key.pub','wb').write(key.public_key().public_bytes(serialization.Encoding.OpenSSH,serialization.PublicFormat.OpenSSH)+b' oev-frame-stride\n')
+          os.chmod('/tmp/runpod_key',0o600)
+          PY
+
+      - name: Launch one healthy RunPod pod
+        id: launch
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          VOLUME_MAP_JSON: ${{ vars.OEV_NETWORK_VOLUME_MAP }}
+        run: |
+          python3 -u - <<'PY'
+          import json, os, subprocess, sys, time, urllib.request, urllib.error
+          api=os.environ['RUNPOD_API_KEY']; base='https://rest.runpod.io/v1'
+          headers={'Authorization':f'Bearer {api}','Content-Type':'application/json','Accept':'application/json'}
+          dc=os.environ['DATACENTER']; volumes=json.loads(os.environ['VOLUME_MAP_JSON']); volume=volumes.get(dc)
+          if not volume: raise SystemExit(f'No network volume mapped for {dc}: {volumes}')
+          pub=open('/tmp/runpod_key.pub').read().strip(); ids='/tmp/runpod_all_pod_ids.txt'; open(ids,'w').close()
+          def req(method,url,data=None,timeout=30):
+              body=json.dumps(data).encode() if data is not None else None
+              r=urllib.request.Request(url,data=body,method=method,headers=headers)
+              try:
+                  with urllib.request.urlopen(r,timeout=timeout) as x:
+                      raw=x.read(); return json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as e:
+                  raise RuntimeError(f'HTTP {e.code}: {e.read().decode(errors="replace")[:500]}') from e
+          def delete(pid):
+              try: req('DELETE',f'{base}/pods/{pid}',timeout=20)
+              except Exception as e: print(f'delete warning {pid}: {e}')
+          def ssh_ready(ip,port):
+              for _ in range(24):
+                  p=subprocess.run(['ssh','-i','/tmp/runpod_key','-p',str(port),'-o','StrictHostKeyChecking=no','-o','ConnectTimeout=8',f'root@{ip}','echo OK'],capture_output=True,text=True,timeout=15)
+                  if 'OK' in p.stdout: return True
+                  time.sleep(5)
+              return False
+          def preflight(ip,port):
+              common=['-i','/tmp/runpod_key','-o','StrictHostKeyChecking=no','-o','ServerAliveInterval=30','-o','ServerAliveCountMax=10']
+              subprocess.run(['scp',*common,'-P',str(port),'runpod_gpu_preflight.sh',f'root@{ip}:/tmp/runpod_gpu_preflight.sh'],check=True,timeout=60)
+              p=subprocess.run(['ssh',*common,'-p',str(port),f'root@{ip}','chmod +x /tmp/runpod_gpu_preflight.sh && stdbuf -oL -eL /tmp/runpod_gpu_preflight.sh'],capture_output=True,text=True,timeout=240)
+              text=p.stdout+p.stderr
+              return p.returncode==0 and 'PREFLIGHT_RESULT=PASS' in text.splitlines(), text
+          winner=None; summaries=[]
+          for attempt in range(1,4):
+              body={
+                'name':'oev-frame-stride-diag','imageName':'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
+                'gpuTypeIds':['NVIDIA GeForce RTX 4090','NVIDIA RTX A5000','NVIDIA GeForce RTX 3090','NVIDIA L4'],
+                'gpuTypePriority':'custom','gpuCount':1,'cloudType':'SECURE','containerDiskInGb':120,
+                'ports':['22/tcp'],'supportPublicIp':True,'allowedCudaVersions':['12.8'],
+                'networkVolumeId':volume,'volumeMountPath':'/runpod-volume','dataCenterIds':[dc],
+                'env':{'PUBLIC_KEY':pub,'SSH_PUBLIC_KEY':pub},
+              }
+              try:
+                  pod=req('POST',f'{base}/pods',body); pid=pod['id']; open(ids,'a').write(pid+'\n')
+                  print(f'attempt {attempt}: pod={pid}')
+                  deadline=time.time()+300; info={}; ip=port=None
+                  while time.time()<deadline:
+                      info=req('GET',f'{base}/pods/{pid}?includeMachine=true')
+                      ip=info.get('publicIp'); maps=info.get('portMappings') or {}; port=maps.get('22') or maps.get('22/tcp')
+                      if ip and port: break
+                      time.sleep(10)
+                  if not ip or not port: raise RuntimeError('network timeout')
+                  if not ssh_ready(ip,port): raise RuntimeError('SSH timeout')
+                  ok,text=preflight(ip,port); open(f'preflight_attempt_{attempt}.txt','w').write(text)
+                  machine=info.get('machine') or {}; gpu=info.get('gpu') or {}
+                  gpu_name=gpu.get('displayName') or (machine.get('gpuType') or {}).get('displayName') or machine.get('gpuDisplayName') or machine.get('gpuTypeId') or 'unknown'
+                  machine_id=info.get('machineId') or 'unknown'; actual_dc=machine.get('dataCenterId') or dc; cost=info.get('costPerHr')
+                  summaries.append(f'attempt={attempt} pod={pid} gpu={gpu_name} machine={machine_id} dc={actual_dc} cost_per_hr={cost} preflight={"PASS" if ok else "FAIL"}')
+                  if not ok:
+                      delete(pid); continue
+                  open('preflight_output.txt','w').write(text)
+                  winner=(pid,ip,str(port),gpu_name,machine_id,actual_dc,'' if cost is None else str(cost)); break
+              except Exception as e:
+                  summaries.append(f'attempt={attempt} result=ERROR error={e}')
+                  print(summaries[-1])
+                  try: delete(pid)
+                  except Exception: pass
+          open('pod_selection_summary.txt','w').write('\n'.join(summaries)+'\n')
+          if not winner:
+              print('::error::No healthy pod after 3 attempts'); sys.exit(1)
+          pid,ip,port,gpu,machine,actual_dc,cost=winner
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              for k,v in [('pod_id',pid),('ip',ip),('port',port),('gpu_type',gpu),('machine_id',machine),('data_center_id',actual_dc),('cost_per_hr',cost)]: f.write(f'{k}={v}\n')
+          print(f'healthy pod: {winner}')
+          PY
+
+      - name: Bootstrap validated environment
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP runpod_bootstrap.sh root@$IP:/tmp/runpod_bootstrap.sh
+          $SSH 'chmod +x /tmp/runpod_bootstrap.sh && stdbuf -oL -eL /tmp/runpod_bootstrap.sh' | tee bootstrap_output.txt
+
+      - name: Build exact frame-stride Reco revision
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          $SSH "set -euo pipefail; cd /tmp/video-stitcher; git fetch origin '$RECO_BRANCH'; git reset --hard '$RECO_SHA'; test \"\$(git rev-parse HEAD)\" = '$RECO_SHA'; source \"\$HOME/.cargo/env\" 2>/dev/null || true; cargo fmt --all; cargo test -p reco-autocam stride_ --lib; time cargo build --release -p reco-cli --features cuda 2>&1 | tee /tmp/frame_stride_build.log; test \"\${PIPESTATUS[0]}\" -eq 0; echo video-stitcher_sha=\$(git rev-parse HEAD) > /tmp/frame_stride_versions.log"
+          $SSH 'cat /tmp/frame_stride_versions.log; tail -20 /tmp/frame_stride_build.log' | tee frame_stride_build_output.txt
+
+      - name: Stage exact sample and model from network volume
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SRC="/runpod-volume/oev-samples/$SAMPLE_SET_ID"
+          MODEL='/runpod-volume/oev-runtime/models/yolo26m.onnx'
+          $SSH "set -e; mkdir -p /tmp/oev_stride; test -s '$SRC/${SAMPLE_ID}_left_${DURATION_S}s.mp4'; test -s '$SRC/${SAMPLE_ID}_right_${DURATION_S}s.mp4'; test -s '$MODEL'; cp '$SRC/${SAMPLE_ID}_left_${DURATION_S}s.mp4' /tmp/oev_stride/left.mp4; cp '$SRC/${SAMPLE_ID}_right_${DURATION_S}s.mp4' /tmp/oev_stride/right.mp4; cp '$MODEL' /tmp/oev_stride/yolo26m.onnx; ls -lh /tmp/oev_stride/{left.mp4,right.mp4,yolo26m.onnx}"
+
+      - name: Run stride 1/2/3/4 matrix on same pod
+        id: matrix
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes root@$IP"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes"
+          $SCP oev_frame_stride_benchmark_remote.sh root@$IP:/tmp/oev_frame_stride_benchmark_remote.sh
+          start=$(date +%s)
+          set +e
+          $SSH "set -e; chmod +x /tmp/oev_frame_stride_benchmark_remote.sh; export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}; export VK_DRIVER_FILES=/tmp/nvidia_egl_icd.json; export VK_ICD_FILENAMES=/tmp/nvidia_egl_icd.json; unset DISPLAY; stdbuf -oL -eL /tmp/oev_frame_stride_benchmark_remote.sh" | tee matrix_console.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          end=$(date +%s)
+          echo "remote_exit=$rc" >> "$GITHUB_OUTPUT"
+          echo "matrix_wall_seconds=$((end-start))" >> "$GITHUB_OUTPUT"
+          test "$rc" -eq 0
+
+      - name: Pull benchmark evidence
+        if: always()
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          GPU_TYPE: ${{ steps.launch.outputs.gpu_type }}
+          MACHINE_ID: ${{ steps.launch.outputs.machine_id }}
+          DATA_CENTER_ID: ${{ steps.launch.outputs.data_center_id }}
+          COST_PER_HR: ${{ steps.launch.outputs.cost_per_hr }}
+        run: |
+          mkdir -p frame_stride_artifacts
+          cp preflight*.txt pod_selection_summary.txt bootstrap_output.txt frame_stride_build_output.txt matrix_console.log frame_stride_artifacts/ 2>/dev/null || true
+          cat > frame_stride_artifacts/pod_metadata.txt <<META
+          gpu_type=$GPU_TYPE
+          machine_id=$MACHINE_ID
+          data_center_id=$DATA_CENTER_ID
+          cost_per_hr=$COST_PER_HR
+          reco_sha=$RECO_SHA
+          sample_set_id=$SAMPLE_SET_ID
+          sample_id=$SAMPLE_ID
+          duration_s=$DURATION_S
+          META
+          if [ -n "${IP:-}" ] && [ -n "${PORT:-}" ]; then
+            SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+            $SCP root@$IP:/tmp/oev_stride/source_metadata.txt frame_stride_artifacts/ || true
+            $SCP root@$IP:/tmp/oev_stride/calibrate.log frame_stride_artifacts/ || true
+            $SCP root@$IP:/tmp/oev_stride/match.json frame_stride_artifacts/ || true
+            $SCP -r root@$IP:/tmp/oev_stride/results frame_stride_artifacts/ || true
+          fi
+          if [ -f frame_stride_artifacts/results/matrix_results.json ] && [ -n "$COST_PER_HR" ]; then
+            python3 - <<'PY'
+          import json,os
+          p='frame_stride_artifacts/results/matrix_results.json'; d=json.load(open(p)); price=float(os.environ['COST_PER_HR'])
+          for r in d['rows']: r['approx_stitch_cost_usd']=price*r['wall_seconds']/3600
+          d['cost_per_hr_usd']=price
+          json.dump(d,open(p,'w'),indent=2)
+          PY
+          fi
+
+      - name: Upload matrix artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-frame-stride-${{ github.run_id }}
+          path: frame_stride_artifacts/
+          retention-days: 14
+
+      - name: Terminate every RunPod pod created
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          POD_ID: ${{ steps.launch.outputs.pod_id }}
+        run: |
+          python3 -u - <<'PY'
+          import os,time,urllib.request,urllib.error
+          ids=[]
+          try: ids=[x.strip() for x in open('/tmp/runpod_all_pod_ids.txt') if x.strip()]
+          except FileNotFoundError: pass
+          one=os.environ.get('POD_ID','').strip()
+          if one and one not in ids: ids.append(one)
+          headers={'Authorization':f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          failed=[]
+          for pid in dict.fromkeys(ids):
+              url=f'https://rest.runpod.io/v1/pods/{pid}'; ok=False; last=''
+              for attempt in range(1,4):
+                  try:
+                      with urllib.request.urlopen(urllib.request.Request(url,method='DELETE',headers=headers),timeout=20) as r:
+                          if r.status in (200,202,204): ok=True; break
+                  except urllib.error.HTTPError as e:
+                      if e.code==404: ok=True; break
+                      last=f'HTTP {e.code}'
+                  except Exception as e: last=repr(e)
+                  time.sleep(5)
+              print(f'cleanup pod={pid} confirmed={ok} last={last}')
+              if not ok: failed.append(pid)
+          if failed: raise SystemExit(f'Unconfirmed pod cleanup: {failed}')
+          PY
+
+      - name: Acceptance
+        if: always()
+        env:
+          REMOTE_EXIT: ${{ steps.matrix.outputs.remote_exit }}
+        run: |
+          test "${REMOTE_EXIT:-1}" = 0 || { echo "::error::Frame-stride matrix did not complete cleanly"; exit 1; }
+          test -s frame_stride_artifacts/results/matrix_results.json || { echo "::error::matrix_results.json missing"; exit 1; }
+          echo 'Frame-stride diagnostic matrix completed and evidence artifact exists.'
