@@ -6,6 +6,8 @@ on:
       - diag/zc-exp7-compile-proof
     paths:
       - '.github/workflows/exp7-compile-dispatch.yml'
+      - 'exp7_payload/**'
+      - 'oev_wgpu_hal_lockfile_update_probe_remote.sh'
 
 permissions:
   actions: write
