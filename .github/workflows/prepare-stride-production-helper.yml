@@ -1,0 +1,36 @@
+name: Prepare production stride acceptance
+
+on:
+  push:
+    branches: [feature/frame-stride-testing]
+    paths:
+      - .github/workflows/prepare-stride-production-helper.yml
+      - tools/prepare_stride_production_workflow_v2.py
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    if: ${{ !contains(github.event.head_commit.message, '[stride-prod-prep]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: feature/frame-stride-testing
+          fetch-depth: 0
+      - name: Patch production acceptance workflow
+        run: |
+          python3 tools/prepare_stride_production_workflow_v2.py b2fc622f4b07dfa0c43e3ad9a96ac85b4f450085
+          git diff --check
+          grep -q 'RECO_SHA: b2fc622f4b07dfa0c43e3ad9a96ac85b4f450085' .github/workflows/oev-frame-stride-diag.yml
+          grep -q 'oev_frame_stride_production_remote.sh' .github/workflows/oev-frame-stride-diag.yml
+          grep -q 'production_results.json' .github/workflows/oev-frame-stride-diag.yml
+          ! grep -q 'oev_frame_stride_benchmark_remote.sh' .github/workflows/oev-frame-stride-diag.yml
+      - name: Commit pinned production acceptance
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/oev-frame-stride-diag.yml
+          git commit -m 'test: pin production stride acceptance to b2fc622 [stride-prod-prep]'
+          git push origin HEAD:feature/frame-stride-testing
