@@ -2,7 +2,7 @@
 
 ## First action
 
-Read `docs/ai-project-state.md`. It is the source of truth for the current stage, frozen files, known evidence, active gate, and next action.
+Read `docs/ai-project-state.md`. It is the source of truth for the current stage, frozen files, known evidence, active gate, and next action. A pinned "Current Status" block at the top of that file summarizes every active/open track — check it first. Closed, self-contained sagas (e.g. Clip Extractor, Flatcam) are moved to `docs/ai-project-state-archive.md`; only read it if the active task genuinely concerns one of those closed areas.
 
 ## Operating model
 
