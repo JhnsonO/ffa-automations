@@ -1,0 +1,161 @@
+name: EXP7 — prepare and dispatch real fixture
+
+on:
+  push:
+    branches:
+      - diag/zc-exp7-real-fixture
+    paths:
+      - '.github/workflows/exp7-prepare-and-dispatch-real-fixture.yml'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  prepare-dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v5
+        with:
+          ref: diag/zc-exp7-real-fixture
+          fetch-depth: 1
+
+      - name: Prepare EXP7 abort-before-decode fixture script
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('oev_zero_copy_diag_remote.sh')
+          s = path.read_text()
+
+          old_sha = 'RECO_SHA="e810a04ee29452b3cd6647cc98875033a2e0d1a0"'
+          new_sha = 'RECO_SHA="9059470f01065d5336af8c94bac27a860156dfec"'
+          if s.count(old_sha) != 1:
+              raise SystemExit(f'expected exactly one old RECO_SHA pin, got {s.count(old_sha)}')
+          s = s.replace(old_sha, new_sha, 1)
+
+          old_env = '''mkdir -p /tmp/oev_run/diag_dump
+          export RECO_DEBUG_DUMP_FRAME=1
+          export RECO_DEBUG_DUMP_DIR=/tmp/oev_run/diag_dump
+          '''
+          new_env = '''mkdir -p /tmp/oev_run/diag_dump
+          # EXP7 master gate + cost guard: run the synchronized VkBuffer control,
+          # query Y+UV external-image capabilities/requirements, then exit before
+          # decode/render/encode. Old frame-dump env remains harmless but should
+          # not fire because EXP7 exits during shared-texture setup.
+          export ZC_EXP7=1
+          export ZC_EXP7_ABORT_AFTER=2
+          export RECO_DEBUG_DUMP_FRAME=1
+          export RECO_DEBUG_DUMP_DIR=/tmp/oev_run/diag_dump
+          '''
+          if s.count(old_env) != 1:
+              raise SystemExit(f'expected exactly one stitch env block, got {s.count(old_env)}')
+          s = s.replace(old_env, new_env, 1)
+
+          s = s.replace(
+              'echo "=== stitch.log: reco stitch (ZERO-COPY ACTIVE, no --no-zero-copy, diagnostic readback armed) ===" | tee stitch.log',
+              'echo "=== stitch.log: EXP7 external-memory diagnostic (ZERO-COPY ACTIVE; abort-before-decode armed) ===" | tee stitch.log',
+              1,
+          )
+          s = s.replace(
+              'echo "reco stitch exit code: $stitch_rc (non-zero is EXPECTED/ACCEPTABLE for this diagnostic -- the readback evidence we need is emitted from the decode thread on frame 0, before/independent of whatever happens later in the job)" | tee -a stitch.log',
+              'echo "reco stitch exit code: $stitch_rc (EXP7 should exit cleanly during shared-texture setup after two image probes; no decode is expected)" | tee -a stitch.log',
+              1,
+          )
+
+          marker = 'echo "=== DIAG SUMMARY ===" | tee diag_summary.log\n'
+          if s.count(marker) != 1:
+              raise SystemExit(f'expected exactly one DIAG SUMMARY marker, got {s.count(marker)}')
+          prefix = s.split(marker, 1)[0]
+          tail = r'''echo "=== DIAG SUMMARY ===" | tee diag_summary.log
+          echo "--- EXP7 external-memory capability + synchronized VkBuffer alias control ---" | tee -a diag_summary.log
+          grep -E "ZC_EXP7_(API|IMG|REQ2|BUF_CAPS|BUF_SYNC|BUF_ALIAS|BUF_ALIAS_RESULT|COMPLETE)" stitch.log \
+            | tee -a diag_summary.log || true
+          grep "ZC_DIAG" stitch.log | tee -a diag_summary.log || true
+
+          BUFFER_RESULT=$(grep -oE 'ZC_EXP7_BUF_ALIAS_RESULT=[A-Z_]+' stitch.log | tail -1 | cut -d= -f2 || true)
+          IMG_COUNT=$(grep -c 'ZC_EXP7_IMG:' stitch.log || true)
+          REQ2_COUNT=$(grep -c 'ZC_EXP7_REQ2:' stitch.log || true)
+          COMPLETE_COUNT=$(grep -c 'ZC_EXP7_COMPLETE:' stitch.log || true)
+
+          echo "EXP7 evidence counts: image_caps=$IMG_COUNT req2=$REQ2_COUNT complete=$COMPLETE_COUNT buffer_result=${BUFFER_RESULT:-MISSING}" | tee -a diag_summary.log
+
+          if [ "$COMPLETE_COUNT" -lt 1 ]; then
+            echo "EXP7_HARNESS_VERDICT=INCOMPLETE -- abort-before-decode completion marker missing." | tee -a diag_summary.log
+            exit 21
+          fi
+          if [ "$IMG_COUNT" -lt 2 ] || [ "$REQ2_COUNT" -lt 2 ]; then
+            echo "EXP7_HARNESS_VERDICT=INCOMPLETE -- expected Y+UV image capability/requirements evidence not captured." | tee -a diag_summary.log
+            exit 22
+          fi
+          if [ -z "$BUFFER_RESULT" ]; then
+            echo "EXP7_HARNESS_VERDICT=INCOMPLETE -- no buffer alias result." | tee -a diag_summary.log
+            exit 23
+          fi
+
+          case "$BUFFER_RESULT" in
+            PASS)
+              echo "EXP7_CLASSIFICATION=A_BUFFER_PASS -- generic CUDA-VMM -> Vulkan OPAQUE_FD buffer sharing works; focus next on image-specific external-memory semantics if the image path remains broken." | tee -a diag_summary.log
+              ;;
+            FAIL)
+              echo "EXP7_CLASSIFICATION=B_BUFFER_FAIL -- synchronized Vulkan buffer read did not observe the CUDA sentinel despite CUDA ground truth; broader external-memory path issue remains." | tee -a diag_summary.log
+              ;;
+            CONFIG_UNSUPPORTED|SKIPPED_NO_VK11)
+              echo "EXP7_CLASSIFICATION=CONTROL_NOT_RUN -- buffer configuration/API gate prevented a valid alias test; do not classify aliasing." | tee -a diag_summary.log
+              ;;
+            HARNESS_ERROR)
+              echo "EXP7_CLASSIFICATION=HARNESS_ERROR -- buffer control did not validly exercise the hypothesis." | tee -a diag_summary.log
+              ;;
+            *)
+              echo "EXP7_CLASSIFICATION=UNKNOWN -- unexpected buffer result '$BUFFER_RESULT'." | tee -a diag_summary.log
+              exit 24
+              ;;
+          esac
+
+          if grep -Eq 'ZC_EXP7_IMG:.*query_result=FORMAT_NOT_SUPPORTED|ZC_EXP7_IMG:.*IMPORTABLE=false|ZC_EXP7_IMG:.*opaque_fd_in_compatible=false|ZC_EXP7_IMG:.*DEDICATED_ONLY=true|ZC_EXP7_REQ2:.*requiresDedicatedAllocation=true' stitch.log; then
+            echo "EXP7_IMAGE_CAPABILITY_RED_FLAG=YES -- image-specific external-memory capability/dedicated-allocation evidence is a strong root-cause candidate. Do not patch production in this run." | tee -a diag_summary.log
+          else
+            echo "EXP7_IMAGE_CAPABILITY_RED_FLAG=NO -- queried image capability/dedicated-allocation flags did not expose an obvious incompatibility." | tee -a diag_summary.log
+          fi
+
+          echo "=== EXP7 diagnostic complete (abort-before-decode by design) ===" | tee -a diag_summary.log
+          exit 0
+          '''
+          # Strip workflow-YAML indentation from the embedded shell tail.
+          import textwrap
+          s = prefix + textwrap.dedent(tail)
+          path.write_text(s)
+          PY
+
+          grep -q 'RECO_SHA="9059470f01065d5336af8c94bac27a860156dfec"' oev_zero_copy_diag_remote.sh
+          grep -q 'export ZC_EXP7=1' oev_zero_copy_diag_remote.sh
+          grep -q 'export ZC_EXP7_ABORT_AFTER=2' oev_zero_copy_diag_remote.sh
+          grep -q 'EXP7_CLASSIFICATION=A_BUFFER_PASS' oev_zero_copy_diag_remote.sh
+          bash -n oev_zero_copy_diag_remote.sh
+          git diff --check
+          git diff -- oev_zero_copy_diag_remote.sh
+
+      - name: Commit prepared fixture script
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add oev_zero_copy_diag_remote.sh
+          git commit -m 'ZC_EXP7: wire abort-before-decode real fixture'
+          git push origin HEAD:diag/zc-exp7-real-fixture
+
+      - name: Dispatch existing one-shot RunPod diagnostic
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail-with-body -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/JhnsonO/ffa-automations/actions/workflows/oev-zero-copy-diag.yml/dispatches \
+            -d '{"ref":"diag/zc-exp7-real-fixture"}'
+          echo 'Dispatched oev-zero-copy-diag.yml on diag/zc-exp7-real-fixture'
