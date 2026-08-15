@@ -1,0 +1,51 @@
+name: EXP8 — gate then dispatch real fixture
+
+on:
+  push:
+    branches:
+      - diag/zc-exp8-image-alloc-size
+    paths:
+      - '.github/workflows/exp8-after-compile-dispatch.yml'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  gate-and-dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for exact compile proof, then dispatch fixture
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMPILE_RUN_ID: '31874496979'
+          BRANCH: 'diag/zc-exp8-image-alloc-size'
+        run: |
+          set -euo pipefail
+          api='https://api.github.com/repos/JhnsonO/ffa-automations'
+          auth=(-H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28")
+
+          for _ in $(seq 1 60); do
+            json=$(curl --fail-with-body -sS -L "${auth[@]}" "$api/actions/runs/$COMPILE_RUN_ID")
+            status=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$json")
+            conclusion=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("conclusion") or "")' <<<"$json")
+            echo "compile_run=$COMPILE_RUN_ID status=$status conclusion=$conclusion"
+            if [ "$status" = completed ]; then
+              if [ "$conclusion" != success ]; then
+                echo "Compile proof did not pass; refusing real fixture dispatch." >&2
+                exit 1
+              fi
+              break
+            fi
+            sleep 30
+          done
+
+          json=$(curl --fail-with-body -sS -L "${auth[@]}" "$api/actions/runs/$COMPILE_RUN_ID")
+          status=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$json")
+          conclusion=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("conclusion") or "")' <<<"$json")
+          test "$status" = completed && test "$conclusion" = success
+
+          curl --fail-with-body -sS -L -X POST "${auth[@]}" \
+            "$api/actions/workflows/oev-zero-copy-diag.yml/dispatches" \
+            -d '{"ref":"diag/zc-exp8-image-alloc-size"}'
+          echo "EXP8_REAL_FIXTURE_DISPATCHED=1"
