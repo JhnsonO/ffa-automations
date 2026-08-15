@@ -107,6 +107,57 @@ jobs:
           print(f'ACCEPTED pod={pid} model={model} ip={ip}:{port} cost_per_hr={cost}')
           PY
 
+      - name: Resolve proven benchmark pair in Google Drive
+        id: resolve
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -u - <<'PY'
+          import json, os, urllib.parse, urllib.request as req
+          root='18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ'
+          token_data=json.loads(open('/tmp/youtube_token.json').read())
+          creds_data=json.loads(open('/tmp/youtube_credentials.json').read())
+          payload=json.dumps({
+              'client_id': token_data.get('client_id') or creds_data['installed']['client_id'],
+              'client_secret': token_data.get('client_secret') or creds_data['installed']['client_secret'],
+              'refresh_token': token_data['refresh_token'],
+              'grant_type': 'refresh_token',
+          }).encode()
+          response=req.urlopen(req.Request('https://oauth2.googleapis.com/token',data=payload,headers={'Content-Type':'application/json'},method='POST'))
+          access=json.loads(response.read())['access_token']
+          open('/tmp/drive_token.txt','w').write(access)
+          def find_id(name,parent):
+              q=f"name='{name}' and '{parent}' in parents and trashed=false"
+              url='https://www.googleapis.com/drive/v3/files?'+urllib.parse.urlencode({'q':q,'fields':'files(id,name)','supportsAllDrives':'true','includeItemsFromAllDrives':'true'})
+              files=json.loads(req.urlopen(req.Request(url,headers={'Authorization':f'Bearer {access}'})).read()).get('files',[])
+              if not files: raise RuntimeError(f'{name} not found under {parent}')
+              return files[0]['id']
+          benchmarks=find_id('Benchmarks',root)
+          pack=find_id('oev-test-runtime-v1',benchmarks)
+          left=find_id('left_2274_19s.mp4',pack)
+          right=find_id('right_2274_19s.mp4',pack)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write(f'left_id={left}\nright_id={right}\n')
+          print(f'benchmark pack resolved: left={left} right={right}')
+          PY
+
+      - name: Download proven benchmark pair to accepted pod
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          LEFT_ID: ${{ steps.resolve.outputs.left_id }}
+          RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 root@$IP"
+          $SSH "mkdir -p /tmp/oev_run && (command -v aria2c >/dev/null || (apt-get update -qq && apt-get install -y -qq aria2))"
+          $SSH "set -o pipefail; aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=left.mp4 'https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media' 2>&1 | tail -5"
+          $SSH "set -o pipefail; aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_run --out=right.mp4 'https://www.googleapis.com/drive/v3/files/$RIGHT_ID?alt=media' 2>&1 | tail -5"
+          $SSH "test -s /tmp/oev_run/left.mp4 && test -s /tmp/oev_run/right.mp4 && ls -lh /tmp/oev_run/left.mp4 /tmp/oev_run/right.mp4"
+
       - name: Run option1 hardware A/B
         id: remote
         env:
