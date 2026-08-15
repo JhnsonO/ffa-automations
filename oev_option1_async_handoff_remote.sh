@@ -31,7 +31,6 @@ say "=== OPTION1 ASYNC CUDA/VULKAN SLOT HANDOFF ==="
 say "base_sha=$BASE_SHA"
 say "async_sha=$ASYNC_SHA"
 
-# Inputs are already staged on the attached EU-RO-1 network volume.
 LEFT_SRC="$SAMPLE_DIR/sample_01_left_30s.mp4"
 RIGHT_SRC="$SAMPLE_DIR/sample_01_right_30s.mp4"
 for f in "$LEFT_SRC" "$RIGHT_SRC" "$MODEL"; do
@@ -44,7 +43,6 @@ cp "$LEFT_SRC" left.mp4
 cp "$RIGHT_SRC" right.mp4
 ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,pix_fmt,width,height,r_frame_rate -of default=nw=1 left.mp4 | tee input_probe.log
 
-# Build environment. Same recipe as the validated diagnostic runs.
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
   git curl build-essential pkg-config cmake clang libclang-dev \
@@ -55,7 +53,6 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 export PATH="/root/.cargo/bin:${PATH}"
 
-# Reconstruct NVIDIA Vulkan selection exactly as in the proven RunPod path.
 CUDA_LIB_DIR=$(find /usr/local -maxdepth 1 -type d -name 'cuda-12.*' 2>/dev/null | sort -V | tail -1)
 if [ -z "$CUDA_LIB_DIR" ]; then say "FATAL no CUDA 12 directory"; exit 3; fi
 export LD_LIBRARY_PATH="${CUDA_LIB_DIR}/lib64:${LD_LIBRARY_PATH:-}"
@@ -71,10 +68,12 @@ export VK_ICD_FILENAMES="$EGL_ICD_PATH"
 unset DISPLAY
 VULKAN_CHECK=$(env -u DISPLAY vulkaninfo 2>&1 | grep -iE 'deviceName|deviceType|driverInfo' | head -6)
 echo "$VULKAN_CHECK" | tee gpu_env.log
-if ! grep -q 'DISCRETE_GPU' <<< "$VULKAN_CHECK" || ! grep -q 'NVIDIA GeForce RTX 4090' <<< "$VULKAN_CHECK"; then
-  say "FATAL Vulkan is not the accepted RTX4090"
+if ! grep -q 'DISCRETE_GPU' <<< "$VULKAN_CHECK" || ! grep -q 'NVIDIA' <<< "$VULKAN_CHECK"; then
+  say "FATAL Vulkan is not the accepted NVIDIA discrete GPU"
   exit 3
 fi
+GPU_NAME=$(grep -m1 'deviceName' gpu_env.log | sed 's/.*= *//')
+say "gpu=$GPU_NAME"
 
 build_reco() {
   local sha="$1" dir="$2" log="$3"
@@ -97,7 +96,6 @@ build_reco "$ASYNC_SHA" /tmp/reco_async build_async.log || { say "FATAL async bu
 BASE_BIN=/tmp/reco_base/target/release/reco
 ASYNC_BIN=/tmp/reco_async/target/release/reco
 
-# Calibrate once; both revisions share identical calibration code.
 LENS_PROFILE_URL='https://raw.githubusercontent.com/gyroflow/lens_profiles/main/GoPro/GoPro_HERO10%20Black_Wide_16by9.json'
 curl -fsSL "$LENS_PROFILE_URL" -o hero10_wide_16by9.json
 RUST_LOG=warn "$BASE_BIN" calibrate left.mp4 right.mp4 \
@@ -106,7 +104,6 @@ RUST_LOG=warn "$BASE_BIN" calibrate left.mp4 right.mp4 \
   -o match.json > calibrate.log 2>&1
 if [ $? -ne 0 ] || [ ! -s match.json ]; then say "FATAL calibration failed"; exit 6; fi
 
-# Same St Margaret's field ROI used by production-shaped acceptance runs.
 python3 - <<'PY'
 import json
 p='match.json'
@@ -150,20 +147,17 @@ run_case() {
   return 0
 }
 
-# Short warmups force decode-slot reuse before the timed samples.
 say "warmup base"
 run_case warm_base "$BASE_BIN" 30 warm_base.mp4 warm_base.log 90 || exit 10
 say "warmup async"
 run_case warm_async "$ASYNC_BIN" 30 warm_async.mp4 warm_async.log 90 || exit 11
 
-# Symmetric order reduces cache/thermal/order bias: B A A B.
 say "timed A/B sequence: base -> async -> async -> base"
 run_case base1 "$BASE_BIN" 180 base1.mp4 base1.log 150 || exit 12
 run_case async1 "$ASYNC_BIN" 180 async1.mp4 async1.log 150 || exit 13
 run_case async2 "$ASYNC_BIN" 180 async2.mp4 async2.log 150 || exit 14
 run_case base2 "$BASE_BIN" 180 base2.mp4 base2.log 150 || exit 15
 
-# Any of these strings in candidate logs means the reverse handoff failed.
 if grep -Eqi 'cuWaitExternalSemaphoresAsync:|completion semaphore wait sync:|ERROR_INVALID|CUDA_ERROR' async1.log async2.log; then
   say "OPTION1_CORRECT=FAIL semaphore/CUDA error found"
   grep -Ei 'cuWaitExternalSemaphoresAsync:|completion semaphore wait sync:|ERROR_INVALID|CUDA_ERROR' async1.log async2.log >> summary.log || true
@@ -174,7 +168,6 @@ if ! grep -q 'GPU zero-copy (CUDA shared buffer/Vulkan)' async1.log || ! grep -q
   exit 17
 fi
 
-# Calculate aggregate wall-clock throughput over 2x180 frames each.
 python3 - <<'PY' | tee ab_metrics.txt
 import re
 text=open('timing.log').read()
@@ -200,7 +193,6 @@ print(f'improvement_pct={(speed-1)*100:.1f}')
 PY
 cat ab_metrics.txt >> summary.log
 
-# Visual checkpoints from the first timed output of each revision.
 ffmpeg -loglevel error -y -i base1.mp4 -vf 'select=eq(n\,90)' -vsync 0 -frames:v 1 frames/base_frame90.png
 ffmpeg -loglevel error -y -i async1.mp4 -vf 'select=eq(n\,90)' -vsync 0 -frames:v 1 frames/async_frame90.png
 
