@@ -1,0 +1,272 @@
+/// `GpuPixelFormat::y_format()` and `GpuPixelFormat::uv_format()`.
+///
+/// Unorm normalization maps both 8-bit and 16-bit values to `[0.0, 1.0]`
+/// in the shader, so the fragment shader works unchanged across formats.
+#[cfg(target_os = "linux")]
+pub fn create_nv12_shared_texture(
+    gpu: &GpuContext,
+    width: u32,
+    height: u32,
+    plane: Nv12Plane,
+    pixel_format: crate::render::renderer::GpuPixelFormat,
+) -> Result<SharedTexture, CudaInteropError> {
+    match plane {
+        Nv12Plane::Y => create_shared_texture(gpu, width, height, pixel_format.y_format()),
+        Nv12Plane::Uv => {
+            create_shared_texture(gpu, width / 2, height / 2, pixel_format.uv_format())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_shared_texture() {
+        if !crate::interop::cuda::is_cuda_available() {
+            println!("Skipping: CUDA not available");
+            return;
+        }
+
+        let gpu = match pollster::block_on(GpuContext::new()) {
+            Ok(g) => g,
+            Err(e) => {
+                println!("Skipping: no GPU: {e}");
+                return;
+            }
+        };
+
+        // Only works on Vulkan backend
+        if gpu.adapter_info.backend != wgpu::Backend::Vulkan {
+            println!(
+                "Skipping: not Vulkan backend ({:?})",
+                gpu.adapter_info.backend
+            );
+            return;
+        }
+
+        // Use a small texture - this test verifies the interop pipeline works,
+        // not that it handles production sizes. Smaller textures avoid OOM on
+        // memory-constrained devices (e.g. Jetson with shared CPU/GPU RAM).
+        let tex = create_shared_texture(&gpu, 256, 256, wgpu::TextureFormat::R8Unorm)
+            .expect("should create shared texture");
+
+        println!(
+            "Shared texture created: {}x{}, cuda_ptr=0x{:x}, pitch={}",
+            256, 256, tex.cuda_ptr, tex.pitch
+        );
+
+        // Verify the texture is usable by creating a view
+        let _view = tex
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        println!("Texture view created successfully");
+    }
+
+    /// Proves that Vulkan takes ownership of the fd on import.
+    ///
+    /// After `vkAllocateMemory` with `VkImportMemoryFdInfoKHR`, the fd should
+    /// no longer be valid. Calling `close()` on it should fail with EBADF,
+    /// proving that the driver consumed it. This is what the Vulkan spec
+    /// requires, and it means any code that calls `close(fd)` after import
+    /// (like Gyroflow does) is performing an invalid operation.
+    #[test]
+    fn test_fd_ownership_transfers_to_vulkan() {
+        if !crate::interop::cuda::is_cuda_available() {
+            println!("Skipping: CUDA not available");
+            return;
+        }
+
+        let gpu = match pollster::block_on(GpuContext::new()) {
+            Ok(g) => g,
+            Err(e) => {
+                println!("Skipping: no GPU: {e}");
+                return;
+            }
+        };
+
+        if gpu.adapter_info.backend != wgpu::Backend::Vulkan {
+            println!("Skipping: not Vulkan ({:?})", gpu.adapter_info.backend);
+            return;
+        }
+
+        // Step 1: Allocate CUDA shared memory and grab the fd (small size for Jetson compat)
+        let shared_mem =
+            crate::interop::cuda::allocate_shared_memory(256 * 256).expect("alloc shared mem");
+        let fd = shared_mem.shared_handle;
+        println!("CUDA exported fd = {fd}");
+
+        // Verify the fd is valid before Vulkan import
+        // fstat() on a valid fd returns 0, on invalid fd returns -1 with EBADF
+        let valid_before = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert!(
+            valid_before >= 0,
+            "fd {fd} should be valid before import, got errno {}",
+            std::io::Error::last_os_error()
+        );
+        println!("Before Vulkan import: fd {fd} is valid (fcntl returned {valid_before})");
+
+        // Step 2: Import into Vulkan (this should consume the fd)
+        let tex = create_shared_texture(&gpu, 256, 256, wgpu::TextureFormat::R8Unorm)
+            .expect("create shared texture");
+        let imported_fd = tex._shared_mem.shared_handle;
+
+        // Step 3: Try to use the fd after Vulkan import
+        let valid_after = unsafe { libc::fcntl(imported_fd, libc::F_GETFD) };
+        let errno_after = std::io::Error::last_os_error();
+
+        println!(
+            "After Vulkan import: fcntl(fd={imported_fd}) returned {valid_after}, errno = {errno_after}"
+        );
+
+        if valid_after < 0 {
+            println!(
+                "CONFIRMED: fd {imported_fd} is invalid after Vulkan import (EBADF). \
+                 Vulkan took ownership. Calling close() on it would be a spec violation."
+            );
+        } else {
+            println!(
+                "UNEXPECTED: fd {imported_fd} is still valid after Vulkan import. \
+                 Driver may have dup()'d internally (not spec-compliant behavior). \
+                 close() would still be a spec violation per VK_KHR_external_memory_fd."
+            );
+        }
+
+        // Step 4: If the fd IS still valid, try closing it and see what happens
+        // to the texture (this would be the Gyroflow pattern)
+        if valid_after >= 0 {
+            println!("Attempting close(fd={imported_fd}) like Gyroflow does...");
+            let close_ret = unsafe { libc::close(imported_fd) };
+            let close_errno = std::io::Error::last_os_error();
+            println!("close() returned {close_ret}, errno = {close_errno}");
+
+            // The texture should still work because Vulkan imported the memory
+            // (the fd is just a handle, the dmabuf reference is held by Vulkan)
+            let _view = tex
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            println!("Texture still usable after close(fd) - dmabuf ref held by Vulkan");
+        }
+    }
+}
+
+
+/// Create a binary Vulkan semaphore exportable as a POSIX fd, for the
+/// diagnostic CUDA->Vulkan cross-API sync (Ticket 2). CUDA imports the
+/// returned fd via `cuImportExternalSemaphore` and signals it after
+/// `cuCtxSynchronize()` confirms a frame's `cuMemcpy2D` writes are
+/// complete; Vulkan waits on the returned `VkSemaphore` (via the
+/// existing `add_wait_semaphore`, see the compile-only probe below)
+/// before reading the same shared memory.
+///
+/// Requires `VK_KHR_external_semaphore_fd` enabled on the device --
+/// added to `JhnsonO/wgpu`'s optional-extension list (version-gated:
+/// `VK_KHR_external_semaphore` is only separately requested on a
+/// Vulkan 1.0 device, since it's core as of 1.1) alongside the
+/// existing `VK_KHR_external_memory_fd` request this file already
+/// relies on for the shared textures above.
+///
+/// Checks the physical device's advertised extensions directly before
+/// touching the KHR loader or its function pointers, so an
+/// unsupported device fails with a clear error here rather than
+/// risking a call through an unresolved (null) `vkGetSemaphoreFdKHR`
+/// if the extension wasn't actually enabled at device creation.
+///
+/// Per the extension spec, each successful `vkGetSemaphoreFdKHR` call
+/// transfers ownership of a fresh fd to the caller; the caller must
+/// ensure it's eventually consumed. On the CUDA side specifically:
+/// `cuImportExternalSemaphore` takes ownership of the fd only on a
+/// *successful* import -- if that import fails, the fd is still ours
+/// to close (see `cuda_import_external_semaphore`'s caller contract).
+#[cfg(target_os = "linux")]
+pub fn create_export_semaphore(
+    gpu: &GpuContext,
+) -> Result<(ash::vk::Semaphore, std::os::raw::c_int), CudaInteropError> {
+    use ash::vk;
+    use wgpu::hal::api::Vulkan;
+
+    unsafe {
+        let hal_device_guard = gpu
+            .device
+            .as_hal::<Vulkan>()
+            .ok_or(CudaInteropError::NotVulkan)?;
+        let hal_device = &*hal_device_guard;
+        let raw_device = hal_device.raw_device();
+        let physical_device = hal_device.raw_physical_device();
+        let raw_instance = hal_device.shared_instance().raw_instance();
+
+        // Fail clearly here rather than risk dereferencing an
+        // unavailable extension function pointer below: confirm the
+        // physical device actually advertises the fd-export extension
+        // (equivalent to the check the wgpu-hal patch above uses to
+        // decide whether to enable it at device creation).
+        let supported_extensions = raw_instance
+            .enumerate_device_extension_properties(physical_device)
+            .map_err(|e| {
+                CudaInteropError::VulkanError(format!(
+                    "vkEnumerateDeviceExtensionProperties: {e:?}"
+                ))
+            })?;
+        let has_semaphore_fd = supported_extensions.iter().any(|ep| {
+            ep.extension_name_as_c_str() == Ok(ash::khr::external_semaphore_fd::NAME)
+        });
+        if !has_semaphore_fd {
+            return Err(CudaInteropError::VulkanError(
+                "VK_KHR_external_semaphore_fd not supported by this device -- \
+                 diagnostic CUDA<->Vulkan semaphore sync unavailable"
+                    .into(),
+            ));
+        }
+
+        let mut export_info = vk::ExportSemaphoreCreateInfo::default()
+            .handle_types(vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_FD);
+        let sem_info = vk::SemaphoreCreateInfo::default().push_next(&mut export_info);
+        let semaphore = raw_device
+            .create_semaphore(&sem_info, None)
+            .map_err(|e| {
+                CudaInteropError::VulkanError(format!("vkCreateSemaphore (export): {e:?}"))
+            })?;
+
+        let ext_semaphore_fd =
+            ash::khr::external_semaphore_fd::Device::new(raw_instance, raw_device);
+        let get_fd_info = vk::SemaphoreGetFdInfoKHR::default()
+            .semaphore(semaphore)
+            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_FD);
+        // ash 0.38's `khr::external_semaphore_fd::Device` drops the `_khr`
+        // suffix on its idiomatic wrapper methods (confirmed against the
+        // actual pinned version, ash-0.38.0+1.3.281, via docs.rs -- the
+        // real method is `get_semaphore_fd`, not `get_semaphore_fd_khr`;
+        // the first real compile-proof dispatch caught this as E0599).
+        let fd = ext_semaphore_fd
+            .get_semaphore_fd(&get_fd_info)
+            .map_err(|e| CudaInteropError::VulkanError(format!("vkGetSemaphoreFdKHR: {e:?}")))?;
+
+        Ok((semaphore, fd))
+    }
+}
+
+/// Compile-only probe (ticket 1b): proves `wgpu::Queue::as_hal::<Vulkan>()`
+/// reaches the patched `wgpu-hal` and that `add_wait_semaphore` type-checks
+/// through Reco's existing HAL access pattern. Intentionally never called --
+/// no semaphore is created or waited on. Backing implementation lives in
+/// `JhnsonO/wgpu@62e15ce1` (backport of upstream #9461 onto v28.0.1).
+#[allow(dead_code)]
+fn _compile_only_probe_add_wait_semaphore_typechecks(gpu: &GpuContext) {
+    use wgpu::hal::api::Vulkan;
+
+    // SAFETY: compile-only probe, never called. `as_hal` requires the
+    // caller not to destroy the returned resource while in use by the
+    // GPU; no resource is destroyed here, and no semaphore is created
+    // or waited on -- this exists purely to type-check
+    // `add_wait_semaphore` against the patched wgpu-hal.
+    unsafe {
+        if let Some(hal_queue) = gpu.queue.as_hal::<Vulkan>() {
+            hal_queue.add_wait_semaphore(
+                ash::vk::Semaphore::null(),
+                None,
+                ash::vk::PipelineStageFlags::TOP_OF_PIPE,
+            );
+        }
+    }
+}
