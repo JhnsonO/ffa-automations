@@ -1,0 +1,62 @@
+name: OEV — Record shared-buffer rollout (temporary)
+
+on:
+  push:
+    branches:
+      - rollout/shared-buffer-main
+    paths:
+      - '.github/workflows/_record-shared-buffer-rollout.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: rollout/shared-buffer-main
+          fetch-depth: 1
+      - name: Append verified rollout state
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('docs/ai-project-state.md')
+          s=p.read_text()
+          marker='## Shared-buffer production rollout — VERIFIED (15 Aug 2026)'
+          if marker in s:
+              print('state section already present; no-op')
+              raise SystemExit(0)
+          section=r'''
+
+## Shared-buffer production rollout — VERIFIED (15 Aug 2026)
+
+- `JhnsonO/video-stitcher` shared-buffer architecture is merged on `main` at `f27cbb6d0d65fcf9a11fb4d82d119ae214695318`.
+- Linux production architecture: NVDEC -> CUDA-VMM shared VkBuffers -> CUDA external semaphore -> Vulkan wait -> GPU buffer-to-texture copy -> ordinary wgpu/VramPool textures. There is no CPU pixel round-trip; CUDA detection continues to consume the shared CUDA pointers directly.
+- Correctness coverage before rollout: real GoPro NV12, real HEVC Main10/P010, immediate and buffered/lookahead paths, CUDA inference, and visual output all passed. The direct shared-VkImage architecture is closed and must not be reopened without genuinely new evidence.
+- Exact merged Reco SHA `f27cbb6d...` was itself exercised on a healthy RTX 4090 in run `31898658490`: two 180-frame base renders completed exit 0 at 8.643 wall fps average and were visually correct.
+- EU-RO-1 runtime volume `0hta9vhuue` was refreshed to `f27cbb6d...` successfully in run `31899987177`.
+- Standard production-path canary run `31900275966` passed on EU-RO-1 using `sample_01`, 30 s, YOLO26m, lookahead 1.5, cluster_alpha 0.05. The normal FFA sample workflow passed its exact Reco SHA gate, shared-buffer/NVDEC/CUDA evidence gate, AI-tracking acceptance, Drive upload, and pod cleanup.
+- The FFA production rollout changes pin standard RunPod workflows to `f27cbb6d...` and remove the functional `--no-zero-copy` argument from the normal follow-cam/sample scripts. `--no-zero-copy` remains available only as an explicit CLI fallback/diagnostic comparison.
+- Option 1 (replace the per-frame CPU Vulkan completion poll with reverse completion semaphores) was fully implemented and hardware-tested but intentionally NOT merged: same-pod RTX 4090 B-A-A-B measured 8.643 fps vs 8.643 fps (0.0% improvement). PR `video-stitcher#4` was closed without merge.
+- Secondary cache refreshes were bounded and are not product blockers:
+  - EUR-IS-1 run `31900688401` remained inside the remote populate step for >30 minutes with no stage progress, so it was cancelled under the rollout stop-loss. Its `if: always()` pod termination step completed successfully. EUR-IS-1 therefore remains an old cache until a later maintenance refresh.
+  - US-IL-1 run `31900691010` failed twice before the populate/build script began: both attempts allocated a RunPod 4090 with NVDEC failure and then lost SSH. Both pods were terminated. No Reco build failure occurred; US-IL-1 remains an old cache until later maintenance.
+  - AP-JP-1 repo-variable entry points to volume `6668h25wco`, which RunPod reports no longer exists. Do not retry that volume. The canonical volume-setup workflow independently confirmed the surviving volumes are EU-RO-1 `0hta9vhuue`, EUR-IS-1 `yssxw5c673`, and US-IL-1 `n71p3nlmcz`. Updating `OEV_NETWORK_VOLUME_MAP` is currently blocked by GitHub token permissions (`403 Resource not accessible by integration`) and is recorded as separate infra debt.
+- Product rollout decision: merge the validated FFA production defaults now; do not hold the working shared-buffer path behind optional network-volume cache maintenance.
+- Next performance ticket: profile the current production path stage-by-stage on one healthy RTX 4090, then choose detector optimization vs broader pipeline scheduling from measured evidence. Do not revisit option 1 or direct shared-VkImage sharing.
+'''
+          p.write_text(s.rstrip()+section+'\n')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --quiet -- docs/ai-project-state.md; then
+            echo 'No state change to commit.'
+            exit 0
+          fi
+          git add docs/ai-project-state.md
+          git diff --cached --check
+          git commit -m 'docs: record verified shared-buffer production rollout [rollout-bot]'
+          git push origin HEAD:rollout/shared-buffer-main
