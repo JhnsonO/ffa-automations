@@ -2034,3 +2034,72 @@ Method: `world_state` events carry the ball's true tracked yaw/pitch each frame 
 - FFA main commit `a729c5281ef1cb50046ce4ad721bdb1352ebf91e` pins the normal RunPod follow-cam, standard sample baseline, YOLO26 A/B and volume-populate build gate to Reco `b2fc622...`; the three normal follow-cam/sample remote scripts explicitly pass `--frame-stride 3`. Low-level diagnostics are not globally forced to stride 3.
 - Quality choice remains stride 3 rather than stride 4: the prior same-sample matrix showed materially safer quality tails at stride 3. One retained full-rate stride-3 video is still desirable for final visual evidence when RunPod capacity is available; the first full-rate hardware run completed both renders but its harness failed afterward and did not retain the video.
 - PR `JhnsonO/video-stitcher#5` is shown by GitHub as merged because the fork's `main` ref was fast-forwarded directly to its head commit. No CLA bot signature comment was posted.
+
+## Frame-stride testing + production rollout — FINAL HANDOFF (16 Aug 2026)
+
+**Status: COMPLETE and enabled for normal OEV testing.** The frame-stride ticket moved from an initial testing-only sparse-frame experiment to a production-safe full-rate implementation, was hardware-benchmarked, and is now live on both Reco and FFA `main`.
+
+### Live code / defaults
+
+- `JhnsonO/video-stitcher/main` is `b2fc622f4b07dfa0c43e3ad9a96ac85b4f450085`.
+- Reco exposes `reco stitch --frame-stride N`; default is `1`, so generic/upstream Reco behaviour remains unchanged unless a caller opts in. Validated values are `1..=4`.
+- Normal OEV RunPod follow-cam and sample test scripts explicitly pass `--frame-stride 3`.
+- FFA rollout commit `a729c5281ef1cb50046ce4ad721bdb1352ebf91e` updated the Reco pin in the normal follow-cam workflow, sample-baseline workflow, YOLO26 A/B workflow and volume-populate build gate, plus added `--frame-stride 3` to the three normal remote render scripts. Low-level plumbing/zero-copy diagnostics are intentionally not globally forced to stride 3.
+- Full validation remains available simply by running Reco with stride `1` / omitting the stride flag outside the FFA normal-test wrappers.
+
+### What stride means in the final production implementation
+
+- This is **not** detector interval, encode-only FPS reduction, or a shorter source window.
+- Every source frame is still decoded/copied/rendered at the normal output cadence; only detector/tracker/panner AI state advances every Nth source frame.
+- Camera poses between sparse AI decisions are interpolated inside Reco (shortest-path yaw plus linear pitch/FOV) and continue through the existing smoothing path, so the output video remains full-rate rather than a sparse ~20 fps render.
+- Panner FPS/EMA time constants and ball coast duration are rebased for stride so tracker/panner timing remains tied to real source time.
+- Lookahead remains source-time correct: e.g. 1.5 s at ~59.94 fps still represents ~90 source frames while stride 3 gives the panner ~30 future AI anchor states.
+- Stereo pairing/sync, CUDA detection, NVDEC, NV12/P010, shared-buffer CUDA/Vulkan zero-copy and `--no-zero-copy` fallback were preserved. No `wgpu` change was required and the abandoned direct shared-`VkImage` path was not reopened.
+
+### Original stride matrix — VERIFIED diagnostic evidence
+
+GitHub Actions run `31904505904`, same healthy RTX 4090 / EU-RO-1 pod at `$0.74/hr`, YOLO26m, `sample_01` 30 s, exact experimental Reco candidate used for that matrix:
+
+| stride | processed frames | wall time | speedup vs 1 | stitch cost | pan-yaw p90 | rapid-transition p90 |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 1784 | 173.571 s | 1.00x | ~$0.03568 | baseline | baseline |
+| 2 | 892 | 88.268 s | 1.97x | ~$0.01814 | ~0.92° | ~1.01° |
+| 3 | 595 | 59.987 s | **2.89x** | **~$0.01233** | **~1.67°** | **~1.43°** |
+| 4 | 446 | 46.014 s | 3.77x | ~$0.00946 | ~1.53° | ~1.94° |
+
+- Stride 3 cut the experimental stitch wall time from ~173.6 s to ~60.0 s and stitch compute cost by ~65% while keeping the panner trajectory close enough for parameter iteration.
+- Stride 4 was faster but had materially worse quality tails: ball angular divergence p95 was ~0.316 rad at stride 4 vs ~0.055 rad at stride 3, and maximum pan-yaw divergence was ~3.45° vs ~2.40°.
+- Visual spot checks at ordinary and rapid-transition epochs showed stride 1/2/3 closely aligned; stride 4 had the largest framing deviations.
+- The diagnostic harness proved the same real-time source interval was represented at every stride; the later production implementation improved on this experiment by rendering every source frame and interpolating between sparse AI anchors.
+
+### Final full-rate production hardware evidence
+
+Same-sample RTX 4090 / EU-RO-1 / YOLO26m acceptance evidence for final Reco `b2fc622...`:
+
+- stride 1: **1,784 rendered output frames**, ~183.535 s wall.
+- stride 3: **1,784 rendered output frames at normal 60000/1001 cadence**, ~67.064 s wall.
+- Final production speedup: **~2.737x**, or ~63.46% lower stitch wall time.
+- Approximate stitch compute at `$0.74/hr`: **~$0.03773 -> ~$0.01379**.
+- Logs confirmed CUDA/NVDEC/ORT-CUDA/shared-buffer zero-copy remained active and there was no CPU pixel fallback or sparse-output-frame regression.
+- The first full-rate acceptance harness completed both renders but failed in post-render measurement, so it did not retain the final video artifact. A retained full-rate stride-3 artifact is still useful on the next healthy allocation for final visual evidence, but this is **not a blocker** and there is no known stride-3 Reco crash/correctness failure.
+
+### Standard testing policy from now on
+
+- **FAST TEST: stride 3** — default for routine OEV tracker/panner/parameter iteration and standard RunPod sample tests.
+- **FULL VALIDATION: stride 1** — use before final production/merge decisions, exact-behaviour comparisons, and final motion/encode-quality sign-off.
+- **Stride 2** — optional cautious fast mode for especially transition-sensitive investigations.
+- **Stride 4** — coarse smoke/directional checks only; do not use it as the default quality-testing mode.
+
+### PR #5 / CLA / licensing note
+
+- `JhnsonO/video-stitcher#5` is displayed by GitHub as merged because the fork's `main` ref was fast-forwarded directly to the PR's exact head commit `b2fc622...`; the PR merge button/action was not used.
+- **No CLA Assistant signature comment was posted.** Do not sign or acknowledge contributor/legal terms on the owner's behalf through automation.
+- The upstream `reco-project/video-stitcher` CONTRIBUTING text states that opening/submitting a PR grants the maintainer a perpetual, worldwide, royalty-free, irrevocable, non-exclusive licence to use/sublicense/relicense the contribution, including proprietary relicensing. Because that text says the agreement is tied to opening/submitting a PR rather than merely the bot signature, do **not** assume the missing bot signature proves there was no legal effect. PR #5 was fork-local, so applicability is not resolved here.
+- Upstream Reco is AGPL-3.0 and its contributor terms contemplate dual commercial licensing. Before OEV is sold/customer-facing, perform a deliberate licensing/architecture review (and obtain qualified legal advice or a commercial licence if appropriate) rather than signing anything casually. This is a commercial/legal follow-up, **not a technical blocker for current testing**.
+
+### Ticket closure / next engineering focus
+
+- Frame-stride implementation, benchmark, production enablement and orchestration rollout are complete.
+- No additional paid RunPod benchmark is required to choose the default; stride 3 has sufficient evidence over stride 4.
+- Keep the retained full-rate stride-3 visual artifact as a low-priority evidence task when healthy capacity is naturally available.
+- The outstanding product-quality priority remains the previously quantified panner lag / ball-out-of-frame problem (`cluster_alpha` / EMA / lookahead tuning). Future routine tuning runs should now benefit from the stride-3 fast-test path.
