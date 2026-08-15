@@ -1,0 +1,130 @@
+name: OEV — Prepare shared-buffer rollout commit object (temporary)
+
+on:
+  push:
+    branches:
+      - rollout/shared-buffer-main
+    paths:
+      - '.github/workflows/_prepare-shared-buffer-commit-object.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RECO_SHA: f27cbb6d0d65fcf9a11fb4d82d119ae214695318
+      OLD_RECO_SHA: 53fe10f548d5767ad94ef66aeaedf2d8c7161f27
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: rollout/shared-buffer-main
+          fetch-depth: 1
+      - name: Transform and create unreachable Git commit object
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, json, os, re, subprocess, urllib.request
+
+          old=os.environ['OLD_RECO_SHA']; new=os.environ['RECO_SHA']
+          workflow_files=[
+              Path('.github/workflows/oev-populate-volume.yml'),
+              Path('.github/workflows/oev-runpod-followcam.yml'),
+              Path('.github/workflows/oev-runpod-sample-baseline.yml'),
+              Path('.github/workflows/oev-runpod-followcam-ab-yolo26.yml'),
+          ]
+          scripts=[
+              Path('runpod_followcam_remote.sh'),
+              Path('runpod_sample_baseline_remote.sh'),
+              Path('runpod_sample_baseline_yolo26_remote.sh'),
+          ]
+
+          for p in workflow_files:
+              s=p.read_text()
+              if old in s:
+                  s=s.replace(old,new)
+              if new not in s:
+                  raise SystemExit(f'{p}: merged Reco SHA not present after transformation')
+              s=s.replace('--no-zero-copy interim setting, see runpod_followcam_remote.sh header','shared-buffer GPU path enabled by default')
+              s=s.replace('--no-zero-copy interim setting, see runpod_sample_baseline_remote.sh header','shared-buffer GPU path enabled by default')
+              p.write_text(s)
+
+          new_header=(
+              '# Linux shared-buffer GPU path is production-enabled as of 2026-08-15.\n'
+              '# Reco main f27cbb6d replaces the broken direct shared-VkImage path with\n'
+              '# CUDA-VMM shared VkBuffers -> Vulkan GPU buffer-to-texture copies.\n'
+              '# Verified on real GoPro NV12 and real P010/10-bit fixtures; CUDA detection\n'
+              '# remains GPU-resident. Do not re-add --no-zero-copy except as an explicit\n'
+              '# fallback/diagnostic comparison.\n#\n')
+          new_note=(
+              '# Shared-buffer zero-copy is intentionally enabled here (no --no-zero-copy).\n'
+              '# The merged path was hardware-verified on RTX 4090 and L4 without the old\n'
+              '# green/corrupt direct-shared-VkImage failure.\n')
+          new_accept=(
+              '# --- RunPod-specific GPU-path evidence check. Shared-buffer zero-copy is\n'
+              '# the production default. If an operator explicitly adds --no-zero-copy for a\n'
+              '# fallback/diagnostic run, skip this evidence gate because it is not applicable. ---')
+
+          for p in scripts:
+              s=p.read_text()
+              if '# --no-zero-copy IS PASSED HERE' in s:
+                  s,n=re.subn(r'# --no-zero-copy IS PASSED HERE.*?(?=# Deliberately does NOT pass)',new_header,s,count=1,flags=re.S)
+                  if n != 1: raise SystemExit(f'{p}: failed header replacement')
+              if '# --no-zero-copy: see' in s:
+                  s,n=re.subn(r'# --no-zero-copy: see.*?(?=(?:STITCH_ARGS=|: "\$\{LOOKAHEAD))',new_note,s,count=1,flags=re.S)
+                  if n != 1: raise SystemExit(f'{p}: failed stitch-note replacement')
+              s=s.replace('=== stitch.log: reco stitch (field follow-cam, l-shape, --no-zero-copy interim) ===','=== stitch.log: reco stitch (field follow-cam, l-shape, shared-buffer GPU path) ===')
+              s=re.sub(r'# --- RunPod-specific zero-copy check\. If --no-zero-copy is still intentionally active.*?non-zero\)\. ---',new_accept,s,count=1,flags=re.S)
+              lines=[]
+              for line in s.splitlines(keepends=True):
+                  if line.strip()=='--no-zero-copy':
+                      continue
+                  lines.append(line)
+              s=''.join(lines)
+              if any(line.strip()=='--no-zero-copy' for line in s.splitlines()):
+                  raise SystemExit(f'{p}: functional --no-zero-copy remains')
+              if 'shared-buffer GPU path' not in s:
+                  raise SystemExit(f'{p}: shared-buffer marker missing')
+              p.write_text(s)
+
+          # Syntax/check gates before object creation.
+          for p in scripts:
+              subprocess.run(['bash','-n',str(p)],check=True)
+
+          repo=os.environ['GITHUB_REPOSITORY']
+          api='https://api.github.com/repos/'+repo
+          headers={
+              'Authorization':'Bearer '+os.environ['GH_TOKEN'],
+              'Accept':'application/vnd.github+json',
+              'X-GitHub-Api-Version':'2022-11-28',
+              'Content-Type':'application/json',
+          }
+          def req(method,path,data=None):
+              r=urllib.request.Request(api+path,data=(json.dumps(data).encode() if data is not None else None),method=method,headers=headers)
+              with urllib.request.urlopen(r,timeout=30) as x:
+                  raw=x.read(); return json.loads(raw) if raw else {}
+
+          parent=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          base_tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip()
+          entries=[]
+          for p in [*workflow_files,*scripts]:
+              blob=req('POST','/git/blobs',{'content':p.read_text(),'encoding':'utf-8'})
+              entries.append({'path':str(p),'mode':'100644','type':'blob','sha':blob['sha']})
+              print(f'blob {p}: {blob["sha"]}')
+          tree=req('POST','/git/trees',{'base_tree':base_tree,'tree':entries})
+          commit=req('POST','/git/commits',{
+              'message':'rollout: enable verified shared-buffer GPU path',
+              'tree':tree['sha'],'parents':[parent]})
+          print('PARENT_SHA='+parent)
+          print('PREPARED_TREE_SHA='+tree['sha'])
+          print('PREPARED_COMMIT_SHA='+commit['sha'])
+          Path('/tmp/prepared_commit.txt').write_text(commit['sha']+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prepared-shared-buffer-commit-${{ github.run_id }}
+          path: /tmp/prepared_commit.txt
+          retention-days: 7
