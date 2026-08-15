@@ -33,7 +33,7 @@ on:
       reco_sha:
         description: 'Pinned video-stitcher (Reco) commit SHA to build'
         required: false
-        default: '53fe10f548d5767ad94ef66aeaedf2d8c7161f27'
+        default: 'f27cbb6d0d65fcf9a11fb4d82d119ae214695318'
         type: string
       reco_repo:
         description: 'video-stitcher repo URL'
