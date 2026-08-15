@@ -40,14 +40,27 @@ for old, new in replacements.items():
 # v3's video was good but its workflow was marked failed by one isolated
 # max-acceleration sample (0.407 deg/frame^2) while p99 was only ~0.115.
 # For polish testing, gate the distribution rather than one boundary outlier.
-old_gate = '''if metrics["camera_max_abs_yaw_accel_deg_per_frame2"] > 0.30:\n    raise SystemExit(\n        f"FATAL: yaw acceleration change {metrics['camera_max_abs_yaw_accel_deg_per_frame2']:.3f} deg/frame^2 exceeds 0.30"\n    )'''
-new_gate = '''if metrics["camera_p99_abs_yaw_accel_deg_per_frame2"] > 0.20:\n    raise SystemExit(\n        f"FATAL: p99 yaw acceleration {metrics['camera_p99_abs_yaw_accel_deg_per_frame2']:.3f} deg/frame^2 exceeds 0.20"\n    )'''
+old_gate = '''if metrics["camera_max_abs_yaw_accel_deg_per_frame2"] > 0.30:
+    raise SystemExit(
+        f"FATAL: yaw acceleration change {metrics['camera_max_abs_yaw_accel_deg_per_frame2']:.3f} deg/frame^2 exceeds 0.30"
+    )'''
+new_gate = '''if metrics["camera_p99_abs_yaw_accel_deg_per_frame2"] > 0.20:
+    raise SystemExit(
+        f"FATAL: p99 yaw acceleration {metrics['camera_p99_abs_yaw_accel_deg_per_frame2']:.3f} deg/frame^2 exceeds 0.20"
+    )'''
 if s.count(old_gate) != 1:
     raise SystemExit(f"expected one v3 acceleration gate, found {s.count(old_gate)}")
 s = s.replace(old_gate, new_gate)
 
 # Preserve the JSON metrics in a file the standard workflow already pulls.
-s += '''\nif [ -s containment_metrics.json ]; then\n  {\n    echo "--- v4 micro-damping metrics ---"\n    cat containment_metrics.json\n  } >> acceptance.log\nfi\n'''
+s += '''
+if [ -s containment_metrics.json ]; then
+  {
+    echo "--- v4 micro-damping metrics ---"
+    cat containment_metrics.json
+  } >> acceptance.log
+fi
+'''
 
 p.write_text(s)
 print("v4 runner prepared from exact v3 runner; same test inputs, micro-damping labels + robust p99 diagnostic gate")
