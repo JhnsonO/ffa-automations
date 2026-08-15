@@ -22,25 +22,12 @@
 # Vast.ai equivalent). No tracking/panner/threshold/render changes here
 # -- this ticket is baseline measurement only.
 #
-# --no-zero-copy IS PASSED HERE, matching Vast, as of 2026-08-12. This is
-# an interim correction, not the original intent: run 31557269688 proved
-# full zero-copy (--no-zero-copy omitted) executes cleanly per every log
-# signal (tracking, CUDAExecutionProvider, zero-copy engaged) but
-# actually produces a corrupted followcam.mp4 -- a solid green band,
-# confirmed on visual review, consistent with an NV12->RGB chroma-plane
-# bug in reco-cli's zero-copy encode path that had never been exercised
-# end-to-end before that run. Run 31558373625, identical script except
-# --no-zero-copy added back, produced a clean, correct followcam.mp4 --
-# isolating the corruption to zero-copy specifically (not geometry,
-# flags, or match.json). Do not remove --no-zero-copy again until the
-# zero-copy NV12 bug is actually fixed and re-verified in the
-# JhnsonO/video-stitcher fork. The RunPod-specific zero-copy acceptance
-# check below is left in place for when that fix lands and this flag is
-# removed again -- it is currently dead code on this path since
-# --no-zero-copy means those log lines will never appear, but a
-# following "no such text found" acceptance failure on THIS path with
-# --no-zero-copy still present would itself indicate the flag silently
-# stopped applying and is worth investigating if seen.
+# Linux shared-buffer GPU path is production-enabled as of 2026-08-15.
+# Reco main f27cbb6d replaces the broken direct shared-VkImage path with
+# CUDA-VMM shared VkBuffers -> Vulkan GPU buffer-to-texture copies.
+# Verified on real GoPro NV12 and real P010/10-bit fixtures; CUDA detection
+# remains GPU-resident. Do not re-add --no-zero-copy except as an explicit
+# fallback/diagnostic comparison.
 #
 # Deliberately does NOT pass --allow-no-tracking: if Reco can't
 # initialize tracking, the run must fail loudly, not silently produce a
@@ -232,17 +219,15 @@ assert isinstance(roi.get('right'), list) and len(roi['right']) > 0, 'field_roi.
 fi
 echo "field_roi validated in match.json (left/right polygons present)" | tee -a calibrate.log
 
-echo "=== stitch.log: reco stitch (field follow-cam, l-shape, --no-zero-copy interim) ===" | tee stitch.log
+echo "=== stitch.log: reco stitch (field follow-cam, l-shape, shared-buffer GPU path) ===" | tee stitch.log
 # Same flag set agreed with Johnson as the Vast script: normal
 # perspective (l-shape, default) projection, NOT cylindrical.
 # --detection-interval 1 (no frame-skipping, out of scope for this
 # ticket). Deliberately NO --allow-no-tracking: a tracking-init failure
 # must fail this run loudly, not silently degrade to a static stitch.
-# --no-zero-copy: see the file-header note (2026-08-12) -- zero-copy
-# proved to produce a corrupted green-band output on this pod
-# (run 31557269688), isolated to the zero-copy path specifically via A/B
-# against run 31558373625. This is now the production setting, matching
-# Vast, until the underlying reco-cli bug is fixed and re-verified.
+# Shared-buffer zero-copy is intentionally enabled here (no --no-zero-copy).
+# The merged path was hardware-verified on RTX 4090 and L4 without the old
+# green/corrupt direct-shared-VkImage failure.
 STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
   --model yolov8n.onnx
   --tracking field
@@ -250,7 +235,6 @@ STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
   --lookahead 1.5
   --detection-interval 1
   --events events.jsonl
-  --no-zero-copy
   --width 1920 --height 1080)
 echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch.log
 stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
