@@ -1,0 +1,84 @@
+name: OEV — Append Frame Stride State
+
+on:
+  push:
+    branches:
+      - feature/frame-stride-testing
+    paths:
+      - .github/workflows/oev-frame-stride-state-append.yml
+
+permissions:
+  contents: write
+
+jobs:
+  append-state:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: feature/frame-stride-testing
+          fetch-depth: 0
+
+      - name: Append verified frame-stride result once
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker='FRAME-STRIDE-VERIFIED-2026-08-15'
+          if grep -q "$marker" docs/ai-project-state.md; then
+            echo 'State block already present; no-op.'
+            exit 0
+          fi
+          cat >> docs/ai-project-state.md <<'EOF'
+
+## OEV testing full-pipeline frame stride — VERIFIED 2026-08-15
+<!-- FRAME-STRIDE-VERIFIED-2026-08-15 -->
+
+Status: **VERIFIED on hardware; feature branches only; not production-enabled.**
+
+Purpose: accelerate tracker/panner/parameter experiments by processing sparse **source frame pairs** while preserving the represented real-time match interval. This is not `--detection-interval` and not encode-only FPS reduction. The implementation uses testing-only `RECO_TEST_FRAME_STRIDE=N`; unset/invalid/`1` preserves existing behavior.
+
+Implementation/evidence:
+- Reco baseline: `video-stitcher/main` `f27cbb6d0d65fcf9a11fb4d82d119ae214695318`.
+- Reco feature benchmark SHA: `c647cd101370887eabdf50059dd70eea3d9e730c` on `feature/frame-stride-testing`.
+- Reco files changed: `crates/reco-io/src/smart_source.rs`, `crates/reco-autocam/src/lib.rs` only. No wgpu changes.
+- Skipping reuses Reco's existing paired-source skip path. Linux shared-buffer zero-copy drains the paired GPU signal, consumes both CUDA→Vulkan semaphore signals and releases both camera slots for skipped pairs. Skipped frames bypass VramPool/detection/tracker/panner/render/encode but still incur decode.
+- Autocam time-domain state is explicitly rebased for stride: effective panner FPS = source FPS / stride; per-frame EMA alphas are transformed with `1-(1-alpha)^stride`; ball coast budget is scaled by stride. Geometric thresholds/weights are unchanged.
+- Targeted tests on the benchmark pod: `cargo test -p reco-autocam stride_ --lib` = 2 passed / 0 failed; release CUDA build succeeded.
+- Benchmark harness branch: `ffa-automations/feature/frame-stride-testing`, run `31904505904`, one healthy pod for all four variants.
+- Hardware/sample: RTX 4090, EU-RO-1, $0.74/hr, YOLO26m, `GX010197-seed1384188843/sample_01`, 30s pair, source ~59.94 fps. Vulkan/CUDA/NVDEC/ORT-CUDA/shared-buffer zero-copy preflight passed.
+- Stride runs were sequential on the same pod/GPU with the same sample/model/panner settings. Sparse output is retimed after the measured stitch window for inspection; final production smoothness/encode validation still requires stride 1.
+
+Verified matrix (stitch-only wall time/cost):
+
+| stride | processed frames | wall time | speedup vs 1 | approx stitch cost | pan yaw p90 vs stride1 | rapid-transition yaw p90 | ball delta p90 vs stride1 |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1784 | 173.57s | 1.00x | $0.03568 | baseline | baseline | baseline |
+| 2 | 892 | 88.27s | 1.97x | $0.01814 | 0.92 deg | 1.01 deg | 0.00030 rad |
+| 3 | 595 | 59.99s | 2.89x | $0.01233 | 1.67 deg | 1.43 deg | 0.00532 rad |
+| 4 | 446 | 46.01s | 3.77x | $0.00946 | 1.53 deg | 1.94 deg | 0.01233 rad |
+
+Frame representation gate passed: stride 2/3/4 processed 892/595/446 frames against stride-1's 1784 represented paired frames, matching sparse sampling across the same source interval rather than consuming only the first fraction of the clip. Retimed inspection outputs were ~29.7s for every stride.
+
+Quality interpretation:
+- Stride 3 kept the camera trajectory close to stride 1 while reducing the 30s stitch from 173.6s to 60.0s (~2.89x) and stitch-only GPU cost by ~65%.
+- Stride 4 is faster (~3.77x) but has a materially harsher tail: ball divergence p95 ~0.316 rad vs ~0.055 rad at stride 3, and max pan-yaw divergence ~3.45 deg vs ~2.40 deg at stride 3. Use only for coarse smoke/directional checks.
+- Stride 2 is the conservative option for transition-sensitive investigations (~1.97x speedup).
+- Visual spot checks at normal and rapid-transition epochs showed stride 1/2/3 framing remained closely aligned; stride 4 showed the largest deviation but was still directionally plausible.
+
+Recommendation:
+- **FAST TEST: stride 3** for normal tracker/panner/parameter iteration.
+- **FULL VALIDATION: stride 1** before production/merge decisions and for final motion smoothness/encode quality.
+- Use stride 2 when an experiment is specifically sensitive to very rapid transitions; stride 4 only for coarse smoke tests.
+- Do not build a larger preset system until more sample coverage justifies it.
+
+Known non-blocking CI debt: Windows checks fail in the existing wgpu DX12 dependency graph because incompatible `windows`/`windows_core` crate versions are present; the production baseline Rust CI already fails independently of this stride patch. Keep that debt separate from the stride ticket.
+EOF
+          git add docs/ai-project-state.md
+          if git diff --cached --quiet; then
+            echo 'No state change.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'docs: record verified frame-stride benchmark [skip ci]'
+          git push origin HEAD:feature/frame-stride-testing
