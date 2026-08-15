@@ -6,7 +6,7 @@ set -euo pipefail
 cd /tmp/oev_run
 
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
-RECO_SHA="f7e4dce9e4fa84f166e5121d6356ae58b4db20ed"
+RECO_SHA="a055bb172b711922e7f473784808e4bbe3028d04"
 RECO_BASE="53fe10f548d5767ad94ef66aeaedf2d8c7161f27"
 EXPECTED_WGPU_REV="d74e00f2415e55c0f09a87b0497d66d8192a44bb"
 
