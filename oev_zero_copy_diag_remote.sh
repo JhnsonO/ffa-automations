@@ -32,7 +32,7 @@
 set -uo pipefail
 cd /tmp/oev_run || exit 1
 
-RECO_SHA="a6f12c061d241b215ab1f979d4278b342ec26b99"
+RECO_SHA="e810a04ee29452b3cd6647cc98875033a2e0d1a0"
 RECO_REPO="https://github.com/JhnsonO/video-stitcher"
 MODEL_PATH="/runpod-volume/oev-runtime/models/yolo26m.onnx"
 
@@ -309,6 +309,39 @@ for name in ('zc_exp6_control_native_256x64.raw', 'zc_exp6_control_copy_dst_256x
         diffs = [i for i in range(min(len(got), len(expected))) if got[i] != expected[i]][:8]
         print(f'ZC_EXP6 VERDICT: {name} FAIL len={len(got)} first_diff_offsets={diffs} got={[got[i] for i in diffs]} expected={[expected[i] for i in diffs]}')
 PYV
+
+echo "--- ZC_EXP7: CUDA->Vulkan physical-aliasing sentinel (avenue 2 -- THE decisive evidence this run) ---" | tee -a diag_summary.log
+grep "ZC_EXP7" stitch.log | tee -a diag_summary.log || echo "(no ZC_EXP7 lines found -- sentinel did not fire)" | tee -a diag_summary.log
+grep "ZC_DIAG" stitch.log | tee -a diag_summary.log || true
+python3 - <<'PYS' | tee -a diag_summary.log
+import pathlib, re
+log = pathlib.Path('/tmp/oev_run/stitch.log').read_text(errors='replace')
+m = re.search(r'ZC_EXP7: wrote 3x1024B sentinel .* byte_offsets=\[(\d+), (\d+), (\d+)\] y_pitch=(\d+) height=(\d+)', log)
+if not m:
+    print('ZC_EXP7 VERDICT: sentinel log line not found -- cannot verify')
+    raise SystemExit(0)
+offsets = [int(m.group(i)) for i in (1, 2, 3)]
+pitch = int(m.group(4)); h = int(m.group(5))
+expected = bytes((j & 0xFF) ^ 0xC3 for j in range(1024))
+d = pathlib.Path('/tmp/oev_run/diag_dump')
+W = 3840  # dump row width for the Y plane (bytes_per_row of the readback/dtoh dumps)
+def check(fname, tag):
+    p = d / fname
+    if not p.exists():
+        print(f'ZC_EXP7 {tag}: {fname} MISSING'); return
+    data = p.read_bytes()
+    for off in offsets:
+        row, col = off // pitch, off % pitch
+        do = row * W + col
+        got = data[do:do + 1024]
+        if got == expected:
+            print(f'ZC_EXP7 {tag}: offset {off} (row {row}) SENTINEL PRESENT byte-exact')
+        else:
+            nz = sum(1 for b in got if b)
+            print(f'ZC_EXP7 {tag}: offset {off} (row {row}) sentinel ABSENT -- first16={list(got[:16])} nonzero={nz}/1024')
+check('left_frame0_y_3840x2160.raw', 'CUDA-side ground truth')
+check('left_y_vram_src_3840x2160.raw', 'VULKAN-side readback')
+PYS
 
 echo "=== All stages completed (diagnostic run -- non-zero stitch exit is not itself a failure) ===" | tee -a diag_summary.log
 exit 0
