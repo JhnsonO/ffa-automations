@@ -20,7 +20,7 @@ import sys
 p = Path(sys.argv[1])
 s = p.read_text()
 old = '  echo "{\\"cluster_alpha\\": ${CLUSTER_ALPHA_OVERRIDE}}" > panner_overlay.json\n'
-new = '  echo "{\\"cluster_alpha\\": ${CLUSTER_ALPHA_OVERRIDE}, \\"fov_tight\\": 44.0, \\"fov_wide\\": 44.0, \\"fov_default\\": 44.0}" > panner_overlay.json\n'
+new = r'''  printf '{"cluster_alpha": %s, "fov_tight": 44.0, "fov_wide": 44.0, "fov_default": 44.0}\n' "$CLUSTER_ALPHA_OVERRIDE" > panner_overlay.json''' + "\n"
 if s.count(old) != 1:
     raise SystemExit(f"expected exactly one panner-overlay line, found {s.count(old)}")
 s = s.replace(old, new)
