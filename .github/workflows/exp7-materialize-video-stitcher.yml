@@ -1,0 +1,78 @@
+name: EXP7 — materialize video-stitcher diagnostic branch
+
+on:
+  push:
+    branches:
+      - diag/zc-exp7-compile-proof
+    paths:
+      - '.github/workflows/exp7-materialize-video-stitcher.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout EXP7 payload
+        uses: actions/checkout@v5
+        with:
+          ref: diag/zc-exp7-compile-proof
+          path: orchestrator
+
+      - name: Checkout video-stitcher diagnostic branch
+        uses: actions/checkout@v5
+        with:
+          repository: JhnsonO/video-stitcher
+          ref: diag/zc-exp7-external-memory-caps
+          token: ${{ secrets.GH_PAT }}
+          path: reco
+          fetch-depth: 1
+
+      - name: Reconstruct exact compile-proven source
+        run: |
+          set -euo pipefail
+          PAYLOAD="$GITHUB_WORKSPACE/orchestrator/exp7_payload"
+          VULKAN="$GITHUB_WORKSPACE/reco/crates/reco-core/src/interop/vulkan.rs"
+          CUDA="$GITHUB_WORKSPACE/reco/crates/reco-core/src/interop/cuda.rs"
+
+          cat "$PAYLOAD"/vulkan.part00 "$PAYLOAD"/vulkan.part01 \
+              "$PAYLOAD"/vulkan.part02 "$PAYLOAD"/vulkan.part03 \
+              "$PAYLOAD"/vulkan.part04 > "$VULKAN"
+
+          python3 - "$CUDA" "$PAYLOAD/cuda_destroy_wrapper.txt" <<'PY'
+          from pathlib import Path
+          import sys
+          cuda = Path(sys.argv[1])
+          wrapper = Path(sys.argv[2]).read_text()
+          s = cuda.read_text()
+          marker = '/// Query (free, total) device memory in bytes via the CUDA driver.\n'
+          if 'pub fn cuda_destroy_external_semaphore(' in s:
+              raise SystemExit('destroy wrapper already present; refusing double insert')
+          if s.count(marker) != 1:
+              raise SystemExit(f'CUDA insertion marker count={s.count(marker)}, expected 1')
+          cuda.write_text(s.replace(marker, wrapper + marker, 1))
+          PY
+
+          VULKAN_SHA=$(sha256sum "$VULKAN" | awk '{print $1}')
+          CUDA_SHA=$(sha256sum "$CUDA" | awk '{print $1}')
+          test "$(wc -l < "$VULKAN")" -eq 1476
+          test "$(wc -l < "$CUDA")" -eq 1312
+          test "$VULKAN_SHA" = '4da792382d954f5ffe68865d5ae84db9e778c2f6e452917a7749149f50c41089'
+          test "$CUDA_SHA" = 'e81e693071608caef213eb34e68335d064e3aded6c58214147f2b6be4ac303b7'
+          if grep -Eq 'zc_exp7_fd_memory_type_bits|ZC_EXP7_FD_IMG|eligible_bits|fd_bits|get_memory_fd_properties' "$VULKAN"; then
+            echo 'Forbidden reverted fd-query code present' >&2
+            exit 1
+          fi
+          echo "Exact compile-proven EXP7 source verified."
+
+      - name: Commit diagnostic source only
+        working-directory: reco
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/reco-core/src/interop/vulkan.rs crates/reco-core/src/interop/cuda.rs
+          git diff --cached --check
+          git commit -m 'ZC_EXP7: external-memory capability and buffer alias diagnostic'
+          git push origin HEAD:diag/zc-exp7-external-memory-caps
