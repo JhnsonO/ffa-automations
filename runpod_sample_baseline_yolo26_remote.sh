@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # TEST-ONLY runner for experiment/lookahead-ball-containment-01.
-# Reuses the exact YOLO26 sample baseline runner and changes only:
-#   - fixed 44-degree FOV
-#   - post-run containment + camera-step diagnostics from events.jsonl
-# The Reco source anti-snap/containment guard is injected by runpod_bootstrap.sh.
+# Exact same standardized 180s clip/settings as v2; only the source-side
+# ball-signal hysteresis and final camera dynamics differ.
 set -euo pipefail
 cd /tmp/oev_run
 
@@ -27,14 +25,14 @@ if s.count(old) != 1:
 s = s.replace(old, new)
 
 old_log = '  echo "Panner overlay active: cluster_alpha=${CLUSTER_ALPHA_OVERRIDE} (panner_overlay.json)" | tee -a stitch.log\n'
-new_log = '  echo "Panner overlay active: cluster_alpha=${CLUSTER_ALPHA_OVERRIDE}, fixed_fov=44.0deg, stable_ball_guard=v2_anti_snap (panner_overlay.json)" | tee -a stitch.log\n'
+new_log = '  echo "Panner overlay active: cluster_alpha=${CLUSTER_ALPHA_OVERRIDE}, fixed_fov=44.0deg, stable_ball_guard=v3_trajectory_hysteresis_accel_limit (panner_overlay.json)" | tee -a stitch.log\n'
 if s.count(old_log) != 1:
     raise SystemExit(f"expected exactly one panner-overlay log line, found {s.count(old_log)}")
 p.write_text(s.replace(old_log, new_log))
 PY
 
 chmod +x "$BASE_SCRIPT"
-echo "TEST_ONLY_PANNER_PROFILE=lookahead_ball_containment_02 cluster_alpha=${CLUSTER_ALPHA_OVERRIDE:-unset} fixed_fov=44.0 lookahead=${LOOKAHEAD:-unset} safe_margin_deg=3.0 coast_hold_frames=18 reacquire_confirm_frames=3 max_yaw_step_deg=0.75"
+echo "TEST_ONLY_PANNER_PROFILE=lookahead_ball_containment_03 cluster_alpha=${CLUSTER_ALPHA_OVERRIDE:-unset} fixed_fov=44.0 lookahead=${LOOKAHEAD:-unset} innovation_gate_deg=3.0 switch_confirm_frames=18 max_yaw_step_deg=0.75 yaw_accel_deg_per_frame2=0.08"
 
 "$BASE_SCRIPT"
 
@@ -46,7 +44,7 @@ from pathlib import Path
 
 EVENTS = Path("events.jsonl")
 if not EVENTS.is_file():
-    raise SystemExit("FATAL: events.jsonl missing; cannot measure anti-snap experiment")
+    raise SystemExit("FATAL: events.jsonl missing; cannot measure v3 experiment")
 
 world_by_frame = {}
 pan_by_frame = {}
@@ -88,6 +86,18 @@ def longest_streak(frames):
         prev = idx
     return best
 
+def pct(values, q):
+    if not values:
+        return 0.0
+    vals = sorted(values)
+    pos = (len(vals) - 1) * q
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return vals[lo]
+    frac = pos - lo
+    return vals[lo] * (1.0 - frac) + vals[hi] * frac
+
 tracking_frames = []
 coasting_frames = []
 actual_outside_frames = []
@@ -103,7 +113,7 @@ for idx in sorted(set(world_by_frame) & set(pan_by_frame)):
     state = str(ball.get("state", "")).lower()
     if state == "coasting":
         coasting_frames.append(idx)
-    if state != "tracking":
+    if state not in ("tracking", "coasting"):
         continue
 
     pose = pan_by_frame[idx]
@@ -123,7 +133,8 @@ for idx in sorted(set(world_by_frame) & set(pan_by_frame)):
     dy = abs(angle_diff(by, py))
     dp = abs(bp - pp)
 
-    tracking_frames.append(idx)
+    if state == "tracking":
+        tracking_frames.append(idx)
     yaw_offsets.append(math.degrees(dy))
     pitch_offsets.append(math.degrees(dp))
 
@@ -135,9 +146,7 @@ for idx in sorted(set(world_by_frame) & set(pan_by_frame)):
     if dy > safe_h or dp > safe_v:
         safe_violation_frames.append(idx)
 
-# Final rendered-camera step sizes. These are the numbers that correspond to
-# visible one-frame snaps, using shortest yaw delta so panorama wrap is safe.
-pan_steps = []
+steps = []
 prev_idx = None
 prev_pose = None
 for idx in sorted(pan_by_frame):
@@ -150,11 +159,24 @@ for idx in sorted(pan_by_frame):
         prev_pose = None
         continue
     if prev_pose is not None and prev_idx is not None and idx == prev_idx + 1:
-        yaw_step = abs(math.degrees(angle_diff(py, prev_pose[0])))
-        pitch_step = abs(math.degrees(pp - prev_pose[1]))
-        pan_steps.append((idx, yaw_step, pitch_step))
+        yaw_step = math.degrees(angle_diff(py, prev_pose[0]))
+        pitch_step = math.degrees(pp - prev_pose[1])
+        steps.append((idx, yaw_step, pitch_step))
     prev_idx = idx
     prev_pose = (py, pp)
+
+yaw_accels = []
+pitch_accels = []
+reversals_02 = 0
+reversals_03 = 0
+for (_, y0, p0), (idx, y1, p1) in zip(steps, steps[1:]):
+    yaw_accels.append((idx, y1 - y0))
+    pitch_accels.append((idx, p1 - p0))
+    if y0 * y1 < 0:
+        if abs(y0) > 0.2 and abs(y1) > 0.2:
+            reversals_02 += 1
+        if abs(y0) > 0.3 and abs(y1) > 0.3:
+            reversals_03 += 1
 
 stitch_text = Path("stitch.log").read_text(errors="replace") if Path("stitch.log").is_file() else ""
 guard_rows = [
@@ -164,62 +186,64 @@ guard_rows = [
         stitch_text,
     )
 ]
-anti_snap_rows = [
+dynamics_rows = [
     (float(a), float(b))
     for a, b in re.findall(
-        r"BALL_ANTI_SNAP frame=\d+ yaw_reduction_deg=([0-9.]+) pitch_reduction_deg=([0-9.]+)",
+        r"BALL_CAMERA_DYNAMICS frame=\d+ yaw_reduction_deg=([0-9.]+) pitch_reduction_deg=([0-9.]+)",
         stitch_text,
     )
 ]
-reacquire_holds = len(re.findall(r"BALL_GUARD_REACQUIRE_HOLD", stitch_text))
-reacquire_accepts = len(re.findall(r"BALL_GUARD_REACQUIRE_ACCEPT", stitch_text))
+signal_holds = len(re.findall(r"BALL_SIGNAL_HOLD", stitch_text))
+signal_switch_accepts = len(re.findall(r"BALL_SIGNAL_SWITCH_ACCEPT", stitch_text))
 
-max_yaw_step = max((x[1] for x in pan_steps), default=0.0)
-max_pitch_step = max((x[2] for x in pan_steps), default=0.0)
+abs_yaw_steps = [abs(y) for _, y, _ in steps]
+abs_pitch_steps = [abs(p) for _, _, p in steps]
+abs_yaw_accels = [abs(a) for _, a in yaw_accels]
+abs_pitch_accels = [abs(a) for _, a in pitch_accels]
 
 metrics = {
-    "experiment": "lookahead_ball_containment_02_anti_snap",
-    "definition": "stable Tracking/Coasting ball guard after centered smoothing with final camera slew ceiling",
+    "experiment": "lookahead_ball_containment_03_trajectory_hysteresis_accel_limit",
+    "definition": "upstream stabilized WorldState ball + post-smoothing containment + acceleration-limited final camera",
     "fov_expected_deg": 44.0,
-    "output_aspect": "16:9",
     "safe_margin_deg": SAFE_MARGIN_DEG,
     "tracking_ball_frames": len(tracking_frames),
     "coasting_ball_frames": len(coasting_frames),
-    "actual_outside_frame_frames": len(actual_outside_frames),
-    "actual_outside_frame_pct": (100.0 * len(actual_outside_frames) / len(tracking_frames)) if tracking_frames else None,
-    "safe_zone_violation_frames": len(safe_violation_frames),
-    "safe_zone_violation_pct": (100.0 * len(safe_violation_frames) / len(tracking_frames)) if tracking_frames else None,
+    "actual_outside_frame_frames_tracking_or_coasting": len(actual_outside_frames),
+    "safe_zone_violation_frames_tracking_or_coasting": len(safe_violation_frames),
     "longest_actual_outside_streak_frames": longest_streak(actual_outside_frames),
     "max_abs_yaw_offset_deg": max(yaw_offsets, default=None),
-    "max_abs_pitch_offset_deg": max(pitch_offsets, default=None),
-    "camera_max_yaw_step_deg": max_yaw_step,
-    "camera_max_pitch_step_deg": max_pitch_step,
-    "camera_yaw_steps_gt_1deg": sum(1 for _, y, _ in pan_steps if y > 1.0),
-    "camera_yaw_steps_gt_2deg": sum(1 for _, y, _ in pan_steps if y > 2.0),
-    "camera_yaw_steps_gt_5deg": sum(1 for _, y, _ in pan_steps if y > 5.0),
-    "camera_yaw_steps_gt_10deg": sum(1 for _, y, _ in pan_steps if y > 10.0),
+    "camera_max_yaw_step_deg": max(abs_yaw_steps, default=0.0),
+    "camera_p99_yaw_step_deg": pct(abs_yaw_steps, 0.99),
+    "camera_max_pitch_step_deg": max(abs_pitch_steps, default=0.0),
+    "camera_max_abs_yaw_accel_deg_per_frame2": max(abs_yaw_accels, default=0.0),
+    "camera_p99_abs_yaw_accel_deg_per_frame2": pct(abs_yaw_accels, 0.99),
+    "camera_max_abs_pitch_accel_deg_per_frame2": max(abs_pitch_accels, default=0.0),
+    "camera_adjacent_direction_reversals_gt_0_2deg": reversals_02,
+    "camera_adjacent_direction_reversals_gt_0_3deg": reversals_03,
+    "camera_yaw_steps_gt_1deg": sum(1 for x in abs_yaw_steps if x > 1.0),
     "guard_activations": len(guard_rows),
     "guard_max_yaw_correction_deg": max((a for a, _ in guard_rows), default=0.0),
-    "anti_snap_activations": len(anti_snap_rows),
-    "anti_snap_max_yaw_reduction_deg": max((a for a, _ in anti_snap_rows), default=0.0),
-    "reacquire_jump_holds": reacquire_holds,
-    "reacquire_jump_accepts": reacquire_accepts,
+    "camera_dynamics_activations": len(dynamics_rows),
+    "camera_dynamics_max_yaw_reduction_deg": max((a for a, _ in dynamics_rows), default=0.0),
+    "ball_signal_holds": signal_holds,
+    "ball_signal_switch_accepts": signal_switch_accepts,
 }
 
 Path("containment_metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
 print(json.dumps(metrics, indent=2))
 
-if not pan_steps:
-    raise SystemExit("FATAL: no consecutive PanDecision frames available for anti-snap evaluation")
-# This experiment prioritizes removing visible one-frame snapping. Ball
-# containment is reported, not used as a hard failure, because the slew limiter
-# intentionally chooses smooth movement over teleporting the camera.
-if max_yaw_step > 0.85:
+if not steps:
+    raise SystemExit("FATAL: no consecutive PanDecision frames available")
+if metrics["camera_max_yaw_step_deg"] > 0.80:
     raise SystemExit(
-        f"FATAL: final camera yaw still jumps {max_yaw_step:.3f} deg in one frame; expected <=0.85 deg"
+        f"FATAL: final camera yaw step {metrics['camera_max_yaw_step_deg']:.3f} deg exceeds 0.80"
     )
-if metrics["camera_yaw_steps_gt_2deg"]:
+if metrics["camera_max_abs_yaw_accel_deg_per_frame2"] > 0.30:
     raise SystemExit(
-        f"FATAL: {metrics['camera_yaw_steps_gt_2deg']} final-camera yaw steps remain >2 deg/frame"
+        f"FATAL: yaw acceleration change {metrics['camera_max_abs_yaw_accel_deg_per_frame2']:.3f} deg/frame^2 exceeds 0.30"
+    )
+if reversals_03:
+    raise SystemExit(
+        f"FATAL: {reversals_03} adjacent hard direction reversals remain above 0.3 deg/frame"
     )
 PY
