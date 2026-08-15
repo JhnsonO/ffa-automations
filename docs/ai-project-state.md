@@ -2025,3 +2025,49 @@ Method: `world_state` events carry the ball's true tracked yaw/pitch each frame 
   - AP-JP-1 repo-variable entry points to volume `6668h25wco`, which RunPod reports no longer exists. Do not retry that volume. The canonical volume-setup workflow independently confirmed the surviving volumes are EU-RO-1 `0hta9vhuue`, EUR-IS-1 `yssxw5c673`, and US-IL-1 `n71p3nlmcz`. Updating `OEV_NETWORK_VOLUME_MAP` is currently blocked by GitHub token permissions (`403 Resource not accessible by integration`) and is separate infra debt.
 - Product rollout decision: merge the validated FFA production defaults now; do not hold the working shared-buffer path behind optional network-volume cache maintenance.
 - Next performance ticket: profile the current production path stage-by-stage on one healthy RTX 4090, then choose detector optimization vs broader pipeline scheduling from measured evidence. Do not revisit option 1 or direct shared-VkImage sharing.
+
+## OEV testing full-pipeline frame stride — VERIFIED 2026-08-15
+<!-- FRAME-STRIDE-VERIFIED-2026-08-15 -->
+
+Status: **VERIFIED on hardware; feature branches only; not production-enabled.**
+
+Purpose: accelerate tracker/panner/parameter experiments by processing sparse **source frame pairs** while preserving the represented real-time match interval. This is not `--detection-interval` and not encode-only FPS reduction. The evidence-stage implementation uses testing-only `RECO_TEST_FRAME_STRIDE=N`; unset/invalid/`1` preserves existing behavior.
+
+Implementation/evidence:
+- Production Reco baseline: `video-stitcher/main` `f27cbb6d0d65fcf9a11fb4d82d119ae214695318`.
+- Reco feature benchmark SHA: `c647cd101370887eabdf50059dd70eea3d9e730c` on `feature/frame-stride-testing`.
+- Reco files changed: `crates/reco-io/src/smart_source.rs`, `crates/reco-autocam/src/lib.rs`. No wgpu changes.
+- Skipping reuses Reco's existing paired-source `skip_frames()` path. Linux shared-buffer zero-copy consumes the skipped pair's CUDA→Vulkan semaphore signals and releases both left/right decode slots. Skipped pairs bypass VramPool/detection/tracker/panner/render/encode but still incur decode.
+- Autocam temporal state is explicitly rebased for stride: effective panner FPS = source FPS / stride; per-frame EMA alphas use `1-(1-alpha)^stride`; ball coast budget is divided by stride (ceiling). Geometric thresholds/weights are unchanged.
+- Targeted hardware tests: `cargo test -p reco-autocam stride_ --lib` = 2 passed / 0 failed; release CUDA build succeeded.
+- Benchmark harness evidence revision: `ffa-automations` `bd81440a80c44f5b65802be6dab808834668a4ee`; successful GitHub Actions run `31904505904`.
+- Hardware/sample: one RTX 4090, EU-RO-1, $0.74/hr, YOLO26m, `GX010197-seed1384188843/sample_01` 30s stereo pair, source ~59.94fps. Vulkan/CUDA/NVDEC/ORT-CUDA/shared-buffer zero-copy preflight passed.
+- Stride 1/2/3/4 ran sequentially on the same pod/GPU with the same sample/model/panner/detection settings.
+
+Verified matrix (stitch-only wall time/cost):
+
+| stride | processed pairs | wall time | speedup vs 1 | approx stitch cost | pan yaw p90 vs stride1 | rapid-transition yaw p90 | ball delta p90 vs stride1 |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1784 | 173.57s | 1.00x | $0.03568 | baseline | baseline | baseline |
+| 2 | 892 | 88.27s | 1.97x | $0.01814 | 0.92 deg | 1.01 deg | 0.00030 rad |
+| 3 | 595 | 59.99s | 2.89x | $0.01233 | 1.67 deg | 1.43 deg | 0.00532 rad |
+| 4 | 446 | 46.01s | 3.77x | $0.00946 | 1.53 deg | 1.94 deg | 0.01233 rad |
+
+Frame-accounting gate passed: 1784 -> 892 / 595 / 446 is the expected full-interval sparse sampling, not the first 1/N fraction of the source. Retimed inspection outputs were all ~29.7s. The raw sparse encoder still uses source FPS; the diagnostic harness retimes only after the measured stitch window, so final output smoothness/encode validation remains stride 1.
+
+Quality interpretation:
+- Stride 3 reduces the 30s stitch from 173.6s to 60.0s (~2.89x) and stitch-only GPU cost by ~65% while keeping the camera trajectory close to stride 1.
+- Stride 4 is faster (~3.77x) but its tail is materially worse: ball divergence p95 ~0.316 rad vs ~0.055 rad at stride 3, and max pan-yaw divergence ~3.45 deg vs ~2.40 deg at stride 3.
+- Visual spot checks at normal and rapid-transition epochs showed stride 1/2/3 closely aligned; stride 4 had the largest deviation but remained directionally plausible.
+
+Recommendation:
+- **FAST TEST: stride 3** for routine tracker/panner/parameter iteration.
+- **FULL VALIDATION: stride 1** before production/merge decisions and for final motion smoothness/encode quality.
+- Use stride 2 for especially transition-sensitive investigations; stride 4 only for coarse smoke/directional checks.
+- Do not build a larger preset system until additional sample coverage justifies it.
+
+CI notes:
+- One branch-local rustfmt-only assertion remains for normal formatter cleanup before merge.
+- Windows checks fail in the pre-existing wgpu DX12 dependency graph (`windows` crate version conflict); production baseline CI already fails independently of stride.
+- Security Audit fails before auditing project dependencies because latest `cargo-audit` currently pulls `kstring 2.0.4`, which requires Rust 1.96 while that job pins Rust 1.92.
+- No production/main merge performed.
