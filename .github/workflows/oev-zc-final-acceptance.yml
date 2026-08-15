@@ -1,0 +1,161 @@
+name: OEV — Final Shared-Buffer Acceptance (P010 + RTX4090 A/B)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/zc-buffer-copy-proof
+    paths:
+      - '.github/workflows/oev-zc-final-acceptance.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  final-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v5
+
+      - name: Generate ephemeral SSH key
+        run: |
+          ssh-keygen -q -t ed25519 -N '' -f /tmp/runpod_key
+          chmod 600 /tmp/runpod_key
+
+      - name: Allocate NVDEC-valid RTX 4090 pod
+        id: launch
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 -u - <<'PY'
+          import json, os, subprocess, time, urllib.request, urllib.error
+          base='https://rest.runpod.io/v1'
+          headers={'Authorization':f"Bearer {os.environ['RUNPOD_API_KEY']}",'Content-Type':'application/json','Accept':'application/json'}
+          pub=open('/tmp/runpod_key.pub').read().strip()
+          open('/tmp/final_pod_id.txt','w').close()
+          def req(method,url,data=None,timeout=30):
+              r=urllib.request.Request(url,data=(json.dumps(data).encode() if data is not None else None),method=method,headers=headers)
+              with urllib.request.urlopen(r,timeout=timeout) as x:
+                  raw=x.read(); return json.loads(raw) if raw else {}
+          def delete(pid):
+              try: req('DELETE',f'{base}/pods/{pid}',timeout=20)
+              except Exception as e: print('cleanup warning',pid,e)
+          def ssh_ready(ip,port):
+              for _ in range(24):
+                  p=subprocess.run(['ssh','-i','/tmp/runpod_key','-p',str(port),'-o','StrictHostKeyChecking=no','-o','ConnectTimeout=8',f'root@{ip}','echo OK'],capture_output=True,text=True,timeout=15)
+                  if 'OK' in p.stdout: return True
+                  time.sleep(5)
+              return False
+          winner=None
+          for attempt in range(1,6):
+              body={'name':'oev-final-zc-acceptance','imageName':'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404','gpuTypeIds':['NVIDIA GeForce RTX 4090'],'gpuTypePriority':'custom','gpuCount':1,'cloudType':'SECURE','containerDiskInGb':40,'networkVolumeId':'0hta9vhuue','volumeMountPath':'/runpod-volume','ports':['22/tcp'],'supportPublicIp':True,'allowedCudaVersions':['12.8'],'env':{'PUBLIC_KEY':pub,'SSH_PUBLIC_KEY':pub}}
+              print(f'RTX4090 attempt {attempt}/5')
+              try:
+                  pod=req('POST',f'{base}/pods',body); pid=pod['id']; open('/tmp/final_pod_id.txt','w').write(pid); started=time.time()
+                  deadline=time.time()+600; info=None
+                  while time.time()<deadline:
+                      info=req('GET',f'{base}/pods/{pid}?includeMachine=true'); ip=info.get('publicIp'); m=info.get('portMappings') or {}; port=m.get('22') or m.get('22/tcp')
+                      if ip and port: break
+                      time.sleep(10)
+                  else: raise RuntimeError('no public IP/SSH mapping')
+                  if not ssh_ready(ip,port): raise RuntimeError('SSH not ready')
+                  subprocess.run(['scp','-i','/tmp/runpod_key','-P',str(port),'-o','StrictHostKeyChecking=no','runpod_gpu_preflight.sh',f'root@{ip}:/tmp/preflight.sh'],check=True,timeout=30)
+                  p=subprocess.run(['ssh','-i','/tmp/runpod_key','-p',str(port),'-o','StrictHostKeyChecking=no',f'root@{ip}','chmod +x /tmp/preflight.sh && stdbuf -oL -eL /tmp/preflight.sh'],capture_output=True,text=True,timeout=240)
+                  print(p.stdout); print(p.stderr)
+                  needed=['PREFLIGHT_GPU_MODEL=NVIDIA GeForce RTX 4090','PREFLIGHT_VULKAN=PASS','PREFLIGHT_CUDA_INIT=PASS','PREFLIGHT_NVDEC=PASS','PREFLIGHT_ORT_CUDA=PASS','PREFLIGHT_RESULT=PASS']
+                  if p.returncode or any(x not in p.stdout for x in needed): raise RuntimeError('4090 preflight failed')
+                  winner=(pid,ip,port,info.get('costPerHr'),started); break
+              except Exception as e:
+                  print(f'attempt {attempt} rejected: {e}')
+                  try: delete(pid)
+                  except Exception: pass
+                  if attempt<5: time.sleep(15)
+          if not winner: raise SystemExit('No NVDEC-valid RTX4090 found in 5 attempts')
+          pid,ip,port,cost,started=winner
+          out=os.environ['GITHUB_OUTPUT']
+          with open(out,'a') as f:
+              f.write(f'pod_id={pid}\nip={ip}\nport={port}\ncost_per_hr={cost}\nlaunch_epoch={started}\n')
+          print(f'ACCEPTED RTX4090 pod={pid} ip={ip}:{port} cost_per_hr={cost}')
+          PY
+
+      - name: Mint Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          t=json.loads(os.environ['YOUTUBE_TOKEN']); c=json.loads(os.environ['YOUTUBE_CREDENTIALS'])
+          data=json.dumps({'client_id':t.get('client_id') or c['installed']['client_id'],'client_secret':t.get('client_secret') or c['installed']['client_secret'],'refresh_token':t['refresh_token'],'grant_type':'refresh_token'}).encode()
+          r=urllib.request.urlopen(urllib.request.Request('https://oauth2.googleapis.com/token',data=data,headers={'Content-Type':'application/json'},method='POST'))
+          open('/tmp/drive_token.txt','w').write(json.loads(r.read())['access_token'])
+          PY
+          chmod 600 /tmp/drive_token.txt
+
+      - name: Run both final acceptance tests on same RTX4090
+        id: test
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no"
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=20 root@$IP"
+          $SCP oev_zc_final_acceptance_remote_v2.sh root@$IP:/tmp/final.sh
+          $SCP /tmp/drive_token.txt root@$IP:/tmp/drive_token.txt
+          $SSH 'chmod +x /tmp/final.sh && stdbuf -oL -eL /tmp/final.sh'
+          echo "remote_rc=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Pull evidence
+        if: always()
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          mkdir -p final_artifacts/frames
+          if [ -n "$IP" ] && [ -n "$PORT" ]; then
+            SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no"
+            for f in summary.log ab_metrics.txt p010_probe.log p010.log ab_option2.log ab_nozero.log build.log reco_version.txt gpu_env.log; do $SCP "root@$IP:/tmp/oev_acceptance/$f" final_artifacts/ 2>/dev/null || true; done
+            $SCP 'root@'$IP':/tmp/oev_acceptance/frames/*.png' final_artifacts/frames/ 2>/dev/null || true
+          fi
+          echo '=== summary.log ==='
+          cat final_artifacts/summary.log 2>/dev/null || true
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-zc-final-acceptance-${{ github.run_id }}
+          path: final_artifacts/
+          retention-days: 30
+
+      - name: Terminate RunPod pod
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os,time,urllib.request,urllib.error
+          try: pid=open('/tmp/final_pod_id.txt').read().strip()
+          except FileNotFoundError: raise SystemExit(0)
+          if not pid: raise SystemExit(0)
+          url=f'https://rest.runpod.io/v1/pods/{pid}'; headers={'Authorization':f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          for i in range(3):
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url,method='DELETE',headers=headers),timeout=20) as r: print(f'pod {pid} termination HTTP {r.status}'); break
+              except urllib.error.HTTPError as e:
+                  if e.code==404: print('pod already absent'); break
+              except Exception as e: print('cleanup retry',e)
+              time.sleep(5)
+          else: raise SystemExit('pod termination not confirmed')
+          PY
+
+      - name: Evaluate acceptance
+        if: always()
+        run: |
+          test -f final_artifacts/summary.log
+          grep -q '^P010_RUNTIME=PASS$' final_artifacts/summary.log
+          grep -q '^RTX4090_SAME_POD_AB=PASS$' final_artifacts/summary.log
+          grep -q '^FINAL_ACCEPTANCE=PASS$' final_artifacts/summary.log
+          echo 'FINAL OPTION-2 ACCEPTANCE PASSED'
