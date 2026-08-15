@@ -1,0 +1,61 @@
+name: EXP8 — materialize image allocation-size A/B
+
+on:
+  push:
+    branches:
+      - diag/zc-exp8-image-alloc-size
+    paths:
+      - '.github/workflows/exp8-materialize-video-stitcher.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout video-stitcher EXP8 branch
+        uses: actions/checkout@v5
+        with:
+          repository: JhnsonO/video-stitcher
+          ref: diag/zc-exp8-image-alloc-size
+          token: ${{ secrets.GH_PAT }}
+          path: reco
+          fetch-depth: 1
+
+      - name: Apply the single allocation-size variable
+        working-directory: reco
+        run: |
+          set -euo pipefail
+          FILE='crates/reco-core/src/interop/vulkan.rs'
+          python3 - "$FILE" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          old = '.allocation_size(shared_mem.alloc_size as u64)'
+          new = '.allocation_size(mem_reqs.size)'
+          n = s.count(old)
+          if n != 1:
+              raise SystemExit(f'expected exactly one production image allocation-size occurrence, found {n}')
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+          git diff --check
+          git diff -- "$FILE"
+          test "$(git diff --numstat -- "$FILE" | awk '{print $1+$2}')" -eq 2
+          grep -qF '.allocation_size(mem_reqs.size)' "$FILE"
+          if grep -qF '.allocation_size(shared_mem.alloc_size as u64)' "$FILE"; then
+            echo 'old image allocation-size call still present' >&2
+            exit 1
+          fi
+
+      - name: Commit diagnostic branch only
+        working-directory: reco
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/reco-core/src/interop/vulkan.rs
+          git commit -m 'ZC_EXP8: use Vulkan image memRequirements.size for import A/B'
+          git push origin HEAD:diag/zc-exp8-image-alloc-size
