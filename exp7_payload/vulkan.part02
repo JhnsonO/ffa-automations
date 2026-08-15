@@ -8,14 +8,16 @@
         .push_next(&mut external_info);
 
     let mut external_props = vk::ExternalImageFormatProperties::default();
-    let mut props = vk::ImageFormatProperties2::default().push_next(&mut external_props);
-
-    let query = unsafe {
-        instance.get_physical_device_image_format_properties2(
-            physical_device,
-            &format_info,
-            &mut props,
-        )
+    let (query, image_format_properties) = {
+        let mut props = vk::ImageFormatProperties2::default().push_next(&mut external_props);
+        let query = unsafe {
+            instance.get_physical_device_image_format_properties2(
+                physical_device,
+                &format_info,
+                &mut props,
+            )
+        };
+        (query, props.image_format_properties)
     };
 
     match query {
@@ -60,11 +62,11 @@
          exportFromImportedHandleTypes={export_from_imported:?} maxExtent={}x{}x{} \
          maxMipLevels={} maxArrayLayers={}",
         features.as_raw(),
-        props.image_format_properties.max_extent.width,
-        props.image_format_properties.max_extent.height,
-        props.image_format_properties.max_extent.depth,
-        props.image_format_properties.max_mip_levels,
-        props.image_format_properties.max_array_layers,
+        image_format_properties.max_extent.width,
+        image_format_properties.max_extent.height,
+        image_format_properties.max_extent.depth,
+        image_format_properties.max_mip_levels,
+        image_format_properties.max_array_layers,
     );
 }
 
@@ -82,13 +84,15 @@ unsafe fn zc_exp7_mem_reqs2(
 
     let info = vk::ImageMemoryRequirementsInfo2::default().image(vk_image);
     let mut dedicated = vk::MemoryDedicatedRequirements::default();
-    let mut reqs2 = vk::MemoryRequirements2::default().push_next(&mut dedicated);
+    let memory_requirements = {
+        let mut reqs2 = vk::MemoryRequirements2::default().push_next(&mut dedicated);
+        unsafe {
+            raw_device.get_image_memory_requirements2(&info, &mut reqs2);
+        }
+        reqs2.memory_requirements
+    };
 
-    unsafe {
-        raw_device.get_image_memory_requirements2(&info, &mut reqs2);
-    }
-
-    let size = reqs2.memory_requirements.size as usize;
+    let size = memory_requirements.size as usize;
     let size_exact_match = cuda_alloc_size == size;
 
     log::info!(
@@ -98,8 +102,8 @@ unsafe fn zc_exp7_mem_reqs2(
          cuda_alloc_size={cuda_alloc_size} size_exact_match={size_exact_match}",
         dedicated.requires_dedicated_allocation != 0,
         dedicated.prefers_dedicated_allocation != 0,
-        reqs2.memory_requirements.alignment,
-        reqs2.memory_requirements.memory_type_bits,
+        memory_requirements.alignment,
+        memory_requirements.memory_type_bits,
     );
 }
 
