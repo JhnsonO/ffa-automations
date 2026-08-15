@@ -7,7 +7,7 @@ set -uo pipefail
 BASE_SHA="f27cbb6d0d65fcf9a11fb4d82d119ae214695318"
 ASYNC_SHA="a5de6a23294eea91e0f52831ae4f3686ec619be1"
 REPO="https://github.com/JhnsonO/video-stitcher"
-SAMPLE_DIR="/runpod-volume/oev-samples/GX010197-seed1384188843"
+BENCH_DIR="/tmp/oev_run"
 MODEL="/runpod-volume/oev-runtime/models/yolo26m.onnx"
 RUN_DIR="/tmp/oev_option1"
 mkdir -p "$RUN_DIR/frames"
@@ -31,11 +31,14 @@ say "=== OPTION1 ASYNC CUDA/VULKAN SLOT HANDOFF ==="
 say "base_sha=$BASE_SHA"
 say "async_sha=$ASYNC_SHA"
 
-LEFT_SRC="$SAMPLE_DIR/sample_01_left_30s.mp4"
-RIGHT_SRC="$SAMPLE_DIR/sample_01_right_30s.mp4"
+# Use the exact Drive benchmark pair already proven by the earlier zero-copy
+# acceptance workflows. The workflow downloads these files before this script
+# runs; fail closed if they are absent rather than guessing a volume filename.
+LEFT_SRC="$BENCH_DIR/left.mp4"
+RIGHT_SRC="$BENCH_DIR/right.mp4"
 for f in "$LEFT_SRC" "$RIGHT_SRC" "$MODEL"; do
   if [ ! -s "$f" ]; then
-    say "FATAL missing staged input: $f"
+    say "FATAL missing proven benchmark input: $f"
     exit 2
   fi
 done
