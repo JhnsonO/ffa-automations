@@ -1,0 +1,300 @@
+//! Vulkan side of CUDA/Vulkan interop.
+//!
+//! Imports CUDA-exported shared memory into Vulkan, then wraps the
+//! resulting `VkImage` into a [`wgpu::Texture`] via the HAL escape hatch.
+//!
+//! The flow:
+//! 1. CUDA allocates shareable memory and exports a POSIX fd
+//! 2. This module creates a `VkImage` with `VK_KHR_external_memory_fd`
+//! 3. Imports the fd as the backing memory for the image
+//! 4. Wraps the `VkImage` into `wgpu::Texture` via `create_texture_from_hal`
+//!
+//! ## References
+//! - [Gyroflow](https://github.com/gyroflow/gyroflow) for the general CUDA/Vulkan interop approach
+//! - `VK_KHR_external_memory_fd` specification
+//! - wgpu HAL interop API (`texture_from_raw`, `create_texture_from_hal`)
+
+use crate::gpu::GpuContext;
+use crate::interop::cuda::{CudaInteropError, CudaSharedMemory};
+
+/// A wgpu texture backed by CUDA shared memory.
+///
+/// Owns both the wgpu texture and the underlying CUDA allocation.
+/// When dropped, the wgpu texture is released first, then the CUDA memory.
+pub struct SharedTexture {
+    /// The wgpu texture, usable in bind groups and render passes.
+    pub texture: wgpu::Texture,
+    /// The CUDA device pointer to the shared memory.
+    /// Used for `cuMemcpy2D` from NVDEC output to this texture.
+    pub cuda_ptr: crate::interop::cuda::CUdeviceptr,
+    /// Pitch (row stride in bytes) of the Vulkan image.
+    /// May differ from `width * bpp` due to alignment requirements.
+    pub pitch: usize,
+    /// Keep the shared memory alive (dropped after texture).
+    _shared_mem: CudaSharedMemory,
+}
+
+/// Create a wgpu texture backed by CUDA shared memory.
+///
+/// This is the main entry point for zero-copy interop. The returned texture
+/// can be used in wgpu bind groups just like any other texture, but its memory
+/// is shared with CUDA — writes via `cuMemcpy2D` are visible to wgpu.
+///
+/// # Arguments
+/// - `gpu`: the wgpu GPU context (must be Vulkan backend)
+/// - `width`, `height`: texture dimensions in pixels
+/// - `format`: wgpu texture format (e.g. `R8Unorm` for Y/U/V planes)
+///
+/// # Errors
+/// - `NotVulkan` if the wgpu backend is not Vulkan
+/// - `CudaError` if shared memory allocation fails
+/// - `VulkanError` if Vulkan image creation or memory import fails
+#[cfg(target_os = "linux")]
+pub fn create_shared_texture(
+    gpu: &GpuContext,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> Result<SharedTexture, CudaInteropError> {
+    use ash::vk;
+    use wgpu::hal::api::Vulkan;
+
+    // ZC_EXP7 (diagnostic-only, avenue 3): run the VkBuffer alias control
+    // exactly once, before any decode work, on the first shared-texture
+    // creation. Self-contained -- allocates, writes, reads and frees its
+    // own resources; depends on nothing but `gpu`.
+    zc_exp7_run_buffer_control_once(gpu);
+
+    let bpp = format_bytes_per_pixel(format);
+
+    // Allocate row-aligned: Vulkan may require specific row pitch alignment.
+    // Start with a generous pitch (aligned to 256 bytes, common GPU requirement).
+    let row_bytes = width as usize * bpp;
+    let pitch = (row_bytes + 255) & !255; // align to 256
+    let alloc_size = pitch * height as usize;
+
+    let shared_mem = crate::interop::cuda::allocate_shared_memory(alloc_size)?;
+    let cuda_ptr = shared_mem.device_ptr;
+    let fd = shared_mem.shared_handle;
+
+    // Access the raw Vulkan device through wgpu's HAL
+    let (vk_image, device_memory, actual_pitch) = unsafe {
+        let hal_device_guard = gpu
+            .device
+            .as_hal::<Vulkan>()
+            .ok_or(CudaInteropError::NotVulkan)?;
+        let hal_device = &*hal_device_guard;
+        let raw_device = hal_device.raw_device();
+        let physical_device = hal_device.raw_physical_device();
+        let vk_format = wgpu_format_to_vk(format);
+
+        // --- ZC_EXP7 (diagnostic-only, avenue 3): image capability query ---
+        // Asks the driver whether THIS EXACT external image configuration is
+        // importable from OPAQUE_FD, and whether it demands a dedicated
+        // allocation -- rather than inferring it from vkAllocateMemory
+        // returning VK_SUCCESS, which run 31854089581 showed is not evidence
+        // of real page sharing. Read-only, and fully gated: with ZC_EXP7
+        // unset there is no behavioural change whatsoever.
+        if zc_exp7_enabled() {
+            let instance = hal_device.shared_instance().raw_instance();
+            let api_version = hal_device.shared_instance().instance_api_version();
+            if zc_exp7_vulkan_11_available(api_version) {
+                zc_exp7_image_caps(
+                    instance,
+                    physical_device,
+                    vk_format,
+                    vk::ImageTiling::LINEAR,
+                    vk::ImageUsageFlags::TRANSFER_DST
+                        | vk::ImageUsageFlags::TRANSFER_SRC
+                        | vk::ImageUsageFlags::SAMPLED,
+                    vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD,
+                    width,
+                    height,
+                    format,
+                );
+            }
+        }
+        // --- end ZC_EXP7 image capability query ---
+
+        // Create VkImage with external memory support
+        let mut external_info = vk::ExternalMemoryImageCreateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+
+        let image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk_format)
+            .extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::LINEAR)
+            .usage(
+                vk::ImageUsageFlags::TRANSFER_DST
+                    | vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::SAMPLED,
+            )
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::PREINITIALIZED)
+            .push_next(&mut external_info);
+
+        let vk_image = raw_device
+            .create_image(&image_info, None)
+            .map_err(|e| CudaInteropError::VulkanError(format!("vkCreateImage: {e:?}")))?;
+
+        // Get memory requirements
+        let mem_reqs = raw_device.get_image_memory_requirements(vk_image);
+
+        // --- ZC_EXP7 (diagnostic-only): requirements2 + dedicated reqs ---
+        // Additive. The v1 call above is deliberately left in place so the
+        // existing ZC_DIAG line stays byte-comparable with prior runs.
+        // Reports requiresDedicatedAllocation/prefersDedicatedAllocation --
+        // never queried anywhere in this codebase before -- and measures
+        // shared_mem.alloc_size against mem_reqs2.size for EXACT equality.
+        // The existing ZC_DIAG only ever asserted `>=`; NVIDIA's own
+        // simpleVulkanMMAP passes memRequirements.size verbatim as
+        // allocationSize, so the delta has never actually been measured.
+        if zc_exp7_enabled()
+            && zc_exp7_vulkan_11_available(hal_device.shared_instance().instance_api_version())
+        {
+            zc_exp7_mem_reqs2(raw_device, vk_image, shared_mem.alloc_size, format);
+        }
+        // --- end ZC_EXP7 requirements2 ---
+
+        // Get actual row pitch from the image layout
+        let subresource = vk::ImageSubresource {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            array_layer: 0,
+        };
+        let layout = raw_device.get_image_subresource_layout(vk_image, subresource);
+        let actual_pitch = layout.row_pitch as usize;
+
+        // --- ZC_DIAG: diagnostic-only, no behavioral change ---
+        // Narrowed hypothesis check (per Johnson, 14 Aug 2026): pitch already
+        // confirmed matching on real footage (run 31557269688 logged
+        // actual_pitch=3840 for both Y/UV, same as the guessed pitch here).
+        // The only open question is whether shared_mem.alloc_size (after CUDA
+        // VMM granularity rounding) actually satisfies Vulkan's mem_reqs.size.
+        let mem_reqs_size = mem_reqs.size as usize;
+        let mem_reqs_alignment = mem_reqs.alignment as usize;
+        let actual_pitch_x_height = actual_pitch * height as usize;
+        let pass_vs_mem_reqs = shared_mem.alloc_size >= mem_reqs_size;
+        let pass_vs_pitch_x_height = shared_mem.alloc_size >= actual_pitch_x_height;
+        log::info!(
+            "ZC_DIAG: {}x{} {:?} bpp={} row_bytes={} guessed_pitch={} requested_alloc_size={} shared_mem_alloc_size={} vk_actual_pitch={} vk_mem_reqs_size={} vk_mem_reqs_alignment={} actual_pitch_x_height={} PASS_vs_mem_reqs={} PASS_vs_pitch_x_height={} vk_subresource_offset={} vk_subresource_size={}",
+            width,
+            height,
+            format,
+            bpp,
+            row_bytes,
+            pitch,
+            alloc_size,
+            shared_mem.alloc_size,
+            actual_pitch,
+            mem_reqs_size,
+            mem_reqs_alignment,
+            actual_pitch_x_height,
+            if pass_vs_mem_reqs { "PASS" } else { "FAIL" },
+            if pass_vs_pitch_x_height { "PASS" } else { "FAIL" },
+            layout.offset,
+            layout.size,
+        );
+        // --- end ZC_DIAG ---
+
+        // Find a DEVICE_LOCAL memory type
+        let mem_props = {
+            let instance = hal_device.shared_instance().raw_instance();
+            instance.get_physical_device_memory_properties(physical_device)
+        };
+
+        // Prefer DEVICE_LOCAL, but fall back to any supported memory type.
+        // On unified-memory GPUs (Jetson/Tegra) the driver may not flag
+        // imported-fd-compatible types as DEVICE_LOCAL.
+        let memory_type_index = (0..mem_props.memory_type_count)
+            .find(|&i| {
+                let type_bits = 1 << i;
+                let is_supported = (mem_reqs.memory_type_bits & type_bits) != 0;
+                let props = mem_props.memory_types[i as usize].property_flags;
+                is_supported && props.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+            })
+            .or_else(|| {
+                log::warn!(
+                    "No DEVICE_LOCAL memory type for imported image, \
+                         falling back to any supported type (unified memory GPU?)"
+                );
+                (0..mem_props.memory_type_count)
+                    .find(|&i| (mem_reqs.memory_type_bits & (1 << i)) != 0)
+            })
+            .ok_or_else(|| {
+                CudaInteropError::VulkanError("no compatible memory type for imported image".into())
+            })?;
+
+        // Import the CUDA fd as Vulkan memory
+        let mut import_info = vk::ImportMemoryFdInfoKHR::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD)
+            .fd(fd);
+
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(shared_mem.alloc_size as u64)
+            .memory_type_index(memory_type_index)
+            .push_next(&mut import_info);
+
+        let device_memory = raw_device.allocate_memory(&alloc_info, None).map_err(|e| {
+            CudaInteropError::VulkanError(format!("vkAllocateMemory (import fd): {e:?}"))
+        })?;
+
+        // Bind the imported memory to the image
+        raw_device
+            .bind_image_memory(vk_image, device_memory, 0)
+            .map_err(|e| CudaInteropError::VulkanError(format!("vkBindImageMemory: {e:?}")))?;
+
+        // --- ZC_EXP5 (diagnostic): one-time PREINITIALIZED -> ---
+        // --- TRANSFER_SRC_OPTIMAL layout transition ---
+        //
+        // The image is created with initial_layout = PREINITIALIZED
+        // (above). Left alone, wgpu's create_texture_from_hal previously
+        // hard-coded TextureUses::UNINITIALIZED for every imported HAL
+        // texture -- and per the Vulkan spec, a transition FROM
+        // UNDEFINED/PREINITIALIZED is legally allowed to discard existing
+        // contents on first use. That's the leading hypothesis for why
+        // Vulkan's own readback of this texture has shown all-zero bytes
+        // even when CUDA's own view of the same shared memory is correct
+        // (see docs/ai-project-state.md, "zero-copy NV12 corruption").
+        //
+        // This performs the transition ourselves, once, at texture
+        // creation time -- before any CUDA write has happened and before
+        // wgpu ever sees the image -- so that when create_texture_from_hal
+        // is told (a few lines below, outside this block) that the
+        // texture's initial_state is COPY_SRC, that claim is actually
+        // true of the real VkImageLayout, not just of wgpu's tracker.
+        //
+        // This does NOT synchronize against CUDA's later per-frame
+        // writes to the same shared memory -- that's a separate, already
+        // scoped concern (Ticket 2's external-semaphore design). This is
+        // strictly a one-time "stop wgpu from treating fresh memory as
+        // discardable" fix, submitted on the exact queue wgpu itself
+        // uses (via Queue::as_hal, mirroring the proven pattern already
+        // used for add_wait_semaphore below in this same file) so there
+        // is no cross-queue-family hazard.
+        {
+            let (raw_queue, queue_family_index) = gpu
+                .queue
+                .as_hal::<Vulkan>()
+                .map(|hal_queue| (hal_queue.as_raw(), hal_queue.family_index()))
+                .ok_or(CudaInteropError::NotVulkan)?;
+
+            let pool_info =
+                vk::CommandPoolCreateInfo::default().queue_family_index(queue_family_index);
+            let cmd_pool = raw_device.create_command_pool(&pool_info, None).map_err(|e| {
+                CudaInteropError::VulkanError(format!(
+                    "vkCreateCommandPool (ZC_EXP5 transition): {e:?}"
+                ))
+            })?;
+
+            let alloc_info = vk::CommandBufferAllocateInfo::default()
+                .command_pool(cmd_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
