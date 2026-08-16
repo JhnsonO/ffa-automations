@@ -210,8 +210,8 @@ echo "field_roi validated in match.json (left/right polygons present)" | tee -a 
 echo "=== stitch.log: reco stitch (field follow-cam, l-shape, shared-buffer GPU path) ===" | tee stitch.log
 # Same flag set agreed with Johnson as the Vast script: normal
 # perspective (l-shape, default) projection, NOT cylindrical.
-# --detection-interval 1 (no frame-skipping, out of scope for this
-# ticket). Deliberately NO --allow-no-tracking: a tracking-init failure
+# --detection-interval 1 and no --frame-stride flag: treatment is stride 1.
+# --high-res-ball-recovery is the only detector/recovery treatment flag. Deliberately NO --allow-no-tracking: a tracking-init failure
 # must fail this run loudly, not silently degrade to a static stitch.
 # Shared-buffer zero-copy is intentionally enabled here (no --no-zero-copy).
 # The merged path was hardware-verified on RTX 4090 and L4 without the old
@@ -223,7 +223,7 @@ STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
   --panner-preset broadcast
   --lookahead "${LOOKAHEAD}"
   --detection-interval 1
-  --frame-stride 3
+  --high-res-ball-recovery
   --events events.jsonl
   --width 1920 --height 1080)
 
