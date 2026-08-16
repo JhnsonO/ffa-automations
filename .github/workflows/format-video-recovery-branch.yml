@@ -1,0 +1,30 @@
+name: Format video recovery branch
+
+on:
+  push:
+    branches: [experiment/ball-reacquisition-layer-01]
+    paths: [.format-video-recovery-branch]
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: JhnsonO/video-stitcher
+          ref: agent/high-res-ball-roi-recovery
+          token: ${{ secrets.GH_PAT }}
+      - uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          components: rustfmt
+      - run: |
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet; then
+            git add crates/reco-autocam/src/recovery_filter.rs
+            git commit -m 'style: format recovery validator'
+            git push origin HEAD:agent/high-res-ball-roi-recovery
+          fi
