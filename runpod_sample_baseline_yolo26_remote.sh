@@ -1,84 +1,68 @@
 #!/usr/bin/env bash
-# TEST-ONLY stride-3 adapter for the successful v4 180s sample runner.
-# Fetches the exact v4 stride-1 runner and changes only detector cadence plus
-# experiment labelling. All v4 panner/containment/micro-damping settings stay
-# identical for a clean stride-1 vs stride-3 comparison.
+# TEST-ONLY v4 stride-1 cadence control for sample_02.
+# Uses the exact successful v4 runner wrapper. The current experiment bootstrap,
+# Reco revision, allocator, model and panner settings remain unchanged; only
+# --frame-stride 3 is absent from the final Reco command.
 set -euo pipefail
 cd /tmp/oev_run
 
-V4_FFA_SHA="8febf7a90e048170b7c677e6b341545089d5b774"
-V4_RUNNER="/tmp/oev_run/runpod_sample_baseline_yolo26_v4_stride1_exact.sh"
+V3_FFA_SHA="c91314eaca8e2cbb0b6813f6e8204e4da23f408c"
+V3_RUNNER="/tmp/oev_run/runpod_sample_baseline_yolo26_v3_exact.sh"
 
 curl -fsSL \
-  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${V4_FFA_SHA}/runpod_sample_baseline_yolo26_remote.sh" \
-  -o "$V4_RUNNER"
-test -s "$V4_RUNNER"
+  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${V3_FFA_SHA}/runpod_sample_baseline_yolo26_remote.sh" \
+  -o "$V3_RUNNER"
+test -s "$V3_RUNNER"
 
-python3 - "$V4_RUNNER" <<'PY'
+python3 - "$V3_RUNNER" <<'PY'
 from pathlib import Path
 import sys
 
 p = Path(sys.argv[1])
 s = p.read_text()
-marker = 'exec "$V3_RUNNER"\n'
-if s.count(marker) != 1:
-    raise SystemExit(f"expected one v4 runner final exec marker, found {s.count(marker)}")
 
-# The v4 wrapper operates on the v3 wrapper, not on the final base runner that
-# contains STITCH_ARGS. Inject a tiny patch into the v3 wrapper immediately
-# before its one actual BASE_SCRIPT execution. The following containment-metrics
-# command makes that execution boundary unique; the other BASE_SCRIPT mentions
-# are fetch/test/python/chmod plumbing and must not be patched.
-adapter = r"""python3 - "$V3_RUNNER" <<'PY_STRIDE'
-from pathlib import Path
-import sys
+replacements = {
+    "stable_ball_guard=v3_trajectory_hysteresis_accel_limit":
+        "stable_ball_guard=v4_trajectory_hysteresis_accel_limit_micro_damping",
+    "TEST_ONLY_PANNER_PROFILE=lookahead_ball_containment_03 cluster_alpha=${CLUSTER_ALPHA_OVERRIDE:-unset} fixed_fov=44.0 lookahead=${LOOKAHEAD:-unset} innovation_gate_deg=3.0 switch_confirm_frames=18 max_yaw_step_deg=0.75 yaw_accel_deg_per_frame2=0.08":
+        "TEST_ONLY_PANNER_PROFILE=lookahead_ball_containment_04_micro_damping cluster_alpha=${CLUSTER_ALPHA_OVERRIDE:-unset} fixed_fov=44.0 lookahead=${LOOKAHEAD:-unset} innovation_gate_deg=3.0 switch_confirm_frames=18 max_yaw_step_deg=0.75 yaw_accel_deg_per_frame2=0.08 micro_zone_deg=4.0 micro_hold_deg=0.35",
+    "FATAL: events.jsonl missing; cannot measure v3 experiment":
+        "FATAL: events.jsonl missing; cannot measure v4 micro-damping experiment",
+    '"experiment": "lookahead_ball_containment_03_trajectory_hysteresis_accel_limit"':
+        '"experiment": "lookahead_ball_containment_04_micro_damping_stride1_control"',
+    '"definition": "upstream stabilized WorldState ball + post-smoothing containment + acceleration-limited final camera"':
+        '"definition": "v3 upstream stabilized ball and global dynamics + adaptive damping only inside 4deg final-camera error; stride1 cadence control"',
+}
+for old, new in replacements.items():
+    if old not in s:
+        raise SystemExit(f"v4 runner marker not found: {old}")
+    s = s.replace(old, new)
 
-p = Path(sys.argv[1])
-t = p.read_text()
-metrics_marker = "python3 - <<'PY' 2>&1 | tee containment_metrics.log\n"
-run_marker = '"$BASE_SCRIPT"\n\n' + metrics_marker
-if t.count(run_marker) != 1:
-    raise SystemExit(f"expected one v3 base execution -> metrics boundary, found {t.count(run_marker)}")
+old_gate = '''if metrics["camera_max_abs_yaw_accel_deg_per_frame2"] > 0.30:
+    raise SystemExit(
+        f"FATAL: yaw acceleration change {metrics['camera_max_abs_yaw_accel_deg_per_frame2']:.3f} deg/frame^2 exceeds 0.30"
+    )'''
+new_gate = '''if metrics["camera_p99_abs_yaw_accel_deg_per_frame2"] > 0.20:
+    raise SystemExit(
+        f"FATAL: p99 yaw acceleration {metrics['camera_p99_abs_yaw_accel_deg_per_frame2']:.3f} deg/frame^2 exceeds 0.20"
+    )'''
+if s.count(old_gate) != 1:
+    raise SystemExit(f"expected one v3 acceleration gate, found {s.count(old_gate)}")
+s = s.replace(old_gate, new_gate)
 
-stride_patch = r'''python3 - "$BASE_SCRIPT" <<'PY_FRAME_STRIDE'
-from pathlib import Path
-import sys
-
-p = Path(sys.argv[1])
-s = p.read_text()
-old = "  --detection-interval 1\n  --events events.jsonl\n"
-new = "  --detection-interval 1\n  --frame-stride 3\n  --events events.jsonl\n"
-if s.count(old) != 1:
-    raise SystemExit(f"expected one final stitch cadence marker, found {s.count(old)}")
-s = s.replace(old, new, 1)
-if s.count("--frame-stride 3") != 1:
-    raise SystemExit(f"expected exactly one --frame-stride 3 after patch, found {s.count('--frame-stride 3')}")
-p.write_text(s)
-print("stride-3 final base runner prepared: --detection-interval 1 + --frame-stride 3")
-PY_FRAME_STRIDE
+s += '''
+if [ -s containment_metrics.json ]; then
+  {
+    echo "--- v4 stride1 control metrics ---"
+    cat containment_metrics.json
+  } >> acceptance.log
+fi
 '''
-base_exec_and_metrics = '"$BASE_SCRIPT"\n\n' + metrics_marker
-t = t.replace(run_marker, stride_patch + base_exec_and_metrics, 1)
 
-t = t.replace(
-    'lookahead_ball_containment_04_micro_damping',
-    'lookahead_ball_containment_04_micro_damping_stride3',
-)
-t = t.replace(
-    'v4_micro_damping_same_180s_sample',
-    'v4_micro_damping_stride3_same_180s_sample',
-)
-
-p.write_text(t)
-print("stride-3 runner adapter prepared: unique base execution boundary patched")
-PY_STRIDE
-exec "$V3_RUNNER"
-"""
-
-s = s.replace(marker, adapter, 1)
 p.write_text(s)
+print("v4 stride1 control runner prepared from exact v3 runner; no --frame-stride override")
 PY
 
-chmod +x "$V4_RUNNER"
-echo "TEST_ONLY_RUNNER=v4_micro_damping_stride3 same_sample=sample_01 duration_s=180"
-exec "$V4_RUNNER"
+chmod +x "$V3_RUNNER"
+echo "TEST_ONLY_RUNNER_DELTA=v4_stride1_sample02_control base_v3_sha=${V3_FFA_SHA}"
+exec "$V3_RUNNER"
