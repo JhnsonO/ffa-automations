@@ -2,7 +2,7 @@
 # TEST-ONLY stride-3 adapter for the successful v4 micro-damping experiment.
 #
 # Reuses the exact v4 wrapper from commit 8febf7a, then adapts only the
-# source-patch anchors needed by stride-enabled Reco b2fc622f. Product logic
+# source-patch anchors needed by recovery-enabled Reco 72d0ac17. Product logic
 # remains the v4 ball hysteresis + containment + camera dynamics + 4deg
 # micro-damping. Production/main is untouched.
 set -euo pipefail
@@ -33,7 +33,7 @@ p = Path(sys.argv[1])
 t = p.read_text()
 
 old_sha = 'RECO_SHA="f27cbb6d0d65fcf9a11fb4d82d119ae214695318"'
-new_sha = 'RECO_SHA="b2fc622f4b07dfa0c43e3ad9a96ac85b4f450085"'
+new_sha = 'RECO_SHA="72d0ac1709a09f84a8e32ca7e4b9c792159edc50"'
 if t.count(old_sha) != 1:
     raise SystemExit(f"expected one v4 Reco SHA marker, found {t.count(old_sha)}")
 t = t.replace(old_sha, new_sha, 1)
@@ -93,7 +93,7 @@ t = t.replace(
 
 p.write_text(t)
 print(
-    "stride adapter prepared: Reco=b2fc622f, v4 filter on sparse analysis frames, "
+    "stride adapter prepared: Reco=72d0ac17, v4 filter on sparse analysis frames, "
     "stabilised last_world_state retained for render-only frames"
 )
 PY_STRIDE
@@ -105,5 +105,5 @@ p.write_text(s)
 PY
 
 chmod +x "$V4_SCRIPT"
-echo "TEST_ONLY_STRIDE_ADAPTER=v4_micro_damping_stride3 reco_sha=b2fc622f4b07dfa0c43e3ad9a96ac85b4f450085"
+echo "TEST_ONLY_STRIDE_ADAPTER=v4_micro_damping_stride3 reco_sha=72d0ac1709a09f84a8e32ca7e4b9c792159edc50"
 exec "$V4_SCRIPT"
