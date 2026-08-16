@@ -3,7 +3,7 @@ name: Repoint ball reacquisition head
 on:
   push:
     branches: [experiment/ball-reacquisition-layer-01]
-    paths: [.repoint-ball-reacquisition-head]
+    paths: [.repoint-ball-reacquisition-head-final]
 
 permissions:
   contents: write
@@ -16,12 +16,12 @@ jobs:
         with:
           ref: experiment/ball-reacquisition-layer-01
           token: ${{ secrets.GH_PAT }}
-      - name: Pin corrected PR head
+      - name: Pin final PR head
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          old = '160c1aac8a59f83b9c6ccdfcc57b69bd8a598432'
-          new = 'af4d149bb0c63b3810b1075eef4f2e8f31ea0753'
+          old = 'af4d149bb0c63b3810b1075eef4f2e8f31ea0753'
+          new = 'de0160580c3c69cc9007194d9347ca0db2f98e8c'
           for name in ['.github/workflows/oev-runpod-sample-baseline.yml', 'runpod_bootstrap.sh']:
               p = Path(name)
               t = p.read_text()
@@ -29,13 +29,13 @@ jobs:
                   raise SystemExit(f'{name}: old SHA not found')
               p.write_text(t.replace(old, new))
           PY
-          grep -F 'af4d149bb0c63b3810b1075eef4f2e8f31ea0753' .github/workflows/oev-runpod-sample-baseline.yml
-          grep -F 'af4d149bb0c63b3810b1075eef4f2e8f31ea0753' runpod_bootstrap.sh
+          grep -F 'de0160580c3c69cc9007194d9347ca0db2f98e8c' .github/workflows/oev-runpod-sample-baseline.yml
+          grep -F 'de0160580c3c69cc9007194d9347ca0db2f98e8c' runpod_bootstrap.sh
           git diff --check
-      - name: Commit corrected pin
+      - name: Commit final pin
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/workflows/oev-runpod-sample-baseline.yml runpod_bootstrap.sh
-          git commit -m 'test: pin corrected recovery candidate head'
+          git commit -m 'test: pin final recovery candidate head'
           git push origin HEAD:experiment/ball-reacquisition-layer-01
