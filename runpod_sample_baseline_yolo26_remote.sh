@@ -26,17 +26,19 @@ if s.count(marker) != 1:
 
 # The v4 wrapper operates on the v3 wrapper, not on the final base runner that
 # contains STITCH_ARGS. Inject a tiny patch into the v3 wrapper immediately
-# before it executes BASE_SCRIPT; by then v3 has fetched and modified the real
-# stitch script, so --frame-stride lands on the actual Reco invocation.
+# before its one actual BASE_SCRIPT execution. The following containment-metrics
+# command makes that execution boundary unique; the other BASE_SCRIPT mentions
+# are fetch/test/python/chmod plumbing and must not be patched.
 adapter = r"""python3 - "$V3_RUNNER" <<'PY_STRIDE'
 from pathlib import Path
 import sys
 
 p = Path(sys.argv[1])
 t = p.read_text()
-run_marker = '"$BASE_SCRIPT"\n'
+metrics_marker = "python3 - <<'PY' 2>&1 | tee containment_metrics.log\n"
+run_marker = '"$BASE_SCRIPT"\n\n' + metrics_marker
 if t.count(run_marker) != 1:
-    raise SystemExit(f"expected one v3 base-runner execution marker, found {t.count(run_marker)}")
+    raise SystemExit(f"expected one v3 base execution -> metrics boundary, found {t.count(run_marker)}")
 
 stride_patch = r'''python3 - "$BASE_SCRIPT" <<'PY_FRAME_STRIDE'
 from pathlib import Path
@@ -55,7 +57,8 @@ p.write_text(s)
 print("stride-3 final base runner prepared: --detection-interval 1 + --frame-stride 3")
 PY_FRAME_STRIDE
 '''
-t = t.replace(run_marker, stride_patch + run_marker, 1)
+base_exec_and_metrics = '"$BASE_SCRIPT"\n\n' + metrics_marker
+t = t.replace(run_marker, stride_patch + base_exec_and_metrics, 1)
 
 t = t.replace(
     'lookahead_ball_containment_04_micro_damping',
@@ -67,7 +70,7 @@ t = t.replace(
 )
 
 p.write_text(t)
-print("stride-3 runner adapter prepared: patch deferred to final generated base runner")
+print("stride-3 runner adapter prepared: unique base execution boundary patched")
 PY_STRIDE
 exec "$V3_RUNNER"
 """
