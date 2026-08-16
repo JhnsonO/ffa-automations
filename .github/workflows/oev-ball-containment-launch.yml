@@ -1,4 +1,4 @@
-name: OEV — one-shot v4 stride-3 US-IL launcher
+name: OEV — one-shot v4 stride-3 non-4090 launcher
 
 on:
   push:
@@ -11,10 +11,31 @@ permissions:
 
 jobs:
   dispatch:
-    if: github.event.head_commit.message == 'launch-v4-stride3-usil'
+    if: github.event.head_commit.message == 'launch-v4-stride3-non4090-pat'
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch same 180s v4 stride-3 sample on US-IL-1
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Exclude known-bad 4090 tier on experiment branch
+        run: |
+          set -euo pipefail
+          target='.github/workflows/oev-runpod-sample-baseline.yml'
+          count=$(grep -c "'NVIDIA GeForce RTX 4090'," "$target" || true)
+          test "$count" = '1' || { echo "::error::expected one 4090 entry, found $count"; exit 1; }
+          sed -i "/'NVIDIA GeForce RTX 4090',/d" "$target"
+          grep -q "'NVIDIA RTX A5000'," "$target"
+          ! grep -q "'NVIDIA GeForce RTX 4090'," "$target"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$target"
+          git commit -m 'test(oev): avoid bad EU-RO 4090 host for stride-3 run'
+          git push origin HEAD:${{ github.ref_name }}
+
+      - name: Dispatch same 180s v4 stride-3 sample on EU-RO-1
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -25,7 +46,7 @@ jobs:
           {
             "ref": "${REF}",
             "inputs": {
-              "datacenter": "US-IL-1",
+              "datacenter": "EU-RO-1",
               "sample_id": "sample_01",
               "duration_s": "180",
               "sample_set_id": "GX010197-seed1384188843",
@@ -45,4 +66,4 @@ jobs:
             -d "$payload")
           cat /tmp/dispatch-body.txt || true
           test "$code" = "204" || { echo "::error::workflow dispatch returned HTTP $code"; exit 1; }
-          echo "Dispatched v4 stride-3 experiment on US-IL-1"
+          echo "Dispatched v4 stride-3 experiment on EU-RO-1 without 4090 tier"
