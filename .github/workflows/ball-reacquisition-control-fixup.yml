@@ -1,0 +1,34 @@
+name: Ball reacquisition control fixup
+
+on:
+  push:
+    branches: [experiment/ball-reacquisition-control-01]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[ball-reacq-control]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: experiment/ball-reacquisition-control-01
+          token: ${{ secrets.GH_PAT }}
+      - name: Apply control harness patch
+        run: python3 tools/patch_ball_reacquisition_control.py
+      - name: Verify control invariants
+        run: |
+          grep -F "EXPECTED_RECO_SHA='160c1aac8a59f83b9c6ccdfcc57b69bd8a598432'" .github/workflows/oev-runpod-sample-baseline.yml
+          grep -F 'reset --hard 160c1aac8a59f83b9c6ccdfcc57b69bd8a598432' runpod_bootstrap.sh
+          ! grep -F -- '--high-res-ball-recovery' runpod_sample_baseline_yolo26_remote.sh
+          ! grep -F -- '--frame-stride 3' runpod_sample_baseline_yolo26_remote.sh
+          git diff --check
+      - name: Commit control harness
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/oev-runpod-sample-baseline.yml runpod_bootstrap.sh runpod_sample_baseline_yolo26_remote.sh
+          git commit -m "test: pin stride1 ball reacquisition control [ball-reacq-control]"
+          git push origin HEAD:experiment/ball-reacquisition-control-01
