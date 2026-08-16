@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   dispatch:
-    if: github.event.head_commit.message == 'ci: retry v4 stride-3 non4090 launcher'
+    if: github.event.head_commit.message == 'retry-v4-stride3-non4090'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
