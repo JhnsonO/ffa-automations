@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   patch-and-dispatch:
-    if: github.event.head_commit.message == 'launch-v4-stride3-eu-broaden'
+    if: github.event.head_commit.message == 'retry-v4-stride3-eu-broaden-launcher'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -29,41 +29,41 @@ jobs:
 
           p = Path('.github/workflows/oev-runpod-sample-baseline.yml')
           s = p.read_text()
-          original = s
 
-          s = s.replace(
-              'Launch RunPod GPU pod (NVDEC preflight retry, max 3 attempts, pinned datacenter)',
-              'Launch RunPod GPU pod (NVDEC preflight retry, max 6 attempts, pinned datacenter, GPU failover)',
-              1,
+          old = 'Launch RunPod GPU pod (NVDEC preflight retry, max 3 attempts, pinned datacenter)'
+          new = 'Launch RunPod GPU pod (NVDEC preflight retry, max 6 attempts, pinned datacenter, GPU failover)'
+          if s.count(old) != 1:
+              raise SystemExit(f'step-name anchor count={s.count(old)}')
+          s = s.replace(old, new, 1)
+
+          old = '          MAX_ATTEMPTS = 3\n'
+          new = (
+              '          MAX_ATTEMPTS = 6\n'
+              '          # Same wide GPU fallback pool already used by the production runtime allocator.\n'
+              '          GPU_TYPES_WIDE = [\n'
+              "              'NVIDIA GeForce RTX 4090',\n"
+              "              'NVIDIA RTX A5000',\n"
+              "              'NVIDIA GeForce RTX 3090',\n"
+              "              'NVIDIA L4',\n"
+              "              'NVIDIA L40S',\n"
+              "              'NVIDIA GeForce RTX 5090',\n"
+              "              'NVIDIA RTX 2000 Ada Generation',\n"
+              "              'NVIDIA RTX PRO 6000 Blackwell Server Edition',\n"
+              '          ]\n'
           )
-
-          old = "          MAX_ATTEMPTS = 3\n"
-          new = """          MAX_ATTEMPTS = 6
-          # Same wide GPU fallback pool already used by the production runtime allocator.
-          # Keep the cheap/common types first; later types only win when earlier ones are unavailable.
-          GPU_TYPES_WIDE = [
-              'NVIDIA GeForce RTX 4090',
-              'NVIDIA RTX A5000',
-              'NVIDIA GeForce RTX 3090',
-              'NVIDIA L4',
-              'NVIDIA L40S',
-              'NVIDIA GeForce RTX 5090',
-              'NVIDIA RTX 2000 Ada Generation',
-              'NVIDIA RTX PRO 6000 Blackwell Server Edition',
-          ]
-"""
           if s.count(old) != 1:
               raise SystemExit(f'MAX_ATTEMPTS anchor count={s.count(old)}')
           s = s.replace(old, new, 1)
 
-          old = "          def create_pod(exclude_datacenters):\n              create_body = {\n"
-          new = """          def create_pod(excluded_gpu_types):
-              gpu_type_ids = [gpu for gpu in GPU_TYPES_WIDE if gpu not in excluded_gpu_types]
-              if not gpu_type_ids:
-                  raise RuntimeError('all candidate GPU types have been excluded by failed preflights')
-              print(f'Eligible GPU types this attempt: {gpu_type_ids}')
-              create_body = {
-"""
+          old = '          def create_pod(exclude_datacenters):\n              create_body = {\n'
+          new = (
+              '          def create_pod(excluded_gpu_types):\n'
+              '              gpu_type_ids = [gpu for gpu in GPU_TYPES_WIDE if gpu not in excluded_gpu_types]\n'
+              "              if not gpu_type_ids:\n"
+              "                  raise RuntimeError('all candidate GPU types have been excluded by failed preflights')\n"
+              "              print(f'Eligible GPU types this attempt: {gpu_type_ids}')\n"
+              '              create_body = {\n'
+          )
           if s.count(old) != 1:
               raise SystemExit(f'create_pod anchor count={s.count(old)}')
           s = s.replace(old, new, 1)
@@ -85,49 +85,56 @@ jobs:
           if n != 1:
               raise SystemExit(f'GPU list replacement count={n}')
 
+          if s.count('          excluded_datacenters = set()\n') != 1:
+              raise SystemExit('excluded_datacenters init anchor mismatch')
           s = s.replace('          excluded_datacenters = set()\n', '          excluded_gpu_types = set()\n', 1)
+
+          if s.count('                  pod_id = create_pod(excluded_datacenters)\n') != 1:
+              raise SystemExit('create_pod call anchor mismatch')
           s = s.replace('                  pod_id = create_pod(excluded_datacenters)\n', '                  pod_id = create_pod(excluded_gpu_types)\n', 1)
 
-          old = """                  print(f'::error::Attempt {attempt}: pod create failed: {exc}')
-                  summary_lines.append(f'attempt={attempt} pod_id=none result=CREATE_FAILED error={exc}')
-                  continue
-"""
-          new = """                  print(f'::error::Attempt {attempt}: pod create failed: {exc}')
-                  summary_lines.append(f'attempt={attempt} pod_id=none result=CREATE_FAILED error={exc}')
-                  if attempt < MAX_ATTEMPTS:
-                      delay = min(15 * attempt, 45)
-                      print(f'No capacity matched; waiting {delay}s before retrying the wide GPU pool.')
-                      time.sleep(delay)
-                  continue
-"""
+          old = (
+              "                  print(f'::error::Attempt {attempt}: pod create failed: {exc}')\n"
+              "                  summary_lines.append(f'attempt={attempt} pod_id=none result=CREATE_FAILED error={exc}')\n"
+              '                  continue\n'
+          )
+          new = (
+              "                  print(f'::error::Attempt {attempt}: pod create failed: {exc}')\n"
+              "                  summary_lines.append(f'attempt={attempt} pod_id=none result=CREATE_FAILED error={exc}')\n"
+              '                  if attempt < MAX_ATTEMPTS:\n'
+              '                      delay = min(15 * attempt, 45)\n'
+              "                      print(f'No capacity matched; waiting {delay}s before retrying the wide GPU pool.')\n"
+              '                      time.sleep(delay)\n'
+              '                  continue\n'
+          )
           if s.count(old) != 1:
               raise SystemExit(f'create failure block count={s.count(old)}')
           s = s.replace(old, new, 1)
 
-          old = """                  print(f'Attempt {attempt}: NVDEC preflight FAILED on pod {pod_id} '
-                        f'(driver {driver_version}, machine {machine_id}, datacenter {data_center_id}, '
-                        f'host {ip}) -- deleting and steering next attempt away from this datacenter.')
-                  if data_center_id != 'unknown':
-                      excluded_datacenters.add(data_center_id)
-                  delete_pod(pod_id)
-"""
-          new = """                  print(f'Attempt {attempt}: NVDEC preflight FAILED on pod {pod_id} '
-                        f'(driver {driver_version}, machine {machine_id}, datacenter {data_center_id}, '
-                        f'host {ip}) -- deleting and excluding GPU type {gpu_type} for remaining attempts.')
-                  if gpu_type != 'unknown':
-                      excluded_gpu_types.add(gpu_type)
-                      remaining = [gpu for gpu in GPU_TYPES_WIDE if gpu not in excluded_gpu_types]
-                      print(f'Excluded GPU types: {sorted(excluded_gpu_types)}; remaining candidates: {remaining}')
-                  delete_pod(pod_id)
-                  if attempt < MAX_ATTEMPTS:
-                      time.sleep(10)
-"""
+          old = (
+              "                  print(f'Attempt {attempt}: NVDEC preflight FAILED on pod {pod_id} '\n"
+              "                        f'(driver {driver_version}, machine {machine_id}, datacenter {data_center_id}, '\n"
+              "                        f'host {ip}) -- deleting and steering next attempt away from this datacenter.')\n"
+              "                  if data_center_id != 'unknown':\n"
+              '                      excluded_datacenters.add(data_center_id)\n'
+              '                  delete_pod(pod_id)\n'
+          )
+          new = (
+              "                  print(f'Attempt {attempt}: NVDEC preflight FAILED on pod {pod_id} '\n"
+              "                        f'(driver {driver_version}, machine {machine_id}, datacenter {data_center_id}, '\n"
+              "                        f'host {ip}) -- deleting and excluding GPU type {gpu_type} for remaining attempts.')\n"
+              "                  if gpu_type != 'unknown':\n"
+              '                      excluded_gpu_types.add(gpu_type)\n'
+              '                      remaining = [gpu for gpu in GPU_TYPES_WIDE if gpu not in excluded_gpu_types]\n'
+              "                      print(f'Excluded GPU types: {sorted(excluded_gpu_types)}; remaining candidates: {remaining}')\n"
+              '                  delete_pod(pod_id)\n'
+              '                  if attempt < MAX_ATTEMPTS:\n'
+              '                      time.sleep(10)\n'
+          )
           if s.count(old) != 1:
               raise SystemExit(f'preflight failure block count={s.count(old)}')
           s = s.replace(old, new, 1)
 
-          if s == original:
-              raise SystemExit('allocator patch made no changes')
           if 'excluded_datacenters' in s:
               raise SystemExit('stale excluded_datacenters reference remains')
           if s.count("'NVIDIA L40S'") != 1 or s.count("'NVIDIA GeForce RTX 5090'") != 1:
