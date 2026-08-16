@@ -1,0 +1,95 @@
+name: One-shot append OEV ball recovery state
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/zz-temp-append-ball-recovery-state.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  append-state:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify known-good state file and append handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_blob='ccaafe35cc68e6b426524ce991331f5d02fa210d'
+          actual_blob="$(git hash-object docs/ai-project-state.md)"
+          if [[ "$actual_blob" != "$expected_blob" ]]; then
+            echo "Refusing to append: expected state blob $expected_blob, got $actual_blob" >&2
+            exit 1
+          fi
+
+          cat >> docs/ai-project-state.md <<'STATE_EOF'
+
+## Ball detection/reacquisition — native-crop recovery A/B modest; ROI/state bug confirmed; tiled reacquisition next (16 Aug 2026)
+
+**Status / decision:** diagnosis complete; next architecture is not yet implemented in this entry. `JhnsonO/video-stitcher#6` remains draft and **must not merge as-is**. Inspected Reco state: `video-stitcher/main` is `b2fc622f4b07dfa0c43e3ad9a96ac85b4f450085`; PR #6 head is `72d0ac1709a09f84a8e32ca7e4b9c792159edc50` on `agent/high-res-ball-roi-recovery`, based directly on that Reco main SHA. The implementation follow-up independently inspected the same code and agreed with the architecture below. Its observation that the old FFA recovery experiment branch is 67 ahead / 32 behind current main means it should not be extended; use a fresh experiment branch.
+
+**Experiment/control:** same `sample_02` 180s footage, stride/detection interval 1, YOLO26m, lookahead 1.5, same unrelated settings. Control = run `31939820386`, branch `experiment/sample02-v4-stride1-control`, SHA `6bc0857208b3d82a4f764a4f9658e42fdfc2057e`, artifact id `9262033662`. Recovery = run `31962717862`, branch `experiment/sample02-high-res-ball-recovery-01`, SHA `1d35010997452ac377e275586fed45fb0ba3ae95`, job `95203079378`, artifact `oev-sample-baseline-sample_02-180s-31962717862` / id `9268349547`. Recovery used predicted native-resolution crops with ratios `[0.5, 0.6666667, 0.8333333]`, `MAX_RECOVERY_MISSES=24`, source 3840×2160, existing 1920×1920 model input. The produced recovery `followcam.mp4` (~409MB) lacked a valid `moov` atom, so this A/B is event/log evidence rather than a valid visual comparison.
+
+**Recovery telemetry:** attempts `[3408,869,651]`; hits `[2539,218,67]`; exhausted `584`; errors `0`; total `BALL_RECOVERY_HIT=2824`. Right `2214`, Left `610`; R1/L1 `2029/510`, R2/L2 `139/79`, R3/L3 `46/21`. Confidence mean/median fell with width: stage 1 ~`0.301/0.286`, stage 2 `0.208/0.170`, stage 3 `0.175/0.149`.
+
+| metric | stride-1 control | native-crop recovery |
+|---|---:|---:|
+| raw frames with no ball | 4,892 | 4,617 |
+| longest raw loss | 182 | 139 |
+| world-state `None` | 1,451 | 1,182 |
+| longest world-state loss | 158 | 116 |
+| safe-zone violations | 3,085 | **3,179 (worse)** |
+
+Both runs have 10,775 frames. Raw detections `8073→8507` (+434). There were 275 frames where control had no raw ball and recovery did; no frames moved opposite. World state improved on 301 frames and worsened on 32. But real tracking-state gain was small: `Tracking 3567→3666` (+99) while `Coasting 5757→5927` (+170). Of the 275 newly filled raw frames, only 55 became `Tracking`; 220 stayed `Coasting`. ~117 frames gained extra candidate(s) even though control already had a ball, adding duplicate/cross-camera confusion risk. Other acceptance signals: outside-frame tracking/coasting `971→937` slightly better, safe-zone violations `3085→3179` worse, longest outside streak `112→113`, guard activations `4368→4526`, ball-signal holds `1734→1857`, switches `29→28`. **Interpretation: most of the apparent gain is stale/uncertain holding, not genuine reacquisition.**
+
+**Long-loss evidence:** major control losses included `10364–10545=182`, `9234–9380=147`, `9828–9959=132`, `773–896=124`, `565–672=108`, `470–563=94`. Recovery still had `9234–9372=139`, `9828–9959=132` identical, `773–896=124` identical, `575–672=98`, `470–563=94` identical, and split the 10.4k blackout into `10364–10446=83` + `10452–10545=94` rather than cleanly solving it. Example around frame 10447: weak Right recovery candidate conf ~0.159/yaw -0.302 while world remained stale Left `Coasting` around yaw +1.225/age ~142; frame 10451 Right ~0.160/yaw -0.601 while world was still stale Left. Internal recovery “hit” therefore does not mean the tracker reacquired the ball.
+
+**Confirmed recovery-state/ROI ordering bug:** in `crates/reco-detect/src/detectors/ort_gpu.rs`, `CameraRecoveryState::observe()` updates velocity/center and resets misses. Any crop ball candidate currently increments the recovery hit, calls `observe()`, resets history, stops wider recovery and extends detections immediately. In `crates/reco-autocam/src/lib.rs`, high-res recovery is configured on the GPU detector before the detector is wrapped by field ROI. Therefore an out-of-field/spare-ball candidate can mutate trusted recovery state and terminate widening **before** the outer ROI rejects that same candidate. This is recovery-history poisoning; the field polygon itself is not the root bug.
+
+**Confirmed dead-end:** local predicted crop recovery only runs while `misses < 24`; at stride 1/~60fps that is only ~0.4s. At 24 misses, predicted center becomes `None` and recovery stops until ordinary full-frame YOLO eventually sees the ball again. Real `sample_02` gaps last ~1–3s, so this design cannot solve the long blackout tails.
+
+**Airborne/bouncing-ball ROI rule:** do **not** treat field ROI as a hard truth and do not simply enlarge it. A ball can project outside visible grass while physically above the pitch. Inside ROI = normal candidate. Outside ROI with no credible recent trajectory = reject/very low credibility. Outside ROI that connects convincingly to the recently trusted ball = keep briefly as **provisional**. Score with recent confirmed position, predicted position, velocity/direction, distance, temporal continuity, plausible acceleration/motion, whether it returns toward/into field, confidence, and competing candidates. Stationary spare balls should lose credibility; airborne match balls should remain associated with their prior track. A provisional candidate must **not** mutate trusted recovery state. Only sufficient validation may reset misses, update `last_center`/velocity, end the recovery search or influence the trusted main ball state.
+
+**Tracker/cross-camera:** field tracker already raises max jump to ~0.8 rad and resets `last` on full loss. Do not loosen tracker gates just to improve metrics; current candidates are dirty. Player-anchor may theoretically reject an airborne ball far from players, but that is not proven as the current main bottleneck. Recovery state is per-camera (`[CameraRecoveryState;2]`) and cross-camera arbitration happens too late; a weak recovery candidate on one camera must not contaminate state while the other camera has a stronger credible ball.
+
+**Agreed next architecture — key invariant: `candidate != trusted ball`.**
+1. Split candidate generation from trusted state mutation. Detector may produce normal/local/tiled candidates; box found ≠ state commit.
+2. Validate in a context-rich layer using ROI + recent trusted trajectory + confidence/motion + both cameras. Do not bury the field polygon inside the CUDA detector just to fix ordering.
+3. Outside-ROI candidates are provisional only when trajectory-consistent; stationary/implausible ones die.
+4. Cross-camera arbitration occurs before trusted commit.
+5. Recovery is a state progression, not a dead end: `normal → predicted native crop → global tiled search → trusted reacquisition → normal`. Prediction expiry changes search mode; it must not abandon recovery.
+6. Keep existing native predicted crops for short losses after fixing validation/state ordering.
+7. After local recovery fails/expires, add fallback **native-resolution tiled global reacquisition**. Do not resize whole 3840×2160 into the same 1920 model; that preserves no meaningful extra ball detail. Start with ~2×2 overlapping native regions (derive exact geometry/aspect handling from preprocessing), feed each tile into existing detector, remap detections to native/camera coordinates, then run the same validator. Overlap protects boundaries. Fallback only, not continuous 4K inference; throttle later only if benchmark data requires.
+8. Instrument candidate generated → provisional/rejected/accepted → trusted commit → actual transition back to `Tracking`, plus local/tiled attempts, tile/camera/confidence, cross-camera conflicts, reacquisition latency, and tiled inference time. `BALL_RECOVERY_HIT` is not success by itself.
+9. Use a fresh FFA experiment branch from current main and a fresh stride-1 control from the same current harness; historical `31939820386` remains reference.
+10. Re-test `sample_02` 180s, stride 1. Compare raw missing/longest loss, `Tracking`, `Coasting`, `None`/longest world loss, genuine lost→Tracking reacquisition count/latency, safe-zone violations, cross-camera conflicts/switches and wall-clock overhead. Success = materially shorter blackouts + more genuine `Tracking` without material false-tracking/safe-zone regression.
+
+**If tiled native-resolution reacquisition still fails materially:** stop tracker tuning and move to a dedicated football detector/fine-tune on OEV hard cases (tiny ball, blur, occlusion, airborne, near feet, touchline, goal/net). YOLO+VLM remains a later exception-path concept, not the first next fix.
+
+**Immediate handoff:** fresh implementation chat should establish `candidate != trusted ball` before adding stronger tiled search, keep work opt-in/draft, run a same-harness fresh control/treatment A/B, append exact implementation SHAs/branches/PR/run IDs/results to this state file, and **do not merge PR #6 as-is**.
+STATE_EOF
+
+          read -r adds dels file < <(git diff --numstat -- docs/ai-project-state.md)
+          if [[ "$dels" != "0" ]]; then
+            echo "Refusing to commit: append unexpectedly deleted $dels lines" >&2
+            git diff -- docs/ai-project-state.md
+            exit 1
+          fi
+          echo "State append verified: +$adds / -$dels"
+
+      - name: Commit append and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/zz-temp-append-ball-recovery-state.yml
+          git add docs/ai-project-state.md
+          git commit -m 'docs: record ball recovery diagnosis and reacquisition plan'
+          git push origin HEAD:main
