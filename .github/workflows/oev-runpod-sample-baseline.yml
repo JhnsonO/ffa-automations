@@ -10,6 +10,7 @@ on:
         options:
           - EU-RO-1
           - EUR-IS-1
+          - US-IL-1
       sample_id:
         description: "Sample id within the staged pack, e.g. 'sample_01'"
         required: true
