@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TEST-ONLY v4 stride-1 cadence control for sample_02.
+# TEST-ONLY v4 stride-1 high-resolution ball recovery for sample_02.
 # Uses the exact successful v4 runner wrapper. The current experiment bootstrap,
 # Reco revision, allocator, model and panner settings remain unchanged; only
 # --frame-stride 3 is absent from the final Reco command.
@@ -29,9 +29,9 @@ replacements = {
     "FATAL: events.jsonl missing; cannot measure v3 experiment":
         "FATAL: events.jsonl missing; cannot measure v4 micro-damping experiment",
     '"experiment": "lookahead_ball_containment_03_trajectory_hysteresis_accel_limit"':
-        '"experiment": "lookahead_ball_containment_04_micro_damping_stride1_control"',
+        '"experiment": "lookahead_ball_containment_05_high_res_ball_recovery"',
     '"definition": "upstream stabilized WorldState ball + post-smoothing containment + acceleration-limited final camera"':
-        '"definition": "v3 upstream stabilized ball and global dynamics + adaptive damping only inside 4deg final-camera error; stride1 cadence control"',
+        '"definition": "v4 stride1 control plus opt-in native-resolution crop retries after a full-frame ball miss"',
 }
 for old, new in replacements.items():
     if old not in s:
@@ -50,19 +50,41 @@ if s.count(old_gate) != 1:
     raise SystemExit(f"expected one v3 acceleration gate, found {s.count(old_gate)}")
 s = s.replace(old_gate, new_gate)
 
+# The v3 wrapper downloads and edits the actual baseline runner at runtime.
+# Insert one additional, marker-checked edit after that download so the only
+# command-line delta from the stride-1 control is the recovery flag.
+runner_marker = 'chmod +x "$BASE_SCRIPT"\n'
+if s.count(runner_marker) != 1:
+    raise SystemExit(f"expected one baseline runner chmod marker, found {s.count(runner_marker)}")
+recovery_patch = r'''python3 - "$BASE_SCRIPT" <<'PY_RECOVERY'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+t = p.read_text()
+old = "  --detection-interval 1\n"
+new = old + "  --high-res-ball-recovery\n"
+if t.count(old) != 1:
+    raise SystemExit(f"expected one detection-interval marker, found {t.count(old)}")
+p.write_text(t.replace(old, new, 1))
+print("high-resolution ball recovery flag added to exact stride1 control runner")
+PY_RECOVERY
+'''
+s = s.replace(runner_marker, recovery_patch + runner_marker, 1)
+
 s += '''
 if [ -s containment_metrics.json ]; then
   {
-    echo "--- v4 stride1 control metrics ---"
+    echo "--- v4 stride1 high-resolution ball recovery metrics ---"
     cat containment_metrics.json
   } >> acceptance.log
 fi
 '''
 
 p.write_text(s)
-print("v4 stride1 control runner prepared from exact v3 runner; no --frame-stride override")
+print("v4 stride1 high-resolution ball recovery runner prepared from exact v3 runner")
 PY
 
 chmod +x "$V3_RUNNER"
-echo "TEST_ONLY_RUNNER_DELTA=v4_stride1_sample02_control base_v3_sha=${V3_FFA_SHA}"
+echo "TEST_ONLY_RUNNER_DELTA=v4_stride1_sample02_high_res_ball_recovery base_v3_sha=${V3_FFA_SHA}"
 exec "$V3_RUNNER"
