@@ -50,3 +50,4 @@ t = t.replace(
 p.write_text(t)
 
 print(f'patched treatment harness for Reco {RECO_SHA}')
+# Retry marker: use GH_PAT-backed checkout so workflow-file updates can be pushed.
