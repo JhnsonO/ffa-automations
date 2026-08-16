@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   dispatch:
-    if: github.event.head_commit.message == 'launch-v4-stride3-usil-pat'
+    if: github.event.head_commit.message == 'retry-v4-stride3-usil-pat'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -25,7 +25,7 @@ jobs:
           set -euo pipefail
           target='.github/workflows/oev-runpod-sample-baseline.yml'
           python3 -c 'from pathlib import Path; p=Path(".github/workflows/oev-runpod-sample-baseline.yml"); s=p.read_text(); old="        options:\n          - EU-RO-1\n          - EUR-IS-1\n"; new=old+"          - US-IL-1\n"; assert s.count(old)==1, s.count(old); p.write_text(s.replace(old,new,1))'
-          grep -A4 "datacenter:" "$target" | grep -q 'US-IL-1'
+          grep -q '^          - US-IL-1$' "$target"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add "$target"
