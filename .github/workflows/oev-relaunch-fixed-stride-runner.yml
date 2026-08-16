@@ -31,9 +31,12 @@ jobs:
           v3 = Path('/tmp/v3.sh').read_text()
           base = Path('/tmp/base.sh').read_text()
 
-          assert wrapper.count("run_marker = '\"$BASE_SCRIPT\"\\n'") == 1, 'deferred base-runner marker missing from stride wrapper'
-          run_marker = '"$BASE_SCRIPT"\n'
-          assert v3.count(run_marker) == 1, f'v3 base execution anchor count={v3.count(run_marker)}'
+          wrapper_anchor = 'run_marker = \'"$BASE_SCRIPT"\\n\\n\' + metrics_marker'
+          assert wrapper.count(wrapper_anchor) == 1, f'unique deferred execution anchor count={wrapper.count(wrapper_anchor)}'
+
+          metrics_marker = "python3 - <<'PY' 2>&1 | tee containment_metrics.log\n"
+          run_marker = '"$BASE_SCRIPT"\n\n' + metrics_marker
+          assert v3.count(run_marker) == 1, f'v3 base execution -> metrics boundary count={v3.count(run_marker)}'
 
           old = "  --detection-interval 1\n  --events events.jsonl\n"
           new = "  --detection-interval 1\n  --frame-stride 3\n  --events events.jsonl\n"
@@ -41,7 +44,7 @@ jobs:
           patched = base.replace(old, new, 1)
           assert patched.count('--frame-stride 3') == 1
           assert new in patched
-          print('PASS: exact v3/base anchors resolve; final Reco STITCH_ARGS contains frame-stride 3 exactly once')
+          print('PASS: unique v3 execution boundary resolves; final Reco STITCH_ARGS contains frame-stride 3 exactly once')
           PY
 
       - name: Dispatch same 180s v4 stride-3 test on broadened EU allocator
