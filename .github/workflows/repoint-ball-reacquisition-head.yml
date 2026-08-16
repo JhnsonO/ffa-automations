@@ -1,0 +1,41 @@
+name: Repoint ball reacquisition control head
+
+on:
+  push:
+    branches: [experiment/ball-reacquisition-control-01]
+    paths: [.repoint-ball-reacquisition-head]
+
+permissions:
+  contents: write
+
+jobs:
+  repoint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: experiment/ball-reacquisition-control-01
+          token: ${{ secrets.GH_PAT }}
+      - name: Pin corrected PR head
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          old = '160c1aac8a59f83b9c6ccdfcc57b69bd8a598432'
+          new = 'af4d149bb0c63b3810b1075eef4f2e8f31ea0753'
+          for name in ['.github/workflows/oev-runpod-sample-baseline.yml', 'runpod_bootstrap.sh']:
+              p = Path(name)
+              t = p.read_text()
+              if old not in t:
+                  raise SystemExit(f'{name}: old SHA not found')
+              p.write_text(t.replace(old, new))
+          PY
+          grep -F 'af4d149bb0c63b3810b1075eef4f2e8f31ea0753' .github/workflows/oev-runpod-sample-baseline.yml
+          grep -F 'af4d149bb0c63b3810b1075eef4f2e8f31ea0753' runpod_bootstrap.sh
+          git diff --check
+      - name: Commit corrected pin
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/oev-runpod-sample-baseline.yml runpod_bootstrap.sh
+          git commit -m 'test: pin corrected recovery candidate head'
+          git push origin HEAD:experiment/ball-reacquisition-control-01
