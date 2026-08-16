@@ -136,7 +136,6 @@ jobs:
               'NVIDIA GeForce RTX 3090',
               'NVIDIA L4',
               'NVIDIA L40S',
-              'NVIDIA GeForce RTX 5090',
               'NVIDIA RTX 2000 Ada Generation',
               'NVIDIA RTX PRO 6000 Blackwell Server Edition',
           ]
