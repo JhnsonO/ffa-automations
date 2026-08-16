@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   dispatch:
-    if: github.event.head_commit.message == 'ci: launch v4 stride-3 non4090 experiment'
+    if: github.event.head_commit.message == 'ci: retry v4 stride-3 non4090 launcher'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -22,31 +22,15 @@ jobs:
       - name: Exclude known-bad 4090 tier on this experiment branch
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('.github/workflows/oev-runpod-sample-baseline.yml')
-          s = p.read_text()
-          old = """                  'gpuTypeIds': [
-                      'NVIDIA GeForce RTX 4090',
-                      'NVIDIA RTX A5000',
-                      'NVIDIA GeForce RTX 3090',
-                      'NVIDIA L4',
-                  ],
-"""
-          new = """                  # TEST-ONLY: avoid EU-RO-1's repeatedly allocated NVDEC-bad 4090 host.
-                  'gpuTypeIds': [
-                      'NVIDIA RTX A5000',
-                      'NVIDIA GeForce RTX 3090',
-                      'NVIDIA L4',
-                  ],
-"""
-          if s.count(old) != 1:
-              raise SystemExit(f'expected exactly one GPU list match, found {s.count(old)}')
-          p.write_text(s.replace(old, new, 1))
-          PY
+          target='.github/workflows/oev-runpod-sample-baseline.yml'
+          count=$(grep -c "'NVIDIA GeForce RTX 4090'," "$target" || true)
+          test "$count" = '1' || { echo "::error::expected one 4090 entry, found $count"; exit 1; }
+          sed -i "/'NVIDIA GeForce RTX 4090',/d" "$target"
+          grep -q "'NVIDIA RTX A5000'," "$target"
+          ! grep -q "'NVIDIA GeForce RTX 4090'," "$target"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .github/workflows/oev-runpod-sample-baseline.yml
+          git add "$target"
           git commit -m 'test(oev): avoid bad EU-RO 4090 host for stride-3 run'
           git push origin HEAD:${{ github.ref_name }}
 
