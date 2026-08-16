@@ -177,7 +177,6 @@ jobs:
                   # datacenter steering is under test, to isolate which lever
                   # (if either) actually escapes the sticky-host allocator.
                   'gpuTypeIds': [
-                      'NVIDIA GeForce RTX 4090',
                       'NVIDIA RTX A5000',
                       'NVIDIA GeForce RTX 3090',
                       'NVIDIA L4',
