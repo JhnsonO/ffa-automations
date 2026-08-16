@@ -46,8 +46,8 @@ import sys
 
 p = Path(sys.argv[1])
 s = p.read_text()
-old = "  --detection-interval 1\\n  --events events.jsonl\\n"
-new = "  --detection-interval 1\\n  --frame-stride 3\\n  --events events.jsonl\\n"
+old = "  --detection-interval 1\n  --events events.jsonl\n"
+new = "  --detection-interval 1\n  --frame-stride 3\n  --events events.jsonl\n"
 if s.count(old) != 1:
     raise SystemExit(f"expected one final stitch cadence marker, found {s.count(old)}")
 s = s.replace(old, new, 1)
