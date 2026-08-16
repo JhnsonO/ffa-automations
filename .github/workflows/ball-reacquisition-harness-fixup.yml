@@ -15,6 +15,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: experiment/ball-reacquisition-layer-01
+          token: ${{ secrets.GH_PAT }}
       - name: Apply treatment harness patch
         run: python3 tools/patch_ball_reacquisition_harness.py
       - name: Verify treatment invariants
