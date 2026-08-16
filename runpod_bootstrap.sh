@@ -250,6 +250,8 @@ else
   rm -rf "$WORKDIR"
   git clone "$REPO_URL" "$WORKDIR" || fail "git clone failed" 3
 fi
+git -C "$WORKDIR" fetch origin agent/high-res-ball-roi-recovery || fail "git fetch of recovery branch failed" 3
+git -C "$WORKDIR" reset --hard 160c1aac8a59f83b9c6ccdfcc57b69bd8a598432 || fail "git reset to recovery revision failed" 3
 REPO_SHA=$(git -C "$WORKDIR" rev-parse HEAD)
 log_version "video-stitcher_sha" "$REPO_SHA"
 

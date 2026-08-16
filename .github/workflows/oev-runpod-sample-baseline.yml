@@ -404,7 +404,7 @@ jobs:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
-          EXPECTED_RECO_SHA='b2fc622f4b07dfa0c43e3ad9a96ac85b4f450085'
+          EXPECTED_RECO_SHA='160c1aac8a59f83b9c6ccdfcc57b69bd8a598432'
           SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           actual=$($SSH root@$IP "sed -n 's/^video-stitcher_sha=//p' /tmp/runpod_bootstrap_versions.log | tail -1")
           echo "Reco SHA built by bootstrap: $actual"
