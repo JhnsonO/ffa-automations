@@ -25,7 +25,7 @@ marker = 'exec "$V3_SCRIPT"\n'
 if s.count(marker) != 1:
     raise SystemExit(f"expected one v4 final exec marker, found {s.count(marker)}")
 
-adapter = r'''python3 - "$V3_SCRIPT" <<'PY_STRIDE'
+adapter = r"""python3 - "$V3_SCRIPT" <<'PY_STRIDE'
 from pathlib import Path
 import sys
 
@@ -98,7 +98,7 @@ print(
 )
 PY_STRIDE
 exec "$V3_SCRIPT"
-'''
+"""
 
 s = s.replace(marker, adapter, 1)
 p.write_text(s)
