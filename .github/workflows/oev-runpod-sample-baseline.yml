@@ -88,7 +88,7 @@ jobs:
           os.chmod('/tmp/runpod_key', 0o600)
           PY
 
-      - name: Launch RunPod GPU pod (NVDEC preflight retry, max 3 attempts, pinned datacenter)
+      - name: Launch RunPod GPU pod (NVDEC preflight retry, max 6 attempts, pinned datacenter, GPU failover)
         id: launch
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
@@ -128,7 +128,18 @@ jobs:
               sys.exit(1)
           print(f'Pinned datacenter: {PINNED_DATACENTER} (network volume {pinned_volume_id})')
 
-          MAX_ATTEMPTS = 3
+          MAX_ATTEMPTS = 6
+          # Same wide GPU fallback pool already used by the production runtime allocator.
+          GPU_TYPES_WIDE = [
+              'NVIDIA GeForce RTX 4090',
+              'NVIDIA RTX A5000',
+              'NVIDIA GeForce RTX 3090',
+              'NVIDIA L4',
+              'NVIDIA L40S',
+              'NVIDIA GeForce RTX 5090',
+              'NVIDIA RTX 2000 Ada Generation',
+              'NVIDIA RTX PRO 6000 Blackwell Server Edition',
+          ]
           POD_IDS_FILE = '/tmp/runpod_all_pod_ids.txt'
           # Truncate at the start of this job -- the final cleanup step reads
           # this file to sweep every pod created this run, regardless of
@@ -170,19 +181,15 @@ jobs:
               except Exception as exc:
                   print(f'Delete warning for pod {pod_id}: {exc} (final cleanup step will retry).')
 
-          def create_pod(exclude_datacenters):
+          def create_pod(excluded_gpu_types):
+              gpu_type_ids = [gpu for gpu in GPU_TYPES_WIDE if gpu not in excluded_gpu_types]
+              if not gpu_type_ids:
+                  raise RuntimeError('all candidate GPU types have been excluded by failed preflights')
+              print(f'Eligible GPU types this attempt: {gpu_type_ids}')
               create_body = {
                   'name': 'oev-runpod-followcam',
                   'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
-                  # GPU order/config deliberately UNCHANGED this cycle -- only
-                  # datacenter steering is under test, to isolate which lever
-                  # (if either) actually escapes the sticky-host allocator.
-                  'gpuTypeIds': [
-                      'NVIDIA GeForce RTX 4090',
-                      'NVIDIA RTX A5000',
-                      'NVIDIA GeForce RTX 3090',
-                      'NVIDIA L4',
-                  ],
+                  'gpuTypeIds': gpu_type_ids,
                   'gpuTypePriority': 'custom',
                   'gpuCount': 1,
                   'cloudType': 'SECURE',
@@ -269,14 +276,18 @@ jobs:
 
           winner = None
           summary_lines = []
-          excluded_datacenters = set()
+          excluded_gpu_types = set()
           for attempt in range(1, MAX_ATTEMPTS + 1):
               print(f'--- Pod allocation attempt {attempt}/{MAX_ATTEMPTS} ---')
               try:
-                  pod_id = create_pod(excluded_datacenters)
+                  pod_id = create_pod(excluded_gpu_types)
               except Exception as exc:
                   print(f'::error::Attempt {attempt}: pod create failed: {exc}')
                   summary_lines.append(f'attempt={attempt} pod_id=none result=CREATE_FAILED error={exc}')
+                  if attempt < MAX_ATTEMPTS:
+                      delay = min(15 * attempt, 45)
+                      print(f'No capacity matched; waiting {delay}s before retrying the wide GPU pool.')
+                      time.sleep(delay)
                   continue
 
               try:
@@ -354,10 +365,14 @@ jobs:
               else:
                   print(f'Attempt {attempt}: NVDEC preflight FAILED on pod {pod_id} '
                         f'(driver {driver_version}, machine {machine_id}, datacenter {data_center_id}, '
-                        f'host {ip}) -- deleting and steering next attempt away from this datacenter.')
-                  if data_center_id != 'unknown':
-                      excluded_datacenters.add(data_center_id)
+                        f'host {ip}) -- deleting and excluding GPU type {gpu_type} for remaining attempts.')
+                  if gpu_type != 'unknown':
+                      excluded_gpu_types.add(gpu_type)
+                      remaining = [gpu for gpu in GPU_TYPES_WIDE if gpu not in excluded_gpu_types]
+                      print(f'Excluded GPU types: {sorted(excluded_gpu_types)}; remaining candidates: {remaining}')
                   delete_pod(pod_id)
+                  if attempt < MAX_ATTEMPTS:
+                      time.sleep(10)
 
           with open('pod_selection_summary.txt', 'w') as f:
               f.write('\n'.join(summary_lines) + '\n')
