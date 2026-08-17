@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# TEST-ONLY bootstrap wrapper for OEV ball-containment experiment.
+# TEST-ONLY bootstrap wrapper for containment v2 + persistent dormant-object memory.
 #
-# Runs the exact validated main bootstrap first (including its normal GPU/CUDA
-# smoke test), then applies the committed experiment patch to the checked-out
-# Reco c8b0d74 tree, runs reco-autocam unit tests, and rebuilds reco-cli.
-# video-stitcher/main is NOT modified by this experiment.
+# Starts from the exact validated good containment-v2 base. Production
+# video-stitcher/main remains untouched. The active BallTracker's scoring,
+# jump/coast/reacquisition behaviour is not changed by this experiment.
 set -euo pipefail
 
 BASE_AUTOMATIONS_SHA="b043ef9fca4d15e6fa1379dda10c366f94046993"
-PATCH_SCRIPT_SHA="fae991246d2d893b3207973b5652a0f5fd19e23e"
+PANNER_PATCH_SHA="fae991246d2d893b3207973b5652a0f5fd19e23e"
+DORMANT_PATCH_SHA="4f1b427fa8a3d64e9ea99952b51f97e5f9e8b0bf"
 BASE_BOOTSTRAP="/tmp/runpod_bootstrap_validated.sh"
-PATCHER="/tmp/apply_ball_containment.py"
+PANNER_PATCHER="/tmp/apply_ball_containment.py"
+DORMANT_PATCHER="/tmp/apply_dormant_object_memory.py"
 WORKDIR="/tmp/video-stitcher"
 VERSIONS_LOG="/tmp/runpod_bootstrap_versions.log"
 
@@ -19,51 +20,63 @@ curl -fsSL \
   -o "$BASE_BOOTSTRAP"
 chmod +x "$BASE_BOOTSTRAP"
 
-echo "[containment_test] Running exact validated bootstrap from ffa-automations ${BASE_AUTOMATIONS_SHA}"
+echo "[dormant_object_test] Running exact validated bootstrap from ffa-automations ${BASE_AUTOMATIONS_SHA}"
 bash "$BASE_BOOTSTRAP"
 
 BASE_RECO_SHA=$(git -C "$WORKDIR" rev-parse HEAD)
 if [ "$BASE_RECO_SHA" != "c8b0d74b537d192c7de8d2856de64620a82830cf" ]; then
-  echo "[containment_test] FATAL: expected bridging Reco c8b0d74..., got $BASE_RECO_SHA" >&2
+  echo "[dormant_object_test] FATAL: expected bridging Reco c8b0d74..., got $BASE_RECO_SHA" >&2
   exit 3
 fi
 
 curl -fsSL \
-  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${PATCH_SCRIPT_SHA}/experiments/apply_ball_containment.py" \
-  -o "$PATCHER"
-test -s "$PATCHER"
-echo "[containment_test] patcher_sha256=$(sha256sum "$PATCHER" | awk '{print $1}')"
+  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${PANNER_PATCH_SHA}/experiments/apply_ball_containment.py" \
+  -o "$PANNER_PATCHER"
+curl -fsSL \
+  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${DORMANT_PATCH_SHA}/experiments/apply_dormant_object_memory.py" \
+  -o "$DORMANT_PATCHER"
+test -s "$PANNER_PATCHER"
+test -s "$DORMANT_PATCHER"
 
-python3 "$PATCHER"
+python3 "$PANNER_PATCHER"
+python3 "$DORMANT_PATCHER"
 git -C "$WORKDIR" diff --check
 
-echo "[containment_test] Reco source diff follows (test-only, not committed to video-stitcher/main):"
-git -C "$WORKDIR" diff -- crates/reco-autocam/src/panners/field.rs | tee /tmp/ball_containment_source.diff
+echo "[dormant_object_test] Reco source diff follows (test-only):"
+git -C "$WORKDIR" diff -- \
+  crates/reco-autocam/src/panners/field.rs \
+  crates/reco-autocam/src/trackers/ball.rs \
+  crates/reco-autocam/src/trackers/mod.rs \
+  crates/reco-autocam/src/trackers/dormant_ball.rs \
+  | tee /tmp/dormant_object_source.diff
 
 echo "ball_containment_experiment=true" >> "$VERSIONS_LOG"
 echo "ball_containment_version=v2_future_ball_anticipation" >> "$VERSIONS_LOG"
-echo "ball_containment_base_reco_sha=$BASE_RECO_SHA" >> "$VERSIONS_LOG"
-echo "ball_containment_patcher_commit=$PATCH_SCRIPT_SHA" >> "$VERSIONS_LOG"
-echo "ball_containment_dirty_tree=true" >> "$VERSIONS_LOG"
+echo "ball_containment_patcher_commit=$PANNER_PATCH_SHA" >> "$VERSIONS_LOG"
+echo "dormant_object_memory_experiment=true" >> "$VERSIONS_LOG"
+echo "dormant_object_memory_version=v2_persistent_identity_memory" >> "$VERSIONS_LOG"
+echo "dormant_object_memory_patcher_commit=$DORMANT_PATCH_SHA" >> "$VERSIONS_LOG"
+echo "dormant_object_memory_base_reco_sha=$BASE_RECO_SHA" >> "$VERSIONS_LOG"
+echo "dormant_object_memory_active_tracker_changes=none" >> "$VERSIONS_LOG"
+echo "dormant_object_memory_dirty_tree=true" >> "$VERSIONS_LOG"
 
-# Compile/test the affected panner before spending time on the 180s live render.
 source "$HOME/.cargo/env" 2>/dev/null || true
 cd "$WORKDIR"
-echo "[containment_test] Running reco-autocam library tests..."
-time cargo test -p reco-autocam --lib 2>&1 | tee /tmp/ball_containment_tests.log
+echo "[dormant_object_test] Running reco-autocam library tests..."
+time cargo test -p reco-autocam --lib 2>&1 | tee /tmp/dormant_object_tests.log
 TEST_RC=${PIPESTATUS[0]}
 if [ "$TEST_RC" -ne 0 ]; then
-  echo "[containment_test] FATAL: reco-autocam tests failed (exit $TEST_RC)" >&2
+  echo "[dormant_object_test] FATAL: reco-autocam tests failed (exit $TEST_RC)" >&2
   exit 3
 fi
 
-echo "[containment_test] Rebuilding reco-cli --release --features cuda with containment patch..."
-time cargo build --release -p reco-cli --features cuda 2>&1 | tee /tmp/ball_containment_build.log
+echo "[dormant_object_test] Rebuilding reco-cli --release --features cuda..."
+time cargo build --release -p reco-cli --features cuda 2>&1 | tee /tmp/dormant_object_build.log
 BUILD_RC=${PIPESTATUS[0]}
 if [ "$BUILD_RC" -ne 0 ]; then
-  echo "[containment_test] FATAL: patched reco-cli build failed (exit $BUILD_RC)" >&2
+  echo "[dormant_object_test] FATAL: patched reco-cli build failed (exit $BUILD_RC)" >&2
   exit 3
 fi
 
 test -x "$WORKDIR/target/release/reco"
-echo "[containment_test] BALL_CONTAINMENT_TEST_BUILD=PASS version=v2_future_ball_anticipation base_reco=$BASE_RECO_SHA"
+echo "[dormant_object_test] DORMANT_OBJECT_TEST_BUILD=PASS version=v2_persistent_identity_memory base_reco=$BASE_RECO_SHA"
