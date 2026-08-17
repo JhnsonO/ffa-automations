@@ -1,4 +1,4 @@
-name: OEV Ball Containment Test Dispatch Once
+name: OEV Ball Containment v2 Test Dispatch Once
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
   dispatch:
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch stride-1 bridging + ball-containment test
+      - name: Dispatch stride-1 bridging + containment v2 future-ball anticipation test
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -35,7 +35,7 @@ jobs:
               }
           }))
           PY
-          echo 'Dispatching exact sample_02/180s/stride-1 panner profile plus containment override.'
+          echo 'Dispatching sample_02/180s/stride-1 containment v2: ball-first + future-ball-only anticipation.'
           cat /tmp/payload.json
           curl --fail-with-body -sS -L \
             -X POST \
