@@ -8,7 +8,7 @@
 set -euo pipefail
 
 BASE_AUTOMATIONS_SHA="b043ef9fca4d15e6fa1379dda10c366f94046993"
-PATCH_SCRIPT_SHA="cfd57b5b27a303adcd6bc635d24f9d5d0a01cb84"
+PATCH_SCRIPT_SHA="fae991246d2d893b3207973b5652a0f5fd19e23e"
 BASE_BOOTSTRAP="/tmp/runpod_bootstrap_validated.sh"
 PATCHER="/tmp/apply_ball_containment.py"
 WORKDIR="/tmp/video-stitcher"
@@ -41,6 +41,7 @@ echo "[containment_test] Reco source diff follows (test-only, not committed to v
 git -C "$WORKDIR" diff -- crates/reco-autocam/src/panners/field.rs | tee /tmp/ball_containment_source.diff
 
 echo "ball_containment_experiment=true" >> "$VERSIONS_LOG"
+echo "ball_containment_version=v2_future_ball_anticipation" >> "$VERSIONS_LOG"
 echo "ball_containment_base_reco_sha=$BASE_RECO_SHA" >> "$VERSIONS_LOG"
 echo "ball_containment_patcher_commit=$PATCH_SCRIPT_SHA" >> "$VERSIONS_LOG"
 echo "ball_containment_dirty_tree=true" >> "$VERSIONS_LOG"
@@ -65,4 +66,4 @@ if [ "$BUILD_RC" -ne 0 ]; then
 fi
 
 test -x "$WORKDIR/target/release/reco"
-echo "[containment_test] BALL_CONTAINMENT_TEST_BUILD=PASS base_reco=$BASE_RECO_SHA"
+echo "[containment_test] BALL_CONTAINMENT_TEST_BUILD=PASS version=v2_future_ball_anticipation base_reco=$BASE_RECO_SHA"
