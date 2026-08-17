@@ -125,13 +125,51 @@ replace_once(
             None
         };
 
+        // Containment v2 keeps the successful ball-first override but restores
+        // anticipation using BALL states only. The ordinary lookahead helper
+        // prefers player clusters when they exist, which is exactly what this
+        // safety path must not reintroduce. Mirror the validated lookahead idea
+        // by averaging trusted future ball positions across the buffered window.
+        let future_ball_mean = if self.config.ball_containment_enabled && !future.is_empty() {
+            let mut sum_y = 0.0_f32;
+            let mut sum_p = 0.0_f32;
+            let mut n = 0u32;
+            for w in future {
+                if let Some(b) = w.ball.as_ref().filter(|b| {
+                    matches!(b.state, TrackState::Tracking | TrackState::Bridged)
+                        && b.yaw.is_finite()
+                        && b.pitch.is_finite()
+                }) {
+                    sum_y += b.yaw;
+                    sum_p += b.pitch;
+                    n += 1;
+                }
+            }
+            if n > 0 {
+                Some((sum_y / n as f32, sum_p / n as f32))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         if let Some(b) = containment_ball {
             let offset = ((b.yaw - self.yaw).powi(2) + (b.pitch - self.pitch).powi(2)).sqrt();
             let half_fov = 0.5 * self.current_fov.to_radians();
+            let enter_threshold = half_fov * self.config.ball_containment_enter_fraction;
+            let future_threat = future_ball_mean.is_some_and(|(fy, fp)| {
+                ((fy - self.yaw).powi(2) + (fp - self.pitch).powi(2)).sqrt()
+                    >= enter_threshold
+            });
+
             if self.ball_containment_active {
                 let exit_threshold =
                     half_fov * self.config.ball_containment_exit_fraction;
-                if offset <= exit_threshold {
+                // Do not hand control back to the cluster merely because the
+                // current ball is central if the buffered future says a fast
+                // transition is about to carry it back toward/outside the edge.
+                if offset <= exit_threshold && !future_threat {
                     self.ball_containment_active = false;
                     log::debug!(
                         "FieldPanner: ball containment EXIT offset={:.2}deg threshold={:.2}deg",
@@ -139,18 +177,15 @@ replace_once(
                         exit_threshold.to_degrees(),
                     );
                 }
-            } else {
-                let enter_threshold =
-                    half_fov * self.config.ball_containment_enter_fraction;
-                if offset >= enter_threshold {
-                    self.ball_containment_active = true;
-                    log::debug!(
-                        "FieldPanner: ball containment ENTER state={:?} offset={:.2}deg threshold={:.2}deg",
-                        b.state,
-                        offset.to_degrees(),
-                        enter_threshold.to_degrees(),
-                    );
-                }
+            } else if offset >= enter_threshold || future_threat {
+                self.ball_containment_active = true;
+                log::debug!(
+                    "FieldPanner: ball containment ENTER state={:?} offset={:.2}deg threshold={:.2}deg future_threat={}",
+                    b.state,
+                    offset.to_degrees(),
+                    enter_threshold.to_degrees(),
+                    future_threat,
+                );
             }
         } else if self.ball_containment_active {
             self.ball_containment_active = false;
@@ -180,6 +215,24 @@ replace_once(
             && let Some(b) = containment_ball
         {
             target = Some((b.yaw, b.pitch));
+        }
+
+        // While containment owns the shot, restore anticipation using ONLY
+        // the trusted future ball mean. This preserves the old lookahead's
+        // useful "start moving before a fast pass arrives" behaviour without
+        // allowing a future player cluster to pull the camera off the ball.
+        if self.ball_containment_active
+            && let Some((ty, tp)) = target
+            && let Some(b) = containment_ball
+            && let Some((future_y, future_p)) = future_ball_mean
+        {
+            let g = self.config.lead_gain;
+            let raw_lead_y = (future_y - b.yaw) * g;
+            let raw_lead_p = (future_p - b.pitch) * g;
+            let a = self.config.lead_alpha;
+            self.lead_yaw += a * (raw_lead_y - self.lead_yaw);
+            self.lead_pitch += a * (raw_lead_p - self.lead_pitch);
+            target = Some((ty + self.lead_yaw, tp + self.lead_pitch));
         }
 
         // Lookahead lead: aim toward where the action is heading. The
@@ -253,9 +306,12 @@ replace_once(
 
 PATH.write_text(s)
 print("BALL_CONTAINMENT_PATCH_APPLIED")
+print("  version=v2_future_ball_anticipation")
 print("  default_enabled=false")
 print("  trusted_states=Tracking|Bridged")
 print("  containment_target=100% ball")
-print("  containment_lookahead=disabled while active")
+print("  containment_future_trigger=trusted future ball mean")
+print("  containment_lookahead=trusted future ball only")
+print("  future_player_cluster_lookahead=disabled while containment active")
 print("  containment_dead_zone=disabled while active")
 print("  containment_fov=fov_wide while active")
