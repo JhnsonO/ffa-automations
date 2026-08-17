@@ -1,4 +1,4 @@
-name: OEV Active-Ball Validation v1 Dispatch Once
+name: OEV Dormant-Ball Registry v1 Dispatch Once
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
   dispatch:
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch stride-1 containment v2 + active-ball validation test
+      - name: Dispatch stride-1 containment v2 + dormant-ball registry test
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -35,8 +35,8 @@ jobs:
               }
           }))
           PY
-          echo 'Dispatching sample_02/180s/stride-1 containment v2 + active-ball validation v1.'
-          echo 'Active-ball v1: confidence-aware jump gate + weak far reacquire confirmation + stationary-ball challenger/suspect memory.'
+          echo 'Dispatching sample_02/180s/stride-1 containment v2 + passive dynamic dormant-ball registry.'
+          echo 'No forced stationary switching. No weak-reacquire confirmation. Dormant memory filters only during uncertainty.'
           cat /tmp/payload.json
           curl --fail-with-body -sS -L \
             -X POST \
