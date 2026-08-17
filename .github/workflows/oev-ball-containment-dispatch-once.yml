@@ -35,7 +35,7 @@ jobs:
               }
           }))
           PY
-          echo 'Dispatching exact good containment-v2 setup plus passive persistent dormant-object memory.'
+          echo 'Redispatching exact good containment-v2 setup plus passive persistent dormant-object memory after transient-fetch retry hardening.'
           echo 'No jump guard, no forced switch, no reacquisition delay. Dormant identities persist through misses and release only on observed motion.'
           cat /tmp/payload.json
           curl --fail-with-body -sS -L \
