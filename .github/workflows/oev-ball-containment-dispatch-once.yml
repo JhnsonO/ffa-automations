@@ -1,4 +1,4 @@
-name: OEV Ball Containment v2 Test Dispatch Once
+name: OEV Active-Ball Validation v1 Dispatch Once
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
   dispatch:
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch stride-1 bridging + containment v2 future-ball anticipation test
+      - name: Dispatch stride-1 containment v2 + active-ball validation test
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -35,7 +35,8 @@ jobs:
               }
           }))
           PY
-          echo 'Dispatching sample_02/180s/stride-1 containment v2: ball-first + future-ball-only anticipation.'
+          echo 'Dispatching sample_02/180s/stride-1 containment v2 + active-ball validation v1.'
+          echo 'Active-ball v1: confidence-aware jump gate + weak far reacquire confirmation + stationary-ball challenger/suspect memory.'
           cat /tmp/payload.json
           curl --fail-with-body -sS -L \
             -X POST \
