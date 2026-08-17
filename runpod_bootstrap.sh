@@ -9,22 +9,31 @@ set -euo pipefail
 BASE_AUTOMATIONS_SHA="b043ef9fca4d15e6fa1379dda10c366f94046993"
 PANNER_PATCH_SHA="fae991246d2d893b3207973b5652a0f5fd19e23e"
 DORMANT_PATCH_SHA="4f1b427fa8a3d64e9ea99952b51f97e5f9e8b0bf"
+SOURCE_BRANCH="test/oev-dormant-object-memory-02"
+SOURCE_REPO="/tmp/ffa-automations-source"
 BASE_BOOTSTRAP="/tmp/runpod_bootstrap_validated.sh"
 PANNER_PATCHER="/tmp/apply_ball_containment.py"
 DORMANT_PATCHER="/tmp/apply_dormant_object_memory.py"
 WORKDIR="/tmp/video-stitcher"
 VERSIONS_LOG="/tmp/runpod_bootstrap_versions.log"
 
-fetch_raw() {
-  local url="$1"
-  local out="$2"
-  curl -fSL --retry 8 --retry-all-errors --retry-delay 3 --connect-timeout 20 \
-    "$url" -o "$out"
+command -v git >/dev/null 2>&1 || {
+  echo "[dormant_object_test] FATAL: git missing from RunPod base image" >&2
+  exit 2
 }
+rm -rf "$SOURCE_REPO"
+echo "[dormant_object_test] Fetching experiment sources via git transport (no raw.githubusercontent.com)..."
+git clone --filter=blob:none --no-checkout https://github.com/JhnsonO/ffa-automations.git "$SOURCE_REPO"
+git -C "$SOURCE_REPO" fetch --depth=1 origin "$BASE_AUTOMATIONS_SHA"
+git -C "$SOURCE_REPO" fetch --depth=1 origin "$PANNER_PATCH_SHA"
+git -C "$SOURCE_REPO" fetch --depth=20 origin "$SOURCE_BRANCH"
 
-fetch_raw \
-  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${BASE_AUTOMATIONS_SHA}/runpod_bootstrap.sh" \
-  "$BASE_BOOTSTRAP"
+git -C "$SOURCE_REPO" show "${BASE_AUTOMATIONS_SHA}:runpod_bootstrap.sh" > "$BASE_BOOTSTRAP"
+git -C "$SOURCE_REPO" show "${PANNER_PATCH_SHA}:experiments/apply_ball_containment.py" > "$PANNER_PATCHER"
+git -C "$SOURCE_REPO" show "${DORMANT_PATCH_SHA}:experiments/apply_dormant_object_memory.py" > "$DORMANT_PATCHER"
+test -s "$BASE_BOOTSTRAP"
+test -s "$PANNER_PATCHER"
+test -s "$DORMANT_PATCHER"
 chmod +x "$BASE_BOOTSTRAP"
 
 echo "[dormant_object_test] Running exact validated bootstrap from ffa-automations ${BASE_AUTOMATIONS_SHA}"
@@ -35,15 +44,6 @@ if [ "$BASE_RECO_SHA" != "c8b0d74b537d192c7de8d2856de64620a82830cf" ]; then
   echo "[dormant_object_test] FATAL: expected bridging Reco c8b0d74..., got $BASE_RECO_SHA" >&2
   exit 3
 fi
-
-fetch_raw \
-  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${PANNER_PATCH_SHA}/experiments/apply_ball_containment.py" \
-  "$PANNER_PATCHER"
-fetch_raw \
-  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${DORMANT_PATCH_SHA}/experiments/apply_dormant_object_memory.py" \
-  "$DORMANT_PATCHER"
-test -s "$PANNER_PATCHER"
-test -s "$DORMANT_PATCHER"
 
 python3 "$PANNER_PATCHER"
 python3 "$DORMANT_PATCHER"
