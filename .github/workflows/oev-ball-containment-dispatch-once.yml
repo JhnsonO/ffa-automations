@@ -1,9 +1,9 @@
-name: OEV Ball Containment v2 Test Dispatch Once
+name: OEV Dormant Object Memory v2 Dispatch Once
 
 on:
   push:
     branches:
-      - test/oev-ball-containment-override-01
+      - test/oev-dormant-object-memory-02
     paths:
       - .github/workflows/oev-ball-containment-dispatch-once.yml
 
@@ -15,7 +15,7 @@ jobs:
   dispatch:
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch stride-1 bridging + containment v2 future-ball anticipation test
+      - name: Dispatch exact containment-v2 baseline plus persistent dormant-object memory
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -23,7 +23,7 @@ jobs:
           python3 - <<'PY' >/tmp/payload.json
           import json
           print(json.dumps({
-              "ref": "test/oev-ball-containment-override-01",
+              "ref": "test/oev-dormant-object-memory-02",
               "inputs": {
                   "datacenter": "EU-RO-1",
                   "sample_set_id": "GX010197-seed1384188843",
@@ -35,7 +35,8 @@ jobs:
               }
           }))
           PY
-          echo 'Dispatching sample_02/180s/stride-1 containment v2: ball-first + future-ball-only anticipation.'
+          echo 'Dispatching exact good containment-v2 setup plus passive persistent dormant-object memory.'
+          echo 'No jump guard, no forced switch, no reacquisition delay. Dormant identities persist through misses and release only on observed motion.'
           cat /tmp/payload.json
           curl --fail-with-body -sS -L \
             -X POST \
