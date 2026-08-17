@@ -15,9 +15,16 @@ DORMANT_PATCHER="/tmp/apply_dormant_object_memory.py"
 WORKDIR="/tmp/video-stitcher"
 VERSIONS_LOG="/tmp/runpod_bootstrap_versions.log"
 
-curl -fsSL \
+fetch_raw() {
+  local url="$1"
+  local out="$2"
+  curl -fSL --retry 8 --retry-all-errors --retry-delay 3 --connect-timeout 20 \
+    "$url" -o "$out"
+}
+
+fetch_raw \
   "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${BASE_AUTOMATIONS_SHA}/runpod_bootstrap.sh" \
-  -o "$BASE_BOOTSTRAP"
+  "$BASE_BOOTSTRAP"
 chmod +x "$BASE_BOOTSTRAP"
 
 echo "[dormant_object_test] Running exact validated bootstrap from ffa-automations ${BASE_AUTOMATIONS_SHA}"
@@ -29,12 +36,12 @@ if [ "$BASE_RECO_SHA" != "c8b0d74b537d192c7de8d2856de64620a82830cf" ]; then
   exit 3
 fi
 
-curl -fsSL \
+fetch_raw \
   "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${PANNER_PATCH_SHA}/experiments/apply_ball_containment.py" \
-  -o "$PANNER_PATCHER"
-curl -fsSL \
+  "$PANNER_PATCHER"
+fetch_raw \
   "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${DORMANT_PATCH_SHA}/experiments/apply_dormant_object_memory.py" \
-  -o "$DORMANT_PATCHER"
+  "$DORMANT_PATCHER"
 test -s "$PANNER_PATCHER"
 test -s "$DORMANT_PATCHER"
 
