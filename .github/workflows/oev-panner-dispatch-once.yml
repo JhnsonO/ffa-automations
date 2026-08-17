@@ -1,0 +1,44 @@
+name: OEV Panner Test Dispatch Once
+
+on:
+  push:
+    branches:
+      - test/oev-panner-070-dz006-fov38-44-58
+    paths:
+      - .github/workflows/oev-panner-dispatch-once.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch stride-1 bridging panner test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY' >/tmp/payload.json
+          import json
+          print(json.dumps({
+              "ref": "main",
+              "inputs": {
+                  "datacenter": "EU-RO-1",
+                  "sample_set_id": "GX010197-seed1384188843",
+                  "sample_id": "sample_02",
+                  "duration_s": "180",
+                  "model_variant": "yolo26m",
+                  "lookahead": "1.5",
+                  "cluster_alpha_override": "0.08, \"ball_weight\": 0.70, \"dead_zone_rad\": 0.06, \"velocity_alpha\": 0.08, \"max_velocity_rad_per_sec\": 0.31, \"fov_tight\": 38.0, \"fov_default\": 44.0, \"fov_wide\": 58.0"
+              }
+          }))
+          PY
+          curl --fail-with-body -sS -L \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$REPO/actions/workflows/oev-runpod-sample-baseline.yml/dispatches" \
+            --data-binary @/tmp/payload.json
