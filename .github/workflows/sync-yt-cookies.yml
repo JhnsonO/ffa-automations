@@ -1,0 +1,90 @@
+name: Sync YouTube Cookies to R2
+
+# Exports cookies from the live logged-in Chrome profile (footffa@gmail.com)
+# already maintained on this runner for the Clip Extractor, and uploads them
+# to R2 as a Netscape cookies.txt so ffa-media's worker (on Railway) can use
+# them for YouTube probes. Runs on its own schedule, independent of
+# clip-extractor.yml, so cookie freshness doesn't depend on that workflow's
+# cadence.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */4 * * *'
+
+jobs:
+  sync:
+    runs-on: self-hosted
+    timeout-minutes: 15
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -U boto3
+          # Install Deno for yt-dlp JS challenge solving
+          curl -fsSL https://deno.land/install.sh | sh -s -- -y
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.deno/bin:$PATH"
+          deno --version
+          # Install latest yt-dlp (no sudo — self-hosted runner)
+          mkdir -p $HOME/.local/bin
+          curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o $HOME/.local/bin/yt-dlp
+          chmod a+rx $HOME/.local/bin/yt-dlp
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.local/bin:$PATH"
+          yt-dlp --version
+
+      - name: Sync live YouTube cookie profile (root Chrome -> runner-readable copy)
+        run: |
+          SRC=/root/.config/chrome-ffa
+          DST="$HOME/.cache/yt-chrome-sync"
+          rm -rf "$DST"
+          mkdir -p "$DST/Default"
+          sudo cp "$SRC/Local State" "$DST/Local State"
+          sudo cp "$SRC/Default/Cookies" "$DST/Default/Cookies"
+          sudo cp "$SRC/Default/Cookies-journal" "$DST/Default/Cookies-journal" 2>/dev/null || true
+          sudo chown -R "$(id -u):$(id -g)" "$DST"
+          chmod -R go-rwx "$DST"
+          echo "Synced live cookie profile, Cookies mtime: $(stat -c '%y' "$DST/Default/Cookies" 2>/dev/null || echo missing)"
+
+      - name: Export cookies to Netscape format
+        run: |
+          rm -f /tmp/yt_cookies.txt
+          yt-dlp --cookies-from-browser "chrome:$HOME/.cache/yt-chrome-sync" \
+            --cookies /tmp/yt_cookies.txt \
+            --skip-download \
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+          test -s /tmp/yt_cookies.txt
+          echo "Exported: $(wc -l < /tmp/yt_cookies.txt) lines"
+
+      - name: Upload to R2
+        env:
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import boto3
+          from botocore.config import Config
+
+          client = boto3.client(
+              "s3",
+              endpoint_url=os.environ["S3_ENDPOINT_URL"],
+              aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
+              region_name="auto",
+              config=Config(signature_version="s3v4"),
+          )
+          client.upload_file("/tmp/yt_cookies.txt", os.environ["S3_BUCKET"], "secrets/yt_cookies.txt")
+          print("uploaded secrets/yt_cookies.txt")
+          PY
+
+      - name: Clean up local cookie file
+        if: always()
+        run: rm -f /tmp/yt_cookies.txt
