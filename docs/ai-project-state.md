@@ -2,6 +2,8 @@
 
 One line per active or recently-closed track. Full detail is below, newest generally near the top but not guaranteed — check dates. Closed self-contained sagas (Clip Extractor, Flatcam, Runner failsafe) live in `docs/ai-project-state-archive.md`.
 
+- **`vultr-ffa` runner outage 20 Aug — RESOLVED same day, root disk hardened.** Root disk (`/dev/vda2`, 52G) hit 100% full, killing the actions-runner listener (`ENOSPC` on its own log write) and stranding 43 queued runs (Sheet Sync, Clip Extractor, Sync YouTube Cookies) for hours. Cause: `/home/runner/.config/chrome-ffa` (persistent Chrome profile used for GoPro/YouTube cookie sync) had grown unbounded to 33G. Fix: profile relocated to the previously-empty 40GB Vultr block volume via bind mount (`/mnt/oevdata/chrome-ffa-profile-runner` → `/home/runner/.config/chrome-ffa`, entry added to `/etc/fstab`), old copy deleted. Root disk now 39% used (31G free). Runner confirmed `online`/`busy` via API, queue draining. A weekly `vultr-disk-maintenance.timer`/`.service` was installed (`journalctl --vacuum-time=3d`, `apt-get clean`, stale `_work`/`_temp` and aged Chrome-cache-subdir pruning) to stop this recurring; not yet repo-tracked. See full incident write-up below for exact commands and cleanup remaining.
+
 - **YouTube cookies -> R2 for ffa-media worker — NEW, feature branch, BLOCKED on secrets.** `sync-yt-cookies.yml` (branch `feature/sync-yt-cookies-r2`, `5bf0f544`) reuses the existing live-Chrome-profile sync from `clip-extractor.yml` unchanged, exports it via `yt-dlp --cookies-from-browser` to Netscape format, and uploads to R2 at `secrets/yt_cookies.txt` on a 4-hourly schedule independent of Clip Extractor's 6-hourly one. Not merged, not dispatched. **Needs 4 new repo secrets before it can run past the upload step: `S3_ENDPOINT_URL`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET`** (same values already set on ffa-media's Railway services — none of the 4 currently exist as Actions secrets in this repo, confirmed via API). `ffa-media` side (`feature/worker-r2-cookie-sync`) is ready to consume the object once it exists. See `ffa-media/docs/ai-project-state.md` for the consumer side.
 - **OEV zero-copy CUDA/Vulkan interop — RESOLVED, in production.** Shared-VkBuffer architecture merged (`video-stitcher@b2fc622...`), rolled out to standard FFA workflows. Direct shared-`VkImage` approach is a dead end — do not reopen without genuinely new evidence.
 - **Frame-stride 3 — OPEN REGRESSION after multi-sample visual validation (16 Aug).** The full-rate sparse-analysis implementation is live in code, but it is **not product-accepted as the default**: `sample_01` 180s looked mostly watchable with slight misses, while `sample_02` 180s showed severe lag/near-static camera behaviour for large portions. Treat stride 1 v4 as the accepted quality reference until the cadence/timebase issue is resolved.
@@ -13,6 +15,31 @@ One line per active or recently-closed track. Full detail is below, newest gener
 - **VLM-assisted ball recovery — NEXT ARCHITECTURE TICKET, not implemented yet.** Keep YOLO/tracker/bridge as the cheap primary path; invoke a contextual reasoner only for genuine unresolved/ambiguous ball state. The VLM must return a candidate hypothesis (`A/B/C/none`), never control the camera directly or mutate trusted state without validation. Design the interface so a commercial API backend can later be replaced by an OEV-owned specialist model.
 - **P010 10-bit real-fixture test — not yet done.** Compiled/unit-tested only.
 - **Standardized 180s sample validation — ACTIVE.** `sample_01` through `sample_05` have been rendered on the current stride-3 experiment path; `sample_02` exposed a severe visual regression. A same-sample stride-1 v4 control (`31939820386`) completed successfully and is ready for visual A/B. Internal processing-time variance across samples is the next measurement task.
+
+---
+
+## `vultr-ffa` runner outage — RESOLVED (20 Aug 2026)
+
+**Symptom:** GET `/repos/JhnsonO/ffa-automations/actions/runners` showed `vultr-ffa` `status: offline`. 43 workflow runs stuck `queued` (Sheet Sync, Clip Extractor, Sync YouTube Cookies to R2), oldest since ~20:50Z the prior day, `in_progress: 0`.
+
+**Root cause:** root disk (`/dev/vda2`, 52G) reached 100% used (51G/52G, 0 avail), which crash-looped the actions-runner listener (`Runner.Listener` threw on `SafeFileHandle.Open`/`FileStream` opening its own diag log — classic ENOSPC-on-write). The `/mnt/oevdata` 40GB block volume attached during the earlier (6 Aug) disk incident was untouched (24K used) — this was a *different* directory filling up, not a repeat of the earlier cause.
+
+**What actually consumed the space:** `/home/runner/.config/chrome-ffa` (the `runner` user's persistent Chrome profile, used by the rc.local-launched cookie-sync browser for GoPro/YouTube) had grown to **33G**, almost entirely `IndexedDB`/cache under `Default/`. A lookalike path, `/root/.config/chrome-ffa` (239M, referenced in the rc.local error log lines but not the actual hog), was misdiagnosed and cleaned first — wasted one cycle, corrected once `du -xh /home --max-depth=3` was checked directly.
+
+**Fix applied:**
+1. Killed the Chrome process holding open (deleted-but-unfreed) fds on the wrong path first — noted for future reference: `rm -rf` on a directory a live process still has open does not free space until the process is killed/exits.
+2. `rsync -a` the real 33G runner-user profile to `/mnt/oevdata/chrome-ffa-profile-runner/`, deleted the original, recreated `/home/runner/.config/chrome-ffa` as a mountpoint, `chown runner:runner`, bind-mounted, and added a persistent entry to `/etc/fstab`:
+   `/mnt/oevdata/chrome-ffa-profile-runner /home/runner/.config/chrome-ffa none bind 0 0`
+3. Restarted `actions.runner.JhnsonO-ffa-automations.vultr-ffa.service`.
+
+**Verified:** root disk 39% used (19G/52G, 31G avail) post-fix. API confirms runner `status: online`, `busy: true`, actively running a job (`Running job: sync` in the service log). Queued-run count dropped 43 → 39 (+1 `in_progress`) within the same check and is draining normally as jobs complete sequentially — no further action needed for the queue itself, it clears on its own.
+
+**Outstanding / not yet done:**
+- `/usr/local/bin/vultr-disk-maintenance.sh` + `vultr-disk-maintenance.timer`/`.service` (weekly `journalctl --vacuum-time=3d`, `apt-get clean`, stale `_work`/`_temp` prune, aged Chrome-subdir prune) were installed on the box **but the script's Chrome-cache path still points at the wrong `/root/.config/chrome-ffa/Default/...` location** — needs correcting to `/home/runner/.config/chrome-ffa/Default/...` or it will clean the near-empty profile and do nothing useful. Not yet repo-tracked (currently box-local only).
+- `/root/.config/chrome-ffa.bak` (leftover from the first, mistaken cleanup attempt) — deletion was instructed but not re-confirmed after the path correction; verify it's gone.
+- Cause of *why* the runner-user Chrome profile grows unbounded (no built-in cache eviction on this cookie-sync setup) is not addressed at the source — the bind-mount + timer are mitigations, not a fix to the sync script itself.
+
+**Frozen files:** none touched — this was pure box/ops remediation (systemd units, disk layout), no repo code changed.
 
 ---
 
