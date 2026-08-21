@@ -1,0 +1,163 @@
+name: FFA Media YouTube Relay
+
+# Railway's outbound IP gets YouTube's "confirm you're not a bot" wall
+# even with fresh cookies -- this is IP reputation, not cookie staleness.
+# This runner's IP already works (it's how sync-yt-cookies.yml produces
+# a valid cookies.txt in the first place), so it does the actual YouTube
+# network calls on ffa-media's behalf and reports results back over the
+# /api/runner/* endpoints (shared-secret auth via RUNNER_API_KEY).
+#
+# Two jobs of work, polled independently:
+#   - probe:   metadata only, fast, one yt-dlp --dump-json per video
+#   - fetch:   full master download for clip cutting, can be large/slow,
+#              uploaded straight to R2 at the same cache key ffa-media's
+#              worker already checks on retry (no result endpoint needed)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+env:
+  RAILWAY_URL: https://web-production-e9d28.up.railway.app
+
+jobs:
+  relay:
+    runs-on: self-hosted
+    timeout-minutes: 90
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -U boto3 requests
+          curl -fsSL https://deno.land/install.sh | sh -s -- -y
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+          mkdir -p $HOME/.local/bin
+          curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o $HOME/.local/bin/yt-dlp
+          chmod a+rx $HOME/.local/bin/yt-dlp
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Sync live YouTube cookie profile
+        run: |
+          SRC=/root/.config/chrome-ffa
+          DST="$HOME/.cache/yt-chrome-sync"
+          rm -rf "$DST"
+          mkdir -p "$DST/Default"
+          sudo cp "$SRC/Local State" "$DST/Local State"
+          sudo cp "$SRC/Default/Cookies" "$DST/Default/Cookies"
+          sudo cp "$SRC/Default/Cookies-journal" "$DST/Default/Cookies-journal" 2>/dev/null || true
+          sudo chown -R "$(id -u):$(id -g)" "$DST"
+          chmod -R go-rwx "$DST"
+
+      - name: Probe pending YouTube videos
+        env:
+          RUNNER_API_KEY: ${{ secrets.RUNNER_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, requests
+
+          base = os.environ["RAILWAY_URL"]
+          headers = {"X-Runner-Key": os.environ["RUNNER_API_KEY"]}
+          chrome_profile = os.path.expanduser("~/.cache/yt-chrome-sync")
+
+          pending = requests.get(f"{base}/api/runner/pending-youtube", headers=headers, timeout=30).json()
+          videos = pending.get("videos", [])
+          print(f"{len(videos)} video(s) to probe")
+
+          for v in videos:
+              ref = v["source_ref"]
+              result = {"video_id": v["video_id"]}
+              try:
+                  out = subprocess.run(
+                      ["yt-dlp", "--dump-json", "--no-warnings",
+                       "--cookies-from-browser", f"chrome:{chrome_profile}",
+                       f"https://www.youtube.com/watch?v={ref}"],
+                      capture_output=True, text=True, timeout=60, check=True,
+                  )
+                  info = json.loads(out.stdout.splitlines()[-1])
+                  duration = info.get("duration")
+                  result.update({
+                      "duration_ms": int(duration * 1000) if duration else None,
+                      "width": info.get("width"),
+                      "height": info.get("height"),
+                      "title": info.get("title"),
+                      "recorded_at": (
+                          __import__("datetime").datetime.fromtimestamp(
+                              info["timestamp"], tz=__import__("datetime").timezone.utc
+                          ).isoformat()
+                          if info.get("timestamp") else None
+                      ),
+                  })
+                  print(f"probed {ref}: {info.get('title')!r}")
+              except Exception as exc:
+                  result["error"] = str(exc)[:500]
+                  print(f"probe failed for {ref}: {exc}")
+
+              requests.post(f"{base}/api/runner/probe-result", headers=headers, json=result, timeout=30).raise_for_status()
+          PY
+
+      - name: Fetch pending YouTube masters
+        env:
+          RUNNER_API_KEY: ${{ secrets.RUNNER_API_KEY }}
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+        run: |
+          python3 - <<'PY'
+          import os, subprocess, requests, boto3
+          from botocore.config import Config
+
+          base = os.environ["RAILWAY_URL"]
+          headers = {"X-Runner-Key": os.environ["RUNNER_API_KEY"]}
+          chrome_profile = os.path.expanduser("~/.cache/yt-chrome-sync")
+
+          pending = requests.get(f"{base}/api/runner/pending-youtube-fetches", headers=headers, timeout=30).json()
+          fetches = pending.get("fetches", [])
+          print(f"{len(fetches)} master(s) to fetch")
+
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=os.environ["S3_ENDPOINT_URL"],
+              aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
+              region_name="auto",
+              config=Config(signature_version="s3v4"),
+          )
+          bucket = os.environ["S3_BUCKET"]
+
+          for f in fetches:
+              ref, key = f["source_ref"], f["storage_key"]
+              # Cheap existence check -- another run (or the worker's own
+              # adopt-on-retry path) may have already uploaded this.
+              try:
+                  s3.head_object(Bucket=bucket, Key=key)
+                  print(f"{ref} already cached at {key}, skipping")
+                  continue
+              except Exception:
+                  pass
+
+              local = f"/tmp/{ref}.mp4"
+              try:
+                  subprocess.run(
+                      ["yt-dlp",
+                       "-f", "bestvideo[height>=2160]+bestaudio/bestvideo+bestaudio/best",
+                       "--merge-output-format", "mp4",
+                       "--no-part", "--no-warnings",
+                       "--cookies-from-browser", f"chrome:{chrome_profile}",
+                       "-o", local,
+                       f"https://www.youtube.com/watch?v={ref}"],
+                      timeout=3600, check=True,
+                  )
+                  s3.upload_file(local, bucket, key)
+                  print(f"uploaded {ref} -> {key}")
+              except Exception as exc:
+                  print(f"fetch failed for {ref}: {exc}")
+              finally:
+                  if os.path.exists(local):
+                      os.remove(local)
+          PY
