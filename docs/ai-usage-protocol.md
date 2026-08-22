@@ -59,6 +59,32 @@ The harness automatically retries genuine RunPod allocation/preflight failures. 
 
 ---
 
+## OEV reasoning loop — default behaviour
+
+For follow-cam quality, computer-vision/ML, tracking, panning, performance or architecture questions, the AI must **diagnose before fixing**. Johnson should not need to remember this checklist or know the name of the right technology.
+
+1. **Watch/measure the failure.** State exactly what looks or behaves wrong.
+2. **Find the first wrong stage.** Trace `detector -> candidates -> tracker/recovery -> WorldState -> panner -> renderer/cadence -> infrastructure`. Separate observation from inference.
+3. **Explore the solution space.** When Johnson suggests an idea, explain what it can solve, whether current evidence says OEV has that problem, rate likely usefulness High/Medium/Low, surface materially different options he may not know about, and recommend **test now / investigate first / park / do not pursue**.
+4. **Choose the cheapest discriminating test.** Prefer existing telemetry/artifacts, event windows, short replays or offline analysis before another long GPU render.
+5. **Write a falsifiable hypothesis.** Define beforehand what supports it, what falsifies it, and what leaves the result uncertain.
+6. **Change one causal variable.** Do not bundle unrelated detector/tracker/panner/cadence changes into a test whose result cannot be interpreted.
+7. **Re-test the exact failure first.** Prove the change on the footage/window that motivated it.
+8. **Run the permanent regression set second.** Only after the targeted case improves, test the same hard cases/multi-sample corpus and report better/worse/unchanged plus regressions.
+9. **Judge the product last.** Subsystem metrics are evidence, not acceptance. Final question: **"Does this look like a competent human filmed the match?"**
+
+### Rabbit-hole trigger
+
+If Johnson starts stacking plausible technologies onto an undiagnosed symptom, do not simply create more experiments. Say which ideas are plausible but premature, re-identify the single biggest current watchability bottleneck, and steer back to the smallest test that can distinguish the leading causes.
+
+### Regression corpus principle
+
+Preserve representative hard cases so meaningful algorithm changes face the same exam: ordinary midfield play, fast counterattacks, long passes, shots, goalmouth scrambles, temporary occlusion, airborne ball, throw-ins, keeper possession, spare/stationary balls, players clustered away from the ball, very small/distant ball, and sudden direction reversals.
+
+This loop is for open R&D questions. Clear bounded correctness/ops defects with an already-established cause should still be fixed directly.
+
+---
+
 ## Debug loop rules
 
 - Diagnose from the smallest relevant error/log window; do not pull giant raw logs unless necessary.
