@@ -1,79 +1,93 @@
 # AI Usage Protocol — Johnson's Working Instruction
 
-One page. How to run ChatGPT (unlimited) + Claude (limited) without burning Claude tokens.
+One page. Default rule: **use the AI you are already in and let it execute end-to-end when it has the tools.** Handoffs are for missing capability, not habit.
 
 ---
 
-## Rule 0 — route the task BEFORE opening either app
+## Rule 0 — capability first, not brand first
 
-Ask one question: **does this task need the repo, tools, or execution?**
+Ask one question: **can the current AI actually do the required repo/tool action?**
 
-- **No** → ChatGPT. Always. No exceptions.
-- **Yes** → Claude, but arrive prepared (see loop below).
+- **Yes** → let it do the whole bounded task: read, implement, test, debug, push, dispatch, inspect and report.
+- **No** → hand off only the missing part to an agent/tool that has that capability.
 
-| Task | Who |
+| Task | Default owner |
 |---|---|
-| Write code from a spec | ChatGPT |
-| Debug logic from pasted error/output | ChatGPT |
-| Draft prompts, docs, plans, messages | ChatGPT |
-| Explain a concept, review a pasted diff | ChatGPT |
-| Visual review of a rendered artifact (video/frames) | ChatGPT |
-| Read/push repo files, dispatch workflows | Claude |
-| Pull run status, failed-run logs, artifacts | Claude |
-| Verify ChatGPT output against live repo + frozen boundaries | Claude |
-| Update `docs/ai-project-state.md` | Claude |
-| Decide product trade-offs, approve gates | You |
+| Write or change code | Current connected AI |
+| Debug logic from errors/output | Current connected AI |
+| Read/push repo files | Current connected AI if GitHub/repo access exists |
+| Dispatch workflows / inspect runs / artifacts | Current connected AI if Actions access exists |
+| Review rendered video/frames | ChatGPT is fine; human product judgement still wins |
+| Architecture / product trade-offs | Current AI can advise; you approve |
+| Final product acceptance | You |
 
-**The discipline:** never ask Claude a question ChatGPT could answer with pasted context. Claude is hands, not head.
+**Do not send work to Claude/Codex just because it involves code or GitHub.** If ChatGPT has the connected GitHub tools, ChatGPT should execute it. If Claude has the tools, Claude should execute it. Codex is optional.
 
 ---
 
-## The standard loop (one feature/fix)
+## The standard loop
 
-1. **Claude, 1 turn:** read state + the one relevant file → produce a tight spec + paste-ready ChatGPT prompt (with the contract block from `CLAUDE.md` included).
-2. **ChatGPT, unlimited turns:** write, iterate, argue, revise. ALL back-and-forth happens here.
-3. **Claude, 1 turn:** verify final code against live repo + frozen files → push → dispatch if needed → update state → STOP.
-4. Run completes → come back in a **fresh chat** with the run ID.
+For one feature/fix:
 
-**Never iterate on code inside Claude.** Every "actually change this bit" round-trip in Claude re-carries the whole chat history. Iterate in ChatGPT, land once in Claude.
+1. Tell the current AI the outcome you want — e.g. **"fix this and test it"**.
+2. The agent reads `CLAUDE.md` + `docs/ai-project-state.md` and only the files needed for the ticket.
+3. It creates/uses a feature or test branch, implements the change, runs cheap checks first, then the expensive workflow only when needed.
+4. For OEV follow-cam experiments, use the permanent **`OEV — Agent Harness`** instead of creating a new dispatcher workflow each time.
+5. The agent inspects the resulting logs/artifacts and reports the actual result. A green CI run is not visual/product acceptance.
+6. Only hand off if a required capability is genuinely unavailable in the current environment.
+
+This replaces the old fixed "ChatGPT writes / Claude pushes" loop.
 
 ---
 
-## Debug loop rules (run failures)
+## OEV fast path
 
-This is the one job that can't leave Claude — so make it cheap:
+The repo now has a permanent experiment harness:
 
-- Claude uses `scripts/gh.sh` for every GitHub operation. No hand-rolled curl/Python API boilerplate. `gh.sh logs <run_id>` returns the error window only — raw logs never enter context.
-- **Budget: max 3 diagnose→fix→dispatch cycles per chat.** After cycle 3, update state and open a fresh chat. Cycle 4 in a heavy chat costs more than cycles 1–3 in a fresh one.
-- If the fix requires real code (not a one-liner): pull the error window in Claude, hand it to ChatGPT with the file, land the result back in Claude. Same loop as above.
-- After dispatch: one status check, then stop. `DISPATCHED — UNVERIFIED`. Don't poll.
+- `oev/harness_profiles.json` — canonical test settings and known-good reference.
+- `oev/harness_request.json` — tiny control request.
+- `oev/harness-control` — permanent trigger branch.
+- `.github/workflows/oev-agent-harness.yml` — dispatch/wait/retry/analyse wrapper.
+- `scripts/oev_check.sh` — cheap checks.
+- `scripts/oev_analyze_events.py` — standard telemetry comparison.
+
+Normal OEV loop:
+
+**edit experiment branch → cheap checks → update one request file → harness dispatches RunPod → automatic reference comparison → inspect video at the known failure windows.**
+
+The harness automatically retries genuine RunPod allocation/preflight failures. It does **not** retry code/build/render failures, so bad code is not hidden behind expensive redispatches.
+
+---
+
+## Debug loop rules
+
+- Diagnose from the smallest relevant error/log window; do not pull giant raw logs unless necessary.
+- Run cheap/unit/static checks before GPU work.
+- Maximum **3 expensive diagnose→fix→GPU-dispatch cycles** in one chat unless you explicitly want to continue.
+- Do not treat transient RunPod capacity as a code defect; the OEV harness retries that case automatically.
+- Do not declare success from CI alone when the task is visual follow-cam quality.
 
 ---
 
 ## Session hygiene
 
-- **One bounded ticket per Claude chat.** Ticket done → state updated → chat over.
-- **Fresh chat + state file read beats message 40 of an old chat.** Always.
-- **`docs/ai-project-state.md` IS the handoff.** Chat-end summary = the 5-line "FFA Handoff" template: Gate, Done (commit SHAs), Runs/Artifacts, Risk (omit if none), Next — ending with the fetch-first line. State file gets all durable facts first; the summary only points at it.
-- Start every Claude session with the task in the FIRST message, fully specified (repo, file, gate, what "done" looks like). Vague openers cost a clarification round-trip.
+- One bounded ticket at a time.
+- Fresh chat + state file read is better than reconstructing project state from memory.
+- `docs/ai-project-state.md` remains the durable project handoff/source of truth.
+- Start with the actual task, not a vague opener, when you know what you want done.
+- Prefer **"implement it yourself and test it"** over asking one AI to draft a prompt for another.
 
-## Model choice (in Claude)
+## Handoffs
 
-- **Sonnet (default):** patches, run diagnosis, verification, pushes, dispatches — 95% of sessions.
-- **Opus (ask first):** genuine architecture decisions, multi-system debugging where the cause is unknown.
-- **Haiku:** rarely needed now that `gh.sh` pre-filters logs.
+Only create a paste-ready prompt when:
 
-## Anti-patterns (the actual leaks from your history)
+1. the current AI genuinely lacks the required repo/tool capability, or
+2. you explicitly want a second agent involved.
 
-1. Iterating code drafts inside Claude instead of ChatGPT.
-2. 5–7 debug cycles in a single chat.
-3. Raw log dumps pulled into context, then filtered.
-4. Re-deriving GitHub API boilerplate every session (use `gh.sh`).
-5. Re-explaining project context Claude can read from the state file.
-6. Per-response decorations (time, chat weight) — already removed, keep them out.
+A handoff should include the exact repo/ref, frozen files, known-good SHA/setup, data contracts, success criteria, and the instruction to push to a feature branch rather than main.
 
 ## Security
 
-- `GH_PAT` lives in Claude preferences + env vars only. Never in repo files, prompts to ChatGPT, or logs.
-- **Rotate the current PAT** — it appears in plaintext in old chat transcripts. Replace with a fine-grained PAT scoped to `ffa-automations` only (contents + actions read/write).
-- Outstanding from state doc: credential embedded in `playcam/chunked_pipeline.py` still needs rotating and moving to Actions Secrets.
+- Credentials/tokens live in approved secrets/env/connected-tool storage only. Never put them in repo files, prompts, artifacts or logs.
+- Prefer fine-grained tokens with only the permissions actually required.
+- Existing credential-rotation/security debt documented in `docs/ai-project-state.md` remains separate from this operating model.

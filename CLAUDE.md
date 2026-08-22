@@ -6,27 +6,25 @@ Read `docs/ai-project-state.md`. It is the source of truth for the current stage
 
 ## Operating model
 
-**Three-AI split — effective 8 July 2026 (supersedes 25 June hybrid):**
+**Capability-first direct execution — effective 22 August 2026.** This supersedes the old fixed ChatGPT/Codex/Claude role split.
 
-- **Codex is the generative engine.** Codex writes all code and pushes it to a feature branch — never `main`. Claude drafts every Codex prompt with hard constraints (frozen files, last-good workflow SHA, data contracts).
-- **ChatGPT critiques direction and screens trivia.** ChatGPT reviews Codex output for idea/direction problems and trivial defects (typos, missing variables, syntax) before it reaches Claude. Mid-iteration fixes never come to Claude.
-- **Claude is the verifier and gate.** Claude enters only at "claimed done": fetch the branch DIFF (not full files), verify against the spec and frozen boundaries, then merge to `main` and dispatch. A bad diff gets a 1-line defect note back to Codex — Claude does not fix it. Claude never iterates code.
-- **The user owns product trade-offs and final approval.** A successful workflow is not product acceptance.
+- **The current connected agent owns the bounded task end-to-end when it has the required tools.** If the user says "implement it", "go", "fix it", or equivalent, do the repo work yourself instead of drafting a prompt for another AI.
+- **ChatGPT with connected GitHub access may read/write repo files, create feature branches and PRs, merge verified changes, dispatch the OEV harness/workflows, inspect run status/logs/artifacts, and update docs/state.** Do not hand work to Codex or Claude merely because code or GitHub is involved.
+- **Claude with equivalent repo/tool access may do the same.** Claude is not a mandatory gate for work already implemented and verified by another connected agent.
+- **Codex is optional, not mandatory.** Use it only when the user explicitly wants it or when the current agent genuinely lacks the execution capability needed for the task.
+- **Handoff is a capability fallback, not a workflow default.** Only hand work to another tool/agent when the current environment genuinely cannot perform a required action. State the missing capability plainly.
+- **The user owns product trade-offs and final product acceptance.** A green workflow proves execution, not that a rendered video is good enough.
 
-Claude must not independently redesign architecture or choose the next roadmap item without a decision-changing reason. If implementation produces a decision rather than a direct coding action, stop and report it.
-
-All Codex output must pass Claude's diff verification against the live repo and frozen boundaries before merging. Claude is the skeptic, not a relay.
+For repo changes, use a feature/test branch and verify before merging. Do not edit production Reco or other frozen production paths merely to run an experiment unless the user explicitly authorizes that promotion.
 
 ## New-chat bootstrap
 
-Before acting:
+Before acting on a repo task:
 
 1. Read `CLAUDE.md`.
 2. Read `docs/ai-project-state.md`.
 3. Read only files explicitly needed for the active task.
 4. State the current gate and exact files to change in no more than three lines, then proceed.
-
-> **This is mandatory and non-negotiable. Steps 1 and 2 must happen before any other action, including responding to the user's first message.**
 
 Do not request previous chat history or inspect broad logs unless the active task cannot be completed without them.
 
@@ -37,15 +35,20 @@ Do not request previous chat history or inspect broad logs unless the active tas
 - Do not redesign adjacent systems, refactor frozen production code, or add optional work without a decision-changing reason.
 - Keep diagnostics, experiments, and rendering isolated.
 - Do not add credentials, API keys, or private tokens to repository files, artifacts, or logs.
-- One Claude chat should normally complete one bounded build ticket. Stop after the requested artifact, failed run, or decision-changing result.
+- One chat/session should normally complete one bounded build ticket.
 
 ## Repo operations
 
-Use `scripts/gh.sh` for all GitHub API work: file reads/pushes, workflow dispatch, run status, failed-run logs, artifacts. It requires `GH_PAT` in the environment. Do not hand-roll curl/Python API boilerplate; if gh.sh lacks an operation, extend gh.sh instead. `gh.sh logs <run_id>` returns the ANSI-stripped error window only — never pull full raw logs into context.
+Choose the repo interface that exists in the current environment:
 
-### Cloning discipline
+- **ChatGPT connected mode:** use the connected GitHub tools directly for reads, writes, branches, PRs, workflow/run inspection and artifacts. Do not create handoff prompts simply because a terminal is unavailable.
+- **Terminal/Claude/local-agent mode:** use `scripts/gh.sh` for GitHub API work where practical. It requires `GH_PAT` in the environment. Do not hand-roll repeated curl/Python GitHub API boilerplate when `gh.sh` already covers the operation.
 
-Do not `git clone` the full repo by default. For single-file reads or single-file pushes, use `gh.sh get`/`gh.sh push` instead — it transfers one file, not the whole tree (code, databases, git history). Only clone when a task genuinely requires editing across multiple files or needs a local working tree (e.g. running tests). Ask the user for confirmation before cloning, stating why a single-file operation isn't sufficient.
+For OEV experiment execution, prefer the permanent `OEV — Agent Harness` and `oev/harness-control` request-file trigger. Do not create a new one-shot dispatcher workflow for every test. The harness wraps the proven `oev-runpod-sample-baseline.yml`, retries genuine RunPod allocation/preflight failures, downloads candidate/reference artifacts, and generates standard telemetry.
+
+### Cloning discipline (terminal agents)
+
+Do not `git clone` the full repo by default. For single-file reads or single-file pushes, use the lightest available repo operation. Only clone when a task genuinely requires editing across multiple files or needs a local working tree (e.g. running tests). This restriction does not apply to connected repo tools that already expose file-level reads/writes without cloning.
 
 ### Vast.ai workflows
 
@@ -60,26 +63,25 @@ Adapt the offer *query* (GPU vs CPU-only, resource thresholds) to the script's a
 
 ## Debug budget
 
-Maximum 3 diagnose→fix→dispatch cycles per chat. After the third cycle, update the state document and hand off to a fresh chat.
+Maximum 3 expensive diagnose→fix→GPU-dispatch cycles per chat unless the user explicitly asks to continue. Cheap local/unit/static checks do not count. After the third expensive cycle, update the state document and report the remaining blocker instead of looping blindly.
 
-## Codex prompt contract
+## Handoff contract (only when genuinely needed)
 
-Every Codex prompt Claude drafts must include verbatim:
+If the current agent lacks a required capability and another agent/tool must take over, the handoff must include:
 
 1. The frozen-files list relevant to the task (from `docs/ai-project-state.md`).
 2. For workflow files: the last known-working commit SHA and the exact working dependency/setup block as a hard constraint.
 3. The exact data contracts/schemas the code touches.
 4. The instruction: "Complete file(s) only — no placeholders, elisions, or 'rest unchanged' markers."
-
 5. The instruction: "Push to a feature branch, never main."
 
-Claude verifies the Codex branch diff against these constraints before merging to `main`.
+Do **not** create a handoff prompt when the current connected agent can simply execute the task itself.
 
 ## Communication
 
 Do not narrate routine tool calls. Interrupt only for a real blocker, missing decision, unsafe assumption, or evidence that changes the agreed plan.
 
-For a build/task result, return only:
+For a build/task result, return only what matters:
 
 1. **Changed** — files and one-line purpose.
 2. **Verified** — exact check/run outcome.
@@ -88,7 +90,7 @@ For a build/task result, return only:
 
 ## State update requirement
 
-Update `docs/ai-project-state.md` in the same commit or immediately after every meaningful change:
+Update `docs/ai-project-state.md` after meaningful project-state changes when the current environment can safely edit it:
 
 - acceptance/rejection of an artifact or test;
 - code or workflow addition/change;
