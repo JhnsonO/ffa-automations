@@ -1,0 +1,34 @@
+name: OEV — Harness CI
+
+on:
+  push:
+    branches:
+      - feature/oev-agent-harness
+      - main
+    paths:
+      - 'oev/harness_profiles.json'
+      - 'oev/harness_request.json'
+      - 'scripts/oev_*.py'
+      - 'scripts/oev_check.sh'
+      - '.github/workflows/oev-agent-harness.yml'
+      - '.github/workflows/oev-harness-ci.yml'
+  pull_request:
+    paths:
+      - 'oev/harness_profiles.json'
+      - 'oev/harness_request.json'
+      - 'scripts/oev_*.py'
+      - 'scripts/oev_check.sh'
+      - '.github/workflows/oev-agent-harness.yml'
+      - '.github/workflows/oev-harness-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate harness
+        run: bash scripts/oev_check.sh

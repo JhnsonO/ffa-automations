@@ -1,0 +1,221 @@
+name: OEV — Agent Harness
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'check = validate harness only; run = dispatch the canonical GPU regression test'
+        required: true
+        default: run
+        type: choice
+        options:
+          - run
+          - check
+      profile:
+        description: 'Named profile from oev/harness_profiles.json'
+        required: true
+        default: sample_02_180_quality
+        type: choice
+        options:
+          - sample_02_180_quality
+      experiment_ref:
+        description: 'ffa-automations branch/ref whose bootstrap/experiment should be tested'
+        required: true
+        default: test/oev-ball-containment-override-01
+        type: string
+      reference_run_id_override:
+        description: 'Optional known-good run ID. Blank uses the profile reference.'
+        required: false
+        default: ''
+        type: string
+  push:
+    branches:
+      - oev/harness-control
+    paths:
+      - 'oev/harness_request.json'
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: oev-agent-harness-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve + validate request
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      mode: ${{ steps.resolve.outputs.mode }}
+      profile_name: ${{ steps.resolve.outputs.profile_name }}
+      experiment_ref: ${{ steps.resolve.outputs.experiment_ref }}
+      reference_run_id: ${{ steps.resolve.outputs.reference_run_id }}
+      baseline_workflow: ${{ steps.resolve.outputs.baseline_workflow }}
+      fps: ${{ steps.resolve.outputs.fps }}
+      ball_class_id: ${{ steps.resolve.outputs.ball_class_id }}
+      capacity_retry_max: ${{ steps.resolve.outputs.capacity_retry_max }}
+      dispatch: ${{ steps.resolve.outputs.dispatch }}
+      review_windows: ${{ steps.resolve.outputs.review_windows }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cheap harness checks
+        run: bash scripts/oev_check.sh
+      - name: Resolve request
+        id: resolve
+        env:
+          DEFAULT_REF: ${{ github.ref_name }}
+          MANUAL_MODE: ${{ inputs.mode }}
+          MANUAL_PROFILE: ${{ inputs.profile }}
+          MANUAL_REF: ${{ inputs.experiment_ref }}
+          MANUAL_REFERENCE: ${{ inputs.reference_run_id_override }}
+        run: |
+          args=(
+            --config oev/harness_profiles.json
+            --request oev/harness_request.json
+            resolve-request
+            --default-ref "$DEFAULT_REF"
+            --format github-output
+          )
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            args+=(
+              --force-mode "$MANUAL_MODE"
+              --manual-profile "$MANUAL_PROFILE"
+              --manual-ref "$MANUAL_REF"
+              --manual-reference-run "$MANUAL_REFERENCE"
+            )
+          fi
+          python3 scripts/oev_harness.py "${args[@]}" >> "$GITHUB_OUTPUT"
+
+  run:
+    name: Dispatch, wait, compare
+    needs: resolve
+    if: needs.resolve.outputs.mode == 'run'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Dispatch proven RunPod workflow and wait
+        id: dispatch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUTS_JSON: ${{ needs.resolve.outputs.dispatch }}
+          WORKFLOW: ${{ needs.resolve.outputs.baseline_workflow }}
+          EXPERIMENT_REF: ${{ needs.resolve.outputs.experiment_ref }}
+          MAX_ATTEMPTS: ${{ needs.resolve.outputs.capacity_retry_max }}
+        run: |
+          python3 scripts/oev_dispatch_and_wait.py \
+            --workflow "$WORKFLOW" \
+            --ref "$EXPERIMENT_REF" \
+            --inputs-json "$INPUTS_JSON" \
+            --max-attempts "$MAX_ATTEMPTS" \
+            --timeout-s 7200 \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Resolve artifact names
+        id: names
+        env:
+          INPUTS_JSON: ${{ needs.resolve.outputs.dispatch }}
+          CANDIDATE_RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          d = json.loads(os.environ['INPUTS_JSON'])
+          run_id = os.environ['CANDIDATE_RUN_ID']
+          sample = d['sample_id']
+          duration = d['duration_s']
+          print(f"sample_id={sample}")
+          print(f"duration_s={duration}")
+          print(f"candidate_artifact=oev-sample-baseline-{sample}-{duration}s-{run_id}")
+          PY
+
+      - name: Download candidate artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+          ARTIFACT: ${{ steps.names.outputs.candidate_artifact }}
+        run: |
+          mkdir -p candidate
+          gh run download "$RUN_ID" --name "$ARTIFACT" --dir candidate
+          test -s candidate/events.jsonl
+
+      - name: Download reference artifact if available
+        id: reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REFERENCE_RUN_ID: ${{ needs.resolve.outputs.reference_run_id }}
+          SAMPLE_ID: ${{ steps.names.outputs.sample_id }}
+          DURATION_S: ${{ steps.names.outputs.duration_s }}
+        run: |
+          if [ -z "$REFERENCE_RUN_ID" ] || [ "$REFERENCE_RUN_ID" = "0" ]; then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          artifact="oev-sample-baseline-${SAMPLE_ID}-${DURATION_S}s-${REFERENCE_RUN_ID}"
+          mkdir -p reference
+          if gh run download "$REFERENCE_RUN_ID" --name "$artifact" --dir reference; then
+            if [ -s reference/events.jsonl ]; then
+              echo 'available=true' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "::warning::Reference artifact for run $REFERENCE_RUN_ID is unavailable/expired; candidate will still be analysed."
+          echo 'available=false' >> "$GITHUB_OUTPUT"
+
+      - name: Analyse candidate vs reference
+        env:
+          PROFILE: ${{ needs.resolve.outputs.profile_name }}
+          REFERENCE_AVAILABLE: ${{ steps.reference.outputs.available }}
+        run: |
+          mkdir -p oev-report
+          args=(
+            --events candidate/events.jsonl
+            --config oev/harness_profiles.json
+            --profile-name "$PROFILE"
+            --json-out oev-report/metrics.json
+            --markdown-out oev-report/summary.md
+          )
+          [ -s candidate/stitch.log ] && args+=(--stitch-log candidate/stitch.log)
+          if [ "$REFERENCE_AVAILABLE" = "true" ]; then
+            args+=(--reference-events reference/events.jsonl)
+            [ -s reference/stitch.log ] && args+=(--reference-stitch-log reference/stitch.log)
+          fi
+          python3 scripts/oev_analyze_events.py "${args[@]}"
+          cat oev-report/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record run identity
+        env:
+          CANDIDATE_RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+          DISPATCH_ATTEMPTS: ${{ steps.dispatch.outputs.attempts }}
+          REFERENCE_RUN_ID: ${{ needs.resolve.outputs.reference_run_id }}
+          EXPERIMENT_REF: ${{ needs.resolve.outputs.experiment_ref }}
+          PROFILE: ${{ needs.resolve.outputs.profile_name }}
+        run: |
+          cat > oev-report/run_identity.json <<JSON
+          {
+            "profile": "$PROFILE",
+            "experiment_ref": "$EXPERIMENT_REF",
+            "candidate_run_id": $CANDIDATE_RUN_ID,
+            "reference_run_id": $REFERENCE_RUN_ID,
+            "dispatch_attempts": $DISPATCH_ATTEMPTS
+          }
+          JSON
+
+      - name: Upload harness report
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-harness-report-${{ steps.dispatch.outputs.run_id }}
+          path: oev-report/
+          retention-days: 30
+
+  check-only:
+    name: Check-only complete
+    needs: resolve
+    if: needs.resolve.outputs.mode == 'check'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'OEV harness configuration and analyzer checks passed; GPU run intentionally skipped.'
