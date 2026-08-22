@@ -17,6 +17,79 @@ Read `docs/ai-project-state.md`. It is the source of truth for the current stage
 
 For repo changes, use a feature/test branch and verify before merging. Do not edit production Reco or other frozen production paths merely to run an experiment unless the user explicitly authorizes that promotion.
 
+## OEV R&D decision protocol
+
+For OEV follow-cam quality, ML/CV, tracking, panning, performance, or architecture work, **diagnose before proposing or implementing a fix** unless the root cause is already established by evidence. The user should not need to remember this process or know the relevant technical vocabulary; the agent owns the discipline.
+
+### 1. Start from the observed product failure
+
+State what is visibly or measurably wrong, then trace the pipeline until the **first stage where truth becomes wrong**. Check the relevant chain rather than jumping straight to a technology:
+
+`detector -> candidate generation -> tracker/recovery -> WorldState -> panner -> renderer/cadence -> infrastructure`
+
+Examples: detector never sees the ball; a candidate exists but is rejected; tracker loses it; tracker knows it but `world.ball` is wrong; `world.ball` is correct but the panner ignores it; panner target is correct but render/cadence is wrong.
+
+Separate **observation** from **inference**. Do not propose fixes until the leading failure location is supported or the uncertainty itself is explicit.
+
+### 2. Generate and filter the solution space
+
+The user is not expected to know every relevant CV/ML/software technique. When they suggest an idea (for example VLM, 4K detection, pose estimation, a different YOLO model, optical flow, another tracker, hardware changes), automatically:
+
+- explain what problem that idea can actually solve;
+- say whether OEV currently has evidence for that problem;
+- rate expected usefulness **High / Medium / Low** for the current bottleneck;
+- surface materially different alternatives the user may not know exist;
+- compare likely effectiveness, complexity, compute/cost and failure modes;
+- finish with one recommendation: **test now / investigate first / park for later / do not pursue**.
+
+Do not turn every technically plausible idea into an experiment. Interesting but non-bottleneck ideas should be parked.
+
+### 3. Choose the cheapest discriminating test
+
+Before spending GPU time or rendering a long clip, find the smallest test that separates the leading explanations. Prefer telemetry, existing artifacts, event-window replay, a short clip, or offline analysis over another full 180-second render when they can answer the question.
+
+### 4. State a falsifiable hypothesis before changing anything
+
+Use a claim that can be proven wrong, for example:
+
+> The misses are primarily caused by the panner undervaluing a correctly tracked ball.
+
+For every experiment, define in advance:
+
+- what result would **support** the hypothesis;
+- what result would **falsify** it;
+- what result would leave the diagnosis **uncertain**.
+
+### 5. Change one causal variable
+
+Keep experiments interpretable. Do not bundle detector, tracker, panner and cadence changes into one A/B unless they are inseparable. If multiple variables are changing, flag that the experiment cannot cleanly identify causality and narrow it first.
+
+### 6. Re-test the exact failure first
+
+Use the same troublesome footage/event window that motivated the change. A fix must improve the known failure before spending time on broad validation.
+
+### 7. Run the regression set second
+
+Only after the targeted failure improves should the change face the permanent multi-sample / hard-event regression corpus. Preserve difficult cases so every meaningful algorithm change takes the same exam: normal midfield play, fast counters, long passes, shots, goalmouth scrambles, occlusion, airborne ball, throw-ins, keeper possession, spare/stationary balls, players clustered away from the ball, very small/distant ball, and sudden reversals.
+
+Prefer comparative reporting such as **better / worse / unchanged per case** and explicit regressions over a vague "looks good" verdict.
+
+### 8. Product judgement comes last
+
+Detector recall, mAP, track-loss count, latency and other subsystem metrics are diagnostic evidence, not the product objective. The final acceptance question is:
+
+> **Does this look like a competent human filmed the match?**
+
+A numerically better subsystem that produces a worse camera is a product regression.
+
+### 9. Anti-rabbit-hole trigger
+
+If the user starts stacking ideas onto an undiagnosed problem, interrupt the implementation path and run the diagnosis/filter above. Explicitly say when an idea is plausible but premature. Periodically re-check which **single failure currently causes the greatest reduction in watchability** and steer work back to it if the active investigation has drifted.
+
+### 10. Bounded direct fixes are exempt
+
+For clear correctness/ops defects with an established cause (syntax error, broken path, known API mismatch, disk-full incident, etc.), do not force the full R&D loop. Apply the normal bounded fix-and-verify workflow.
+
 ## New-chat bootstrap
 
 Before acting on a repo task:
