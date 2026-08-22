@@ -1,0 +1,75 @@
+name: OEV — Harness Status Probe
+
+on:
+  push:
+    branches:
+      - oev/harness-control
+    paths:
+      - 'oev/harness_status_request.json'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: oev/harness-control
+          fetch-depth: 0
+
+      - name: Snapshot recent OEV runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, datetime
+
+          repo = os.environ['GH_REPO']
+          raw = subprocess.check_output([
+              'gh','api',f'/repos/{repo}/actions/runs?per_page=50'
+          ], text=True)
+          data = json.loads(raw)
+          wanted = []
+          for r in data.get('workflow_runs', []):
+              name = r.get('name','')
+              branch = r.get('head_branch','')
+              if name in {
+                  'OEV — Agent Harness',
+                  'OEV — Sample Baseline Test (network-volume samples, pinned datacenter, RunPod)',
+              } or branch in {'oev/harness-control','test/oev-ball-containment-override-01'}:
+                  wanted.append({
+                      'id': r.get('id'),
+                      'name': name,
+                      'event': r.get('event'),
+                      'status': r.get('status'),
+                      'conclusion': r.get('conclusion'),
+                      'head_branch': branch,
+                      'head_sha': r.get('head_sha'),
+                      'created_at': r.get('created_at'),
+                      'updated_at': r.get('updated_at'),
+                      'html_url': r.get('html_url'),
+                  })
+          out = {
+              'probed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'runs': wanted[:20],
+          }
+          with open('oev/harness_status.json','w') as f:
+              json.dump(out, f, indent=2)
+              f.write('\n')
+          PY
+
+      - name: Publish status snapshot
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add oev/harness_status.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'chore(oev): refresh harness run status [skip ci]'
+          git push origin HEAD:oev/harness-control
