@@ -1,0 +1,79 @@
+name: OEV State Refresh Once
+
+on:
+  push:
+    branches:
+      - feature/oev-state-refresh
+    paths:
+      - .github/workflows/oev-state-refresh-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: feature/oev-state-refresh
+      - name: Reconcile OEV state
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('docs/ai-project-state.md')
+          s = p.read_text()
+          s = s.replace('# FFA / OEV — Current Status (updated 20 Aug 2026)', '# FFA / OEV — Current Status (updated 22 Aug 2026)', 1)
+
+          old_ball = '- **Ball-state recovery / panner containment — ACTIVE, major progress 17 Aug.** Backward bridging now keeps `world.ball` populated on ~98.6% of `sample_02` stride-1 frames despite raw YOLO missing ~45.4%; the remaining dominant failure is camera containment when a known ball is not given enough authority. A direct ball-containment override is currently in a test-only A/B and is **not yet product-validated**.'
+          new_ball = '- **Ball-state recovery / panner containment — ACTIVE; containment v2 is the current quality reference, active-ball identity is the blocker.** Backward bridging keeps `world.ball` populated on ~98.6% of `sample_02` stride-1 frames despite raw YOLO missing ~45.4%. Containment v2 + future-ball anticipation was visually a major improvement (run `32011232949`). The forced stationary/challenger experiment (`32019614329`) was rejected for ping-ponging. Dynamic dormant-ball v1 (`32032942822`) still followed the stationary goal ball around 1:59–2:09 and exposed a timebase bug: stride-1 tracker timing used processing wall-clock time instead of media time for dormant dwell. Next deterministic ticket: dormant objects remain dormant regardless confidence until genuine movement, use video/frame time, keep confidence-aware jump sanity, and require confirmation for weak/far reacquisition before it can become a Tracking/bridge anchor.'
+          if old_ball not in s:
+              raise SystemExit('stale top ball-status bullet not found')
+          s = s.replace(old_ball, new_ball, 1)
+
+          marker = '- **YOLO26m vs YOLOv8n — YOLO26m preferred for current follow-cam experiments.**'
+          harness_bullet = '- **OEV Agent Harness — MERGED 22 Aug, new default experiment path.** PR #59 merged as `b55bd2cd0049bcc19e4316cb1445863504f7025e`. `oev/harness_profiles.json` now holds the canonical `sample_02_180_quality` profile/reference; `OEV — Agent Harness` wraps the proven RunPod baseline workflow, retries genuine allocation/preflight failures only, downloads candidate/reference artifacts, and generates standard telemetry + recurring human-review windows. Permanent trigger branch: `oev/harness-control`. Harness CI run `32601864605` passed.\n- **AI execution protocol — UPDATED 22 Aug.** PR #60 merged as `0886a1a9c035558bf99d4a43503cb27092c1e6b2`; the old mandatory ChatGPT/Codex/Claude split is retired. The current connected agent should execute a bounded task end-to-end when it has the required tools; handoff is only for genuinely missing capability.'
+          if marker not in s:
+              raise SystemExit('YOLO marker not found')
+          s = s.replace(marker, harness_bullet + '\n' + marker, 1)
+
+          section_re = re.compile(r'## Ball-state bridging, panner containment, and VLM recovery direction — ACTIVE \(17 Aug 2026\).*?(?=\n## Frame-stride 3 multi-sample validation)', re.S)
+          replacement = '''## Ball-state recovery, containment, and active-ball identity — ACTIVE (22 Aug 2026)
+
+**Current product finding:** camera control and ball identity are now separate problems. The genuine-anchor backward bridge in `video-stitcher@c8b0d74b537d192c7de8d2856de64620a82830cf` remains proven: raw YOLO26m misses the ball on ~45.4% of `sample_02`, while bridge/tracker state leaves `world.ball=None` on only ~1.4% of frames. `TrackState::Bridged` never anchors another bridge.
+
+**Containment v2 — KEEP / current quality reference:** run `32011232949` added direct trusted-ball containment plus future-ball anticipation. Visually it was a major step forward and solved many prior cluster-vs-ball framing failures. When a trusted ball exists, containment has priority over player-cluster composition. Do not reintroduce the old whole-panner/v4 damping experiment as a substitute; the useful anticipation here is specifically future-ball anticipation under containment.
+
+**Rejected active-ball validation v1:** run `32019614329` tried confidence jump guards plus weak far-reacquisition confirmation plus a stationary-ball challenger that could forcibly switch tracks and temporarily blacklist the old region. The run was visually worse and telemetry showed 14 forced switches / severe ping-ponging. Keep the useful concept of confidence-aware jump sanity; do not restore challenger-driven forced switching or fixed-time pitch-location blacklists.
+
+**Dynamic dormant-ball v1 — run `32032942822`, still not product-accepted:** the passive registry idea is correct in direction but this implementation did not solve the recurring stationary goal-ball identity failure. Human review: loss 7–14s, near-loss ~22s, losses ~36/41s, losses ~1:26/~1:36, stationary goal ball followed ~1:59–2:09, long-pass loss ~2:14–2:19. Standardized harness telemetry for this artifact: 10,775 frames; raw ball present 54.60%; `world.ball=None` 1.43%; Tracking 5,087 / Bridged 5,110 / Coasting 332 / Lost 92; known-ball horizontal OOF 10.11%; trusted Tracking+Bridged horizontal OOF 8.99%. Telemetry is diagnostic only; visual review remains the acceptance gate.
+
+**Timebase bug discovered:** in the stride-1 buffered path, `analysis_elapsed` is derived from processing wall-clock time while the stride>1 path derives it from `source_index / fps`. Dormant v1 used the tracker timestamp for dwell, so "stationary for 2,000ms" could mean only a few tenths of a second of actual football footage. Any time-based active-ball identity/recovery state must use media/video time derived from source frame index + FPS, not render/processing wall time.
+
+**Next deterministic active-ball ticket:** implement dormant registry v2 before adding a VLM. Once a specific stationary ball-like object is learned dormant while another credible match ball is active, high detector confidence alone must not reactivate it; genuine movement out of its learned region releases it. The registry is a candidate filter only and never forces a switch. Keep confidence-aware large-jump sanity. Reintroduce only weak/far reacquisition confirmation so a low-confidence far candidate cannot immediately become `Tracking` or a genuine bridge anchor; strong plausible evidence may reacquire immediately. Architecture: `YOLO candidates -> dormant-object filter -> reacquisition/jump validation -> trusted BallTracker state -> backward bridge -> containment v2/future-ball anticipation -> camera`.
+
+**VLM/context fallback — LATER, not implemented:** after deterministic identity/reacquisition is stable, the intended hierarchy remains a provider-neutral contextual reasoner invoked only for genuinely ambiguous gaps/candidate competition. It should rank constrained candidates (`A/B/C/none + confidence`), never control the camera directly, and must pass a deterministic validation gate before mutating trusted state.
+
+**OEV Agent Harness — MERGED / default execution path:** PR #59 merged as `b55bd2cd0049bcc19e4316cb1445863504f7025e`. The canonical profile `sample_02_180_quality` pins sample set `GX010197-seed1384188843`, `sample_02`, 180s, EU-RO-1, YOLO26m, stride-1 baseline path, lookahead 1.5s, existing containment-v2 overlay, and reference run `32011232949`. `.github/workflows/oev-agent-harness.yml` wraps the proven `oev-runpod-sample-baseline.yml` instead of duplicating its GPU lifecycle. It runs cheap harness checks first, retries only genuine RunPod allocation/preflight failures, downloads candidate/reference artifacts, runs `scripts/oev_analyze_events.py`, and emits a 30-day harness report. `oev/harness-control` + `oev/harness_request.json` is the permanent push trigger, so future agents must not create one-off dispatcher workflows for routine OEV A/B tests. PR #59 CI run `32601864605` passed.
+
+**AI operating protocol:** PR #60 merged as `0886a1a9c035558bf99d4a43503cb27092c1e6b2`. The old mandatory three-AI handoff model is superseded by capability-first execution: when the current connected agent has repo/Actions access, it owns the bounded implementation/test/debug loop end-to-end. Handoffs are reserved for missing capability or explicit user choice.
+
+**Immediate next action:** implement the dormant-registry-v2 / media-time / weak-far-reacquisition ticket on a test branch, run cheap unit checks first, then trigger the permanent OEV Agent Harness against `sample_02_180_quality`; compare the generated telemetry with run `32011232949` and visually inspect the encoded recurring failure windows before any production promotion.
+
+'''
+          s, count = section_re.subn(replacement, s, count=1)
+          if count != 1:
+              raise SystemExit(f'expected one ball section, replaced {count}')
+
+          p.write_text(s)
+          PY
+
+          rm .github/workflows/oev-state-refresh-once.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'docs(oev): reconcile harness and ball recovery state'
+          git push origin HEAD:feature/oev-state-refresh
