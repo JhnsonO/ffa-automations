@@ -1,7 +1,7 @@
 {
-  "mode": "check",
+  "mode": "run",
   "profile": "sample_02_180_quality",
-  "experiment_ref": "",
-  "reference_run_id_override": null,
-  "nonce": "verify-control-20260822"
+  "experiment_ref": "test/oev-ball-containment-override-01",
+  "reference_run_id_override": 32011232949,
+  "nonce": "dormant-v2-20260823-001"
 }
