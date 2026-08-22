@@ -1,28 +1,52 @@
 {
-  "probed_at": "2026-08-22T23:25:18.553919+00:00",
+  "probed_at": "2026-08-22T23:29:40.449421+00:00",
   "runs": [
     {
-      "id": 32605166284,
+      "id": 32605360135,
       "name": "OEV \u2014 Harness Status Probe",
       "event": "push",
       "status": "in_progress",
       "conclusion": null,
       "head_branch": "oev/harness-control",
-      "head_sha": "9a5576793e32529d18f605487c0d4b7f1c8dba52",
-      "created_at": "2026-08-22T23:25:10Z",
-      "updated_at": "2026-08-22T23:25:13Z",
-      "html_url": "https://github.com/JhnsonO/ffa-automations/actions/runs/32605166284"
+      "head_sha": "4250bce40cdebf2bb059e03034e0d9109fdb5411",
+      "created_at": "2026-08-22T23:29:35Z",
+      "updated_at": "2026-08-22T23:29:38Z",
+      "html_url": "https://github.com/JhnsonO/ffa-automations/actions/runs/32605360135"
     },
     {
-      "id": 32605154719,
+      "id": 32605317988,
       "name": "OEV \u2014 Sample Baseline Test (network-volume samples, pinned datacenter, RunPod)",
       "event": "workflow_dispatch",
       "status": "in_progress",
       "conclusion": null,
       "head_branch": "test/oev-ball-containment-override-01",
       "head_sha": "a1d909644d38ead44aecaba3ceed3a2a1efec054",
+      "created_at": "2026-08-22T23:28:35Z",
+      "updated_at": "2026-08-22T23:28:40Z",
+      "html_url": "https://github.com/JhnsonO/ffa-automations/actions/runs/32605317988"
+    },
+    {
+      "id": 32605166284,
+      "name": "OEV \u2014 Harness Status Probe",
+      "event": "push",
+      "status": "completed",
+      "conclusion": "success",
+      "head_branch": "oev/harness-control",
+      "head_sha": "9a5576793e32529d18f605487c0d4b7f1c8dba52",
+      "created_at": "2026-08-22T23:25:10Z",
+      "updated_at": "2026-08-22T23:25:21Z",
+      "html_url": "https://github.com/JhnsonO/ffa-automations/actions/runs/32605166284"
+    },
+    {
+      "id": 32605154719,
+      "name": "OEV \u2014 Sample Baseline Test (network-volume samples, pinned datacenter, RunPod)",
+      "event": "workflow_dispatch",
+      "status": "completed",
+      "conclusion": "failure",
+      "head_branch": "test/oev-ball-containment-override-01",
+      "head_sha": "a1d909644d38ead44aecaba3ceed3a2a1efec054",
       "created_at": "2026-08-22T23:24:56Z",
-      "updated_at": "2026-08-22T23:25:03Z",
+      "updated_at": "2026-08-22T23:28:20Z",
       "html_url": "https://github.com/JhnsonO/ffa-automations/actions/runs/32605154719"
     },
     {
