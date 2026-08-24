@@ -1,0 +1,37 @@
+name: Drive Duplicate Scan
+
+# Read-only diagnostic. Scans FFA/Clips in Google Drive for duplicate
+# files (same name in same folder, or identical content anywhere) and
+# uploads a JSON report. Does not delete or modify anything in Drive.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -q google-auth google-auth-httplib2 google-api-python-client
+
+      - name: Write Drive token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: python -c "import os; open('youtube_token.json','w').write(os.environ['YOUTUBE_TOKEN'])"
+
+      - name: Scan for duplicates
+        run: python find_drive_duplicates.py
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: duplicates-report
+          path: duplicates_report.json
