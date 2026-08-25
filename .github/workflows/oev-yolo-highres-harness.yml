@@ -1,4 +1,4 @@
-name: OEV — YOLO Highres Harness (US-IL-1)
+name: OEV — YOLO Highres Harness (EU-RO-1)
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Resolve isolated US-IL-1 request
+      - name: Resolve isolated EU-RO-1 request
         id: resolve
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
@@ -36,7 +36,6 @@ jobs:
           profile_name = request.get('profile') or 'sample_02_180_quality'
           profile = config['profiles'][profile_name]
           dispatch = dict(profile['dispatch'])
-          dispatch['datacenter'] = 'US-IL-1'
           reference = request.get('reference_run_id_override') or profile.get('reference_run_id') or 0
           experiment_ref = request.get('experiment_ref')
           if not experiment_ref:
@@ -147,7 +146,7 @@ jobs:
           {
             "profile": "$PROFILE",
             "experiment_ref": "$EXPERIMENT_REF",
-            "datacenter": "US-IL-1",
+            "datacenter": "EU-RO-1",
             "candidate_run_id": $CANDIDATE_RUN_ID,
             "reference_run_id": $REFERENCE_RUN_ID,
             "dispatch_attempts": $DISPATCH_ATTEMPTS
