@@ -1,0 +1,318 @@
+name: OEV — YOLO Resolution A/B (no-volume RunPod)
+
+on:
+  push:
+    branches:
+      - experiment/yolo-highres-01
+    paths:
+      - 'oev/yolo_resolution_run.json'
+
+permissions:
+  contents: read
+
+jobs:
+  followcam:
+    name: YOLO resolution sample_02 180s
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout experiment
+        uses: actions/checkout@v5
+
+      - name: Resolve run config
+        id: cfg
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          d=json.load(open('oev/yolo_resolution_run.json'))
+          res=int(d['resolution'])
+          if res not in (1920,2560): raise SystemExit(f'unsupported controlled resolution {res}')
+          print(f'resolution={res}')
+          print(f'label={d.get("label",f"yolo-resolution-{res}")}')
+          print(f'target_datacenter={d.get("target_datacenter","")}')
+          print(f'target_gpu={d.get("target_gpu","")}')
+          PY
+
+      - name: Generate SSH key pair
+        run: |
+          pip install -q cryptography
+          python3 - <<'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+          key=Ed25519PrivateKey.generate()
+          open('/tmp/runpod_key','wb').write(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.OpenSSH,serialization.NoEncryption()))
+          pub=key.public_key().public_bytes(serialization.Encoding.OpenSSH,serialization.PublicFormat.OpenSSH)
+          open('/tmp/runpod_key.pub','wb').write(pub+b' ffa-oev-yolo-resolution\n')
+          os.chmod('/tmp/runpod_key',0o600)
+          PY
+
+      - name: Launch healthy RunPod GPU
+        id: launch
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          TARGET_DATACENTER: ${{ steps.cfg.outputs.target_datacenter }}
+          TARGET_GPU: ${{ steps.cfg.outputs.target_gpu }}
+        run: |
+          python3 -u - <<'PY'
+          import json,os,subprocess,time,urllib.request,urllib.error
+          base='https://rest.runpod.io/v1'
+          headers={'Authorization':f"Bearer {os.environ['RUNPOD_API_KEY']}",'Content-Type':'application/json','Accept':'application/json'}
+          pub=open('/tmp/runpod_key.pub').read().strip()
+          target_dc=os.environ.get('TARGET_DATACENTER','').strip()
+          target_gpu=os.environ.get('TARGET_GPU','').strip()
+          all_dcs=['EU-RO-1','CA-MTL-1','EU-SE-1','US-IL-1','EUR-IS-1','EU-CZ-1','US-TX-3','EUR-IS-2','US-KS-2','US-GA-2','US-WA-1','US-TX-1','CA-MTL-3','EU-NL-1','US-TX-4','US-CA-2','US-NC-1','OC-AU-1','US-DE-1','EUR-IS-3','CA-MTL-2','AP-JP-1','EUR-NO-1','EU-FR-1','US-KS-3','US-GA-1','AP-IN-1','US-MD-1']
+          preferred=['NVIDIA GeForce RTX 4090','NVIDIA RTX A5000','NVIDIA GeForce RTX 3090','NVIDIA L4','NVIDIA L40S','NVIDIA GeForce RTX 5090','NVIDIA RTX 2000 Ada Generation','NVIDIA RTX PRO 6000 Blackwell Server Edition']
+          gpu_types=[target_gpu] if target_gpu else preferred
+          allowed=[target_dc] if target_dc else list(all_dcs)
+          open('/tmp/yolo_resolution_pods.txt','w').close()
+          def req(method,path,data=None,timeout=30):
+              r=urllib.request.Request(base+path,data=json.dumps(data).encode() if data is not None else None,method=method,headers=headers)
+              try:
+                  with urllib.request.urlopen(r,timeout=timeout) as x:
+                      raw=x.read(); return json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as e:
+                  raise RuntimeError(f'HTTP {e.code}: {e.read().decode(errors="replace")[:500]}') from e
+          def delete(pid):
+              try: req('DELETE',f'/pods/{pid}',timeout=20)
+              except Exception as e: print(f'delete warning {pid}: {e}')
+          def wait_network(pid):
+              info={}
+              for _ in range(72):
+                  info=req('GET',f'/pods/{pid}?includeMachine=true')
+                  m=info.get('portMappings') or {}; port=(m.get('22') or m.get('22/tcp')) if isinstance(m,dict) else None
+                  if info.get('publicIp') and port:return info,info['publicIp'],port
+                  time.sleep(5)
+              raise RuntimeError('network timeout')
+          def ssh_ready(ip,port):
+              for _ in range(24):
+                  p=subprocess.run(['ssh','-i','/tmp/runpod_key','-p',str(port),'-o','StrictHostKeyChecking=no','-o','ConnectTimeout=8',f'root@{ip}','echo OK'],capture_output=True,text=True,timeout=15)
+                  if 'OK' in p.stdout:return True
+                  time.sleep(5)
+              return False
+          def preflight(ip,port):
+              scp=['scp','-i','/tmp/runpod_key','-P',str(port),'-o','StrictHostKeyChecking=no','-o','ConnectTimeout=15']
+              ssh=['ssh','-i','/tmp/runpod_key','-p',str(port),'-o','StrictHostKeyChecking=no','-o','ConnectTimeout=15','-o','ServerAliveInterval=30','-o','ServerAliveCountMax=10']
+              subprocess.run(scp+['runpod_gpu_preflight.sh',f'root@{ip}:/tmp/runpod_gpu_preflight.sh'],check=True,timeout=60)
+              subprocess.run(ssh+[f'root@{ip}','chmod +x /tmp/runpod_gpu_preflight.sh'],check=True,timeout=30)
+              p=subprocess.run(ssh+[f'root@{ip}','stdbuf -oL -eL /tmp/runpod_gpu_preflight.sh'],capture_output=True,text=True,timeout=180)
+              out=p.stdout+p.stderr
+              return p.returncode==0 and 'PREFLIGHT_RESULT=PASS' in out.splitlines(),out
+          winner=None
+          for attempt in range(1,11):
+              if attempt>1: time.sleep(8)
+              if not allowed: raise SystemExit('all candidate datacenters exhausted by failed NVDEC preflight')
+              body={'name':'oev-yolo-resolution','imageName':'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404','gpuTypeIds':gpu_types,'gpuTypePriority':'custom','gpuCount':1,'cloudType':'SECURE','containerDiskInGb':120,'ports':['22/tcp'],'supportPublicIp':True,'allowedCudaVersions':['12.8'],'dataCenterIds':allowed,'env':{'PUBLIC_KEY':pub,'SSH_PUBLIC_KEY':pub}}
+              try: pod=req('POST','/pods',body)
+              except Exception as e:
+                  print(f'attempt {attempt}: create failed: {e}'); continue
+              pid=pod.get('id')
+              if not pid: continue
+              with open('/tmp/yolo_resolution_pods.txt','a') as f:f.write(pid+'\n')
+              try: info,ip,port=wait_network(pid)
+              except Exception as e: print(f'attempt {attempt}: {e}'); delete(pid); continue
+              machine=info.get('machine') or {}; dc=machine.get('dataCenterId') or 'unknown'
+              gpu=(info.get('gpu') or {}).get('displayName') or (machine.get('gpuType') or {}).get('displayName') or machine.get('gpuDisplayName') or machine.get('gpuTypeId') or 'unknown'
+              if not ssh_ready(ip,port): print(f'attempt {attempt}: SSH timeout {dc}/{gpu}'); delete(pid); continue
+              try: ok,out=preflight(ip,port)
+              except Exception as e: print(f'attempt {attempt}: preflight error {e}'); delete(pid); continue
+              open(f'preflight_attempt_{attempt}.txt','w').write(out)
+              driver=next((x.split('=',1)[1] for x in out.splitlines() if x.startswith('PREFLIGHT_DRIVER_VERSION=')),'unknown')
+              print(f'attempt={attempt} pod={pid} dc={dc} gpu={gpu} machine={info.get("machineId")} driver={driver} preflight={ok}')
+              if ok:
+                  open('preflight_output.txt','w').write(out)
+                  winner=(pid,ip,port,gpu,dc,info.get('machineId') or 'unknown',driver,info.get('costPerHr'))
+                  break
+              delete(pid)
+              if not target_dc and dc in allowed and dc!='unknown':
+                  allowed.remove(dc)
+                  print(f'steering subsequent attempts away from failed datacenter {dc}')
+          if not winner: raise SystemExit('no healthy RunPod GPU after 10 controlled allocation attempts')
+          pid,ip,port,gpu,dc,machine,driver,cost=winner
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              for k,v in [('pod_id',pid),('ip',ip),('port',port),('gpu_type',gpu),('datacenter',dc),('machine_id',machine),('driver_version',driver),('cost_per_hr',cost if cost is not None else 'unavailable')]:f.write(f'{k}={v}\n')
+          PY
+
+      - name: Bootstrap exact accepted OEV runtime
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP runpod_bootstrap.sh root@$IP:/tmp/runpod_bootstrap.sh
+          $SSH root@$IP 'chmod +x /tmp/runpod_bootstrap.sh && stdbuf -oL -eL /tmp/runpod_bootstrap.sh' | tee bootstrap_output.txt
+          actual=$($SSH root@$IP "sed -n 's/^video-stitcher_sha=//p' /tmp/runpod_bootstrap_versions.log | tail -1")
+          echo "bootstrap_reco_sha=$actual"
+          test "$actual" = 'c8b0d74b537d192c7de8d2856de64620a82830cf'
+
+      - name: Download exact sample_02 180s from Drive
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          echo "$YOUTUBE_TOKEN" >/tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" >/tmp/youtube_credentials.json
+          pip install -q google-auth google-api-python-client
+          python3 - <<'PY'
+          import json
+          from google.oauth2.credentials import Credentials
+          from google.auth.transport.requests import Request
+          from googleapiclient.discovery import build
+          t=json.load(open('/tmp/youtube_token.json')); c=json.load(open('/tmp/youtube_credentials.json'))
+          creds=Credentials(token=None,refresh_token=t['refresh_token'],token_uri=t.get('token_uri','https://oauth2.googleapis.com/token'),client_id=t.get('client_id') or c['installed']['client_id'],client_secret=t.get('client_secret') or c['installed']['client_secret'])
+          creds.refresh(Request()); drive=build('drive','v3',credentials=creds)
+          root='18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ'
+          def child(name,parent,folder=False):
+              mime=" and mimeType='application/vnd.google-apps.folder'" if folder else ''
+              q=f"name='{name}' and '{parent}' in parents and trashed=false{mime}"
+              r=drive.files().list(q=q,fields='files(id)',supportsAllDrives=True,includeItemsFromAllDrives=True).execute().get('files',[])
+              if not r: raise RuntimeError(f'missing Drive item {name}')
+              return r[0]['id']
+          samples=child('Samples',root,True); pack=child('GX010197-seed1384188843',samples,True); sample=child('sample_02',pack,True)
+          ids={'left':child('sample_02_left_180s.mp4',sample),'right':child('sample_02_right_180s.mp4',sample)}
+          open('/tmp/drive_ids.json','w').write(json.dumps(ids)); open('/tmp/drive_access_token','w').write(creds.token)
+          PY
+          ACCESS=$(cat /tmp/drive_access_token); LEFT=$(python3 -c "import json;print(json.load(open('/tmp/drive_ids.json'))['left'])"); RIGHT=$(python3 -c "import json;print(json.load(open('/tmp/drive_ids.json'))['right'])")
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          $SSH "apt-get update -qq && apt-get install -y -qq --no-install-recommends aria2 >/dev/null && mkdir -p /tmp/oev_run"
+          $SSH "aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS' --dir=/tmp/oev_run --out=left.mp4 'https://www.googleapis.com/drive/v3/files/$LEFT?alt=media' >/dev/null"
+          $SSH "aria2c -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS' --dir=/tmp/oev_run --out=right.mp4 'https://www.googleapis.com/drive/v3/files/$RIGHT?alt=media' >/dev/null"
+          $SSH 'test -s /tmp/oev_run/left.mp4 && test -s /tmp/oev_run/right.mp4 && ffprobe -v error -show_entries format=duration -of csv=p=0 /tmp/oev_run/left.mp4 && ffprobe -v error -show_entries format=duration -of csv=p=0 /tmp/oev_run/right.mp4'
+
+      - name: Export pinned YOLO26m at controlled resolution
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          RESOLUTION: ${{ steps.cfg.outputs.resolution }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          $SSH "python3 -m venv /tmp/yolo-resolution-venv && /tmp/yolo-resolution-venv/bin/pip install -q --upgrade pip && /tmp/yolo-resolution-venv/bin/pip install -q 'ultralytics==8.4.118' onnxruntime-gpu"
+          $SSH "cd /tmp/oev_run && /tmp/yolo-resolution-venv/bin/yolo export model=yolo26m.pt format=onnx imgsz=$RESOLUTION 2>&1 | tee model_export.log"
+          $SSH "cd /tmp/oev_run && test -s yolo26m.pt && test -s yolo26m.onnx && { echo resolution=$RESOLUTION; sha256sum yolo26m.pt yolo26m.onnx; /tmp/yolo-resolution-venv/bin/python3 - <<'PYMODEL'; } | tee model_identity.txt
+import onnx
+m=onnx.load('/tmp/oev_run/yolo26m.onnx')
+print('onnx_input_shape=' + 'x'.join(str(d.dim_value) for d in m.graph.input[0].type.tensor_type.shape.dim))
+PYMODEL"
+
+      - name: Run accepted-v4 wrapper with local controlled model
+        id: run
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          RESOLUTION: ${{ steps.cfg.outputs.resolution }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
+          $SCP runpod_yolo_resolution_local_remote.sh root@$IP:/tmp/oev_run/runpod_yolo_resolution_local_remote.sh
+          $SSH 'chmod +x /tmp/oev_run/runpod_yolo_resolution_local_remote.sh'
+          start=$(date -u +%Y-%m-%dT%H:%M:%SZ); echo "processing_start=$start" >> "$GITHUB_OUTPUT"
+          rc=0
+          $SSH "test -d /usr/local/cuda-12.8/lib64 && test -f /tmp/nvidia_egl_icd.json; export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}; export VK_DRIVER_FILES=/tmp/nvidia_egl_icd.json; export VK_ICD_FILENAMES=/tmp/nvidia_egl_icd.json; unset DISPLAY; cd /tmp/oev_run; SAMPLE_ID='sample_02' DURATION_S='180' LEFT_CLIP='sample_02_left_180s.mp4' RIGHT_CLIP='sample_02_right_180s.mp4' YOLO26_VARIANT='yolo26m' YOLO_RESOLUTION='$RESOLUTION' LOOKAHEAD='1.5' CLUSTER_ALPHA_OVERRIDE='0.08, \"ball_weight\": 0.70, \"dead_zone_rad\": 0.06, \"velocity_alpha\": 0.08, \"max_velocity_rad_per_sec\": 0.31, \"fov_tight\": 38.0, \"fov_default\": 44.0, \"fov_wide\": 58.0, \"ball_containment_enabled\": true, \"ball_containment_enter_fraction\": 0.80, \"ball_containment_exit_fraction\": 0.45' stdbuf -oL -eL ./runpod_yolo_resolution_local_remote.sh" || rc=$?
+          end=$(date -u +%Y-%m-%dT%H:%M:%SZ); echo "processing_end=$end" >> "$GITHUB_OUTPUT"; echo "remote_exit=$rc" >> "$GITHUB_OUTPUT"
+          echo "Remote exit=$rc; processing=$start -> $end"
+
+      - name: Pull complete experiment artifacts
+        if: always()
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          GPU: ${{ steps.launch.outputs.gpu_type }}
+          DC: ${{ steps.launch.outputs.datacenter }}
+          MACHINE: ${{ steps.launch.outputs.machine_id }}
+          DRIVER: ${{ steps.launch.outputs.driver_version }}
+          COST: ${{ steps.launch.outputs.cost_per_hr }}
+          RESOLUTION: ${{ steps.cfg.outputs.resolution }}
+          LABEL: ${{ steps.cfg.outputs.label }}
+          START: ${{ steps.run.outputs.processing_start }}
+          END: ${{ steps.run.outputs.processing_end }}
+        run: |
+          mkdir -p followcam_artifacts
+          cp preflight*.txt bootstrap_output.txt followcam_artifacts/ 2>/dev/null || true
+          cat > followcam_artifacts/run_metadata.txt <<META
+          label=$LABEL
+          resolution=$RESOLUTION
+          sample_id=sample_02
+          duration_s=180
+          datacenter=$DC
+          gpu_type=$GPU
+          machine_id=$MACHINE
+          driver_version=$DRIVER
+          cost_per_hr=$COST
+          processing_start=$START
+          processing_end=$END
+          experiment_ref=${{ github.ref_name }}
+          experiment_sha=${{ github.sha }}
+          META
+          if [ -n "$IP" ] && [ -n "$PORT" ]; then
+            SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15"
+            for f in segment.log calibrate.log stitch.log acceptance.log match.json events.jsonl followcam.mp4 gpu_telemetry.csv containment_metrics.json model_export.log model_identity.txt; do $SCP root@$IP:/tmp/oev_run/$f followcam_artifacts/ || true; done
+          fi
+
+      - name: Upload GitHub artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.cfg.outputs.label }}-sample_02-180s-${{ github.run_id }}
+          path: followcam_artifacts/
+          retention-days: 30
+
+      - name: Copy successful result to OEV Drive Baseline
+        id: drive
+        if: always()
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          LABEL: ${{ steps.cfg.outputs.label }}
+        run: |
+          if [ ! -s followcam_artifacts/followcam.mp4 ]; then echo 'verified=false' >> "$GITHUB_OUTPUT"; exit 0; fi
+          pip install -q google-auth google-api-python-client
+          echo "$YOUTUBE_TOKEN" >/tmp/youtube_token.json; echo "$YOUTUBE_CREDENTIALS" >/tmp/youtube_credentials.json
+          python3 - <<'PY'
+          import json,os
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+          t=json.load(open('/tmp/youtube_token.json')); c=json.load(open('/tmp/youtube_credentials.json'))
+          creds=Credentials(token=None,refresh_token=t['refresh_token'],token_uri=t.get('token_uri','https://oauth2.googleapis.com/token'),client_id=t.get('client_id') or c['installed']['client_id'],client_secret=t.get('client_secret') or c['installed']['client_secret'])
+          drive=build('drive','v3',credentials=creds); root='18Y8hI_S29BMeg5FEoxlaqoGy1DsQ7GKJ'; label=os.environ['LABEL']; run='${{ github.run_id }}'
+          q=f"name='Baseline' and '{root}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'"; r=drive.files().list(q=q,fields='files(id)',supportsAllDrives=True,includeItemsFromAllDrives=True).execute().get('files',[])
+          folder=r[0]['id'] if r else drive.files().create(body={'name':'Baseline','mimeType':'application/vnd.google-apps.folder','parents':[root]},fields='id').execute()['id']
+          for path,mime in [('followcam_artifacts/followcam.mp4','video/mp4'),('followcam_artifacts/events.jsonl','application/json'),('followcam_artifacts/stitch.log','text/plain'),('followcam_artifacts/run_metadata.txt','text/plain'),('followcam_artifacts/model_identity.txt','text/plain')]:
+              if os.path.exists(path): drive.files().create(body={'name':f'{label}-run{run}-{os.path.basename(path)}','parents':[folder]},media_body=MediaFileUpload(path,mimetype=mime,resumable=True),fields='id',supportsAllDrives=True).execute()
+          PY
+          echo 'verified=true' >> "$GITHUB_OUTPUT"
+
+      - name: Terminate every created RunPod pod
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os,time,urllib.request,urllib.error
+          try: ids=[x.strip() for x in open('/tmp/yolo_resolution_pods.txt') if x.strip()]
+          except FileNotFoundError: ids=[]
+          h={'Authorization':f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          for pid in dict.fromkeys(ids):
+              for attempt in range(3):
+                  try:
+                      urllib.request.urlopen(urllib.request.Request(f'https://rest.runpod.io/v1/pods/{pid}',method='DELETE',headers=h),timeout=20); break
+                  except urllib.error.HTTPError as e:
+                      if e.code==404: break
+                  except Exception:
+                      if attempt<2: time.sleep(3)
+          PY
+
+      - name: Evaluate experiment arm
+        if: always()
+        env:
+          RC: ${{ steps.run.outputs.remote_exit }}
+          DRIVE: ${{ steps.drive.outputs.verified }}
+        run: |
+          test "${RC:-1}" = 0
+          test -s followcam_artifacts/events.jsonl
+          test -s followcam_artifacts/followcam.mp4
+          test -s followcam_artifacts/model_identity.txt
+          test "${DRIVE:-false}" = true
