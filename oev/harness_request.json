@@ -1,7 +1,7 @@
 {
-  "mode": "check",
+  "mode": "run",
   "profile": "sample_02_180_quality",
-  "experiment_ref": "",
-  "reference_run_id_override": null,
-  "nonce": "initial"
+  "experiment_ref": "experiment/yolo-highres-01",
+  "reference_run_id_override": 32011232949,
+  "nonce": "yolo-highres-control-eur-is1-20260825-0755"
 }
