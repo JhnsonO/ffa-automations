@@ -2,5 +2,5 @@
   "mode": "run",
   "profile": "sample_02_180_yolo_highres_euris",
   "experiment_ref": "experiment/specialised-ball-detector-01",
-  "nonce": "specialised-detector-control-180s-euris-20260825-b"
+  "nonce": "specialised-detector-test-180s-euris-20260825-c"
 }
