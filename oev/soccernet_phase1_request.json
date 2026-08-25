@@ -1,0 +1,13 @@
+{
+  "experiment": "soccernet-ball-detector-01",
+  "phase": 1,
+  "sample_set": "GX010197-seed1384188843",
+  "sample_id": "sample_02",
+  "duration_s": 180,
+  "control": "yolo26m",
+  "experiment_model": "yolo-sn-ball-opt.pt",
+  "resolution": 1920,
+  "stride": 1,
+  "detection_cadence": "every_frame",
+  "nonce": "detector-only-20260825-1100"
+}
