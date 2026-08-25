@@ -1,7 +1,7 @@
 {
   "mode": "run",
-  "profile": "sample_02_180_yolo_highres_euris",
+  "profile": "sample_02_180_yolo_highres_euro",
   "experiment_ref": "experiment/yolo-highres-01",
   "reference_run_id_override": 32835540882,
-  "nonce": "yolo-highres-2560-euris-20260825-1158"
+  "nonce": "yolo-highres-2560-euro-20260825-1212"
 }
