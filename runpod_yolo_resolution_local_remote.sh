@@ -18,7 +18,7 @@ p=Path(sys.argv[1]); res=sys.argv[2]; s=p.read_text()
 marker='test -s "$V3_RUNNER"\n'
 if s.count(marker)!=1:
     raise SystemExit(f'expected one V3 marker, found {s.count(marker)}')
-inject=r'''python3 - "$V3_RUNNER" <<'PY_LOCAL_MODEL_HOOK'
+inject=r"""python3 - "$V3_RUNNER" <<'PY_LOCAL_MODEL_HOOK'
 from pathlib import Path
 p=Path("/tmp/oev_run/runpod_sample_baseline_yolo26_v3_exact.sh")
 s=p.read_text()
@@ -38,7 +38,7 @@ PY_LOCAL_MODEL_PATH
 '''
 p.write_text(s.replace(marker, marker+hook, 1))
 PY_LOCAL_MODEL_HOOK
-'''
+"""
 s=s.replace(marker, marker+inject, 1)
 s=s.replace('"experiment": "yolo_resolution_control_1920_v4_stride1"', f'"experiment": "yolo_resolution_{res}_v4_stride1"')
 s=s.replace('"definition": "accepted v4 stride1 camera behavior; YOLO26m 1920 control"', f'"definition": "accepted v4 stride1 camera behavior; YOLO26m {res} inference-resolution arm"')
