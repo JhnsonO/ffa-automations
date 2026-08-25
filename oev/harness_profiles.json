@@ -76,6 +76,31 @@
         {"label": "1:59-2:09 stationary goal ball", "start_s": 117.0, "end_s": 131.0},
         {"label": "2:14-2:19 long-pass recovery", "start_s": 132.0, "end_s": 141.0}
       ]
+    },
+    "sample_02_180_specialised_euris": {
+      "description": "Detector-only A/B arm for the football-specialised YOLO26l checkpoint on the same EUR-IS-1 sample_02 180s stride-1 OEV configuration. No automatic reference comparison because control ball class is 32 while specialised ball class is 0; compare artifacts post-hoc with their own class maps.",
+      "fps": 59.94,
+      "ball_class_id": 0,
+      "reference_run_id": 0,
+      "capacity_retry_max": 3,
+      "dispatch": {
+        "datacenter": "EUR-IS-1",
+        "sample_id": "sample_02",
+        "duration_s": "180",
+        "sample_set_id": "GX010197-seed1384188843",
+        "model_variant": "yolo26l",
+        "lookahead": "1.5",
+        "cluster_alpha_override": "0.08, \"ball_weight\": 0.70, \"dead_zone_rad\": 0.06, \"velocity_alpha\": 0.08, \"max_velocity_rad_per_sec\": 0.31, \"fov_tight\": 38.0, \"fov_default\": 44.0, \"fov_wide\": 58.0, \"ball_containment_enabled\": true, \"ball_containment_enter_fraction\": 0.80, \"ball_containment_exit_fraction\": 0.45"
+      },
+      "review_windows": [
+        {"label": "early loss", "start_s": 6.0, "end_s": 15.0},
+        {"label": "22s near-loss", "start_s": 20.0, "end_s": 24.0},
+        {"label": "36-41s losses", "start_s": 34.0, "end_s": 43.0},
+        {"label": "1:26 loss", "start_s": 84.0, "end_s": 90.0},
+        {"label": "1:36 brief loss", "start_s": 94.0, "end_s": 99.0},
+        {"label": "1:59-2:09 stationary goal ball", "start_s": 117.0, "end_s": 131.0},
+        {"label": "2:14-2:19 long-pass recovery", "start_s": 132.0, "end_s": 141.0}
+      ]
     }
   }
 }
