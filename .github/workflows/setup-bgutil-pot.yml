@@ -1,0 +1,22 @@
+name: Setup bgutil PO Token provider (temporary)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: self-hosted
+    steps:
+      - name: Check for docker, install container if available
+        run: |
+          set -x
+          if command -v docker >/dev/null 2>&1; then
+            echo "docker present"
+            sudo docker rm -f bgutil-provider 2>/dev/null || true
+            sudo docker run --name bgutil-provider -d --restart unless-stopped -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+            sleep 3
+            sudo docker ps --filter name=bgutil-provider
+            curl -s -X POST http://127.0.0.1:4416/ping || true
+          else
+            echo "NO_DOCKER"
+          fi
