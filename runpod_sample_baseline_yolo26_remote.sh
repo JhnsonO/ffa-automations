@@ -61,8 +61,6 @@ if [ "$actual_size" != "$SOCCERNET_EXPECTED_SIZE" ]; then
 fi
 sha256sum "$SOCCERNET_PT" | tee "$PHASE1_DIR/soccernet_pt.sha256" | tee -a phase1.log
 
-# Use the SAME Ultralytics version recorded for the accepted staged YOLO26
-# runtime where possible. If the manifest is absent, fail rather than guessing.
 ULTRA_VERSION=$(python3 - <<'PY'
 import json
 p='/runpod-volume/oev-runtime/manifest.json'
@@ -77,9 +75,37 @@ PY
 }
 echo "ultralytics_version=$ULTRA_VERSION" | tee -a phase1.log
 
-python3 -m venv /tmp/soccernet-phase1-venv
+# IMPORTANT: do not let pip replace the CUDA-12.8 base image's PyTorch with a
+# newer CUDA-13 build. PyPI ORT >=1.27 also defaults to CUDA 13. Pin ORT 1.26.0
+# (official CUDA-12.8 build) and reuse the base image's torch 2.8/cu128 through
+# --system-site-packages. Install Ultralytics without dependencies.
+python3 -m venv --system-site-packages /tmp/soccernet-phase1-venv
 /tmp/soccernet-phase1-venv/bin/pip install -q --upgrade pip
-/tmp/soccernet-phase1-venv/bin/pip install -q "ultralytics==$ULTRA_VERSION" onnx onnxruntime-gpu opencv-python-headless 2>&1 | tee -a phase1.log
+/tmp/soccernet-phase1-venv/bin/pip install -q --no-deps "ultralytics==$ULTRA_VERSION" 2>&1 | tee -a phase1.log
+/tmp/soccernet-phase1-venv/bin/pip install -q --no-deps "onnxruntime-gpu==1.26.0" "onnx==1.19.1" 2>&1 | tee -a phase1.log
+# Ultralytics import dependencies that may not exist in the base image; these
+# do not install/replace torch or CUDA runtime packages.
+/tmp/soccernet-phase1-venv/bin/pip install -q --no-deps "opencv-python-headless==4.11.0.86" ultralytics-thop polars py-cpuinfo 2>&1 | tee -a phase1.log
+
+# Hard environment gate before the expensive 180s test.
+/tmp/soccernet-phase1-venv/bin/python3 - <<'PYENV' 2>&1 | tee -a phase1.log
+import torch, onnxruntime as ort
+print('torch_version=', torch.__version__)
+print('torch_cuda=', torch.version.cuda)
+print('torch_cuda_available=', torch.cuda.is_available())
+print('ort_version=', ort.__version__)
+print('ort_providers=', ort.get_available_providers())
+assert str(torch.version.cuda).startswith('12.'), torch.version.cuda
+assert torch.cuda.is_available(), 'base PyTorch cannot see GPU'
+assert ort.__version__ == '1.26.0', ort.__version__
+assert 'CUDAExecutionProvider' in ort.get_available_providers(), ort.get_available_providers()
+PYENV
+env_rc=${PIPESTATUS[0]}
+if [ "$env_rc" -ne 0 ]; then
+  echo 'FATAL: CUDA-12.8 Phase 1 Python environment gate failed' | tee -a phase1.log
+  cp phase1.log segment.log
+  exit 1
+fi
 
 curl -fsSL "$PHASE1_SCRIPT_URL" -o /tmp/oev_run/oev_soccernet_phase1.py
 if [ ! -s /tmp/oev_run/oev_soccernet_phase1.py ]; then
@@ -102,7 +128,6 @@ phase1_end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 echo "phase1_end=$phase1_end phase1_rc=$phase1_rc" | tee -a phase1.log
 if [ "$phase1_rc" -ne 0 ]; then
   echo 'FATAL: Phase 1 detector A/B failed; OEV integration was NOT attempted.' | tee -a phase1.log
-  # Make the failure diagnosable through one of the standard pulled files.
   cp phase1.log segment.log
   exit 1
 fi
@@ -126,8 +151,6 @@ set -e
 # Preserve Phase 1 evidence without changing the proven workflow's fixed remote
 # artifact pull list: after the control no longer needs match.json, package the
 # original calibration plus ALL detector comparison evidence into that slot.
-# ZIP supports arbitrary filenames; the artifact entry is still named
-# match.json solely because the parent workflow only pulls a fixed set of names.
 mkdir -p /tmp/oev_run/phase1_payload
 cp -a "$PHASE1_DIR"/. /tmp/oev_run/phase1_payload/ 2>/dev/null || true
 cp phase1.log /tmp/oev_run/phase1_payload/phase1.log
@@ -144,7 +167,6 @@ print('phase1 payload bytes',out.stat().st_size)
 PYZIP
 mv /tmp/oev_run/match.phase1.zip /tmp/oev_run/match.json
 
-# Also surface the concise detector result in a normal text artifact.
 {
   echo
   echo '=== SOCCERNET PHASE 1 DETECTOR-ONLY RESULT (integration not attempted) ==='
