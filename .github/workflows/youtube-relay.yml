@@ -12,6 +12,12 @@ name: FFA Media YouTube Relay
 #   - fetch:   full master download for clip cutting, can be large/slow,
 #              uploaded straight to R2 at the same cache key ffa-media's
 #              worker already checks on retry (no result endpoint needed)
+#
+# Both yt-dlp calls also pass a PO token via bgutil-ytdlp-pot-provider
+# (HTTP server on 127.0.0.1:4416, run persistently on this box via Docker,
+# outside this workflow) -- cookies + a clean IP stopped being enough on
+# their own for full-media downloads once YouTube started gating those
+# behind a proof-of-origin token; metadata probes were less affected.
 
 on:
   workflow_dispatch:
@@ -33,7 +39,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -U boto3 requests
+          pip install -U boto3 requests bgutil-ytdlp-pot-provider
           curl -fsSL https://deno.land/install.sh | sh -s -- -y
           echo "$HOME/.deno/bin" >> $GITHUB_PATH
           mkdir -p $HOME/.local/bin
@@ -75,6 +81,7 @@ jobs:
                   out = subprocess.run(
                       ["yt-dlp", "--dump-json", "--no-warnings",
                        "--cookies-from-browser", f"chrome:{chrome_profile}",
+                       "--extractor-args", "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
                        f"https://www.youtube.com/watch?v={ref}"],
                       capture_output=True, text=True, timeout=60, check=True,
                   )
@@ -149,6 +156,7 @@ jobs:
                        "--merge-output-format", "mp4",
                        "--no-part", "--no-warnings",
                        "--cookies-from-browser", f"chrome:{chrome_profile}",
+                       "--extractor-args", "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
                        "-o", local,
                        f"https://www.youtube.com/watch?v={ref}"],
                       timeout=3600, check=True,
