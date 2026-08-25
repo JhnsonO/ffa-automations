@@ -83,18 +83,24 @@ python3 -m venv --system-site-packages /tmp/soccernet-phase1-venv
 /tmp/soccernet-phase1-venv/bin/pip install -q --upgrade pip
 /tmp/soccernet-phase1-venv/bin/pip install -q --no-deps "ultralytics==$ULTRA_VERSION" 2>&1 | tee -a phase1.log
 /tmp/soccernet-phase1-venv/bin/pip install -q --no-deps "onnxruntime-gpu==1.26.0" "onnx==1.19.1" 2>&1 | tee -a phase1.log
-# Ultralytics import dependencies that may not exist in the base image; these
-# do not install/replace torch or CUDA runtime packages.
-/tmp/soccernet-phase1-venv/bin/pip install -q --no-deps "opencv-python-headless==4.11.0.86" ultralytics-thop polars py-cpuinfo 2>&1 | tee -a phase1.log
+# Ultralytics runtime/import dependencies. Keep CUDA/PyTorch untouched; these
+# are CPU-side Python dependencies only. The previous run proved matplotlib
+# was absent from the base image, so install the complete non-torch import set
+# explicitly instead of discovering dependencies one-by-one at runtime.
+/tmp/soccernet-phase1-venv/bin/pip install -q \
+  "opencv-python-headless==4.11.0.86" ultralytics-thop polars py-cpuinfo \
+  matplotlib pillow pyyaml requests scipy psutil pandas 2>&1 | tee -a phase1.log
 
-# Hard environment gate before the expensive 180s test.
+# Hard environment + import gate before the expensive 180s test.
 /tmp/soccernet-phase1-venv/bin/python3 - <<'PYENV' 2>&1 | tee -a phase1.log
 import torch, onnxruntime as ort
+from ultralytics import YOLO
 print('torch_version=', torch.__version__)
 print('torch_cuda=', torch.version.cuda)
 print('torch_cuda_available=', torch.cuda.is_available())
 print('ort_version=', ort.__version__)
 print('ort_providers=', ort.get_available_providers())
+print('ultralytics_import=OK', YOLO)
 assert str(torch.version.cuda).startswith('12.'), torch.version.cuda
 assert torch.cuda.is_available(), 'base PyTorch cannot see GPU'
 assert ort.__version__ == '1.26.0', ort.__version__
@@ -102,7 +108,7 @@ assert 'CUDAExecutionProvider' in ort.get_available_providers(), ort.get_availab
 PYENV
 env_rc=${PIPESTATUS[0]}
 if [ "$env_rc" -ne 0 ]; then
-  echo 'FATAL: CUDA-12.8 Phase 1 Python environment gate failed' | tee -a phase1.log
+  echo 'FATAL: CUDA-12.8 Phase 1 Python environment/import gate failed' | tee -a phase1.log
   cp phase1.log segment.log
   exit 1
 fi
