@@ -3,5 +3,5 @@
   "profile": "sample_02_180_quality",
   "experiment_ref": "experiment/soccernet-ball-detector-01",
   "reference_run_id_override": 32011232949,
-  "nonce": "soccernet-ball-detector-phase1-20260825-0204"
+  "nonce": "soccernet-ball-detector-phase1-cuda12-20260825-0230"
 }
