@@ -1,7 +1,7 @@
 {
   "mode": "run",
   "profile": "sample_02_180_quality",
-  "experiment_ref": "experiment/yolo-highres-01",
+  "experiment_ref": "experiment/soccernet-ball-detector-01",
   "reference_run_id_override": 32011232949,
-  "nonce": "yolo-resolution-control-v4-1920-20260825-0130"
+  "nonce": "soccernet-ball-detector-phase1-20260825-0204"
 }
