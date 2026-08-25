@@ -1,0 +1,48 @@
+name: OEV — Enable US-IL-1 on YOLO Highres Experiment
+
+on:
+  push:
+    branches:
+      - oev/harness-yolo-highres-eur-is1
+    paths:
+      - 'oev/yolo_highres_enable_usil.request'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout experiment branch
+        uses: actions/checkout@v5
+        with:
+          ref: experiment/yolo-highres-01
+          fetch-depth: 0
+
+      - name: Add US-IL-1 to workflow dispatch whitelist only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/oev-runpod-sample-baseline.yml')
+          s = p.read_text()
+          needle = "          - EUR-IS-1\n"
+          insert = "          - EUR-IS-1\n          - US-IL-1\n"
+          if "          - US-IL-1\n" not in s:
+              if needle not in s:
+                  raise SystemExit('expected datacenter option block not found')
+              s = s.replace(needle, insert, 1)
+              p.write_text(s)
+          PY
+
+      - name: Commit whitelist-only infrastructure change
+        run: |
+          if git diff --quiet -- .github/workflows/oev-runpod-sample-baseline.yml; then
+            echo 'US-IL-1 already enabled; no commit needed.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/oev-runpod-sample-baseline.yml
+          git commit -m 'experiment: allow US-IL-1 for highres control runs'
+          git push origin HEAD:experiment/yolo-highres-01
