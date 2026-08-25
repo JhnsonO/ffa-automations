@@ -60,7 +60,8 @@ python3 -m venv --system-site-packages /tmp/soccernet-phase1-venv
 /tmp/soccernet-phase1-venv/bin/pip install -q --no-deps "onnxruntime-gpu==1.26.0" "onnx==1.19.1"
 /tmp/soccernet-phase1-venv/bin/pip install -q --no-deps \
   "opencv-python-headless==4.11.0.86" ultralytics-thop polars py-cpuinfo \
-  matplotlib pillow pyyaml requests scipy psutil pandas seaborn nvidia-ml-py
+  matplotlib pillow pyyaml requests scipy psutil pandas seaborn nvidia-ml-py \
+  cycler contourpy fonttools kiwisolver packaging pyparsing python-dateutil six
 
 # Hard gate: detector-only runner needs CUDA inference, but deliberately does
 # NOT require NVDEC/Vulkan because Phase 1 decodes via OpenCV and tests detectors only.
