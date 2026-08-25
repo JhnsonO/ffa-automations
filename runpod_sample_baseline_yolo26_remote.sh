@@ -104,4 +104,52 @@ PY
 
 chmod +x "$BASE_RUNNER"
 echo "TEST_ONLY_RUNNER_DELTA=yolo26m_inference_resolution_1920_to_2560 base_main_sha=${BASE_FFA_SHA}"
-exec "$BASE_RUNNER"
+set +e
+"$BASE_RUNNER"
+base_rc=$?
+set -e
+
+# The canonical workflow only preserves fixed log names. Fold the passive
+# nvidia-smi sample summary into acceptance.log so compute evidence survives
+# pod teardown without changing any detector/tracker/panner behavior.
+if [ -s gpu_telemetry.csv ]; then
+  set +e
+  python3 - <<'PYGPU' | tee -a acceptance.log
+import csv, math, statistics
+rows = []
+with open('gpu_telemetry.csv', newline='') as f:
+    for row in csv.DictReader(f):
+        try:
+            rows.append((
+                float(row['gpu_util_pct']),
+                float(row['memory_used_mib']),
+                float(row['memory_total_mib']),
+            ))
+        except (KeyError, TypeError, ValueError):
+            pass
+print('--- highres passive GPU telemetry ---')
+print(f'gpu_samples={len(rows)}')
+if rows:
+    utils = [r[0] for r in rows]
+    mem = [r[1] for r in rows]
+    total = rows[0][2]
+    def pct(xs, p):
+        ys = sorted(xs)
+        if len(ys) == 1:
+            return ys[0]
+        pos = (len(ys)-1) * p
+        lo, hi = math.floor(pos), math.ceil(pos)
+        if lo == hi:
+            return ys[lo]
+        return ys[lo] + (ys[hi]-ys[lo]) * (pos-lo)
+    print(f'gpu_util_mean_pct={statistics.fmean(utils):.2f}')
+    print(f'gpu_util_p95_pct={pct(utils, 0.95):.2f}')
+    print(f'gpu_util_max_pct={max(utils):.2f}')
+    print(f'vram_mean_mib={statistics.fmean(mem):.1f}')
+    print(f'vram_p95_mib={pct(mem, 0.95):.1f}')
+    print(f'vram_max_mib={max(mem):.1f}')
+    print(f'vram_total_mib={total:.1f}')
+PYGPU
+  set -e
+fi
+exit "$base_rc"
