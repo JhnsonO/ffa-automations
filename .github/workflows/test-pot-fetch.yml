@@ -4,40 +4,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  cleanup:
     runs-on: self-hosted
-    timeout-minutes: 15
     steps:
-      - name: Install deps
+      - name: Remove test download
         run: |
-          pip install -U bgutil-ytdlp-pot-provider
-          curl -fsSL https://deno.land/install.sh | sh -s -- -y
-          echo "$HOME/.deno/bin" >> $GITHUB_PATH
-          mkdir -p $HOME/.local/bin
-          curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o $HOME/.local/bin/yt-dlp
-          chmod a+rx $HOME/.local/bin/yt-dlp
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Sync live YouTube cookie profile
-        run: |
-          SRC=/root/.config/chrome-ffa
-          DST="$HOME/.cache/yt-chrome-sync"
-          rm -rf "$DST"
-          mkdir -p "$DST/Default"
-          sudo cp "$SRC/Local State" "$DST/Local State"
-          sudo cp "$SRC/Default/Cookies" "$DST/Default/Cookies"
-          sudo cp "$SRC/Default/Cookies-journal" "$DST/Default/Cookies-journal" 2>/dev/null || true
-          sudo chown -R "$(id -u):$(id -g)" "$DST"
-          chmod -R go-rwx "$DST"
-
-      - name: Try the previously-failing fetch with PO token + Deno available
-        run: |
-          set -x
-          which deno
-          yt-dlp -v -f "bestvideo[height>=2160]+bestaudio/bestvideo+bestaudio/best" \
-            --merge-output-format mp4 --no-part \
-            --cookies-from-browser "chrome:$HOME/.cache/yt-chrome-sync" \
-            --extractor-args "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416" \
-            -o /tmp/test.mp4 \
-            "https://www.youtube.com/watch?v=7prW6leaDWE" 2>&1 | tee /tmp/ytdlp.log
-          ls -la /tmp/test.mp4 || echo "NO FILE PRODUCED"
+          rm -fv /tmp/test.mp4 /tmp/test.f315.webm /tmp/test.f251-1.webm /tmp/ytdlp.log
+          df -h /
