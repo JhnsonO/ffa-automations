@@ -1,4 +1,4 @@
-name: OEV — YOLO Highres Stage US-IL-1
+name: OEV — YOLO Highres Stage AP-JP-1
 
 on:
   push:
@@ -17,13 +17,13 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
-      - name: Populate US-IL-1 OEV volume with canonical YOLO26 models
+      - name: Populate AP-JP-1 OEV volume with canonical YOLO26 models
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/oev_dispatch_and_wait.py \
             --workflow oev-populate-volume.yml \
             --ref main \
-            --inputs-json '{"datacenter_id":"US-IL-1","reco_sha":"c8b0d74b537d192c7de8d2856de64620a82830cf","reco_repo":"https://github.com/JhnsonO/video-stitcher","ultralytics_version":"8.4.118","force_rebuild":"false"}' \
+            --inputs-json '{"datacenter_id":"AP-JP-1","reco_sha":"c8b0d74b537d192c7de8d2856de64620a82830cf","reco_repo":"https://github.com/JhnsonO/video-stitcher","ultralytics_version":"8.4.118","force_rebuild":"false"}' \
             --max-attempts 1 \
             --timeout-s 5400
