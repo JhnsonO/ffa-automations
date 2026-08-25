@@ -7,16 +7,47 @@ jobs:
   setup:
     runs-on: self-hosted
     steps:
-      - name: Check for docker, install container if available
+      - name: Ensure Node.js 20+, build and install the provider server as a systemd service
         run: |
-          set -x
-          if command -v docker >/dev/null 2>&1; then
-            echo "docker present"
-            sudo docker rm -f bgutil-provider 2>/dev/null || true
-            sudo docker run --name bgutil-provider -d --restart unless-stopped -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
-            sleep 3
-            sudo docker ps --filter name=bgutil-provider
-            curl -s -X POST http://127.0.0.1:4416/ping || true
-          else
-            echo "NO_DOCKER"
+          set -ex
+          NEED_NODE=1
+          if command -v node >/dev/null 2>&1; then
+            NODE_MAJOR=$(node -e "console.log(process.versions.node.split('.')[0])")
+            if [ "$NODE_MAJOR" -ge 20 ]; then NEED_NODE=0; fi
           fi
+          if [ "$NEED_NODE" = "1" ]; then
+            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+            sudo apt-get install -y nodejs
+          fi
+          node --version
+          npm --version
+
+          sudo rm -rf /opt/bgutil-ytdlp-pot-provider
+          sudo git clone --single-branch --branch 1.3.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/bgutil-ytdlp-pot-provider
+          sudo chown -R "$(id -u):$(id -g)" /opt/bgutil-ytdlp-pot-provider
+          cd /opt/bgutil-ytdlp-pot-provider/server
+          npm ci
+          npx tsc
+
+          sudo tee /etc/systemd/system/bgutil-pot.service > /dev/null <<'UNIT'
+          [Unit]
+          Description=bgutil PO Token provider for yt-dlp
+          After=network.target
+
+          [Service]
+          Type=simple
+          WorkingDirectory=/opt/bgutil-ytdlp-pot-provider/server
+          ExecStart=/usr/bin/node build/main.js
+          Restart=always
+          RestartSec=5
+          Environment=HOST=127.0.0.1
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now bgutil-pot.service
+          sleep 3
+          sudo systemctl status bgutil-pot.service --no-pager || true
+          curl -s -X POST http://127.0.0.1:4416/get_pot -H "Content-Type: application/json" -d "{}" || true
