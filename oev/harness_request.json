@@ -1,7 +1,7 @@
 {
   "mode": "run",
   "profile": "sample_02_180_quality",
-  "experiment_ref": "experiment/specialised-ball-detector-01",
+  "experiment_ref": "main",
   "reference_run_id_override": 32011232949,
-  "nonce": "specialised-detector-test-20260825-0110"
+  "nonce": "yolo-resolution-control-180s-20260825"
 }
