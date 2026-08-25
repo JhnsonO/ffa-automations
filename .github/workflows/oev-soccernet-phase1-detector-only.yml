@@ -1,0 +1,239 @@
+name: OEV — SoccerNet Ball Detector Phase 1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/soccernet-ball-detector-01
+    paths:
+      - 'oev/soccernet_phase1_request.json'
+
+permissions:
+  contents: read
+
+jobs:
+  detector-ab:
+    name: Pure detector A/B (YOLO26m vs SoccerNet)
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout experiment branch
+        uses: actions/checkout@v5
+
+      - name: Generate ephemeral SSH key
+        run: |
+          pip install -q cryptography
+          python3 - <<'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          import os
+          k=Ed25519PrivateKey.generate()
+          open('/tmp/runpod_key','wb').write(k.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.OpenSSH,serialization.NoEncryption()))
+          open('/tmp/runpod_key.pub','wb').write(k.public_key().public_bytes(serialization.Encoding.OpenSSH,serialization.PublicFormat.OpenSSH)+b' oev-soccernet-phase1\n')
+          os.chmod('/tmp/runpod_key',0o600)
+          PY
+
+      - name: Launch detector-only RunPod
+        id: pod
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          VOLUME_MAP_JSON: ${{ vars.OEV_NETWORK_VOLUME_MAP }}
+        run: |
+          python3 -u - <<'PY'
+          import json, os, subprocess, sys, time, urllib.request, urllib.error
+          api_key=os.environ['RUNPOD_API_KEY']
+          headers={'Authorization':f'Bearer {api_key}','Content-Type':'application/json','Accept':'application/json'}
+          base='https://rest.runpod.io/v1'
+          vol=json.loads(os.environ['VOLUME_MAP_JSON']).get('EU-RO-1')
+          if not vol: raise SystemExit('EU-RO-1 network volume missing')
+          pub=open('/tmp/runpod_key.pub').read().strip()
+          all_ids=[]
+          open('/tmp/soccernet_phase1_pods.txt','w').close()
+          def req(method,path,data=None):
+              body=json.dumps(data).encode() if data is not None else None
+              r=urllib.request.Request(base+path,data=body,method=method,headers=headers)
+              with urllib.request.urlopen(r,timeout=30) as x:
+                  raw=x.read(); return json.loads(raw) if raw else {}
+          def delete(pid):
+              try: req('DELETE',f'/pods/{pid}')
+              except Exception as e: print('delete warning',pid,e)
+          winner=None
+          # Detector-only Phase 1 intentionally does not require NVDEC/Vulkan.
+          # Prefer 4090 for the 1920x1920 A/B; both models run on the same GPU.
+          for attempt in range(1,5):
+              body={
+                'name':'oev-soccernet-phase1','imageName':'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
+                'gpuTypeIds':['NVIDIA GeForce RTX 4090','NVIDIA RTX A5000','NVIDIA GeForce RTX 3090','NVIDIA L4'],
+                'gpuTypePriority':'custom','gpuCount':1,'cloudType':'SECURE','containerDiskInGb':80,
+                'ports':['22/tcp'],'supportPublicIp':True,'allowedCudaVersions':['12.8'],
+                'networkVolumeId':vol,'volumeMountPath':'/runpod-volume','dataCenterIds':['EU-RO-1'],
+                'env':{'PUBLIC_KEY':pub,'SSH_PUBLIC_KEY':pub},
+              }
+              try:
+                  p=req('POST','/pods',body); pid=p['id']; all_ids.append(pid)
+                  with open('/tmp/soccernet_phase1_pods.txt','a') as f:f.write(pid+'\n')
+                  print('created pod',pid,'attempt',attempt)
+              except Exception as e:
+                  print('create failed',repr(e)); continue
+              deadline=time.time()+300; info={}
+              while time.time()<deadline:
+                  try: info=req('GET',f'/pods/{pid}?includeMachine=true')
+                  except Exception: time.sleep(5); continue
+                  mappings=info.get('portMappings') or {}; port=mappings.get('22') or mappings.get('22/tcp')
+                  ip=info.get('publicIp')
+                  if ip and port: break
+                  time.sleep(8)
+              else:
+                  print('network timeout',pid); delete(pid); continue
+              ok=False
+              for _ in range(24):
+                  r=subprocess.run(['ssh','-o','StrictHostKeyChecking=no','-o','ConnectTimeout=8','-i','/tmp/runpod_key','-p',str(port),f'root@{ip}',
+                                    "nvidia-smi --query-gpu=name,driver_version --format=csv,noheader && test -s /runpod-volume/oev-runtime/models/yolo26m.onnx && echo DETECTOR_READY"],
+                                   capture_output=True,text=True,timeout=20)
+                  if r.returncode==0 and 'DETECTOR_READY' in r.stdout:
+                      print(r.stdout.strip()); ok=True; break
+                  time.sleep(5)
+              if not ok:
+                  print('GPU/volume readiness failed',pid); delete(pid); continue
+              machine=info.get('machine') or {}; gpu=info.get('gpu') or {}
+              winner={'id':pid,'ip':ip,'port':port,'gpu':gpu.get('displayName') or (machine.get('gpuType') or {}).get('displayName') or 'unknown',
+                      'driver':subprocess.check_output(['ssh','-o','StrictHostKeyChecking=no','-i','/tmp/runpod_key','-p',str(port),f'root@{ip}',
+                                                       "nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits | head -1"],text=True).strip()}
+              break
+          if not winner: raise SystemExit('No detector-capable RunPod after 4 attempts')
+          print('selected',winner)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              for k,v in winner.items(): f.write(f'{k}={v}\n')
+          PY
+
+      - name: Resolve Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          ACCESS_TOKEN=$(python3 - <<'PY'
+          import json, urllib.request
+          t=json.load(open('/tmp/youtube_token.json')); c=json.load(open('/tmp/youtube_credentials.json'))
+          data=json.dumps({'client_id':t.get('client_id') or c['installed']['client_id'],'client_secret':t.get('client_secret') or c['installed']['client_secret'],
+                           'refresh_token':t['refresh_token'],'grant_type':'refresh_token'}).encode()
+          r=urllib.request.urlopen(urllib.request.Request('https://oauth2.googleapis.com/token',data=data,headers={'Content-Type':'application/json'},method='POST'))
+          print(json.loads(r.read())['access_token'])
+          PY
+          )
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "$ACCESS_TOKEN" > /tmp/drive_access_token
+
+      - name: Stage exact sample_02 180s pair
+        env:
+          IP: ${{ steps.pod.outputs.ip }}
+          PORT: ${{ steps.pod.outputs.port }}
+        run: |
+          ACCESS_TOKEN=$(cat /tmp/drive_access_token)
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes root@$IP"
+          $SSH "apt-get update -qq && apt-get install -y -qq --no-install-recommends aria2 ffmpeg >/dev/null && mkdir -p /tmp/oev_phase1"
+          # Exact pinned files previously verified for GX010197-seed1384188843/sample_02/180s.
+          $SSH "aria2c -q -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_phase1 --out=left.mp4 'https://www.googleapis.com/drive/v3/files/1dWRcKX3TUF-WdNiWMbIT_p_1dI-EfbDq?alt=media'"
+          $SSH "aria2c -q -x 8 -s 8 --file-allocation=none --header='Authorization: Bearer $ACCESS_TOKEN' --dir=/tmp/oev_phase1 --out=right.mp4 'https://www.googleapis.com/drive/v3/files/1pgspDYygvAbmL4aP6fLYKcQysMnw4S-N?alt=media'"
+          $SSH "ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 /tmp/oev_phase1/left.mp4; ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 /tmp/oev_phase1/right.mp4"
+
+      - name: Upload detector evaluator
+        env:
+          IP: ${{ steps.pod.outputs.ip }}
+          PORT: ${{ steps.pod.outputs.port }}
+        run: |
+          SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes"
+          $SCP scripts/oev_soccernet_phase1.py runpod_soccernet_phase1_remote.sh root@$IP:/tmp/oev_phase1/
+
+      - name: Run full 180s pure detector A/B
+        id: phase1
+        env:
+          IP: ${{ steps.pod.outputs.ip }}
+          PORT: ${{ steps.pod.outputs.port }}
+        run: |
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=30 -o TCPKeepAlive=yes root@$IP"
+          start=$(date -u +%Y-%m-%dT%H:%M:%SZ); echo "start=$start" >> "$GITHUB_OUTPUT"
+          set +e
+          timeout 320m $SSH "chmod +x /tmp/oev_phase1/runpod_soccernet_phase1_remote.sh && export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}; stdbuf -oL -eL /tmp/oev_phase1/runpod_soccernet_phase1_remote.sh" | tee phase1_remote.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          end=$(date -u +%Y-%m-%dT%H:%M:%SZ); echo "end=$end" >> "$GITHUB_OUTPUT"; echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+      - name: Pull detector evidence
+        if: always()
+        env:
+          IP: ${{ steps.pod.outputs.ip }}
+          PORT: ${{ steps.pod.outputs.port }}
+          GPU: ${{ steps.pod.outputs.gpu }}
+          DRIVER: ${{ steps.pod.outputs.driver }}
+          START: ${{ steps.phase1.outputs.start }}
+          END: ${{ steps.phase1.outputs.end }}
+        run: |
+          mkdir -p soccernet_phase1_artifact
+          cp phase1_remote.log soccernet_phase1_artifact/ 2>/dev/null || true
+          cat > soccernet_phase1_artifact/run_metadata.txt <<META
+          workflow_run_id=${{ github.run_id }}
+          experiment_commit=${{ github.sha }}
+          gpu=$GPU
+          driver=$DRIVER
+          start=$START
+          end=$END
+          phase1_rc=${{ steps.phase1.outputs.rc }}
+          sample_set=GX010197-seed1384188843
+          sample_id=sample_02
+          duration_s=180
+          control=yolo26m
+          control_resolution=1920
+          control_threshold=0.10
+          stride=1
+          detection_cadence=every_frame
+          experiment=yolo-sn-ball-opt.pt
+          META
+          if [ -n "$IP" ] && [ -n "$PORT" ]; then
+            SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
+            SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15"
+            $SSH "test -d /tmp/oev_phase1/out && tar -czf /tmp/soccernet_phase1_out.tar.gz -C /tmp/oev_phase1 out" || true
+            $SCP root@$IP:/tmp/soccernet_phase1_out.tar.gz soccernet_phase1_artifact/ || true
+          fi
+
+      - name: Upload Phase 1 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soccernet-ball-detector-phase1-${{ github.run_id }}
+          path: soccernet_phase1_artifact/
+          retention-days: 30
+
+      - name: Terminate detector-only pod(s)
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, urllib.request, urllib.error
+          try: ids=[x.strip() for x in open('/tmp/soccernet_phase1_pods.txt') if x.strip()]
+          except FileNotFoundError: ids=[]
+          h={'Authorization':f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          failures=[]
+          for pid in dict.fromkeys(ids):
+              try:
+                  r=urllib.request.urlopen(urllib.request.Request(f'https://rest.runpod.io/v1/pods/{pid}',method='DELETE',headers=h),timeout=20)
+                  print('terminated',pid,r.status)
+              except urllib.error.HTTPError as e:
+                  if e.code==404: print('already absent',pid)
+                  else: failures.append((pid,str(e)))
+              except Exception as e: failures.append((pid,repr(e)))
+          if failures: raise SystemExit(f'cleanup failures: {failures}')
+          PY
+
+      - name: Assert Phase 1 completed
+        if: always()
+        run: |
+          if [ "${{ steps.phase1.outputs.rc }}" != "0" ]; then
+            echo "::error::Pure detector Phase 1 did not complete; artifact/logs preserved."
+            exit 1
+          fi
+          echo 'Pure detector Phase 1 completed successfully.'
