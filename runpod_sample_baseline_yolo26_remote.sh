@@ -31,7 +31,8 @@ python3 -m venv /tmp/yolo-highres-venv
     2>&1 | tee /tmp/oev_run/model_export.log
 )
 test -s "$MODEL_DIR/yolo26m.pt"
-test -s "$MODEL_DIR/yolo26m.onnx"\n
+test -s "$MODEL_DIR/yolo26m.onnx"
+
 /tmp/yolo-highres-venv/bin/python3 - "$MODEL_DIR/yolo26m.onnx" "$YOLO_RESOLUTION" <<'PY_SHAPE' | tee model_shape.log
 import sys
 import onnxruntime as ort
@@ -56,36 +57,34 @@ PY_SHAPE
 # Redirect only the nested accepted control's model source from the staged
 # 1920 ONNX to this locally exported 2560 ONNX. All behavior below the model
 # path remains the exact pinned accepted-v4 control.
-python3 - "$CONTROL" "$MODEL_DIR" <<'PY_CONTROL'
+python3 - "$CONTROL" <<'PY_CONTROL'
 from pathlib import Path
-import sys
-p = Path(sys.argv[1])
-model_dir = sys.argv[2]
+p = Path('/tmp/oev_run/runpod_yolo_resolution_control_1920.sh')
 s = p.read_text()
 marker = 'test -s "$V3_RUNNER"\n'
 if s.count(marker) != 1:
     raise SystemExit(f'expected one V3 marker, found {s.count(marker)}')
-inject = rf'''python3 - "$V3_RUNNER" <<'PY_HIGHRES_V3'
+inject = r"""python3 - "$V3_RUNNER" <<'PY_HIGHRES_V3'
 from pathlib import Path
 p = Path("/tmp/oev_run/runpod_sample_baseline_yolo26_v3_exact.sh")
 s = p.read_text()
-marker = 'test -s "$BASE_SCRIPT"\\n'
+marker = 'test -s "$BASE_SCRIPT"\n'
 if s.count(marker) != 1:
-    raise SystemExit(f"expected one base marker, found {{s.count(marker)}}")
+    raise SystemExit(f"expected one base marker, found {s.count(marker)}")
 hook = r'''python3 - "$BASE_SCRIPT" <<'PY_HIGHRES_MODEL_PATH'
 from pathlib import Path
 p = Path("/tmp/oev_run/runpod_sample_baseline_yolo26_base.sh")
 s = p.read_text()
 old = 'YOLO_MODEL="/runpod-volume/oev-runtime/models/${YOLO26_VARIANT}.onnx"'
-new = 'YOLO_MODEL="__MODEL_DIR__/${YOLO26_VARIANT}.onnx"'
+new = 'YOLO_MODEL="/tmp/oev_run/highres_model/${YOLO26_VARIANT}.onnx"'
 if s.count(old) != 1:
     raise SystemExit(f"expected one staged YOLO model path, found {s.count(old)}")
 p.write_text(s.replace(old, new, 1))
 PY_HIGHRES_MODEL_PATH
-'''.replace('__MODEL_DIR__', ''' + repr(model_dir) + r''')
+'''
 p.write_text(s.replace(marker, marker + hook, 1))
 PY_HIGHRES_V3
-'''
+"""
 s = s.replace(marker, marker + inject, 1)
 repls = {
     '"experiment": "yolo_resolution_control_1920_v4_stride1"':
