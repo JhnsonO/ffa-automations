@@ -1,0 +1,29 @@
+name: OEV — YOLO Highres Stage US-IL-1
+
+on:
+  push:
+    branches:
+      - oev/harness-yolo-highres-eur-is1
+    paths:
+      - 'oev/yolo_highres_populate_usil.request'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - name: Populate US-IL-1 OEV volume with canonical YOLO26 models
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/oev_dispatch_and_wait.py \
+            --workflow oev-populate-volume.yml \
+            --ref main \
+            --inputs-json '{"datacenter_id":"US-IL-1","reco_sha":"c8b0d74b537d192c7de8d2856de64620a82830cf","reco_repo":"https://github.com/JhnsonO/video-stitcher","ultralytics_version":"8.4.118","force_rebuild":"false"}' \
+            --max-attempts 1 \
+            --timeout-s 5400
