@@ -1,0 +1,162 @@
+name: OEV — YOLO Highres Harness (US-IL-1)
+
+on:
+  push:
+    branches:
+      - oev/harness-yolo-highres-eur-is1
+    paths:
+      - 'oev/harness_request.json'
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: oev-yolo-highres-harness-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Dispatch, wait, compare
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve isolated US-IL-1 request
+        id: resolve
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          request = json.loads(Path('oev/harness_request.json').read_text())
+          config = json.loads(Path('oev/harness_profiles.json').read_text())
+          if request.get('mode') != 'run':
+              raise SystemExit('isolated highres harness requires mode=run')
+          profile_name = request.get('profile') or 'sample_02_180_quality'
+          profile = config['profiles'][profile_name]
+          dispatch = dict(profile['dispatch'])
+          dispatch['datacenter'] = 'US-IL-1'
+          reference = request.get('reference_run_id_override') or profile.get('reference_run_id') or 0
+          experiment_ref = request.get('experiment_ref')
+          if not experiment_ref:
+              raise SystemExit('experiment_ref is required')
+          print(f"profile={profile_name}")
+          print(f"workflow={config['baseline_workflow']}")
+          print(f"experiment_ref={experiment_ref}")
+          print(f"reference_run_id={int(reference)}")
+          print(f"max_attempts={int(profile.get('capacity_retry_max', 3))}")
+          print('dispatch=' + json.dumps(dispatch, separators=(',', ':')))
+          PY
+
+      - name: Dispatch proven RunPod workflow and wait
+        id: dispatch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUTS_JSON: ${{ steps.resolve.outputs.dispatch }}
+          WORKFLOW: ${{ steps.resolve.outputs.workflow }}
+          EXPERIMENT_REF: ${{ steps.resolve.outputs.experiment_ref }}
+          MAX_ATTEMPTS: ${{ steps.resolve.outputs.max_attempts }}
+        run: |
+          python3 scripts/oev_dispatch_and_wait.py \
+            --workflow "$WORKFLOW" \
+            --ref "$EXPERIMENT_REF" \
+            --inputs-json "$INPUTS_JSON" \
+            --max-attempts "$MAX_ATTEMPTS" \
+            --timeout-s 7200 \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Resolve candidate artifact name
+        id: names
+        env:
+          INPUTS_JSON: ${{ steps.resolve.outputs.dispatch }}
+          CANDIDATE_RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          d = json.loads(os.environ['INPUTS_JSON'])
+          run_id = os.environ['CANDIDATE_RUN_ID']
+          sample = d['sample_id']
+          duration = d['duration_s']
+          print(f"candidate_artifact=oev-sample-baseline-{sample}-{duration}s-{run_id}")
+          print(f"sample_id={sample}")
+          print(f"duration_s={duration}")
+          PY
+
+      - name: Download candidate artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+          ARTIFACT: ${{ steps.names.outputs.candidate_artifact }}
+        run: |
+          mkdir -p candidate
+          gh run download "$RUN_ID" --name "$ARTIFACT" --dir candidate
+          test -s candidate/events.jsonl
+          test -s candidate/followcam.mp4
+
+      - name: Download reference artifact if available
+        id: reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REFERENCE_RUN_ID: ${{ steps.resolve.outputs.reference_run_id }}
+          SAMPLE_ID: ${{ steps.names.outputs.sample_id }}
+          DURATION_S: ${{ steps.names.outputs.duration_s }}
+        run: |
+          if [ -z "$REFERENCE_RUN_ID" ] || [ "$REFERENCE_RUN_ID" = "0" ]; then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          artifact="oev-sample-baseline-${SAMPLE_ID}-${DURATION_S}s-${REFERENCE_RUN_ID}"
+          mkdir -p reference
+          if gh run download "$REFERENCE_RUN_ID" --name "$artifact" --dir reference && [ -s reference/events.jsonl ]; then
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Analyse candidate vs reference
+        env:
+          PROFILE: ${{ steps.resolve.outputs.profile }}
+          REFERENCE_AVAILABLE: ${{ steps.reference.outputs.available }}
+        run: |
+          mkdir -p oev-report
+          args=(
+            --events candidate/events.jsonl
+            --config oev/harness_profiles.json
+            --profile-name "$PROFILE"
+            --json-out oev-report/metrics.json
+            --markdown-out oev-report/summary.md
+          )
+          [ -s candidate/stitch.log ] && args+=(--stitch-log candidate/stitch.log)
+          if [ "$REFERENCE_AVAILABLE" = "true" ]; then
+            args+=(--reference-events reference/events.jsonl)
+            [ -s reference/stitch.log ] && args+=(--reference-stitch-log reference/stitch.log)
+          fi
+          python3 scripts/oev_analyze_events.py "${args[@]}"
+          cat oev-report/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record run identity
+        env:
+          CANDIDATE_RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+          DISPATCH_ATTEMPTS: ${{ steps.dispatch.outputs.attempts }}
+          REFERENCE_RUN_ID: ${{ steps.resolve.outputs.reference_run_id }}
+          EXPERIMENT_REF: ${{ steps.resolve.outputs.experiment_ref }}
+          PROFILE: ${{ steps.resolve.outputs.profile }}
+        run: |
+          cat > oev-report/run_identity.json <<JSON
+          {
+            "profile": "$PROFILE",
+            "experiment_ref": "$EXPERIMENT_REF",
+            "datacenter": "US-IL-1",
+            "candidate_run_id": $CANDIDATE_RUN_ID,
+            "reference_run_id": $REFERENCE_RUN_ID,
+            "dispatch_attempts": $DISPATCH_ATTEMPTS
+          }
+          JSON
+
+      - name: Upload isolated harness report
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-yolo-highres-harness-report-${{ steps.dispatch.outputs.run_id }}
+          path: oev-report/
+          retention-days: 30
