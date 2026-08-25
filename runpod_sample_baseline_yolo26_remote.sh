@@ -1,154 +1,109 @@
 #!/usr/bin/env bash
-# TEST-ONLY controlled YOLO inference-resolution experiment.
-# Base runner is pinned to the exact main HEAD this branch was created from.
-# Behavioural delta: YOLO26m static ONNX input 1920x1920 -> 2560x2560 only.
+# CONTROL for experiment/yolo-highres-01.
+# Accepted v4 stride-1 sample_02 runner, current workflow/bootstrap/ReCo bridge.
+# Passive nvidia-smi sampling is instrumentation only.
 set -euo pipefail
 cd /tmp/oev_run
 
-BASE_FFA_SHA="21184152f96e9d6938fb02e849d6b9bc0c64d387"
-BASE_RUNNER="/tmp/oev_run/runpod_sample_baseline_yolo26_1920_control.sh"
-HIGHRES=2560
-ULTRALYTICS_VERSION="8.4.118"
+V3_FFA_SHA="c91314eaca8e2cbb0b6813f6e8204e4da23f408c"
+V3_RUNNER="/tmp/oev_run/runpod_sample_baseline_yolo26_v3_exact.sh"
 
 curl -fsSL \
-  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${BASE_FFA_SHA}/runpod_sample_baseline_yolo26_remote.sh" \
-  -o "$BASE_RUNNER"
-test -s "$BASE_RUNNER"
+  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${V3_FFA_SHA}/runpod_sample_baseline_yolo26_remote.sh" \
+  -o "$V3_RUNNER"
+test -s "$V3_RUNNER"
 
-python3 - "$BASE_RUNNER" <<'PY'
+# Instrument the exact nested base runner without changing detector/tracker/panner behavior.
+python3 - "$V3_RUNNER" <<'PY_INSTRUMENT'
 from pathlib import Path
 import sys
-
 p = Path(sys.argv[1])
 s = p.read_text()
-old = r''': "${YOLO26_VARIANT:=yolo26m}"
-YOLO_MODEL="/runpod-volume/oev-runtime/models/${YOLO26_VARIANT}.onnx"
-if [ ! -s "$YOLO_MODEL" ]; then
-  echo "FATAL: ${YOLO_MODEL} not found on attached volume -- run oev-populate-volume.yml for this datacenter first, no fresh-export fallback for YOLO26" | tee -a segment.log
-  exit 1
-fi
-echo "Using YOLO model: $YOLO_MODEL (YOLO26 A/B variant, no re-export)" | tee -a segment.log
-cp "$YOLO_MODEL" "/tmp/oev_run/${YOLO26_VARIANT}.onnx"
-'''
-new = r''': "${YOLO26_VARIANT:=yolo26m}"
-if [ "$YOLO26_VARIANT" != "yolo26m" ]; then
-  echo "FATAL: resolution experiment is pinned to yolo26m; got ${YOLO26_VARIANT}" | tee -a segment.log
-  exit 1
-fi
-CONTROL_MODEL="/runpod-volume/oev-runtime/models/yolo26m.onnx"
-if [ ! -s "$CONTROL_MODEL" ]; then
-  echo "FATAL: canonical YOLO26m control model missing: $CONTROL_MODEL" | tee -a segment.log
-  exit 1
-fi
-
-echo "=== YOLO resolution experiment model preparation ===" | tee -a segment.log
-echo "experiment_variable=inference_resolution" | tee -a segment.log
-echo "control_resolution=1920x1920" | tee -a segment.log
-echo "highres_resolution=2560x2560" | tee -a segment.log
-echo "ultralytics_version=8.4.118" | tee -a segment.log
-sha256sum "$CONTROL_MODEL" | sed 's/^/control_onnx_sha256=/' | tee -a segment.log
-stat -c 'control_onnx_bytes=%s' "$CONTROL_MODEL" | tee -a segment.log
-
-EXPORT_DIR="/tmp/oev_yolo2560_export"
-EXPORT_VENV="/tmp/oev_yolo2560_venv"
-rm -rf "$EXPORT_DIR" "$EXPORT_VENV"
-mkdir -p "$EXPORT_DIR"
-python3 -m venv "$EXPORT_VENV"
-"$EXPORT_VENV/bin/pip" install -q --upgrade pip
-"$EXPORT_VENV/bin/pip" install -q "ultralytics==8.4.118" onnxruntime-gpu
-export_start=$(date +%s)
-(
-  cd "$EXPORT_DIR"
-  "$EXPORT_VENV/bin/yolo" export model=yolo26m.pt format=onnx imgsz=2560
-)
-export_end=$(date +%s)
-HIGHRES_MODEL="$EXPORT_DIR/yolo26m.onnx"
-if [ ! -s "$HIGHRES_MODEL" ]; then
-  echo "FATAL: 2560 YOLO26m export missing: $HIGHRES_MODEL" | tee -a segment.log
-  exit 1
-fi
-if [ ! -s "$EXPORT_DIR/yolo26m.pt" ]; then
-  echo "FATAL: source yolo26m.pt missing after export" | tee -a segment.log
-  exit 1
-fi
-sha256sum "$EXPORT_DIR/yolo26m.pt" | sed 's/^/source_pt_sha256=/' | tee -a segment.log
-sha256sum "$HIGHRES_MODEL" | sed 's/^/highres_onnx_sha256=/' | tee -a segment.log
-stat -c 'highres_onnx_bytes=%s' "$HIGHRES_MODEL" | tee -a segment.log
-echo "highres_model_export_seconds=$((export_end-export_start))" | tee -a segment.log
-
-CONTROL_MODEL="$CONTROL_MODEL" HIGHRES_MODEL="$HIGHRES_MODEL" "$EXPORT_VENV/bin/python3" - <<'PYSHAPE' | tee -a segment.log
-import os
-import onnxruntime as ort
-for label, path in [('control', os.environ['CONTROL_MODEL']), ('highres', os.environ['HIGHRES_MODEL'])]:
-    s = ort.InferenceSession(path, providers=['CPUExecutionProvider'])
-    print(f"{label}_onnx_input_shape={s.get_inputs()[0].shape}")
-PYSHAPE
-
-cp "$HIGHRES_MODEL" "/tmp/oev_run/yolo26m.onnx"
-echo "Using YOLO model: /tmp/oev_run/yolo26m.onnx (same YOLO26m weights, test-only 2560 static inference input)" | tee -a segment.log
-'''
+marker = 'test -s "$BASE_SCRIPT"\n'
+if s.count(marker) != 1:
+    raise SystemExit(f"expected one V3 base-script marker, found {s.count(marker)}")
+inject = r'''python3 - "$BASE_SCRIPT" <<'PY_BASE_INSTRUMENT'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+old = 'stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log\nstitch_rc=${PIPESTATUS[0]}\n'
+new = '''GPU_TELEMETRY=gpu_telemetry.csv\necho "timestamp_ms,gpu_util_pct,memory_used_mib,memory_total_mib" > "$GPU_TELEMETRY"\n( while true; do\n    ts=$(date +%s%3N)\n    vals=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ') || true\n    [ -n "$vals" ] && echo "$ts,$vals" >> "$GPU_TELEMETRY"\n    sleep 1\n  done ) &\nGPU_MON_PID=$!\nstdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log\nstitch_rc=${PIPESTATUS[0]}\nkill "$GPU_MON_PID" 2>/dev/null || true\nwait "$GPU_MON_PID" 2>/dev/null || true\n'''
 if s.count(old) != 1:
-    raise SystemExit(f"expected exactly one canonical YOLO26 model block, found {s.count(old)}")
-s = s.replace(old, new, 1)
+    raise SystemExit(f"expected one base stitch invocation, found {s.count(old)}")
+p.write_text(s.replace(old, new, 1))
+PY_BASE_INSTRUMENT
+'''
+p.write_text(s.replace(marker, marker + inject, 1))
+PY_INSTRUMENT
 
-# Add passive GPU/VRAM telemetry around the unchanged Reco stitch command.
-old_run = 'stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log\nstitch_rc=${PIPESTATUS[0]}\n'
-new_run = '''GPU_TELEMETRY=gpu_telemetry.csv\necho "timestamp_ms,gpu_util_pct,memory_used_mib,memory_total_mib" > "$GPU_TELEMETRY"\n( while true; do\n    ts=$(date +%s%3N)\n    vals=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ') || true\n    [ -n "$vals" ] && echo "$ts,$vals" >> "$GPU_TELEMETRY"\n    sleep 1\n  done ) &\nGPU_MON_PID=$!\nstdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log\nstitch_rc=${PIPESTATUS[0]}\nkill "$GPU_MON_PID" 2>/dev/null || true\nwait "$GPU_MON_PID" 2>/dev/null || true\n'''
-if s.count(old_run) != 1:
-    raise SystemExit(f"expected exactly one canonical stitch invocation, found {s.count(old_run)}")
-s = s.replace(old_run, new_run, 1)
-
+# Exact accepted v4 stride-1 adaptation from experiment/sample02-v4-stride1-control.
+python3 - "$V3_RUNNER" <<'PY_V4'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+replacements = {
+    "stable_ball_guard=v3_trajectory_hysteresis_accel_limit":
+        "stable_ball_guard=v4_trajectory_hysteresis_accel_limit_micro_damping",
+    "TEST_ONLY_PANNER_PROFILE=lookahead_ball_containment_03 cluster_alpha=${CLUSTER_ALPHA_OVERRIDE:-unset} fixed_fov=44.0 lookahead=${LOOKAHEAD:-unset} innovation_gate_deg=3.0 switch_confirm_frames=18 max_yaw_step_deg=0.75 yaw_accel_deg_per_frame2=0.08":
+        "TEST_ONLY_PANNER_PROFILE=lookahead_ball_containment_04_micro_damping cluster_alpha=${CLUSTER_ALPHA_OVERRIDE:-unset} fixed_fov=44.0 lookahead=${LOOKAHEAD:-unset} innovation_gate_deg=3.0 switch_confirm_frames=18 max_yaw_step_deg=0.75 yaw_accel_deg_per_frame2=0.08 micro_zone_deg=4.0 micro_hold_deg=0.35",
+    "FATAL: events.jsonl missing; cannot measure v3 experiment":
+        "FATAL: events.jsonl missing; cannot measure v4 micro-damping experiment",
+    '"experiment": "lookahead_ball_containment_03_trajectory_hysteresis_accel_limit"':
+        '"experiment": "yolo_resolution_control_1920_v4_stride1"',
+    '"definition": "upstream stabilized WorldState ball + post-smoothing containment + acceleration-limited final camera"':
+        '"definition": "accepted v4 stride1 camera behavior; YOLO26m 1920 control"',
+}
+for old, new in replacements.items():
+    if old not in s:
+        raise SystemExit(f"v4 runner marker not found: {old}")
+    s = s.replace(old, new)
+old_gate = '''if metrics["camera_max_abs_yaw_accel_deg_per_frame2"] > 0.30:
+    raise SystemExit(
+        f"FATAL: yaw acceleration change {metrics['camera_max_abs_yaw_accel_deg_per_frame2']:.3f} deg/frame^2 exceeds 0.30"
+    )'''
+new_gate = '''if metrics["camera_p99_abs_yaw_accel_deg_per_frame2"] > 0.20:
+    raise SystemExit(
+        f"FATAL: p99 yaw acceleration {metrics['camera_p99_abs_yaw_accel_deg_per_frame2']:.3f} deg/frame^2 exceeds 0.20"
+    )'''
+if s.count(old_gate) != 1:
+    raise SystemExit(f"expected one v3 acceleration gate, found {s.count(old_gate)}")
+s = s.replace(old_gate, new_gate)
+s += '''\nif [ -s containment_metrics.json ]; then\n  {\n    echo "--- yolo resolution control v4 stride1 metrics ---"\n    cat containment_metrics.json\n  } >> acceptance.log\nfi\n'''
 p.write_text(s)
-print("Prepared exact-main YOLO26m runner with inference resolution as the sole behavioural delta: 1920 -> 2560")
-PY
+PY_V4
 
-chmod +x "$BASE_RUNNER"
-echo "TEST_ONLY_RUNNER_DELTA=yolo26m_inference_resolution_1920_to_2560 base_main_sha=${BASE_FFA_SHA}"
+chmod +x "$V3_RUNNER"
+echo "TEST_ONLY_RUNNER_DELTA=yolo_resolution_control_1920 accepted_v4_stride1=1 base_v3_sha=${V3_FFA_SHA}"
 set +e
-"$BASE_RUNNER"
+"$V3_RUNNER"
 base_rc=$?
 set -e
 
-# The canonical workflow only preserves fixed log names. Fold the passive
-# nvidia-smi sample summary into acceptance.log so compute evidence survives
-# pod teardown without changing any detector/tracker/panner behavior.
 if [ -s gpu_telemetry.csv ]; then
   set +e
   python3 - <<'PYGPU' | tee -a acceptance.log
 import csv, math, statistics
-rows = []
+rows=[]
 with open('gpu_telemetry.csv', newline='') as f:
     for row in csv.DictReader(f):
-        try:
-            rows.append((
-                float(row['gpu_util_pct']),
-                float(row['memory_used_mib']),
-                float(row['memory_total_mib']),
-            ))
-        except (KeyError, TypeError, ValueError):
-            pass
-print('--- highres passive GPU telemetry ---')
+        try: rows.append((float(row['gpu_util_pct']), float(row['memory_used_mib']), float(row['memory_total_mib'])))
+        except (KeyError, TypeError, ValueError): pass
+print('--- passive GPU telemetry ---')
 print(f'gpu_samples={len(rows)}')
 if rows:
-    utils = [r[0] for r in rows]
-    mem = [r[1] for r in rows]
-    total = rows[0][2]
-    def pct(xs, p):
-        ys = sorted(xs)
-        if len(ys) == 1:
-            return ys[0]
-        pos = (len(ys)-1) * p
-        lo, hi = math.floor(pos), math.ceil(pos)
-        if lo == hi:
-            return ys[lo]
-        return ys[lo] + (ys[hi]-ys[lo]) * (pos-lo)
-    print(f'gpu_util_mean_pct={statistics.fmean(utils):.2f}')
-    print(f'gpu_util_p95_pct={pct(utils, 0.95):.2f}')
-    print(f'gpu_util_max_pct={max(utils):.2f}')
-    print(f'vram_mean_mib={statistics.fmean(mem):.1f}')
-    print(f'vram_p95_mib={pct(mem, 0.95):.1f}')
-    print(f'vram_max_mib={max(mem):.1f}')
-    print(f'vram_total_mib={total:.1f}')
+    def pct(xs,p):
+        ys=sorted(xs); pos=(len(ys)-1)*p; lo=math.floor(pos); hi=math.ceil(pos)
+        return ys[lo] if lo==hi else ys[lo]+(ys[hi]-ys[lo])*(pos-lo)
+    u=[r[0] for r in rows]; m=[r[1] for r in rows]
+    print(f'gpu_util_mean_pct={statistics.fmean(u):.2f}')
+    print(f'gpu_util_p95_pct={pct(u,.95):.2f}')
+    print(f'gpu_util_max_pct={max(u):.2f}')
+    print(f'vram_mean_mib={statistics.fmean(m):.1f}')
+    print(f'vram_p95_mib={pct(m,.95):.1f}')
+    print(f'vram_max_mib={max(m):.1f}')
+    print(f'vram_total_mib={rows[0][2]:.1f}')
 PYGPU
   set -e
 fi
