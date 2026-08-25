@@ -22,18 +22,31 @@ s = p.read_text()
 marker = 'test -s "$BASE_SCRIPT"\n'
 if s.count(marker) != 1:
     raise SystemExit(f"expected one V3 base-script marker, found {s.count(marker)}")
-inject = r'''python3 - "$BASE_SCRIPT" <<'PY_BASE_INSTRUMENT'
+inject = r"""python3 - "$BASE_SCRIPT" <<'PY_BASE_INSTRUMENT'
 from pathlib import Path
 import sys
 p = Path(sys.argv[1])
 s = p.read_text()
 old = 'stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log\nstitch_rc=${PIPESTATUS[0]}\n'
-new = '''GPU_TELEMETRY=gpu_telemetry.csv\necho "timestamp_ms,gpu_util_pct,memory_used_mib,memory_total_mib" > "$GPU_TELEMETRY"\n( while true; do\n    ts=$(date +%s%3N)\n    vals=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ') || true\n    [ -n "$vals" ] && echo "$ts,$vals" >> "$GPU_TELEMETRY"\n    sleep 1\n  done ) &\nGPU_MON_PID=$!\nstdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log\nstitch_rc=${PIPESTATUS[0]}\nkill "$GPU_MON_PID" 2>/dev/null || true\nwait "$GPU_MON_PID" 2>/dev/null || true\n'''
+new = r'''GPU_TELEMETRY=gpu_telemetry.csv
+echo "timestamp_ms,gpu_util_pct,memory_used_mib,memory_total_mib" > "$GPU_TELEMETRY"
+( while true; do
+    ts=$(date +%s%3N)
+    vals=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ') || true
+    [ -n "$vals" ] && echo "$ts,$vals" >> "$GPU_TELEMETRY"
+    sleep 1
+  done ) &
+GPU_MON_PID=$!
+stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
+stitch_rc=${PIPESTATUS[0]}
+kill "$GPU_MON_PID" 2>/dev/null || true
+wait "$GPU_MON_PID" 2>/dev/null || true
+'''
 if s.count(old) != 1:
     raise SystemExit(f"expected one base stitch invocation, found {s.count(old)}")
 p.write_text(s.replace(old, new, 1))
 PY_BASE_INSTRUMENT
-'''
+"""
 p.write_text(s.replace(marker, marker + inject, 1))
 PY_INSTRUMENT
 
