@@ -9,7 +9,7 @@
       "reference_run_id": 32011232949,
       "capacity_retry_max": 3,
       "dispatch": {
-        "datacenter": "EU-RO-1",
+        "datacenter": "EUR-IS-1",
         "sample_id": "sample_02",
         "duration_s": "180",
         "sample_set_id": "GX010197-seed1384188843",
