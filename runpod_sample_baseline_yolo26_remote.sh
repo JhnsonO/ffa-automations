@@ -22,6 +22,13 @@
 # Vast.ai equivalent). No tracking/panner/threshold/render changes here
 # -- this ticket is baseline measurement only.
 #
+# EXPERIMENT BRANCH ONLY (experiment/specialised-ball-detector-01):
+# the detector weights are replaced with mobadam/football-player-detection,
+# a football-fine-tuned YOLO26l. The weights are exported at the same 1920
+# detector input used by the canonical YOLO26m control. Model metadata maps
+# its Player class to `person`, because Reco's existing field-mode resolver
+# expects that label; no tracker/panner settings are changed.
+#
 # Linux shared-buffer GPU path is production-enabled as of 2026-08-15.
 # Reco main f27cbb6d replaces the broken direct shared-VkImage path with
 # CUDA-VMM shared VkBuffers -> Vulkan GPU buffer-to-texture copies.
@@ -49,7 +56,7 @@
 #   events.jsonl      - pipeline event trace (present if stitch ran)
 #   followcam.mp4     - follow-cam output (only if stitch succeeds)
 #
-# Exit codes: 1=segment-selection failure, 2=calibrate/field_roi failure,
+# Exit codes: 1=segment-selection/model-prep failure, 2=calibrate/field_roi failure,
 # 3=stitch command failure, 4=stitch reported success but output missing,
 # 5=acceptance failure (tracking not confirmed active, OR -- RunPod-
 # specific -- zero-copy/NVDEC/CUDAExecutionProvider evidence missing from
@@ -97,21 +104,86 @@ fi
   echo "No re-trimming applied -- full pre-staged sample clip is the test segment."
 } | tee -a segment.log
 
-# --- YOLO model: YOLO26 A/B variant. Unlike the YOLOv8n baseline script,
-# this NEVER exports fresh -- it requires the model already staged on the
-# attached network volume (built by oev-populate-volume.yml, confirmed
-# present on EU-RO-1 volume 0hta9vhuue at reco_sha=53fe10f548d5767ad94ef
-# 66aeaedf2d8c7161f27, run 31747259271). Hard-fails if missing rather than
-# silently falling back to YOLOv8n, so a missing-model run can never be
-# mistaken for a real YOLO26 result. ---
-: "${YOLO26_VARIANT:=yolo26m}"
-YOLO_MODEL="/runpod-volume/oev-runtime/models/${YOLO26_VARIANT}.onnx"
-if [ ! -s "$YOLO_MODEL" ]; then
-  echo "FATAL: ${YOLO_MODEL} not found on attached volume -- run oev-populate-volume.yml for this datacenter first, no fresh-export fallback for YOLO26" | tee -a segment.log
+# --- Detector-only experiment: football-fine-tuned YOLO26l. ---
+# Control exports YOLO26 at 1920, so this experiment exports the specialised
+# weights at exactly 1920 as well. Reco's detector/tracker/panner are untouched.
+# The upstream model labels are Ball/Player/Referee/Goalkeeper; Reco field mode
+# resolves `person`, so the metadata-only class mapping renames Player->person.
+SPECIALISED_MODEL_URL="https://huggingface.co/mobadam/football-player-detection/resolve/main/player_detector.pt?download=true"
+SPECIALISED_PT_SHA256="05ee5d6c1ed37d92b0425a4d98cbb656bd71869860615590dbfaae913d75087f"
+SPECIALISED_MODEL_CACHE="/runpod-volume/oev-runtime/models/specialised-football-yolo26l-1920.onnx"
+SPECIALISED_PT="/tmp/specialised-football-yolo26l.pt"
+LOCAL_MODEL_NAME="specialised-football-yolo26l-1920.onnx"
+
+if [ ! -s "$SPECIALISED_MODEL_CACHE" ]; then
+  echo "Specialised model cache missing; downloading pinned weights and exporting at 1920." | tee -a segment.log
+  curl -fL --retry 3 --retry-delay 2 "$SPECIALISED_MODEL_URL" -o "$SPECIALISED_PT"
+  if [ ! -s "$SPECIALISED_PT" ]; then
+    echo "FATAL: specialised detector weights download failed" | tee -a segment.log
+    exit 1
+  fi
+  echo "${SPECIALISED_PT_SHA256}  ${SPECIALISED_PT}" | sha256sum -c - | tee -a segment.log
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+    echo "FATAL: specialised detector weights SHA256 mismatch" | tee -a segment.log
+    exit 1
+  fi
+
+  python3 -m venv /tmp/specialised-yolo-venv
+  /tmp/specialised-yolo-venv/bin/pip install -q --upgrade pip
+  /tmp/specialised-yolo-venv/bin/pip install -q "ultralytics==8.4.118" onnx onnxruntime
+  /tmp/specialised-yolo-venv/bin/python3 - <<'PYMODEL' 2>&1 | tee -a segment.log
+from pathlib import Path
+from ultralytics import YOLO
+import ast
+import onnxruntime as ort
+
+pt = Path('/tmp/specialised-football-yolo26l.pt')
+out = Path('/runpod-volume/oev-runtime/models/specialised-football-yolo26l-1920.onnx')
+model = YOLO(str(pt))
+original_names = dict(model.names)
+print(f"specialised detector original classes: {original_names}")
+expected = {0: 'Ball', 1: 'Player', 2: 'Referee', 3: 'Goalkeeper'}
+normalised = {int(k): str(v).lower() for k, v in original_names.items()}
+assert normalised == {k: v.lower() for k, v in expected.items()}, (
+    f"unexpected specialised model classes: {original_names}"
+)
+# Metadata-only mapping required by Reco field-mode class resolver.
+model.model.names = {0: 'ball', 1: 'person', 2: 'referee', 3: 'goalkeeper'}
+exported = Path(model.export(format='onnx', imgsz=1920, dynamic=False))
+if exported.resolve() != out.resolve():
+    out.write_bytes(exported.read_bytes())
+
+sess = ort.InferenceSession(str(out), providers=['CPUExecutionProvider'])
+shape = list(sess.get_inputs()[0].shape)
+meta = sess.get_modelmeta().custom_metadata_map
+raw_names = meta.get('names', '')
+names = ast.literal_eval(raw_names) if raw_names else {}
+names = {int(k): str(v).lower() for k, v in names.items()}
+print(f"specialised detector exported input shape: {shape}")
+print(f"specialised detector exported classes: {names}")
+print(f"specialised detector output shapes: {[list(o.shape) for o in sess.get_outputs()]}")
+assert shape == [1, 3, 1920, 1920], f"inference resolution changed: {shape}"
+assert names.get(0) == 'ball' and names.get(1) == 'person', f"class mapping invalid: {names}"
+assert len(sess.get_outputs()) == 1, "specialised export is not the single-output YOLO26 path Reco expects"
+out_shape = list(sess.get_outputs()[0].shape)
+assert len(out_shape) == 3 and out_shape[-1] == 6, f"unexpected YOLO26 output layout: {out_shape}"
+print('specialised detector validation: PASS')
+PYMODEL
+  model_prep_rc=${PIPESTATUS[0]}
+  if [ "$model_prep_rc" -ne 0 ] || [ ! -s "$SPECIALISED_MODEL_CACHE" ]; then
+    echo "FATAL: specialised detector export/metadata/input validation failed" | tee -a segment.log
+    exit 1
+  fi
+else
+  echo "Using cached specialised detector export: $SPECIALISED_MODEL_CACHE" | tee -a segment.log
+fi
+
+cp "$SPECIALISED_MODEL_CACHE" "/tmp/oev_run/${LOCAL_MODEL_NAME}"
+if [ ! -s "/tmp/oev_run/${LOCAL_MODEL_NAME}" ]; then
+  echo "FATAL: specialised detector ONNX missing after staging" | tee -a segment.log
   exit 1
 fi
-echo "Using YOLO model: $YOLO_MODEL (YOLO26 A/B variant, no re-export)" | tee -a segment.log
-cp "$YOLO_MODEL" "/tmp/oev_run/${YOLO26_VARIANT}.onnx"
+echo "EXPERIMENT detector: ${LOCAL_MODEL_NAME} (football-fine-tuned YOLO26l, input=1920, ball=0, person=1)" | tee -a segment.log
 
 echo "=== calibrate.log: reco calibrate ===" | tee calibrate.log
 # Same pinned Hero10 Wide profile as the Vast follow-cam script (both
@@ -218,7 +290,7 @@ echo "=== stitch.log: reco stitch (field follow-cam, l-shape, shared-buffer GPU 
 # green/corrupt direct-shared-VkImage failure.
 : "${LOOKAHEAD:=1.5}"
 STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
-  --model "${YOLO26_VARIANT}.onnx"
+  --model "${LOCAL_MODEL_NAME}"
   --tracking field
   --panner-preset broadcast
   --lookahead "${LOOKAHEAD}"
@@ -243,7 +315,7 @@ echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch.log
 stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
 stitch_rc=${PIPESTATUS[0]}
 if [ "$stitch_rc" -ne 0 ]; then
-  echo "FATAL: reco stitch failed (exit $stitch_rc), see stitch.log (match.json/${YOLO26_VARIANT}.onnx are still valid)" | tee -a stitch.log
+  echo "FATAL: reco stitch failed (exit $stitch_rc), see stitch.log (${LOCAL_MODEL_NAME} is still valid)" | tee -a stitch.log
   exit 3
 fi
 if [ ! -f followcam.mp4 ]; then
