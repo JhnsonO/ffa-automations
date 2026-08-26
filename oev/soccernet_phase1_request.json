@@ -9,5 +9,5 @@
   "resolution": 1920,
   "stride": 1,
   "detection_cadence": "every_frame",
-  "nonce": "detector-only-20260825-1348"
+  "nonce": "detector-only-20260826-protobuf-fix"
 }
