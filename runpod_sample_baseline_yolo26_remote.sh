@@ -90,7 +90,6 @@ flow_method=pyramidal Lucas-Kanade + forward/backward consistency + median local
 comparison_video=CONTROL left | EXPERIMENT right
 EOF
 
-# Accepted detector already staged on the persistent network volume.
 YOLO_MODEL="/runpod-volume/oev-runtime/models/${EXPECTED_MODEL}.onnx"
 if [ ! -s "$YOLO_MODEL" ]; then
   echo "FATAL: $YOLO_MODEL missing" | tee -a segment.log
@@ -98,8 +97,6 @@ if [ ! -s "$YOLO_MODEL" ]; then
 fi
 cp "$YOLO_MODEL" "$EXPECTED_MODEL.onnx"
 
-# Reconstruct the accepted panner overlay explicitly rather than trusting an
-# old prompt/default. These values are the canonical main harness profile.
 cat > panner_overlay.json <<'JSON'
 {
   "cluster_alpha": 0.08,
@@ -116,9 +113,6 @@ cat > panner_overlay.json <<'JSON'
 }
 JSON
 
-# Build one experiment binary containing (1) the already-accepted containment
-# patch and (2) an inert flow hook. The hook is empty for control because the
-# OEV_FLOW_BRIDGE_FILE environment variable is unset in that process.
 echo "=== Applying accepted containment + inert experiment hook ===" | tee patch.log
 curl -fsSL \
   "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${CONTAINMENT_COMMIT}/experiments/apply_ball_containment.py" \
@@ -128,9 +122,6 @@ curl -fsSL \
   -o /tmp/apply_optical_flow_bridge_hook.py
 python3 /tmp/apply_ball_containment.py 2>&1 | tee -a patch.log
 python3 /tmp/apply_optical_flow_bridge_hook.py 2>&1 | tee -a patch.log
-# Bootstrap installs rustup/cargo under /root/.cargo, but this workload runs in
-# a fresh SSH shell. Restore that proven toolchain environment before rebuilding
-# the experiment-only patched Reco binary.
 . /root/.cargo/env
 cd "$RECO_SRC"
 git diff --check 2>&1 | tee -a /tmp/oev_run/patch.log
@@ -141,7 +132,6 @@ if [ ! -x "$RECO_BIN" ]; then
   exit 2
 fi
 
-# Shared calibration, identical for A and B.
 echo "=== calibrate.log: shared calibration ===" | tee calibrate.log
 LENS_PROFILE_URL="https://raw.githubusercontent.com/gyroflow/lens_profiles/main/GoPro/GoPro_HERO10%20Black_Wide_16by9.json"
 curl -fsSL "$LENS_PROFILE_URL" -o hero10_wide_16by9.json
@@ -176,7 +166,6 @@ COMMON_ARGS=(stitch left.mp4 right.mp4 -c match.json
   --end-time "$WINDOW_END"
   --width 1920 --height 1080)
 
-# A. CONTROL. Same patched binary, but flow hook inert/unset.
 echo "=== CONTROL 125s-155s ===" | tee control_stitch.log
 unset OEV_FLOW_BRIDGE_FILE || true
 stdbuf -oL -eL "$RECO_BIN" "${COMMON_ARGS[@]}" \
@@ -187,10 +176,11 @@ if [ ! -s control.mp4 ] || [ ! -s control_events.jsonl ]; then
   exit 3
 fi
 
-# Build the causal flow continuation from control telemetry + original pixels.
-# OpenCV is experiment-only tooling and does not alter detector/runtime config.
+# Ubuntu 24.04 enforces PEP 668. This is a disposable experiment pod, so allow
+# this one pinned experiment-only wheel to install into the system interpreter.
 if ! python3 -c 'import cv2' >/dev/null 2>&1; then
-  python3 -m pip install -q --disable-pip-version-check opencv-python-headless==4.10.0.84
+  python3 -m pip install -q --disable-pip-version-check --break-system-packages \
+    opencv-python-headless==4.10.0.84
 fi
 curl -fsSL \
   "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${HELPER_COMMIT}/experiments/optical_flow_ball_bridge.py" \
@@ -212,7 +202,6 @@ if [ "${FLOW_COUNT:-0}" -le 0 ]; then
   exit 4
 fi
 
-# B. EXPERIMENT. Exact same command; only this environment variable is added.
 echo "=== EXPERIMENT 125s-155s + optical flow ===" | tee experiment_stitch.log
 OEV_FLOW_BRIDGE_FILE=/tmp/oev_run/flow_bridge.jsonl \
 stdbuf -oL -eL "$RECO_BIN" "${COMMON_ARGS[@]}" \
@@ -223,7 +212,6 @@ if [ ! -s experiment.mp4 ] || [ ! -s experiment_events.jsonl ]; then
   exit 5
 fi
 
-# Telemetry-first A/B analysis.
 curl -fsSL \
   "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${HELPER_COMMIT}/experiments/analyze_optical_flow_ball_bridge.py" \
   -o /tmp/analyze_optical_flow_ball_bridge.py
@@ -236,7 +224,6 @@ python3 /tmp/analyze_optical_flow_ball_bridge.py \
   --failure-start 7 --failure-end 16 \
   --output metrics.json > metrics_stdout.txt
 
-# Preserve both traces through the workflow's existing single events.jsonl pull.
 python3 - <<'PY'
 import json
 with open('events.jsonl','w') as out:
@@ -249,8 +236,6 @@ with open('events.jsonl','w') as out:
             out.write(json.dumps(ev,separators=(',',':'))+'\n')
 PY
 
-# Render confirmation: same target window, side-by-side. No audio needed for this
-# tracking/panning discrimination. Left is always control, right experiment.
 ffmpeg -hide_banner -loglevel warning -y \
   -i control.mp4 -i experiment.mp4 \
   -filter_complex "[0:v]scale=960:540[c];[1:v]scale=960:540[e];[c][e]hstack=inputs=2[v]" \
@@ -275,8 +260,6 @@ print('failure_pan_difference=',json.dumps(m['failure_pan_difference'],sort_keys
 print('flow_report=',json.dumps(f,sort_keys=True),sep='')
 PY
 
-# Basic validity gates. Scientific PASS/FAIL is decided after telemetry + visual
-# review, not by making the CI job fail when the hypothesis itself is false.
 grep -q "Autocam: tracking enabled" control_stitch.log
 grep -q "Autocam: tracking enabled" experiment_stitch.log
 grep -q "OEV flow bridge: loaded" experiment_stitch.log
