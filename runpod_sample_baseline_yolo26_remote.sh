@@ -128,6 +128,10 @@ curl -fsSL \
   -o /tmp/apply_optical_flow_bridge_hook.py
 python3 /tmp/apply_ball_containment.py 2>&1 | tee -a patch.log
 python3 /tmp/apply_optical_flow_bridge_hook.py 2>&1 | tee -a patch.log
+# Bootstrap installs rustup/cargo under /root/.cargo, but this workload runs in
+# a fresh SSH shell. Restore that proven toolchain environment before rebuilding
+# the experiment-only patched Reco binary.
+. /root/.cargo/env
 cd "$RECO_SRC"
 git diff --check 2>&1 | tee -a /tmp/oev_run/patch.log
 cargo build --release -p reco-cli --features cuda 2>&1 | tee -a /tmp/oev_run/patch.log
