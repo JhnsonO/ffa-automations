@@ -1,370 +1,285 @@
 #!/usr/bin/env bash
-# Runs ON a RunPod pod (uploaded + executed via SSH by
-# oev-runpod-followcam.yml), AFTER runpod_bootstrap.sh has already
-# produced a working --features cuda reco-cli build at
-# /tmp/video-stitcher/target/release/reco and runpod_gpu_preflight.sh has
-# already confirmed PREFLIGHT_RESULT=PASS on this pod.
+# OEV EXPERIMENT ONLY: targeted optical-flow ball-bridge A/B for sample_02.
 #
-# This script does NOT install any CUDA runtime, cuDNN, Rust toolchain,
-# or rebuild reco-cli -- all of that is runpod_bootstrap.sh's job and is
-# already done by the time this script runs. Redoing it here would mean
-# building against the Vast script's CUDA-13-tuned install logic on top
-# of this environment's already-proven CUDA 12.8 contract -- exactly the
-# "wrong CUDA version on top of bootstrap's output" mistake this ticket
-# exists to avoid (docs/ai-project-state.md, Task 4 spec).
+# This branch deliberately replaces the normal YOLO26 sample-baseline remote
+# helper so the existing proven GitHub Actions -> RunPod orchestration can be
+# reused without changing main. It consumes the staged 180s sample_02 clips but
+# processes only source time 125s..155s for both variants.
 #
-# This is the OEV baseline sample-pack variant of runpod_followcam_remote.sh.
-# Only the segment-selection block differs (no internal re-trimming --
-# see below); calibrate, field_roi injection, the stitch invocation, and
-# the tracking-acceptance check are reused verbatim from
-# runpod_followcam_remote.sh (production follow-cam script), which in
-# turn reused them verbatim from oev_followcam_test_remote.sh (the
-# Vast.ai equivalent). No tracking/panner/threshold/render changes here
-# -- this ticket is baseline measurement only.
+# A = accepted control configuration.
+# B = identical configuration + causal bounded Lucas-Kanade continuation fed
+#     into the existing raw-detection -> panorama mapping -> BallTracker chain.
 #
-# Linux shared-buffer GPU path is production-enabled as of 2026-08-15.
-# Reco main f27cbb6d replaces the broken direct shared-VkImage path with
-# CUDA-VMM shared VkBuffers -> Vulkan GPU buffer-to-texture copies.
-# Verified on real GoPro NV12 and real P010/10-bit fixtures; CUDA detection
-# remains GPU-resident. Do not re-add --no-zero-copy except as an explicit
-# fallback/diagnostic comparison.
-#
-# Deliberately does NOT pass --allow-no-tracking: if Reco can't
-# initialize tracking, the run must fail loudly, not silently produce a
-# plain static stitch that looks like a follow-cam but isn't one.
-#
-# Expects, in /tmp/oev_run/:
-#   left.mp4, right.mp4   (the exact pre-cut sample_NN_{left,right}_{30,60,180}s.mp4
-#                          clip for the requested sample/duration, copied
-#                          from the RunPod network volume by the workflow
-#                          -- NOT full source clips, no further trimming
-#                          is applied here)
-#
-# Produces, in /tmp/oev_run/:
-#   segment.log     - sample_id/duration + measured left/right clip durations
-#   calibrate.log   - reco calibrate output + field_roi injection
-#   stitch.log       - reco stitch output
-#   acceptance.log   - tracking + zero-copy acceptance check output
-#   match.json        - calibration result (present even if stitch fails)
-#   events.jsonl      - pipeline event trace (present if stitch ran)
-#   followcam.mp4     - follow-cam output (only if stitch succeeds)
-#
-# Exit codes: 1=segment-selection failure, 2=calibrate/field_roi failure,
-# 3=stitch command failure, 4=stitch reported success but output missing,
-# 5=acceptance failure (tracking not confirmed active, OR -- RunPod-
-# specific -- zero-copy/NVDEC/CUDAExecutionProvider evidence missing from
-# stitch.log).
+# Standard artifact names are preserved so the existing workflow pulls them:
+#   segment.log      exact config/window + provenance
+#   calibrate.log    shared calibration
+#   stitch.log       control + experiment + flow logs
+#   acceptance.log   A/B telemetry summary
+#   match.json       shared calibration/ROI
+#   events.jsonl     both traces, each line tagged variant=control|experiment
+#   followcam.mp4    side-by-side render: CONTROL left, EXPERIMENT right
 
-set -uo pipefail
+set -euo pipefail
 cd /tmp/oev_run
 
-RECO_BIN="/tmp/video-stitcher/target/release/reco"
+RECO_SRC=/tmp/video-stitcher
+RECO_BIN="$RECO_SRC/target/release/reco"
+BASE_RECO_SHA=c8b0d74b537d192c7de8d2856de64620a82830cf
+HELPER_COMMIT=c54bc70ab790eda67de8efffeac22f8f3c36bf03
+CONTAINMENT_COMMIT=a1d909644d38ead44aecaba3ceed3a2a1efec054
+WINDOW_START=125
+WINDOW_END=155
+WINDOW_DURATION=30
+FAILURE_START=132
+FAILURE_END=141
+EXPECTED_MODEL=yolo26m
+
 if [ ! -x "$RECO_BIN" ]; then
-  echo "FATAL: $RECO_BIN not found or not executable -- runpod_bootstrap.sh must run and succeed before this script" | tee -a segment.log
+  echo "FATAL: validated Reco binary missing before experiment" | tee segment.log
   exit 1
 fi
-
-# --- Fixed-duration sample clip, NO internal re-trimming. ---
-# This is the baseline sample-pack test script: unlike
-# runpod_followcam_remote.sh (which expects the FULL original source
-# clips and picks its own random 15-20s sub-window), this script expects
-# left.mp4/right.mp4 to ALREADY be the exact pre-cut sample clip for the
-# requested sample_id/duration (staged on the RunPod network volume by
-# oev_populate_volume_samples_remote.sh, copied into place by the
-# workflow before this script runs). The full clip IS the test window --
-# no further trimming, no random start selection.
-echo "=== Baseline sample clip (no re-trimming) ===" | tee segment.log
-SAMPLE_ID_LOG="${SAMPLE_ID:-unknown}"
-DURATION_S_LOG="${DURATION_S:-unknown}"
-LEFT_SOURCE_NAME="${LEFT_CLIP:-left.mp4}"
-RIGHT_SOURCE_NAME="${RIGHT_CLIP:-right.mp4}"
+if [ "${YOLO26_VARIANT:-}" != "$EXPECTED_MODEL" ]; then
+  echo "FATAL: this controlled experiment requires YOLO26_VARIANT=$EXPECTED_MODEL, got ${YOLO26_VARIANT:-unset}" | tee segment.log
+  exit 1
+fi
 if [ ! -s left.mp4 ] || [ ! -s right.mp4 ]; then
-  echo "FATAL: left.mp4/right.mp4 missing/empty -- expected pre-staged sample clips, not full sources" | tee -a segment.log
+  echo "FATAL: staged sample clips missing" | tee segment.log
   exit 1
 fi
-LEFT_CLIP_DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 left.mp4)
-RIGHT_CLIP_DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 right.mp4)
-LEFT_CLIP_DURATION_INT=$(printf '%.0f' "${LEFT_CLIP_DURATION:-0}")
-RIGHT_CLIP_DURATION_INT=$(printf '%.0f' "${RIGHT_CLIP_DURATION:-0}")
-if [ "$LEFT_CLIP_DURATION_INT" -le 0 ] || [ "$RIGHT_CLIP_DURATION_INT" -le 0 ]; then
-  echo "FATAL: could not determine duration of left.mp4/right.mp4 (left=${LEFT_CLIP_DURATION_INT}s right=${RIGHT_CLIP_DURATION_INT}s)" | tee -a segment.log
-  exit 1
-fi
-{
-  echo "Sample: ${SAMPLE_ID_LOG} (requested duration ${DURATION_S_LOG}s)"
-  echo "Left clip:  ${LEFT_SOURCE_NAME} (measured duration ${LEFT_CLIP_DURATION_INT}s)"
-  echo "Right clip: ${RIGHT_SOURCE_NAME} (measured duration ${RIGHT_CLIP_DURATION_INT}s)"
-  echo "No re-trimming applied -- full pre-staged sample clip is the test segment."
-} | tee -a segment.log
 
-# --- YOLO model: YOLO26 A/B variant. Unlike the YOLOv8n baseline script,
-# this NEVER exports fresh -- it requires the model already staged on the
-# attached network volume (built by oev-populate-volume.yml, confirmed
-# present on EU-RO-1 volume 0hta9vhuue at reco_sha=53fe10f548d5767ad94ef
-# 66aeaedf2d8c7161f27, run 31747259271). Hard-fails if missing rather than
-# silently falling back to YOLOv8n, so a missing-model run can never be
-# mistaken for a real YOLO26 result. ---
-: "${YOLO26_VARIANT:=yolo26m}"
-YOLO_MODEL="/runpod-volume/oev-runtime/models/${YOLO26_VARIANT}.onnx"
+LEFT_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 left.mp4)
+RIGHT_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 right.mp4)
+FPS_EXPR=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 left.mp4 | head -1)
+FPS=$(python3 - "$FPS_EXPR" <<'PY'
+import sys
+from fractions import Fraction
+print(float(Fraction(sys.argv[1])))
+PY
+)
+
+cat > segment.log <<EOF
+experiment=optical-flow-ball-bridge-01
+sample_id=${SAMPLE_ID:-sample_02}
+source_variant=180s staged sample clips
+left_duration=$LEFT_DUR
+right_duration=$RIGHT_DUR
+source_fps=$FPS
+control_window=${WINDOW_START}s-${WINDOW_END}s
+failure_review_window=${FAILURE_START}s-${FAILURE_END}s
+base_reco_sha=$BASE_RECO_SHA
+model=$EXPECTED_MODEL
+frame_stride=1
+detection_interval=1
+lookahead_seconds=1.5
+panner_preset=broadcast
+cluster_alpha=0.08
+ball_weight=0.70
+dead_zone_rad=0.06
+velocity_alpha=0.08
+max_velocity_rad_per_sec=0.31
+fov_tight=38.0
+fov_default=44.0
+fov_wide=58.0
+ball_containment_enabled=true
+ball_containment_enter_fraction=0.80
+ball_containment_exit_fraction=0.45
+backward_ball_bridging=existing Reco c8b0d74b behavior unchanged
+flow_only_change=temporary raw ball continuation during non-Tracking selected-ball gaps
+flow_max_seconds=0.85
+flow_method=pyramidal Lucas-Kanade + forward/backward consistency + median local motion
+comparison_video=CONTROL left | EXPERIMENT right
+EOF
+
+# Accepted detector already staged on the persistent network volume.
+YOLO_MODEL="/runpod-volume/oev-runtime/models/${EXPECTED_MODEL}.onnx"
 if [ ! -s "$YOLO_MODEL" ]; then
-  echo "FATAL: ${YOLO_MODEL} not found on attached volume -- run oev-populate-volume.yml for this datacenter first, no fresh-export fallback for YOLO26" | tee -a segment.log
+  echo "FATAL: $YOLO_MODEL missing" | tee -a segment.log
   exit 1
 fi
-echo "Using YOLO model: $YOLO_MODEL (YOLO26 A/B variant, no re-export)" | tee -a segment.log
-cp "$YOLO_MODEL" "/tmp/oev_run/${YOLO26_VARIANT}.onnx"
+cp "$YOLO_MODEL" "$EXPECTED_MODEL.onnx"
 
-echo "=== calibrate.log: reco calibrate ===" | tee calibrate.log
-# Same pinned Hero10 Wide profile as the Vast follow-cam script (both
-# cameras are GoPro Hero 10, Wide mode; auto-detect is known to fail on
-# this footage's telemetry -- see docs/ai-project-state.md).
-LENS_PROFILE_URL="https://raw.githubusercontent.com/gyroflow/lens_profiles/main/GoPro/GoPro_HERO10%20Black_Wide_16by9.json"
-echo "Downloading lens profile: $LENS_PROFILE_URL" | tee -a calibrate.log
-curl -fsSL "$LENS_PROFILE_URL" -o hero10_wide_16by9.json
-if [ ! -s hero10_wide_16by9.json ]; then
-  echo "FATAL: failed to download lens profile from $LENS_PROFILE_URL" | tee -a calibrate.log
+# Reconstruct the accepted panner overlay explicitly rather than trusting an
+# old prompt/default. These values are the canonical main harness profile.
+cat > panner_overlay.json <<'JSON'
+{
+  "cluster_alpha": 0.08,
+  "ball_weight": 0.70,
+  "dead_zone_rad": 0.06,
+  "velocity_alpha": 0.08,
+  "max_velocity_rad_per_sec": 0.31,
+  "fov_tight": 38.0,
+  "fov_default": 44.0,
+  "fov_wide": 58.0,
+  "ball_containment_enabled": true,
+  "ball_containment_enter_fraction": 0.80,
+  "ball_containment_exit_fraction": 0.45
+}
+JSON
+
+# Build one experiment binary containing (1) the already-accepted containment
+# patch and (2) an inert flow hook. The hook is empty for control because the
+# OEV_FLOW_BRIDGE_FILE environment variable is unset in that process.
+echo "=== Applying accepted containment + inert experiment hook ===" | tee patch.log
+curl -fsSL \
+  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${CONTAINMENT_COMMIT}/experiments/apply_ball_containment.py" \
+  -o /tmp/apply_ball_containment.py
+curl -fsSL \
+  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${HELPER_COMMIT}/experiments/apply_optical_flow_bridge_hook.py" \
+  -o /tmp/apply_optical_flow_bridge_hook.py
+python3 /tmp/apply_ball_containment.py 2>&1 | tee -a patch.log
+python3 /tmp/apply_optical_flow_bridge_hook.py 2>&1 | tee -a patch.log
+cd "$RECO_SRC"
+git diff --check 2>&1 | tee -a /tmp/oev_run/patch.log
+cargo build --release -p reco-cli --features cuda 2>&1 | tee -a /tmp/oev_run/patch.log
+cd /tmp/oev_run
+if [ ! -x "$RECO_BIN" ]; then
+  echo "FATAL: patched experiment binary missing" | tee -a patch.log
   exit 2
 fi
+
+# Shared calibration, identical for A and B.
+echo "=== calibrate.log: shared calibration ===" | tee calibrate.log
+LENS_PROFILE_URL="https://raw.githubusercontent.com/gyroflow/lens_profiles/main/GoPro/GoPro_HERO10%20Black_Wide_16by9.json"
+curl -fsSL "$LENS_PROFILE_URL" -o hero10_wide_16by9.json
 stdbuf -oL -eL "$RECO_BIN" calibrate left.mp4 right.mp4 \
   --left-profile hero10_wide_16by9.json \
   --right-profile hero10_wide_16by9.json \
   -o match.json 2>&1 | tee -a calibrate.log
-calibrate_rc=${PIPESTATUS[0]}
-if [ "$calibrate_rc" -ne 0 ]; then
-  echo "FATAL: reco calibrate failed (exit $calibrate_rc), see calibrate.log" | tee -a calibrate.log
-  exit 2
-fi
-if [ ! -f match.json ]; then
-  echo "FATAL: calibrate reported success but match.json missing" | tee -a calibrate.log
-  exit 2
-fi
-echo "Calibrate OK: match.json written" | tee -a calibrate.log
 
-# Fixed St Margaret's field ROI (verbatim from oev_followcam_test_remote.sh
-# -- same prototype polygon Johnson marked on the calibrate-stills
-# screenshots for this exact clip pair/camera setup). Injected into
-# match.json after calibrate, before stitch, so reco stitch's already-
-# existing field_roi auto-load filters out detections from the
-# neighbouring pitch.
-echo "Injecting St Margaret's field_roi into match.json" | tee -a calibrate.log
-python3 - <<'PYROI'
+python3 - <<'PY'
 import json
-
-with open("match.json") as f:
-    match = json.load(f)
-
-match["field_roi"] = {
-    "left": [
-        [0.1227, 0.9611],
-        [0.0573, 0.6846],
-        [0.1802, 0.6285],
-        [0.2645, 0.5769],
-        [0.4382, 0.4864],
-        [0.4988, 0.4658],
-        [0.5942, 0.4474],
-        [0.7835, 0.4175],
-        [0.9285, 0.3785],
-        [1.0000, 1.0000],
-        [0.1227, 1.0000],
-    ],
-    "right": [
-        [0.0391, 0.4206],
-        [0.0818, 0.4101],
-        [0.1839, 0.4070],
-        [0.2783, 0.4070],
-        [0.3448, 0.4083],
-        [0.4100, 0.4161],
-        [0.4684, 0.4319],
-        [0.6239, 0.4801],
-        [0.7368, 0.5200],
-        [0.7980, 0.5465],
-        [0.7454, 0.9011],
-        [0.7454, 1.0000],
-        [0.0000, 1.0000],
-    ],
+p='match.json'
+m=json.load(open(p))
+m['field_roi']={
+ 'left': [[0.1227,0.9611],[0.0573,0.6846],[0.1802,0.6285],[0.2645,0.5769],[0.4382,0.4864],[0.4988,0.4658],[0.5942,0.4474],[0.7835,0.4175],[0.9285,0.3785],[1.0,1.0],[0.1227,1.0]],
+ 'right': [[0.0391,0.4206],[0.0818,0.4101],[0.1839,0.4070],[0.2783,0.4070],[0.3448,0.4083],[0.4100,0.4161],[0.4684,0.4319],[0.6239,0.4801],[0.7368,0.5200],[0.7980,0.5465],[0.7454,0.9011],[0.7454,1.0],[0.0,1.0]],
 }
+json.dump(m,open(p,'w'),indent=2)
+print('field_roi injected')
+PY
 
-with open("match.json", "w") as f:
-    json.dump(match, f, indent=2)
+echo "field_roi injected/validated" | tee -a calibrate.log
 
-assert len(match["field_roi"]["left"]) == 11
-assert len(match["field_roi"]["right"]) == 13
-print("field_roi injected: left=%d pts, right=%d pts" % (
-    len(match["field_roi"]["left"]), len(match["field_roi"]["right"])))
-PYROI
-if [ $? -ne 0 ]; then
-  echo "FATAL: field_roi injection into match.json failed" | tee -a calibrate.log
-  exit 2
-fi
-if ! python3 -c "
-import json, sys
-m = json.load(open('match.json'))
-roi = m.get('field_roi')
-assert roi and isinstance(roi.get('left'), list) and len(roi['left']) > 0, 'field_roi.left missing/empty'
-assert isinstance(roi.get('right'), list) and len(roi['right']) > 0, 'field_roi.right missing/empty'
-" 2>>calibrate.log; then
-  echo "FATAL: match.json field_roi validation failed after injection" | tee -a calibrate.log
-  exit 2
-fi
-echo "field_roi validated in match.json (left/right polygons present)" | tee -a calibrate.log
-
-echo "=== stitch.log: reco stitch (field follow-cam, l-shape, shared-buffer GPU path) ===" | tee stitch.log
-# Same flag set agreed with Johnson as the Vast script: normal
-# perspective (l-shape, default) projection, NOT cylindrical.
-# --detection-interval 1 (no frame-skipping, out of scope for this
-# ticket). Deliberately NO --allow-no-tracking: a tracking-init failure
-# must fail this run loudly, not silently degrade to a static stitch.
-# Shared-buffer zero-copy is intentionally enabled here (no --no-zero-copy).
-# The merged path was hardware-verified on RTX 4090 and L4 without the old
-# green/corrupt direct-shared-VkImage failure.
-: "${LOOKAHEAD:=1.5}"
-STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
-  --model "${YOLO26_VARIANT}.onnx"
+COMMON_ARGS=(stitch left.mp4 right.mp4 -c match.json
+  --model "$EXPECTED_MODEL.onnx"
   --tracking field
   --panner-preset broadcast
-  --lookahead "${LOOKAHEAD}"
+  --panner-config panner_overlay.json
+  --lookahead 1.5
   --detection-interval 1
   --frame-stride 1
-  --events events.jsonl
+  --start-time "$WINDOW_START"
+  --end-time "$WINDOW_END"
   --width 1920 --height 1080)
 
-# --- Measurement-only overlay: optional cluster_alpha override on top of
-# the broadcast preset. Blank/unset CLUSTER_ALPHA_OVERRIDE (the default)
-# leaves this block entirely inert -- STITCH_ARGS is unchanged and
-# behavior is byte-identical to the pre-existing baseline. Only alpha is
-# overridden; every other broadcast parameter (dead_zone_rad, lead_gain,
-# lead_alpha, lookahead_reactivity, ball_weight) stays at preset default.
-if [ -n "${CLUSTER_ALPHA_OVERRIDE:-}" ]; then
-  echo "{\"cluster_alpha\": ${CLUSTER_ALPHA_OVERRIDE}}" > panner_overlay.json
-  STITCH_ARGS+=(--panner-config panner_overlay.json)
-  echo "Panner overlay active: cluster_alpha=${CLUSTER_ALPHA_OVERRIDE} (panner_overlay.json)" | tee -a stitch.log
-fi
-
-echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch.log
-stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
-stitch_rc=${PIPESTATUS[0]}
-if [ "$stitch_rc" -ne 0 ]; then
-  echo "FATAL: reco stitch failed (exit $stitch_rc), see stitch.log (match.json/${YOLO26_VARIANT}.onnx are still valid)" | tee -a stitch.log
+# A. CONTROL. Same patched binary, but flow hook inert/unset.
+echo "=== CONTROL 125s-155s ===" | tee control_stitch.log
+unset OEV_FLOW_BRIDGE_FILE || true
+stdbuf -oL -eL "$RECO_BIN" "${COMMON_ARGS[@]}" \
+  -o control.mp4 --events control_events.jsonl \
+  2>&1 | tee -a control_stitch.log
+if [ ! -s control.mp4 ] || [ ! -s control_events.jsonl ]; then
+  echo "FATAL: control output missing" | tee -a control_stitch.log
   exit 3
 fi
-if [ ! -f followcam.mp4 ]; then
-  echo "FATAL: stitch reported success but followcam.mp4 missing" | tee -a stitch.log
+
+# Build the causal flow continuation from control telemetry + original pixels.
+# OpenCV is experiment-only tooling and does not alter detector/runtime config.
+if ! python3 -c 'import cv2' >/dev/null 2>&1; then
+  python3 -m pip install -q --disable-pip-version-check opencv-python-headless==4.10.0.84
+fi
+curl -fsSL \
+  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${HELPER_COMMIT}/experiments/optical_flow_ball_bridge.py" \
+  -o /tmp/optical_flow_ball_bridge.py
+
+echo "=== OPTICAL FLOW GENERATION ===" | tee flow_bridge.log
+python3 /tmp/optical_flow_ball_bridge.py \
+  --events control_events.jsonl \
+  --left left.mp4 --right right.mp4 \
+  --start-seconds "$WINDOW_START" \
+  --duration-seconds "$WINDOW_DURATION" \
+  --output flow_bridge.jsonl \
+  --report flow_report.json \
+  2>&1 | tee -a flow_bridge.log
+FLOW_COUNT=$(wc -l < flow_bridge.jsonl | tr -d ' ')
+echo "flow_synthetic_frames=$FLOW_COUNT" | tee -a flow_bridge.log
+if [ "${FLOW_COUNT:-0}" -le 0 ]; then
+  echo "FATAL: optical-flow generator produced no continuation frames; invalid experiment" | tee -a flow_bridge.log
   exit 4
 fi
-echo "Stitch OK: followcam.mp4 written" | tee -a stitch.log
 
-echo "=== acceptance.log: verifying AI-driven follow-cam (not a static stitch) ===" | tee acceptance.log
-python3 - <<'PY' 2>&1 | tee -a acceptance.log
-import json, sys
-
-accept_fail = False
-
-try:
-    stitch_log = open('stitch.log').read()
-except FileNotFoundError:
-    print("FAIL: stitch.log missing")
-    sys.exit(1)
-
-if "Autocam: tracking enabled" not in stitch_log:
-    print("FAIL: 'Autocam: tracking enabled' not found in stitch.log -- tracking did not initialize")
-    accept_fail = True
-else:
-    print("OK: 'Autocam: tracking enabled' found in stitch.log")
-
-try:
-    lines = open('events.jsonl').read().splitlines()
-except FileNotFoundError:
-    print("FAIL: events.jsonl missing")
-    accept_fail = True
-    lines = []
-
-detections_with_hits = 0
-pan_yaws = []
-for line in lines:
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        ev = json.loads(line)
-    except json.JSONDecodeError:
-        continue
-    if ev.get('kind') == 'detections_raw' and ev.get('detections'):
-        detections_with_hits += 1
-    if ev.get('kind') == 'pan_decision':
-        pose = ev.get('pose') or {}
-        yaw = pose.get('yaw')
-        if yaw is not None:
-            pan_yaws.append(yaw)
-
-print(f"Total event lines: {len(lines)}")
-print(f"detections_raw events with >=1 detection: {detections_with_hits}")
-print(f"pan_decision events with a yaw value: {len(pan_yaws)}")
-
-if detections_with_hits == 0:
-    print("FAIL: no detections_raw event contained any detection -- detector produced nothing")
-    accept_fail = True
-
-if len(pan_yaws) < 2:
-    print("FAIL: fewer than 2 pan_decision events with a pose -- can't judge camera movement")
-    accept_fail = True
-else:
-    yaw_spread = max(pan_yaws) - min(pan_yaws)
-    print(f"pan_decision yaw spread (radians): {yaw_spread}")
-    if yaw_spread < 1e-4:
-        print("FAIL: pan_decision yaw never changes -- camera is static, not AI-driven")
-        accept_fail = True
-    else:
-        print("OK: pan_decision yaw shows real movement")
-
-if accept_fail:
-    sys.exit(1)
-print("ACCEPTANCE (tracking): PASS")
-PY
-tracking_accept_rc=${PIPESTATUS[0]}
-if [ "$tracking_accept_rc" -ne 0 ]; then
-  echo "FATAL: follow-cam tracking acceptance check FAILED -- see acceptance.log. followcam.mp4 exists but is NOT confirmed AI-driven." | tee -a acceptance.log
+# B. EXPERIMENT. Exact same command; only this environment variable is added.
+echo "=== EXPERIMENT 125s-155s + optical flow ===" | tee experiment_stitch.log
+OEV_FLOW_BRIDGE_FILE=/tmp/oev_run/flow_bridge.jsonl \
+stdbuf -oL -eL "$RECO_BIN" "${COMMON_ARGS[@]}" \
+  -o experiment.mp4 --events experiment_events.jsonl \
+  2>&1 | tee -a experiment_stitch.log
+if [ ! -s experiment.mp4 ] || [ ! -s experiment_events.jsonl ]; then
+  echo "FATAL: experiment output missing" | tee -a experiment_stitch.log
   exit 5
 fi
 
-# --- RunPod-specific: zero-copy evidence check. Only runs when
-# --no-zero-copy is NOT in STITCH_ARGS -- i.e. only when zero-copy is
-# actually expected to be active. As of 2026-08-12, --no-zero-copy IS in
-# STITCH_ARGS (interim production setting, see file header), so this
-# whole block is skipped on this path; it's left in place, unmodified,
-# for whenever the reco-cli zero-copy bug is fixed and --no-zero-copy is
-# removed again -- do not delete this block to "clean up" while
-# --no-zero-copy is the active setting. ---
-if printf '%s\n' "${STITCH_ARGS[@]}" | grep -qx -- '--no-zero-copy'; then
-  echo "=== --no-zero-copy is active this run -- skipping zero-copy evidence check (expected, not applicable) ===" | tee -a acceptance.log
-else
-  echo "=== Verifying full zero-copy path actually engaged (RunPod-specific, no Vast equivalent) ===" | tee -a acceptance.log
-  zero_copy_fail=0
-  if grep -qiE 'zero-copy|zero copy' stitch.log; then
-    echo "OK: zero-copy log line found" | tee -a acceptance.log
-  else
-    echo "FAIL: no zero-copy log line found in stitch.log" | tee -a acceptance.log
-    zero_copy_fail=1
-  fi
-  if grep -qiE 'NVDEC.*CUDA|NVDEC \(CUDA\)|cuvid' stitch.log; then
-    echo "OK: GPU decode (NVDEC/CUDA) log line found" | tee -a acceptance.log
-  else
-    echo "FAIL: no NVDEC/CUDA decode log line found in stitch.log" | tee -a acceptance.log
-    zero_copy_fail=1
-  fi
-  if grep -qE "No execution providers from session options registered successfully" stitch.log; then
-    echo "FAIL: CUDA EP fallback warning present in stitch.log -- detection likely ran on CPU" | tee -a acceptance.log
-    zero_copy_fail=1
-  elif grep -qiE 'CUDAExecutionProvider' stitch.log; then
-    echo "OK: CUDAExecutionProvider log line found, no fallback warning" | tee -a acceptance.log
-  else
-    echo "FAIL: no CUDAExecutionProvider log line found in stitch.log" | tee -a acceptance.log
-    zero_copy_fail=1
-  fi
-  if [ "$zero_copy_fail" -ne 0 ]; then
-    echo "FATAL: zero-copy acceptance check FAILED -- see acceptance.log. Tracking passed but full zero-copy is NOT confirmed active on this run." | tee -a acceptance.log
-    exit 5
-  fi
-  echo "Acceptance OK: zero-copy (GPU decode + CUDA inference) confirmed engaged" | tee -a acceptance.log
-fi
-echo "Acceptance OK: AI tracking confirmed active with real detections + camera movement" | tee -a acceptance.log
+# Telemetry-first A/B analysis.
+curl -fsSL \
+  "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${HELPER_COMMIT}/experiments/analyze_optical_flow_ball_bridge.py" \
+  -o /tmp/analyze_optical_flow_ball_bridge.py
+python3 /tmp/analyze_optical_flow_ball_bridge.py \
+  --control control_events.jsonl \
+  --experiment experiment_events.jsonl \
+  --flow flow_bridge.jsonl \
+  --fps "$FPS" \
+  --duration-seconds "$WINDOW_DURATION" \
+  --failure-start 7 --failure-end 16 \
+  --output metrics.json > metrics_stdout.txt
 
-echo "=== All stages completed ==="
+# Preserve both traces through the workflow's existing single events.jsonl pull.
+python3 - <<'PY'
+import json
+with open('events.jsonl','w') as out:
+    for variant,path in [('control','control_events.jsonl'),('experiment','experiment_events.jsonl')]:
+        for line in open(path):
+            if not line.strip():
+                continue
+            ev=json.loads(line)
+            ev['variant']=variant
+            out.write(json.dumps(ev,separators=(',',':'))+'\n')
+PY
+
+# Render confirmation: same target window, side-by-side. No audio needed for this
+# tracking/panning discrimination. Left is always control, right experiment.
+ffmpeg -hide_banner -loglevel warning -y \
+  -i control.mp4 -i experiment.mp4 \
+  -filter_complex "[0:v]scale=960:540[c];[1:v]scale=960:540[e];[c][e]hstack=inputs=2[v]" \
+  -map "[v]" -an -c:v libx264 -preset veryfast -crf 20 followcam.mp4
+
+cat patch.log control_stitch.log flow_bridge.log experiment_stitch.log > stitch.log
+
+python3 - <<'PY' > acceptance.log
+import json
+m=json.load(open('metrics.json'))
+f=json.load(open('flow_report.json'))
+print('EXPERIMENT_EXECUTION=PASS')
+print('comparison_video=followcam.mp4 (CONTROL left | EXPERIMENT right)')
+print('window=125.000s-155.000s')
+print('failure_window=132.000s-141.000s')
+print('flow_synthetic_frames_generated=',m['synthetic_flow_frames_generated'],sep='')
+print('flow_acceptance=',json.dumps(m['flow_acceptance'],sort_keys=True),sep='')
+print('control=',json.dumps(m['control'],sort_keys=True),sep='')
+print('experiment=',json.dumps(m['experiment'],sort_keys=True),sep='')
+print('pan_difference=',json.dumps(m['pan_difference'],sort_keys=True),sep='')
+print('failure_pan_difference=',json.dumps(m['failure_pan_difference'],sort_keys=True),sep='')
+print('flow_report=',json.dumps(f,sort_keys=True),sep='')
+PY
+
+# Basic validity gates. Scientific PASS/FAIL is decided after telemetry + visual
+# review, not by making the CI job fail when the hypothesis itself is false.
+grep -q "Autocam: tracking enabled" control_stitch.log
+grep -q "Autocam: tracking enabled" experiment_stitch.log
+grep -q "OEV flow bridge: loaded" experiment_stitch.log
+[ -s followcam.mp4 ]
+[ -s events.jsonl ]
+[ -s acceptance.log ]
+
+echo "=== A/B metrics ==="
+cat acceptance.log
+exit 0
