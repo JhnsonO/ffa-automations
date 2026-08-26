@@ -57,7 +57,7 @@ echo "ultralytics_version=$ULTRA_VERSION"
 python3 -m venv --system-site-packages /tmp/soccernet-phase1-venv
 /tmp/soccernet-phase1-venv/bin/pip install -q --upgrade pip
 /tmp/soccernet-phase1-venv/bin/pip install -q --no-deps "ultralytics==$ULTRA_VERSION"
-/tmp/soccernet-phase1-venv/bin/pip install -q --no-deps "onnxruntime-gpu==1.26.0" "onnx==1.19.1" "protobuf==6.32.1"
+/tmp/soccernet-phase1-venv/bin/pip install -q --no-deps "onnxruntime-gpu==1.26.0" "onnx==1.19.1" "protobuf==6.32.1" "ml-dtypes==0.5.3"
 /tmp/soccernet-phase1-venv/bin/pip install -q --no-deps \
   "opencv-python-headless==4.11.0.86" ultralytics-thop polars py-cpuinfo \
   matplotlib pillow pyyaml requests scipy psutil pandas seaborn nvidia-ml-py \
@@ -66,12 +66,13 @@ python3 -m venv --system-site-packages /tmp/soccernet-phase1-venv
 # Hard gate: detector-only runner needs CUDA inference, but deliberately does
 # NOT require NVDEC/Vulkan because Phase 1 decodes via OpenCV and tests detectors only.
 /tmp/soccernet-phase1-venv/bin/python3 - <<'PY'
-import torch, onnxruntime as ort, google.protobuf
+import torch, onnxruntime as ort, google.protobuf, ml_dtypes
 from ultralytics import YOLO
 print('gpu=', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE')
 print('torch=', torch.__version__, 'cuda=', torch.version.cuda, 'available=', torch.cuda.is_available())
 print('ort=', ort.__version__, 'providers=', ort.get_available_providers())
 print('protobuf=', google.protobuf.__version__)
+print('ml_dtypes=', ml_dtypes.__version__)
 assert torch.cuda.is_available()
 assert str(torch.version.cuda).startswith('12.')
 assert ort.__version__ == '1.26.0'
