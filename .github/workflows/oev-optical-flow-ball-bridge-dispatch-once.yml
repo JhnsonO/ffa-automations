@@ -20,6 +20,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
+          # Rerun marker: cargo PATH restored in the experiment remote helper.
           python3 - <<'PY' >/tmp/payload.json
           import json
           print(json.dumps({
