@@ -20,13 +20,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          # Rerun marker: OpenCV PEP 668 install fixed on disposable RunPod.
+          # Infrastructure-only retry in the other staged OEV datacenter;
+          # all footage/config/experiment variables are unchanged.
           python3 - <<'PY' >/tmp/payload.json
           import json
           print(json.dumps({
               "ref": "experiment/optical-flow-ball-bridge-01",
               "inputs": {
-                  "datacenter": "EU-RO-1",
+                  "datacenter": "EUR-IS-1",
                   "sample_set_id": "GX010197-seed1384188843",
                   "sample_id": "sample_02",
                   "duration_s": "180",
