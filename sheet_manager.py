@@ -1129,13 +1129,38 @@ def _reconcile_clip_errors(sheets_svc, spreadsheet_id, tab_names, tab_gids) -> i
     return len(rows)
 
 
+_DRIVE_FILE_ID_RE = re.compile(r"/file/d/([^/]+)")
+
+
+def download_drive_file(drive_svc, drive_url_or_id: str, dest_path: str) -> None:
+    """Download a Drive file by URL or bare file ID using the same OAuth
+    Drive client this script already authenticates for clip uploads
+    (service accounts can't read a personal-Drive file, only this token
+    can). Used by the promote-legacy-clip workflow -- read-only, doesn't
+    touch the sheet or the source file."""
+    from googleapiclient.http import MediaIoBaseDownload
+
+    match = _DRIVE_FILE_ID_RE.search(drive_url_or_id)
+    file_id = match.group(1) if match else drive_url_or_id
+
+    request = drive_svc.files().get_media(fileId=file_id)
+    with open(dest_path, "wb") as fh:
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _status, done = downloader.next_chunk()
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("job", choices=["sync-videos", "process-clips", "process-add-video"],
+    ap.add_argument("job", choices=["sync-videos", "process-clips", "process-add-video", "download-drive-file"],
                     help="sync-videos: create tabs for newly-public videos. "
-                         "process-clips: cut pending clips and upload to Drive.")
+                         "process-clips: cut pending clips and upload to Drive. "
+                         "download-drive-file: fetch one Drive file by URL/ID to a local path.")
     ap.add_argument("--lookback-days", type=int, default=14,
                     help="How many days back to scan for new public videos (default: 14)")
+    ap.add_argument("--drive-url", help="Drive share URL or bare file ID (for download-drive-file)")
+    ap.add_argument("--dest", help="Local destination path (for download-drive-file)")
     args = ap.parse_args()
 
     if args.job == "sync-videos":
@@ -1146,3 +1171,10 @@ if __name__ == "__main__":
         sheets_svc, drive_svc = get_sheets_service()
         spreadsheet_id = get_spreadsheet_id(sheets_svc)
         process_add_video(sheets_svc, drive_svc, spreadsheet_id)
+    elif args.job == "download-drive-file":
+        if not args.drive_url or not args.dest:
+            raise SystemExit("download-drive-file requires --drive-url and --dest")
+        _sheets_svc, drive_svc = get_sheets_service()
+        if drive_svc is None:
+            raise SystemExit("Drive OAuth client unavailable -- check YOUTUBE_TOKEN")
+        download_drive_file(drive_svc, args.drive_url, args.dest)
