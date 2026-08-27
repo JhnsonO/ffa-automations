@@ -1,0 +1,69 @@
+name: Promote Legacy Clip
+
+# Manual trigger: takes a moment_id, looks up its legacy Drive clip via the
+# ffa-media API, downloads it with this repo's existing Drive OAuth client,
+# and uploads it to ffa-media as a real Rendition. Bridges the two repos:
+# this one has Drive read access (YOUTUBE_TOKEN), ffa-media has the DB and
+# R2 -- neither has both.
+
+on:
+  workflow_dispatch:
+    inputs:
+      moment_id:
+        description: 'Moment ID to promote (from the ffa-media Clips UI)'
+        required: true
+
+jobs:
+  promote:
+    runs-on: self-hosted
+    timeout-minutes: 15
+    env:
+      FFA_MEDIA_API: https://web-production-e9d28.up.railway.app
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -q google-auth google-auth-httplib2 google-api-python-client requests
+
+      - name: Look up legacy Drive URL
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          AUTOMATIONS_API_TOKEN: ${{ secrets.AUTOMATIONS_API_TOKEN }}
+        run: |
+          python3 -c "
+          import os, requests
+          resp = requests.get(
+              f\"{os.environ['FFA_MEDIA_API']}/api/moments/${{ inputs.moment_id }}/legacy-drive-url\",
+              headers={'X-Automations-Key': os.environ['AUTOMATIONS_API_TOKEN']},
+              timeout=30,
+          )
+          resp.raise_for_status()
+          drive_url = resp.json()['legacy_drive_url']
+          with open('/tmp/drive_url.txt', 'w') as f:
+              f.write(drive_url)
+          print(f'Drive URL: {drive_url}')
+          "
+
+      - name: Download from Drive
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: |
+          DRIVE_URL=$(cat /tmp/drive_url.txt)
+          python sheet_manager.py download-drive-file --drive-url "$DRIVE_URL" --dest /tmp/promoted.mp4
+          ls -la /tmp/promoted.mp4
+
+      - name: Upload to ffa-media as a Rendition
+        env:
+          AUTOMATIONS_API_TOKEN: ${{ secrets.AUTOMATIONS_API_TOKEN }}
+        run: |
+          curl -sf -X POST \
+            -H "X-Automations-Key: $AUTOMATIONS_API_TOKEN" \
+            -F "file=@/tmp/promoted.mp4;type=video/mp4" \
+            "$FFA_MEDIA_API/api/moments/${{ inputs.moment_id }}/promote-legacy"
