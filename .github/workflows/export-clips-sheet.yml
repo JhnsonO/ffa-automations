@@ -1,0 +1,35 @@
+name: Export Clips Sheet (one-off)
+
+# Read-only dump of the full FFA Clips spreadsheet (with grid data --
+# tab titles, gids, cell values) to a workflow artifact, for offline
+# schema inspection. Never writes to the live sheet. Manual trigger only.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -q google-auth google-auth-httplib2 google-api-python-client
+
+      - name: Export sheet (read-only)
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: python export_sheet_raw.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clips-sheet-export
+          path: clips_sheet_export.json
+          retention-days: 7
