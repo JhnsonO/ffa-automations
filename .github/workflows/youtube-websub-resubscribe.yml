@@ -1,0 +1,53 @@
+name: YouTube WebSub Resubscribe
+
+# Keeps our push-notification subscription for new channel uploads
+# alive. Google's hub only grants a lease of roughly 5-10 days, so we
+# re-POST the subscribe request daily well before it can lapse.
+# Re-subscribing is idempotent -- it just extends the lease whether or
+# not one is currently active -- so there's no state to track here and
+# nothing that can drift out of sync.
+#
+# This only renews the lease; it doesn't re-verify the callback. Google's
+# hub re-runs the GET-challenge handshake against ffa-media's
+# /api/youtube/webhook on every (re-)subscribe, so if that endpoint or
+# YOUTUBE_WEBSUB_SECRET ever gets out of sync between here and Railway,
+# this step's POST still returns 202 but the follow-up verification
+# will silently fail -- check Railway logs for a hub GET to
+# /api/youtube/webhook if uploads stop appearing.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # daily, 6am UTC
+  workflow_dispatch:
+
+env:
+  RAILWAY_URL: https://web-production-e9d28.up.railway.app
+  FFA_CHANNEL_ID: UCSj-hQdqQ9La4FMM3HFqvXw
+
+jobs:
+  resubscribe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Subscribe to channel push notifications
+        env:
+          YOUTUBE_WEBSUB_SECRET: ${{ secrets.YOUTUBE_WEBSUB_SECRET }}
+        run: |
+          python3 << 'PY'
+          import os, sys, requests
+
+          resp = requests.post(
+              "https://pubsubhubbub.appspot.com/subscribe",
+              data={
+                  "hub.mode": "subscribe",
+                  "hub.topic": f"https://www.youtube.com/feeds/videos.xml?channel_id={os.environ['FFA_CHANNEL_ID']}",
+                  "hub.callback": f"{os.environ['RAILWAY_URL']}/api/youtube/webhook",
+                  "hub.secret": os.environ["YOUTUBE_WEBSUB_SECRET"],
+              },
+              timeout=15,
+          )
+          print(f"hub responded HTTP {resp.status_code}")
+          if resp.status_code not in (202, 204):
+              print(resp.text[:500])
+              sys.exit(1)
+          PY
