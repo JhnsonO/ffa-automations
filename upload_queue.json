@@ -1,1 +1,26 @@
-[]
+[
+  {
+    "media_id": "6a95e6635aee96b98c81d9b4",
+    "filename": "GX010219.MP4",
+    "file_size": 22412324760,
+    "captured_at": "2026-08-31T19:27:01Z",
+    "queued_at": "2026-09-01T00:12:16.453486+00:00",
+    "fail_count": 0
+  },
+  {
+    "media_id": "6a95e5a7ca69d3be4241e295",
+    "filename": "GX010469.MP4",
+    "file_size": 21989090314,
+    "captured_at": "2026-08-31T17:07:40Z",
+    "queued_at": "2026-09-01T00:12:16.453486+00:00",
+    "fail_count": 0
+  },
+  {
+    "media_id": "6a95d75c73126558d1d6a313",
+    "filename": "GX010218.MP4",
+    "file_size": 24017707967,
+    "captured_at": "2026-08-31T18:23:44Z",
+    "queued_at": "2026-09-01T00:12:16.453486+00:00",
+    "fail_count": 0
+  }
+]
