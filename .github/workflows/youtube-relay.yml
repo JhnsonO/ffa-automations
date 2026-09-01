@@ -207,7 +207,7 @@ jobs:
           RUNNER_API_KEY: ${{ secrets.RUNNER_API_KEY }}
         run: |
           python3 - <<'PY'
-          import json, os, re, subprocess, requests
+          import json, os, re, subprocess, requests, time
           from datetime import UTC, datetime
 
           base = os.environ["RAILWAY_URL"]
@@ -239,7 +239,21 @@ jobs:
           print(f"{len(videos)} video(s) to re-check for recorded_at backfill")
 
           checked = changed = failed = 0
+          consecutive_bot_walls = 0
           for v in videos:
+              # 126 back-to-back requests tripped YouTube's burst limit
+              # after ~24 (2026-09-01 run: checked=24 changed=23
+              # failed=102, all "confirm you're not a bot" -- on the same
+              # runner IP/cookies that had just fetched full masters fine
+              # moments earlier in this job, so it's rate limiting, not a
+              # broken profile). A flat delay plus backing off harder once
+              # the wall shows up beats hammering it at a fixed pace.
+              time.sleep(3)
+              if consecutive_bot_walls >= 3:
+                  print(f"3 consecutive bot-wall failures, pausing 60s before {v['source_ref']}")
+                  time.sleep(60)
+                  consecutive_bot_walls = 0
+
               ref = v["source_ref"]
               result = {"video_id": v["video_id"]}
               try:
@@ -253,10 +267,13 @@ jobs:
                   info = json.loads(out.stdout.splitlines()[-1])
                   result["recorded_at"] = recorded_at_from_info(info)
                   checked += 1
+                  consecutive_bot_walls = 0
               except Exception as exc:
                   detail = getattr(exc, "stderr", None) or str(exc)
                   result["error"] = detail[-500:]
                   failed += 1
+                  if "not a bot" in detail:
+                      consecutive_bot_walls += 1
                   print(f"backfill probe failed for {ref}: {detail}")
 
               resp = requests.post(
