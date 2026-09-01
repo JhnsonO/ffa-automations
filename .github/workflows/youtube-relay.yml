@@ -127,8 +127,13 @@ jobs:
                   })
                   print(f"probed {ref}: {info.get('title')!r}")
               except Exception as exc:
-                  result["error"] = str(exc)[:500]
-                  print(f"probe failed for {ref}: {exc}")
+                  # CalledProcessError's own __str__ is just "returned
+                  # non-zero exit status N" -- the actual reason yt-dlp
+                  # gives (bot wall, PO token, video unavailable, ...) is
+                  # in stderr, which was silently dropped before this fix.
+                  detail = getattr(exc, "stderr", None) or str(exc)
+                  result["error"] = detail[-500:]
+                  print(f"probe failed for {ref}: {detail}")
 
               requests.post(f"{base}/api/runner/probe-result", headers=headers, json=result, timeout=30).raise_for_status()
           PY
@@ -249,9 +254,10 @@ jobs:
                   result["recorded_at"] = recorded_at_from_info(info)
                   checked += 1
               except Exception as exc:
-                  result["error"] = str(exc)[:500]
+                  detail = getattr(exc, "stderr", None) or str(exc)
+                  result["error"] = detail[-500:]
                   failed += 1
-                  print(f"backfill probe failed for {ref}: {exc}")
+                  print(f"backfill probe failed for {ref}: {detail}")
 
               resp = requests.post(
                   f"{base}/api/runner/recorded-at-backfill-result",
