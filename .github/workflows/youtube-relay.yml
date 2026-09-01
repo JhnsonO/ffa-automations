@@ -21,6 +21,14 @@ name: FFA Media YouTube Relay
 
 on:
   workflow_dispatch:
+    inputs:
+      run_recorded_at_backfill:
+        description: >-
+          Also re-probe every already-ingested YouTube video and correct
+          recorded_at (one-off; videos ingested before the FFA_EFFECTIVE_AT
+          parsing fix above landed never got the GoPro capture time).
+        type: boolean
+        default: false
   schedule:
     - cron: '*/5 * * * *'
 
@@ -64,11 +72,34 @@ jobs:
           RUNNER_API_KEY: ${{ secrets.RUNNER_API_KEY }}
         run: |
           python3 - <<'PY'
-          import json, os, subprocess, requests
+          import json, os, re, subprocess, requests
+          from datetime import UTC, datetime
 
           base = os.environ["RAILWAY_URL"]
           headers = {"X-Runner-Key": os.environ["RUNNER_API_KEY"]}
           chrome_profile = os.path.expanduser("~/.cache/yt-chrome-sync")
+
+          def recorded_at_from_info(info: dict) -> str | None:
+              # Mirrors ffa_media.providers.sources.YouTubeSource.probe --
+              # keep these in sync. GoPro capture time in the description
+              # (FFA_EFFECTIVE_AT) is authoritative over YouTube's upload
+              # timestamp, which is only ever "close enough" and can be
+              # hours off if an upload was queued/retried.
+              description = info.get("description") or ""
+              match = re.search(r"^FFA_EFFECTIVE_AT:([^\r\n]+)$", description, re.MULTILINE)
+              if match:
+                  raw = match.group(1)
+                  try:
+                      if raw.endswith("Z"):
+                          raw = f"{raw[:-1]}+00:00"
+                      dt = datetime.fromisoformat(raw)
+                      dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+                      return dt.isoformat()
+                  except (ValueError, OverflowError):
+                      pass
+              if info.get("timestamp"):
+                  return datetime.fromtimestamp(info["timestamp"], tz=UTC).isoformat()
+              return None
 
           pending = requests.get(f"{base}/api/runner/pending-youtube", headers=headers, timeout=30).json()
           videos = pending.get("videos", [])
@@ -92,12 +123,7 @@ jobs:
                       "width": info.get("width"),
                       "height": info.get("height"),
                       "title": info.get("title"),
-                      "recorded_at": (
-                          __import__("datetime").datetime.fromtimestamp(
-                              info["timestamp"], tz=__import__("datetime").timezone.utc
-                          ).isoformat()
-                          if info.get("timestamp") else None
-                      ),
+                      "recorded_at": recorded_at_from_info(info),
                   })
                   print(f"probed {ref}: {info.get('title')!r}")
               except Exception as exc:
@@ -168,4 +194,73 @@ jobs:
               finally:
                   if os.path.exists(local):
                       os.remove(local)
+          PY
+
+      - name: One-off recorded_at backfill (manual, opt-in)
+        if: github.event.inputs.run_recorded_at_backfill == 'true'
+        env:
+          RUNNER_API_KEY: ${{ secrets.RUNNER_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess, requests
+          from datetime import UTC, datetime
+
+          base = os.environ["RAILWAY_URL"]
+          headers = {"X-Runner-Key": os.environ["RUNNER_API_KEY"]}
+          chrome_profile = os.path.expanduser("~/.cache/yt-chrome-sync")
+
+          # Same parsing as the probe step above -- keep the two in sync.
+          def recorded_at_from_info(info: dict) -> str | None:
+              description = info.get("description") or ""
+              match = re.search(r"^FFA_EFFECTIVE_AT:([^\r\n]+)$", description, re.MULTILINE)
+              if match:
+                  raw = match.group(1)
+                  try:
+                      if raw.endswith("Z"):
+                          raw = f"{raw[:-1]}+00:00"
+                      dt = datetime.fromisoformat(raw)
+                      dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+                      return dt.isoformat()
+                  except (ValueError, OverflowError):
+                      pass
+              if info.get("timestamp"):
+                  return datetime.fromtimestamp(info["timestamp"], tz=UTC).isoformat()
+              return None
+
+          pending = requests.get(
+              f"{base}/api/runner/pending-recorded-at-backfill", headers=headers, timeout=30
+          ).json()
+          videos = pending.get("videos", [])
+          print(f"{len(videos)} video(s) to re-check for recorded_at backfill")
+
+          checked = changed = failed = 0
+          for v in videos:
+              ref = v["source_ref"]
+              result = {"video_id": v["video_id"]}
+              try:
+                  out = subprocess.run(
+                      ["yt-dlp", "--dump-json", "--no-warnings",
+                       "--cookies-from-browser", f"chrome:{chrome_profile}",
+                       "--extractor-args", "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
+                       f"https://www.youtube.com/watch?v={ref}"],
+                      capture_output=True, text=True, timeout=60, check=True,
+                  )
+                  info = json.loads(out.stdout.splitlines()[-1])
+                  result["recorded_at"] = recorded_at_from_info(info)
+                  checked += 1
+              except Exception as exc:
+                  result["error"] = str(exc)[:500]
+                  failed += 1
+                  print(f"backfill probe failed for {ref}: {exc}")
+
+              resp = requests.post(
+                  f"{base}/api/runner/recorded-at-backfill-result",
+                  headers=headers, json=result, timeout=30,
+              )
+              resp.raise_for_status()
+              if resp.json().get("changed"):
+                  changed += 1
+                  print(f"corrected recorded_at for {ref}")
+
+          print(f"backfill done: checked={checked} changed={changed} failed={failed}")
           PY
