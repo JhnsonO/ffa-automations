@@ -111,6 +111,7 @@ jobs:
             --ref "$EXPERIMENT_REF" \
             --inputs-json "$INPUTS_JSON" \
             --max-attempts "$MAX_ATTEMPTS" \
+            --fallback-datacenter "EUR-IS-1" \
             --timeout-s 7200 \
             --github-output "$GITHUB_OUTPUT"
 
