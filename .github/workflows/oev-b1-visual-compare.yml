@@ -16,6 +16,11 @@ jobs:
   extract:
     runs-on: ubuntu-24.04
     steps:
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
       - name: Download A and B artifacts
         env:
           GH_TOKEN: ${{ github.token }}
