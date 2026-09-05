@@ -1,7 +1,7 @@
 {
   "mode": "run",
   "profile": "sample_02_180_production_b1",
-  "experiment_ref": "main",
-  "reference_run_id_override": "",
-  "nonce": "b1-actionstate-production-baseline-a-fallback-20260905"
+  "experiment_ref": "experiment/actionstate-b1-local-ball-neighbourhood",
+  "reference_run_id_override": "33977564533",
+  "nonce": "b1-actionstate-ab-run-20260905"
 }
