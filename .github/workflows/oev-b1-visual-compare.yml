@@ -35,6 +35,24 @@ jobs:
           echo "A_VIDEO=$A_VIDEO" >> "$GITHUB_ENV"
           echo "B_VIDEO=$B_VIDEO" >> "$GITHUB_ENV"
 
+      - name: Quantify visual similarity in evaluation windows
+        run: |
+          set -euo pipefail
+          : > out/visual_similarity.txt
+          compare_window() {
+            label="$1"; start="$2"; dur="$3"
+            echo "=== $label start=${start}s duration=${dur}s ===" | tee -a out/visual_similarity.txt
+            ffmpeg -hide_banner -ss "$start" -i "$A_VIDEO" -ss "$start" -i "$B_VIDEO" -t "$dur" \
+              -filter_complex "[0:v]scale=960:-2[a];[1:v]scale=960:-2[b];[a][b]ssim" \
+              -an -f null - 2>&1 | grep 'SSIM' | tail -n1 | tee -a out/visual_similarity.txt
+          }
+          compare_window primary_129_149 129 20
+          compare_window hard_134_139 134 5
+          for s in 134 135 136 137 138; do
+            compare_window second_${s}_$((s+1)) "$s" 1
+          done
+          cat out/visual_similarity.txt
+
       - name: Extract hard-window and goal-context clips
         run: |
           ffmpeg -hide_banner -loglevel error -ss 128 -i "$A_VIDEO" -t 22 -an -vf "scale=960:-2" -c:v libx264 -preset veryfast -crf 25 out/A_128_150.mp4
