@@ -10,6 +10,17 @@ curl -fsSL "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${BASE_AUT
 chmod +x "$BASE_BOOTSTRAP"
 "$BASE_BOOTSTRAP"
 
+# Production bootstrap installs Rust in a child shell; restore Cargo in this wrapper.
+if [ -f "$HOME/.cargo/env" ]; then
+  . "$HOME/.cargo/env"
+else
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
+command -v cargo >/dev/null || {
+  echo "cargo missing after production bootstrap" >&2
+  exit 127
+}
+
 git -C "$WORKDIR" fetch origin "$BASE_SHA"
 git -C "$WORKDIR" reset --hard "$BASE_SHA"
 
