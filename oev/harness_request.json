@@ -1,6 +1,7 @@
 {
   "mode": "run",
-  "profile": "sample_02_180_yolo_highres_euro",
-  "experiment_ref": "experiment/specialised-ball-detector-01",
-  "nonce": "specialised-detector-test-180s-euro-20260825-c"
+  "profile": "sample_02_180_quality",
+  "experiment_ref": "main",
+  "reference_run_id_override": "",
+  "nonce": "b1-actionstate-baseline-a-20260905"
 }
