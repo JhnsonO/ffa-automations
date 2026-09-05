@@ -250,7 +250,7 @@ log "Fetching/building reco-cli..."
 # `git checkout <sha> -- <paths>` -- HEAD and the logged SHA stay at the
 # validated production commit; only those two files' contents change.
 BASE_SHA="c8b0d74b537d192c7de8d2856de64620a82830cf"
-DIAG_SHA="a93a7157b6dcb554b9b8e91f0c92ed7b28ee694e"
+DIAG_SHA="50c823fb110dec437e35159efcd2edb0b34ef24a"
 DIAG_OVERLAY_FILES="crates/reco-autocam/src/trackers/ball.rs crates/reco-core/src/session/run_loop.rs"
 if [ -d "$WORKDIR/.git" ]; then
   log "Existing clone found at $WORKDIR, fetching pinned SHAs instead of re-cloning."
