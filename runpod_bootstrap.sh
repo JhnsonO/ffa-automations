@@ -2,10 +2,11 @@
 set -euo pipefail
 
 BASE_SHA="c8b0d74b537d192c7de8d2856de64620a82830cf"
+BASE_AUTOMATIONS_SHA="c06aea970328645afd8d7fe94cfd2731b9d695cb"
 WORKDIR="/tmp/video-stitcher"
 BASE_BOOTSTRAP="/tmp/runpod_bootstrap_production.sh"
 
-curl -fsSL "https://raw.githubusercontent.com/JhnsonO/ffa-automations/main/runpod_bootstrap.sh" -o "$BASE_BOOTSTRAP"
+curl -fsSL "https://raw.githubusercontent.com/JhnsonO/ffa-automations/${BASE_AUTOMATIONS_SHA}/runpod_bootstrap.sh" -o "$BASE_BOOTSTRAP"
 chmod +x "$BASE_BOOTSTRAP"
 "$BASE_BOOTSTRAP"
 
@@ -64,6 +65,7 @@ cargo fmt --all
 cargo test -p reco-autocam --lib panners::field::tests -- --nocapture
 time cargo build --release -p reco-cli --features cuda
 
+echo "ffa_bootstrap_sha=$BASE_AUTOMATIONS_SHA" >> /tmp/runpod_bootstrap_versions.log
 echo "video-stitcher_sha=$BASE_SHA" >> /tmp/runpod_bootstrap_versions.log
 echo "video-stitcher_overlay=actionstate-b1-local-ball-neighbourhood" >> /tmp/runpod_bootstrap_versions.log
 echo "video-stitcher_field_sha256=$(sha256sum crates/reco-autocam/src/panners/field.rs | awk '{print $1}')" >> /tmp/runpod_bootstrap_versions.log
