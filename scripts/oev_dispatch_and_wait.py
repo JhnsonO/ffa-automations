@@ -94,6 +94,7 @@ def main() -> int:
     parser.add_argument("--inputs-json", required=True)
     parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--timeout-s", type=int, default=7200)
+    parser.add_argument("--fallback-datacenter", default="")
     parser.add_argument("--github-output")
     args = parser.parse_args()
 
@@ -106,10 +107,20 @@ def main() -> int:
         raise SystemExit("--inputs-json must decode to an object")
     inputs = {str(k): str(v) for k, v in inputs.items()}
 
+    primary_datacenter = inputs.get("datacenter", "")
+    fallback_datacenter = args.fallback_datacenter.strip()
+
     final_run = 0
     for attempt in range(1, args.max_attempts + 1):
-        print(f"Dispatch attempt {attempt}/{args.max_attempts} for {args.ref}", flush=True)
-        run_id = dispatch_once(repo, args.workflow, args.ref, inputs, token)
+        attempt_inputs = dict(inputs)
+        if attempt > 1 and fallback_datacenter and fallback_datacenter != primary_datacenter:
+            attempt_inputs["datacenter"] = fallback_datacenter
+        datacenter = attempt_inputs.get("datacenter", "unspecified")
+        print(
+            f"Dispatch attempt {attempt}/{args.max_attempts} for {args.ref} datacenter={datacenter}",
+            flush=True,
+        )
+        run_id = dispatch_once(repo, args.workflow, args.ref, attempt_inputs, token)
         final_run = run_id
         run = wait_run(repo, run_id, token, args.timeout_s)
         if run.get("conclusion") == "success":
@@ -118,11 +129,30 @@ def main() -> int:
                 with open(args.github_output, "a", encoding="utf-8") as fh:
                     fh.write(f"run_id={run_id}\n")
                     fh.write(f"attempts={attempt}\n")
+                    fh.write(f"datacenter={datacenter}\n")
             return 0
-        if failed_in_launch_step(repo, run_id, token) and attempt < args.max_attempts:
-            print(f"Run {run_id} failed in RunPod allocation/preflight; retrying without changing code.", flush=True)
+
+        launch_failed = failed_in_launch_step(repo, run_id, token)
+        if launch_failed and attempt < args.max_attempts:
+            next_datacenter = (
+                fallback_datacenter
+                if fallback_datacenter and fallback_datacenter != primary_datacenter
+                else datacenter
+            )
+            print(
+                f"Run {run_id} failed in RunPod allocation/preflight; retrying without changing code "
+                f"(next datacenter={next_datacenter}).",
+                flush=True,
+            )
             continue
-        print(f"Run {run_id} failed outside the retryable RunPod allocation step; not retrying.", flush=True)
+        if launch_failed:
+            print(
+                f"Run {run_id} failed in RunPod allocation/preflight; retry budget exhausted after "
+                f"{args.max_attempts} attempts.",
+                flush=True,
+            )
+        else:
+            print(f"Run {run_id} failed outside the retryable RunPod allocation step; not retrying.", flush=True)
         break
 
     if args.github_output:
