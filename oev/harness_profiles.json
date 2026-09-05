@@ -2,6 +2,27 @@
   "schema_version": 1,
   "baseline_workflow": "oev-runpod-sample-baseline.yml",
   "profiles": {
+    "sample_02_180_production_b1": {
+      "description": "Production-clean sample_02 180s control/profile for ActionState B1. Uses broadcast FieldPanner defaults with no containment/tuning overlay.",
+      "fps": 59.94,
+      "ball_class_id": 32,
+      "reference_run_id": 0,
+      "capacity_retry_max": 3,
+      "dispatch": {
+        "datacenter": "EU-RO-1",
+        "sample_id": "sample_02",
+        "duration_s": "180",
+        "sample_set_id": "GX010197-seed1384188843",
+        "model_variant": "yolo26m",
+        "lookahead": "1.5",
+        "cluster_alpha_override": ""
+      },
+      "review_windows": [
+        {"label": "B1 primary 129-149s", "start_s": 129.0, "end_s": 149.0},
+        {"label": "B1 hard case 134-139s", "start_s": 134.0, "end_s": 139.0},
+        {"label": "stationary-goal-ball context", "start_s": 117.0, "end_s": 131.0}
+      ]
+    },
     "sample_02_180_quality": {
       "description": "Canonical stride-1 180s sample_02 OEV follow-cam quality regression profile.",
       "fps": 59.94,
