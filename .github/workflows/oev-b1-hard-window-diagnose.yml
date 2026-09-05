@@ -11,6 +11,7 @@ permissions:
   actions: read
   contents: read
 
+# One-off diagnostic for why production and B1 converge during the 134–139s hard window.
 jobs:
   diagnose:
     runs-on: ubuntu-24.04
@@ -29,40 +30,28 @@ jobs:
       - name: Diagnose 134-139s event state
         run: |
           python3 - <<'PY'
-          import json, math, statistics, re
-          from pathlib import Path
-
+          import json, math
           TERMS = ('ball','cluster','target','future','lookahead','fov','pan','yaw','pitch','player','local','track','state','aim')
-
           def flat(obj, prefix=''):
               out={}
               if isinstance(obj, dict):
                   for k,v in obj.items():
                       p=f'{prefix}.{k}' if prefix else str(k)
-                      if isinstance(v,(dict,list)):
-                          out.update(flat(v,p))
-                      else:
-                          out[p]=v
+                      if isinstance(v,(dict,list)): out.update(flat(v,p))
+                      else: out[p]=v
               elif isinstance(obj,list):
-                  # Keep short numeric lists visible but don't explode huge arrays.
-                  if len(obj) <= 8 and all(not isinstance(x,(dict,list)) for x in obj):
-                      out[prefix]=obj
+                  if len(obj) <= 8 and all(not isinstance(x,(dict,list)) for x in obj): out[prefix]=obj
                   else:
                       for i,v in enumerate(obj[:20]):
                           p=f'{prefix}[{i}]'
-                          if isinstance(v,(dict,list)):
-                              out.update(flat(v,p))
-                          else:
-                              out[p]=v
+                          if isinstance(v,(dict,list)): out.update(flat(v,p))
+                          else: out[p]=v
               return out
-
           def time_candidates(d):
-              f=flat(d)
-              c=[]
+              f=flat(d); c=[]
               for k,v in f.items():
                   if not isinstance(v,(int,float)): continue
-                  kl=k.lower()
-                  score=0
+                  kl=k.lower(); score=0
                   if any(x in kl for x in ['timestamp','time_s','seconds','pts_time','video_time']): score+=5
                   if kl.endswith('.t') or kl=='t': score+=3
                   if 'ms' in kl: score+=2
@@ -72,83 +61,61 @@ jobs:
                       if 'ms' in kl and val>1000: val/=1000.0
                       c.append((score,k,val))
               return sorted(c, reverse=True)
-
           def load_window(path):
               rows=[]; chosen=None
               with open(path,'r',errors='replace') as fh:
-                  for idx,line in enumerate(fh):
+                  for line in fh:
                       try: d=json.loads(line)
                       except: continue
                       tc=time_candidates(d)
                       if chosen is None and tc:
-                          # pick a plausible monotonic seconds field once first useful record appears
                           for _,k,v in tc:
-                              if 0 <= v <= 10000:
-                                  chosen=k; break
+                              if 0 <= v <= 10000: chosen=k; break
                       if chosen:
                           f=flat(d)
                           if chosen in f and isinstance(f[chosen],(int,float)):
-                              t=float(f[chosen]);
+                              t=float(f[chosen])
                               if 'ms' in chosen.lower() and t>1000: t/=1000.0
-                              if 133.5 <= t <= 139.5:
-                                  rows.append((t,d,f))
+                              if 133.5 <= t <= 139.5: rows.append((t,d,f))
               return chosen,rows
-
           def summarize(label,path):
               key,rows=load_window(path)
-              print(f'\n===== {label} =====')
-              print('time_key:',key,'rows:',len(rows))
-              if not rows:
-                  return [],key
-              # Discover relevant scalar keys and their coverage.
+              print(f'\n===== {label} ====='); print('time_key:',key,'rows:',len(rows))
+              if not rows: return [],key
               counts={}
               for _,_,f in rows:
                   for k,v in f.items():
-                      kl=k.lower()
-                      if any(term in kl for term in TERMS) and isinstance(v,(int,float,str,bool,list)):
+                      if any(term in k.lower() for term in TERMS) and isinstance(v,(int,float,str,bool,list)):
                           counts[k]=counts.get(k,0)+1
               relevant=[k for k,c in sorted(counts.items(), key=lambda kv:(-kv[1],kv[0])) if c >= max(2,int(len(rows)*0.05))]
               print('relevant_keys:')
               for k in relevant[:120]: print(' ',k,counts[k])
-
-              # One sample nearest each 0.5s boundary, output relevant values compactly.
               print('\nframe_samples:')
               for target in [134+i*0.5 for i in range(11)]:
-                  t,d,f=min(rows,key=lambda r:abs(r[0]-target))
-                  vals=[]
+                  t,d,f=min(rows,key=lambda r:abs(r[0]-target)); print(f'-- t={t:.3f} nearest={target:.1f}')
+                  shown=0
                   for k in relevant:
-                      v=f.get(k)
-                      if v is None: continue
+                      if k not in f: continue
                       kl=k.lower()
                       if any(x in kl for x in ['ball','cluster','target','future','lookahead','fov','pan','yaw','pitch','local','track','state','aim']):
-                          s=repr(v)
-                          if len(s)>90: s=s[:87]+'...'
-                          vals.append(f'{k}={s}')
-                  print(f'-- t={t:.3f} nearest={target:.1f}')
-                  for s in vals[:80]: print('  ',s)
+                          s=repr(f[k]); s=s if len(s)<=90 else s[:87]+'...'
+                          print('  ',f'{k}={s}'); shown+=1
+                          if shown>=80: break
               return rows,key
-
-          A,ka=summarize('A production','A/events.jsonl')
-          B,kb=summarize('B B1','B/events.jsonl')
-
-          # Common relevant numeric fields: compare A/B nearest in time to find what is identical vs diverged.
+          A,_=summarize('A production','A/events.jsonl'); B,_=summarize('B B1','B/events.jsonl')
           print('\n===== COMMON FIELD DELTAS =====')
           if A and B:
-              common=set(A[0][2]).intersection(B[0][2])
-              common=[k for k in common if any(term in k.lower() for term in TERMS)]
+              common=set(A[0][2]).intersection(B[0][2]); common=[k for k in common if any(term in k.lower() for term in TERMS)]
               for target in [134,135,136,137,138,139]:
-                  a=min(A,key=lambda r:abs(r[0]-target)); b=min(B,key=lambda r:abs(r[0]-target))
-                  print(f'-- ~{target}s A={a[0]:.3f} B={b[0]:.3f}')
+                  a=min(A,key=lambda r:abs(r[0]-target)); b=min(B,key=lambda r:abs(r[0]-target)); print(f'-- ~{target}s A={a[0]:.3f} B={b[0]:.3f}')
                   diffs=[]
                   for k in common:
                       va=a[2].get(k); vb=b[2].get(k)
                       if isinstance(va,(int,float)) and isinstance(vb,(int,float)):
                           d=abs(float(va)-float(vb))
                           if math.isfinite(d): diffs.append((d,k,va,vb))
-                      elif isinstance(va,(str,bool)) and isinstance(vb,(str,bool)) and va!=vb:
-                          diffs.append((999,k,va,vb))
-                  for d,k,va,vb in sorted(diffs,reverse=True)[:40]:
-                      print(f'  {k}: A={va} B={vb} delta={d if d!=999 else "DIFF"}')
+                      elif isinstance(va,(str,bool)) and isinstance(vb,(str,bool)) and va!=vb: diffs.append((999,k,va,vb))
+                  for d,k,va,vb in sorted(diffs,reverse=True)[:40]: print(f'  {k}: A={va} B={vb} delta={d if d!=999 else "DIFF"}')
           PY
 
       - name: Save concise schema probe
@@ -156,8 +123,7 @@ jobs:
           python3 - <<'PY' > out/schema_probe.txt
           import json
           for label,path in [('A','A/events.jsonl'),('B','B/events.jsonl')]:
-              print('===',label,'===')
-              n=0
+              print('===',label,'==='); n=0
               with open(path,errors='replace') as f:
                   for line in f:
                       try:d=json.loads(line)
