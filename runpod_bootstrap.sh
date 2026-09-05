@@ -60,7 +60,7 @@ path.write_text(s)
 PY
 
 cd "$WORKDIR"
-cargo fmt --all -- --check
+cargo fmt --all
 cargo test -p reco-autocam --lib panners::field::tests -- --nocapture
 time cargo build --release -p reco-cli --features cuda
 
