@@ -242,23 +242,30 @@ log "Vulkan confirmed: $(echo "$VULKAN_CHECK" | tr '\n' ' ')"
 #    update just picks up the diff.
 # ---------------------------------------------------------------------------
 log "Fetching/building reco-cli..."
-# Pinned to the diag/hard-case-134-139s branch tip: production baseline
-# c8b0d74b537d192c7de8d2856de64620a82830cf plus additive-only OEV_DIAG
-# logging in ball.rs and run_loop.rs (zero logic changes). See
-# JhnsonO/video-stitcher@diag/hard-case-134-139s.
+# This RunPod workflow hard-gates on video-stitcher_sha == the exact
+# validated production SHA (see "Verify exact validated Reco revision" in
+# oev-runpod-sample-baseline.yml). Reset HEAD to that SHA, then overlay
+# only the two additive-only instrumented files from the diagnostic
+# branch tip (JhnsonO/video-stitcher@diag/hard-case-134-139s) via
+# `git checkout <sha> -- <paths>` -- HEAD and the logged SHA stay at the
+# validated production commit; only those two files' contents change.
+BASE_SHA="c8b0d74b537d192c7de8d2856de64620a82830cf"
 DIAG_SHA="a93a7157b6dcb554b9b8e91f0c92ed7b28ee694e"
+DIAG_OVERLAY_FILES="crates/reco-autocam/src/trackers/ball.rs crates/reco-core/src/session/run_loop.rs"
 if [ -d "$WORKDIR/.git" ]; then
-  log "Existing clone found at $WORKDIR, fetching pinned diagnostic SHA instead of re-cloning."
-  git -C "$WORKDIR" fetch origin "$DIAG_SHA" || fail "git fetch of pinned diagnostic SHA failed in existing clone" 3
+  log "Existing clone found at $WORKDIR, fetching pinned SHAs instead of re-cloning."
+  git -C "$WORKDIR" fetch origin "$BASE_SHA" "$DIAG_SHA" || fail "git fetch of pinned SHAs failed in existing clone" 3
 else
   rm -rf "$WORKDIR"
   git clone "$REPO_URL" "$WORKDIR" || fail "git clone failed" 3
-  git -C "$WORKDIR" fetch origin "$DIAG_SHA" || fail "git fetch of pinned diagnostic SHA failed" 3
+  git -C "$WORKDIR" fetch origin "$BASE_SHA" "$DIAG_SHA" || fail "git fetch of pinned SHAs failed" 3
 fi
-git -C "$WORKDIR" reset --hard "$DIAG_SHA" || fail "git reset to pinned diagnostic SHA failed" 3
+git -C "$WORKDIR" reset --hard "$BASE_SHA" || fail "git reset to validated production SHA failed" 3
+# shellcheck disable=SC2086
+git -C "$WORKDIR" checkout "$DIAG_SHA" -- $DIAG_OVERLAY_FILES || fail "overlay checkout of diagnostic files failed" 3
 REPO_SHA=$(git -C "$WORKDIR" rev-parse HEAD)
 log_version "video-stitcher_sha" "$REPO_SHA"
-log_version "video-stitcher_overlay" "diag-hard-case-134-139s-additive-logging"
+log_version "video-stitcher_overlay" "diag-hard-case-134-139s-additive-logging (files: $DIAG_OVERLAY_FILES from $DIAG_SHA)"
 
 cd "$WORKDIR"
 time cargo build --release -p reco-cli --features cuda 2>&1 | tee /tmp/runpod_bootstrap_build.log
