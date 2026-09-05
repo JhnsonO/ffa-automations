@@ -2,7 +2,7 @@
 set -euo pipefail
 
 BASE_SHA="c8b0d74b537d192c7de8d2856de64620a82830cf"
-BASE_AUTOMATIONS_SHA="c06aea970328645afd8d7fe94cfd2731b9d695cb"
+BASE_AUTOMATIONS_SHA="c06aea887c3f0824c75b487b54c511cb7eb8f50b"
 WORKDIR="/tmp/video-stitcher"
 BASE_BOOTSTRAP="/tmp/runpod_bootstrap_production.sh"
 
