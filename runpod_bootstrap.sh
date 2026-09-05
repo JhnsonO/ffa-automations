@@ -242,16 +242,23 @@ log "Vulkan confirmed: $(echo "$VULKAN_CHECK" | tr '\n' ' ')"
 #    update just picks up the diff.
 # ---------------------------------------------------------------------------
 log "Fetching/building reco-cli..."
+# Pinned to the diag/hard-case-134-139s branch tip: production baseline
+# c8b0d74b537d192c7de8d2856de64620a82830cf plus additive-only OEV_DIAG
+# logging in ball.rs and run_loop.rs (zero logic changes). See
+# JhnsonO/video-stitcher@diag/hard-case-134-139s.
+DIAG_SHA="a93a7157b6dcb554b9b8e91f0c92ed7b28ee694e"
 if [ -d "$WORKDIR/.git" ]; then
-  log "Existing clone found at $WORKDIR, fetching latest instead of re-cloning."
-  git -C "$WORKDIR" fetch origin || fail "git fetch failed in existing clone" 3
-  git -C "$WORKDIR" reset --hard origin/main || fail "git reset to origin/main failed" 3
+  log "Existing clone found at $WORKDIR, fetching pinned diagnostic SHA instead of re-cloning."
+  git -C "$WORKDIR" fetch origin "$DIAG_SHA" || fail "git fetch of pinned diagnostic SHA failed in existing clone" 3
 else
   rm -rf "$WORKDIR"
   git clone "$REPO_URL" "$WORKDIR" || fail "git clone failed" 3
+  git -C "$WORKDIR" fetch origin "$DIAG_SHA" || fail "git fetch of pinned diagnostic SHA failed" 3
 fi
+git -C "$WORKDIR" reset --hard "$DIAG_SHA" || fail "git reset to pinned diagnostic SHA failed" 3
 REPO_SHA=$(git -C "$WORKDIR" rev-parse HEAD)
 log_version "video-stitcher_sha" "$REPO_SHA"
+log_version "video-stitcher_overlay" "diag-hard-case-134-139s-additive-logging"
 
 cd "$WORKDIR"
 time cargo build --release -p reco-cli --features cuda 2>&1 | tee /tmp/runpod_bootstrap_build.log
