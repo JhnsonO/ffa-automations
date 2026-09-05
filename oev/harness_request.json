@@ -1,7 +1,7 @@
 {
   "mode": "run",
-  "profile": "sample_02_180_quality",
+  "profile": "sample_02_180_production_b1",
   "experiment_ref": "main",
   "reference_run_id_override": "",
-  "nonce": "b1-actionstate-baseline-a-20260905"
+  "nonce": "b1-actionstate-production-baseline-a-20260905"
 }
