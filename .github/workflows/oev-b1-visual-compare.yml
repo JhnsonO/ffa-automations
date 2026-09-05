@@ -1,0 +1,57 @@
+name: OEV — B1 Visual Compare
+
+on:
+  push:
+    branches:
+      - oev/harness-control
+    paths:
+      - '.github/workflows/oev-b1-visual-compare.yml'
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download A and B artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: JhnsonO/ffa-automations
+        run: |
+          mkdir -p A B out
+          gh run download 33977564533 --name oev-sample-baseline-sample_02-180s-33977564533 --dir A
+          gh run download 33980740029 --name oev-sample-baseline-sample_02-180s-33980740029 --dir B
+          A_VIDEO=$(find A -type f -name '*.mp4' | head -n1)
+          B_VIDEO=$(find B -type f -name '*.mp4' | head -n1)
+          test -n "$A_VIDEO" && test -n "$B_VIDEO"
+          echo "A_VIDEO=$A_VIDEO" >> "$GITHUB_ENV"
+          echo "B_VIDEO=$B_VIDEO" >> "$GITHUB_ENV"
+
+      - name: Extract hard-window and goal-context clips
+        run: |
+          # Re-encode only short windows so the review artifact stays small.
+          ffmpeg -hide_banner -loglevel error -ss 128 -i "$A_VIDEO" -t 22 -an -vf "scale=960:-2" -c:v libx264 -preset veryfast -crf 25 out/A_128_150.mp4
+          ffmpeg -hide_banner -loglevel error -ss 128 -i "$B_VIDEO" -t 22 -an -vf "scale=960:-2" -c:v libx264 -preset veryfast -crf 25 out/B_128_150.mp4
+          ffmpeg -hide_banner -loglevel error -ss 116 -i "$A_VIDEO" -t 17 -an -vf "scale=960:-2" -c:v libx264 -preset veryfast -crf 25 out/A_116_133.mp4
+          ffmpeg -hide_banner -loglevel error -ss 116 -i "$B_VIDEO" -t 17 -an -vf "scale=960:-2" -c:v libx264 -preset veryfast -crf 25 out/B_116_133.mp4
+
+          # Side-by-side review videos, labels baked in.
+          ffmpeg -hide_banner -loglevel error -i out/A_128_150.mp4 -i out/B_128_150.mp4 -filter_complex "[0:v]drawtext=text='A production':x=20:y=20:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.55[a];[1:v]drawtext=text='B B1':x=20:y=20:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.55[b];[a][b]hstack=inputs=2[v]" -map "[v]" -an -c:v libx264 -preset veryfast -crf 26 out/AB_128_150_side_by_side.mp4
+          ffmpeg -hide_banner -loglevel error -i out/A_116_133.mp4 -i out/B_116_133.mp4 -filter_complex "[0:v]drawtext=text='A production':x=20:y=20:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.55[a];[1:v]drawtext=text='B B1':x=20:y=20:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.55[b];[a][b]hstack=inputs=2[v]" -map "[v]" -an -c:v libx264 -preset veryfast -crf 26 out/AB_116_133_side_by_side.mp4
+
+          # Contact sheets around the exact 134–139 hard case and goal context.
+          ffmpeg -hide_banner -loglevel error -ss 132 -i "$A_VIDEO" -t 9 -vf "fps=2,scale=640:-2,tile=3x6" -frames:v 1 out/A_hard_contact.jpg
+          ffmpeg -hide_banner -loglevel error -ss 132 -i "$B_VIDEO" -t 9 -vf "fps=2,scale=640:-2,tile=3x6" -frames:v 1 out/B_hard_contact.jpg
+          ffmpeg -hide_banner -loglevel error -ss 116 -i "$A_VIDEO" -t 17 -vf "fps=1,scale=640:-2,tile=4x5" -frames:v 1 out/A_goal_contact.jpg
+          ffmpeg -hide_banner -loglevel error -ss 116 -i "$B_VIDEO" -t 17 -vf "fps=1,scale=640:-2,tile=4x5" -frames:v 1 out/B_goal_contact.jpg
+
+          ls -lh out
+
+      - name: Upload visual comparison
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-b1-visual-compare-33977564533-vs-33980740029
+          path: out/
+          retention-days: 7
