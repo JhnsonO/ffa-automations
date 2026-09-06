@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_SHA="c8b0d74b537d192c7de8d2856de64620a82830cf"
+BASE_SHA="d525ed206740336973d1f46fcb4dbb2d1bc76857"
 BASE_AUTOMATIONS_SHA="c06aea887c3f0824c75b487b54c511cb7eb8f50b"
 WORKDIR="/tmp/video-stitcher"
 BASE_BOOTSTRAP="/tmp/runpod_bootstrap_production.sh"
