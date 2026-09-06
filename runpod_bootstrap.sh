@@ -90,6 +90,12 @@ repl(
     'camera-response dead_zone_rad',
 )
 
+repl(
+    'assert!(a.dead_zone_rad < b.dead_zone_rad);\n',
+    '',
+    'camera-response test invariant (broadcast now has a smaller dead_zone than action for this experiment)',
+)
+
 path.write_text(s)
 PY
 
