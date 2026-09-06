@@ -99,6 +99,77 @@ repl(
 path.write_text(s)
 PY
 
+python3 - <<'PY2'
+from pathlib import Path
+
+path = Path('/tmp/video-stitcher/crates/reco-autocam/src/roi_filter.rs')
+s = path.read_text()
+
+def repl(old, new, label):
+    global s
+    if old not in s:
+        raise SystemExit(f'roi diag patch anchor missing: {label}')
+    if s.count(old) != 1:
+        raise SystemExit(f'roi diag patch anchor not unique: {label}')
+    s = s.replace(old, new, 1)
+
+repl(
+    "pub struct RoiFilteredDetector {\n    inner: Box<dyn UnifiedDetector>,\n    roi: FieldRoi,\n    class_anchors: HashMap<u16, RoiAnchor>,\n    default_anchor: RoiAnchor,\n}",
+    "pub struct RoiFilteredDetector {\n    inner: Box<dyn UnifiedDetector>,\n    roi: FieldRoi,\n    class_anchors: HashMap<u16, RoiAnchor>,\n    default_anchor: RoiAnchor,\n    // Diagnostic-only (OEV ball-ROI hypothesis test). Every other class's\n    // filtering path above is untouched; ball_class_id stays None unless\n    // with_ball_roi_diagnostics is called, so default behaviour is identical\n    // to production.\n    ball_class_id: Option<u16>,\n    ball_vertical_margin: f64,\n    roi_diag_frame_left: u64,\n    roi_diag_frame_right: u64,\n    roi_diag_fps: f32,\n    roi_diag_frame_stride: u32,\n}",
+    "struct fields",
+)
+
+repl(
+    "    pub fn new(inner: Box<dyn UnifiedDetector>, roi: FieldRoi) -> Self {\n        Self {\n            inner,\n            roi,\n            class_anchors: HashMap::new(),\n            default_anchor: RoiAnchor::Center,\n        }\n    }",
+    "    pub fn new(inner: Box<dyn UnifiedDetector>, roi: FieldRoi) -> Self {\n        Self {\n            inner,\n            roi,\n            class_anchors: HashMap::new(),\n            default_anchor: RoiAnchor::Center,\n            ball_class_id: None,\n            ball_vertical_margin: 0.0,\n            roi_diag_frame_left: 0,\n            roi_diag_frame_right: 0,\n            roi_diag_fps: 60.0,\n            roi_diag_frame_stride: 1,\n        }\n    }",
+    "constructor",
+)
+
+repl(
+    "    /// Override the default anchor for classes without an explicit\n    /// [`with_class_anchor`](Self::with_class_anchor) entry. Chainable.\n    pub fn with_default_anchor(mut self, anchor: RoiAnchor) -> Self {\n        self.default_anchor = anchor;\n        self\n    }\n}",
+    "    /// Override the default anchor for classes without an explicit\n    /// [`with_class_anchor`](Self::with_class_anchor) entry. Chainable.\n    pub fn with_default_anchor(mut self, anchor: RoiAnchor) -> Self {\n        self.default_anchor = anchor;\n        self\n    }\n\n    /// Diagnostic-only (OEV ball-ROI hypothesis test, hard case 134-139s).\n    /// Gives `ball_class_id` a generous vertical allowance above the field\n    /// polygon's top edge before the ROI test, so a lofted ball whose\n    /// center is genuinely above the pitch line is not rejected purely for\n    /// being airborne. No other class is affected: `filter_by_roi` below\n    /// still runs unmodified for every class except this one. `fps` /\n    /// `frame_stride` are used only to derive an approximate timestamp for\n    /// window-scoped `eprintln!` diagnostics, matching the same cadence\n    /// formula used elsewhere in the autocam pipeline. Chainable.\n    pub fn with_ball_roi_diagnostics(\n        mut self,\n        ball_class_id: u16,\n        vertical_margin: f64,\n        fps: f32,\n        frame_stride: u32,\n    ) -> Self {\n        self.ball_class_id = Some(ball_class_id);\n        self.ball_vertical_margin = vertical_margin;\n        self.roi_diag_fps = fps;\n        self.roi_diag_frame_stride = frame_stride;\n        self\n    }\n}",
+    "builder method",
+)
+
+repl(
+    "    fn detect(\n        &mut self,\n        camera: CameraId,\n        frame: &DetectorFrame<'_>,\n    ) -> Result<Vec<Detection>, DetectorError> {\n        let detections = self.inner.detect(camera, frame)?;\n        Ok(filter_by_roi(\n            detections,\n            &self.roi,\n            &self.class_anchors,\n            self.default_anchor,\n        ))\n    }",
+    "    fn detect(\n        &mut self,\n        camera: CameraId,\n        frame: &DetectorFrame<'_>,\n    ) -> Result<Vec<Detection>, DetectorError> {\n        let detections = self.inner.detect(camera, frame)?;\n\n        // Diagnostic-only: everything below is a no-op (ball_dets always\n        // empty, kept == filter_by_roi(detections, ...)) unless\n        // with_ball_roi_diagnostics was called.\n        let frame_index = match camera {\n            CameraId::Left => {\n                let i = self.roi_diag_frame_left;\n                self.roi_diag_frame_left += 1;\n                i\n            }\n            CameraId::Right => {\n                let i = self.roi_diag_frame_right;\n                self.roi_diag_frame_right += 1;\n                i\n            }\n        };\n        let timestamp_ms = frame_index as f64 * 1000.0 * self.roi_diag_frame_stride as f64\n            / self.roi_diag_fps as f64;\n        let diag_window = (133000.0..=140000.0).contains(&timestamp_ms);\n\n        let (ball_dets, other_dets): (Vec<Detection>, Vec<Detection>) = detections\n            .into_iter()\n            .partition(|d| self.ball_class_id == Some(d.class_id));\n\n        let mut kept = filter_by_roi(other_dets, &self.roi, &self.class_anchors, self.default_anchor);\n\n        let polygon: &[[f64; 2]] = match camera {\n            CameraId::Left => &self.roi.left,\n            CameraId::Right => &self.roi.right,\n        };\n\n        if polygon.len() < 3 {\n            kept.extend(ball_dets);\n        } else {\n            for d in ball_dets {\n                let cx = d.center_x as f64;\n                let cy = d.center_y as f64;\n                let adj_cy = cy + self.ball_vertical_margin;\n                let roi_pass = point_in_polygon([cx, adj_cy], polygon);\n                if diag_window {\n                    eprintln!(\n                        \"OEV_ROI_DIAG cam={:?} t_ms={:.3} cx={:.4} cy={:.4} adj_cy={:.4} roi_pass={}\",\n                        camera, timestamp_ms, cx, cy, adj_cy, roi_pass\n                    );\n                }\n                if roi_pass {\n                    kept.push(d);\n                }\n            }\n        }\n\n        Ok(kept)\n    }",
+    "detect() ball diagnostics",
+)
+
+path.write_text(s)
+PY2
+
+python3 - <<'PY3'
+from pathlib import Path
+
+path = Path('/tmp/video-stitcher/crates/reco-autocam/src/lib.rs')
+s = path.read_text()
+
+def repl(old, new, label):
+    global s
+    if old not in s:
+        raise SystemExit(f'lib.rs diag patch anchor missing: {label}')
+    if s.count(old) != 1:
+        raise SystemExit(f'lib.rs diag patch anchor not unique: {label}')
+    s = s.replace(old, new, 1)
+
+repl(
+    'let person_id_for_roi = resolve_or(&class_names, &["person"], 0);',
+    'let person_id_for_roi = resolve_or(&class_names, &["person"], 0);\n    // Diagnostic-only (OEV ball-ROI hypothesis test). Resolved the same way\n    // as person_id_for_roi above; falls back to COCO\'s "sports ball" id (32)\n    // if the model\'s label list doesn\'t have an exact match.\n    let ball_id_for_roi = resolve_or(&class_names, &["ball", "sports ball", "football"], 32);',
+    "ball id resolution",
+)
+
+repl(
+    "    let wrap_with_roi = |inner: Box<dyn reco_core::detect::detector::UnifiedDetector>,\n                         roi: reco_core::calibration::FieldRoi|\n     -> Box<dyn reco_core::detect::detector::UnifiedDetector> {\n        Box::new(\n            RoiFilteredDetector::new(inner, roi)\n                .with_class_anchor(person_id_for_roi, RoiAnchor::Bottom),\n        )\n    };",
+    "    let wrap_with_roi = |inner: Box<dyn reco_core::detect::detector::UnifiedDetector>,\n                         roi: reco_core::calibration::FieldRoi|\n     -> Box<dyn reco_core::detect::detector::UnifiedDetector> {\n        Box::new(\n            RoiFilteredDetector::new(inner, roi)\n                .with_class_anchor(person_id_for_roi, RoiAnchor::Bottom)\n                // Diagnostic-only: deliberately generous vertical margin\n                // (0.40, normalized) to test the \"lofted ball rejected by\n                // ROI\" hypothesis. Not a tuned production value.\n                .with_ball_roi_diagnostics(ball_id_for_roi, 0.40, fps, frame_stride),\n        )\n    };",
+    "wrap_with_roi wiring",
+)
+
+path.write_text(s)
+PY3
+
+
 cd "$WORKDIR"
 cargo fmt --all
 cargo test -p reco-autocam --lib panners::field::tests -- --nocapture
