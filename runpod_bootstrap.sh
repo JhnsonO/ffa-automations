@@ -68,6 +68,28 @@ repl(
     'lookahead application gate',
 )
 
+# Combined A/B: layer camera-response overrides on top of B2b's target
+# override. These three constants live in FieldPannerConfig::default(),
+# which broadcast() (the preset used in production/harness runs) inherits
+# unchanged -- action() explicitly overrides dead_zone_rad separately and
+# is untouched here. cluster_alpha and centered_smooth() are deliberately
+# left alone per this round's isolate-one-variable-at-a-time scope.
+repl(
+    'max_velocity_rad_per_sec: 0.18,\n',
+    'max_velocity_rad_per_sec: 0.31,\n',
+    'camera-response max_velocity_rad_per_sec',
+)
+repl(
+    'velocity_alpha: 0.06,\n',
+    'velocity_alpha: 0.08,\n',
+    'camera-response velocity_alpha',
+)
+repl(
+    'dead_zone_rad: 0.20,\n',
+    'dead_zone_rad: 0.06,\n',
+    'camera-response dead_zone_rad',
+)
+
 path.write_text(s)
 PY
 
