@@ -1985,3 +1985,68 @@ Both runs have 10,775 frames. Raw detections `8073→8507` (+434). There were 27
 **If tiled native-resolution reacquisition still fails materially:** stop tracker tuning and move to a dedicated football detector/fine-tune on OEV hard cases (tiny ball, blur, occlusion, airborne, near feet, touchline, goal/net). YOLO+VLM remains a later exception-path concept, not the first next fix.
 
 **Immediate handoff:** fresh implementation chat should establish `candidate != trusted ball` before adding stronger tiled search, keep work opt-in/draft, run a same-harness fresh control/treatment A/B, append exact implementation SHAs/branches/PR/run IDs/results to this state file, and **do not merge PR #6 as-is**.
+
+
+## 2026-09-06 session: Ball-ROI hypothesis — CONFIRMED, clean positive result
+
+**Trigger:** OEV/Reco 134-139s hard case. Hypothesis: the fixed `field_roi`
+polygon (pitch-line boundary) was rejecting genuine lofted-ball detections
+because the ball anchor tests only the bbox center against the same
+polygon players use, with no vertical allowance for airborne height.
+
+**Test, on top of frozen B2b + camera-response (branch
+`experiment/actionstate-b2b-bridged-authority-v2`):** ball class only
+given a deliberately generous +0.40 (normalized) vertical margin before
+the ROI test (`roi_filter.rs`), plus pre/post-ROI `eprintln!` diagnostics
+in the 134-139s window. Player anchor/polygon untouched (margin map
+defaults to 0.0 for every other class). Run `34055036821`
+(`sample_02`/180s/`yolo26m`/stride-1/`EU-RO-1`, RTX 4090, $0.74/hr),
+SUCCESS.
+
+**Result — ball_state=`Tracking` for all 72 analysis frames across the
+entire 134-139s window. Zero Coasting, zero Lost, zero Bridged, zero
+blackout.** This is a complete change from this window's previously
+documented behaviour (B2a rejected, B2b visually inconclusive with the
+same window still showing loss).
+
+**Raw ROI diagnostic (1209 candidate ball detections in window, 888
+accepted / 321 rejected) confirms the mechanism directly:**
+- 293/321 rejections were at the horizontal frame edge (cx<0.05 or
+  >0.95) -- plausible off-pitch/frustum-boundary junk, correctly
+  filtered.
+- 28/321 rejections were low-in-frame detections pushed *below* the
+  polygon's bottom edge by the flat +0.40 margin overcorrecting an
+  already-valid low position -- a side effect of a uniform additive
+  margin, not the lofted-ball case.
+- **Zero rejections were still "too high" after the margin** (0 of 321
+  had `adj_cy` < 0.45). Every genuinely airborne ball detection in this
+  window survived once given vertical room.
+
+Camera pose telemetry for the same window (72/72 poses matched) shows
+smooth, active panning (yaw range 0.392 rad across the window, mean
+frame-to-frame delta 0.0055 rad, max 0.0076 rad) -- not frozen/dead-zone
+stuck.
+
+**Conclusion: the ball-ROI vertical-rejection hypothesis is confirmed as
+(at least one) real upstream cause of this hard case's tracking loss.**
+0.40 is a deliberately generous diagnostic value, not a tuned production
+number, and the flat/uniform margin shape has a known side effect
+(low-ball bottom-edge overcorrection, 28 instances above) that a
+non-uniform (top-edge-only) margin would avoid.
+
+**Not yet tested:** margin tuned down from 0.40 toward a production
+value; neighbouring-pitch contamination check (whether a smaller-but-
+still-effective margin starts accepting balls from the adjacent pitch).
+Per Johnson: prove/disprove first (done, confirmed), then tune down and
+check contamination next.
+
+**Also this session:** `oev-runpod-sample-baseline.yml` gained an
+attempt-2+ GPU-pool widen (`GPU_TIER_WIDE` = preferred-4 + `NVIDIA A100
+80GB PCIe` + `NVIDIA L40S`) after repeated live RunPod capacity 500s on
+both `EU-RO-1`/`EUR-IS-1` for the preferred-4 pool. A100/L40S chosen as
+same architecture families (Ampere/Ada) as the already-proven preferred-4;
+RTX 5090/RTX PRO 6000 Blackwell deliberately excluded (5090 confirmed
+`cudaErrorNoKernelImageForDevice` on this pipeline's YOLO kernel; PRO 6000
+shares that same untested newer architecture). L40S was previously
+excluded by an earlier explicit scope decision, re-added here on
+Johnson's explicit request this session.
