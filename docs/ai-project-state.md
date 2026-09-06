@@ -2050,3 +2050,57 @@ RTX 5090/RTX PRO 6000 Blackwell deliberately excluded (5090 confirmed
 shares that same untested newer architecture). L40S was previously
 excluded by an earlier explicit scope decision, re-added here on
 Johnson's explicit request this session.
+
+
+## 2026-09-06 (later): Spare-ball reacquisition fix — verified, overlaid
+
+**Trigger:** watching the ball-ROI diagnostic run's output, Johnson found
+a new, separate issue: after a genuine loss, the tracker sometimes
+latches onto a stationary spare ball sitting in the goal instead of the
+real moving ball, because `BallTracker::score()` only ever ranks
+candidates against the frozen last-known position with no velocity
+awareness.
+
+**Fix (Johnson's design, Claude drafted the spec, Codex implemented):**
+`crates/reco-autocam/src/trackers/ball.rs` on new branch
+`experiment/velocity-aware-ball-reacquire-01`
+(commit `d525ed206740336973d1f46fcb4dbb2d1bc76857`, 1 commit ahead of the
+pinned `c8b0d74b537d192c7de8d2856de64620a82830cf`, `ball.rs` only,
++155/-4). Normal frame-to-frame `Tracking` is untouched (still scores
+against the static last position). Only reacquisition after a coast, and
+only when a velocity estimate exists (learned strictly from two
+consecutive genuine `Tracking` frames, never from `Coasting`/`Bridged`
+output), ranks candidates against a time-projected position
+(`last + velocity * elapsed_ms`, using the real `timestamp_ms` finally
+put to use) instead of the frozen last position. The original
+`max_jump_rad` safety envelope around the last real observation remains
+a hard gate in both paths, unchanged. Velocity resets to `None` on both
+a coast-reacquisition (no cross-gap velocity is ever computed) and a
+full `Lost` transition.
+
+**Verification (Claude, before any GPU spend):** cloned `video-stitcher`
+at the exact claimed commit, installed a local Rust toolchain (free,
+CPU-only -- `libssl-dev`/`pkg-config` were the only missing system
+deps), and ran `cargo test -p reco-autocam --lib` directly. Confirmed
+diff touches only `ball.rs` (compare API), reviewed the diff against
+spec line-by-line, and independently re-derived the arithmetic for all 5
+new tests (predicted-position math, envelope-rejection math, Coaster
+budget semantics cross-checked against `coaster.rs` directly rather than
+assumed) rather than trusting comments. **Result: 74/74 tests pass in
+the full `reco-autocam` crate, 0 regressions, $0 spent.**
+
+**Overlay into the sample harness:** since `d525ed2` is a strict 1-commit
+superset of the pinned baseline touching only `ball.rs` (untouched by
+the B2b/camera-response/ROI-diagnostic patches, which touch
+`field.rs`/`roi_filter.rs`/`lib.rs`), overlaying it was a 1-line change
+-- `runpod_bootstrap.sh`'s `BASE_SHA` repointed from `c8b0d74b...` to
+`d525ed2...` on `experiment/actionstate-b2b-bridged-authority-v2`. No
+new text-patch needed; the ROI diagnostic patch is otherwise untouched.
+Dispatched run `34061552990` (`sample_02`/180s/`yolo26m`/stride-1/
+`EU-RO-1`) testing all four layers together: B2b + camera-response +
+ROI-margin diagnostic + velocity-aware ball reacquisition.
+
+**Not yet known:** whether the combined run actually fixes the spare-
+ball issue visually, and whether it interacts with the ROI margin work
+(still itself pending tune-down + neighbouring-pitch contamination
+check, unchanged from before).
