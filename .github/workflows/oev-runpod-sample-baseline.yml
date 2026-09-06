@@ -429,7 +429,11 @@ jobs:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
-          EXPECTED_RECO_SHA='c8b0d74b537d192c7de8d2856de64620a82830cf'
+          # d525ed2 is video-stitcher's velocity-aware-ball-reacquire-01
+          # branch tip: 1 commit strictly ahead of c8b0d74b, ball.rs only
+          # (+155/-4), verified locally (cargo test -p reco-autocam --lib,
+          # 74/74 passed, $0, no GPU) before this SHA was pinned here.
+          EXPECTED_RECO_SHA='d525ed206740336973d1f46fcb4dbb2d1bc76857'
           SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           actual=$($SSH root@$IP "sed -n 's/^video-stitcher_sha=//p' /tmp/runpod_bootstrap_versions.log | tail -1")
           echo "Reco SHA built by bootstrap: $actual"
@@ -818,7 +822,13 @@ jobs:
               print('No pod IDs recorded -- nothing to terminate.')
               raise SystemExit(0)
 
-          headers = {'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          # Same Cloudflare browser-signature block as the create_pod
+          # headers above (error_code 1010) hit pod termination too --
+          # this is a separate dict, so it needs the same header.
+          headers = {
+              'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}",
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) ffa-automations-oev-runpod-sample-baseline',
+          }
           failures = []
 
           for pod_id in pod_ids:
