@@ -128,6 +128,25 @@ jobs:
           print(f'Pinned datacenter: {PINNED_DATACENTER} (network volume {pinned_volume_id})')
 
           MAX_ATTEMPTS = 3
+          GPU_TIER_PREFERRED = [
+              'NVIDIA GeForce RTX 4090',
+              'NVIDIA RTX A5000',
+              'NVIDIA GeForce RTX 3090',
+              'NVIDIA L4',
+          ]
+          # Widened pool for attempt 2+. A100 and L40S are Ampere/Ada --
+          # same architecture families as the preferred-4 above, already
+          # confirmed compatible with this pipeline's real YOLO/Reco
+          # detector path (see docs/ai-project-state.md). RTX 5090 / RTX
+          # PRO 6000 Blackwell are deliberately NOT added here: 5090 is
+          # confirmed to fail with cudaErrorNoKernelImageForDevice on the
+          # YOLO QuickGelu kernel, and PRO 6000 shares that same newer,
+          # unvalidated architecture. L40S was previously out of scope by
+          # explicit prior decision; re-added here on explicit request.
+          GPU_TIER_WIDE = GPU_TIER_PREFERRED + [
+              'NVIDIA A100 80GB PCIe',
+              'NVIDIA L40S',
+          ]
           POD_IDS_FILE = '/tmp/runpod_all_pod_ids.txt'
           # Truncate at the start of this job -- the final cleanup step reads
           # this file to sweep every pod created this run, regardless of
@@ -169,19 +188,14 @@ jobs:
               except Exception as exc:
                   print(f'Delete warning for pod {pod_id}: {exc} (final cleanup step will retry).')
 
-          def create_pod(exclude_datacenters):
+          def create_pod(exclude_datacenters, gpu_type_ids):
               create_body = {
                   'name': 'oev-runpod-followcam',
                   'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
-                  # GPU order/config deliberately UNCHANGED this cycle -- only
-                  # datacenter steering is under test, to isolate which lever
-                  # (if either) actually escapes the sticky-host allocator.
-                  'gpuTypeIds': [
-                      'NVIDIA GeForce RTX 4090',
-                      'NVIDIA RTX A5000',
-                      'NVIDIA GeForce RTX 3090',
-                      'NVIDIA L4',
-                  ],
+                  # gpu_type_ids is attempt-dependent (see GPU_TIER_PREFERRED /
+                  # GPU_TIER_WIDE above and the call site below) -- datacenter
+                  # steering is unrelated and untouched here.
+                  'gpuTypeIds': gpu_type_ids,
                   'gpuTypePriority': 'custom',
                   'gpuCount': 1,
                   'cloudType': 'SECURE',
@@ -270,9 +284,11 @@ jobs:
           summary_lines = []
           excluded_datacenters = set()
           for attempt in range(1, MAX_ATTEMPTS + 1):
-              print(f'--- Pod allocation attempt {attempt}/{MAX_ATTEMPTS} ---')
+              gpu_type_ids = GPU_TIER_PREFERRED if attempt == 1 else GPU_TIER_WIDE
+              gpu_tier_label = 'preferred-4' if attempt == 1 else 'widened-6 (+A100,+L40S)'
+              print(f'--- Pod allocation attempt {attempt}/{MAX_ATTEMPTS} (gpu_tier={gpu_tier_label}) ---')
               try:
-                  pod_id = create_pod(excluded_datacenters)
+                  pod_id = create_pod(excluded_datacenters, gpu_type_ids)
               except Exception as exc:
                   print(f'::error::Attempt {attempt}: pod create failed: {exc}')
                   summary_lines.append(f'attempt={attempt} pod_id=none result=CREATE_FAILED error={exc}')
