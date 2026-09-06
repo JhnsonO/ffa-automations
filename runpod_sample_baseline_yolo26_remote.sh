@@ -240,7 +240,11 @@ if [ -n "${CLUSTER_ALPHA_OVERRIDE:-}" ]; then
 fi
 
 echo "reco stitch args: ${STITCH_ARGS[*]}" | tee -a stitch.log
-stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
+# Debug-scoped to the ball tracker only (default filter is
+# "info,ort::logging=warn" -- this adds trackers::ball=debug on top
+# so BallTracker::acquired/reacquired-after-coast/track-lost lines
+# are visible without drowning the log in wgpu/ort debug noise).
+RUST_LOG="info,ort::logging=warn,reco_autocam::trackers::ball=debug" stdbuf -oL -eL "$RECO_BIN" "${STITCH_ARGS[@]}" 2>&1 | tee -a stitch.log
 stitch_rc=${PIPESTATUS[0]}
 if [ "$stitch_rc" -ne 0 ]; then
   echo "FATAL: reco stitch failed (exit $stitch_rc), see stitch.log (match.json/${YOLO26_VARIANT}.onnx are still valid)" | tee -a stitch.log
