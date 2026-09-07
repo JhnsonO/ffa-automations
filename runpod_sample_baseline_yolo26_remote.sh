@@ -64,6 +64,57 @@ if [ ! -x "$RECO_BIN" ]; then
   exit 1
 fi
 
+# --- EXPERIMENTAL TEST BINARY (one-off: spare-ball reacquisition confirmation) ---
+# The check above only proves runpod_bootstrap.sh's GATED PRODUCTION binary
+# (video-stitcher@main, EXPECTED_RECO_SHA-checked upstream) exists. It says
+# nothing about the binary this test actually runs. That binary is built
+# HERE, from a separate, pinned, unmerged commit -- runpod_bootstrap.sh and
+# video-stitcher@main are untouched by this block. Remove this block once
+# the experiment is resolved (merge-or-discard).
+EXPERIMENT_SHA="28b6d820c66ed42b2d2d6a3caa2fa657e417c852"
+EXPERIMENT_DIR="/tmp/video-stitcher-experiment"
+echo "Building experimental reco-cli at pinned SHA $EXPERIMENT_SHA..." | tee -a segment.log
+
+if [ -d "$EXPERIMENT_DIR/.git" ]; then
+  git -C "$EXPERIMENT_DIR" fetch origin || { echo "FATAL: git fetch failed for experimental checkout" | tee -a segment.log; exit 1; }
+else
+  git clone https://github.com/JhnsonO/video-stitcher.git "$EXPERIMENT_DIR" || { echo "FATAL: git clone failed for experimental checkout" | tee -a segment.log; exit 1; }
+fi
+
+# Checkout the EXACT pinned commit (detached), not a branch name -- a
+# branch ref can move under us between fetch and build. Hard-fail if the
+# resolved HEAD doesn't match, rather than silently testing drifted code.
+git -C "$EXPERIMENT_DIR" checkout --detach "$EXPERIMENT_SHA" || { echo "FATAL: checkout of pinned experimental SHA failed" | tee -a segment.log; exit 1; }
+ACTUAL_EXPERIMENT_SHA=$(git -C "$EXPERIMENT_DIR" rev-parse HEAD)
+if [ "$ACTUAL_EXPERIMENT_SHA" != "$EXPERIMENT_SHA" ]; then
+  echo "FATAL: experimental checkout resolved to $ACTUAL_EXPERIMENT_SHA, expected $EXPERIMENT_SHA" | tee -a segment.log
+  exit 1
+fi
+echo "experiment_video-stitcher_source_sha=$ACTUAL_EXPERIMENT_SHA" | tee -a segment.log
+
+# Deliberately a SEPARATE CARGO_TARGET_DIR from the bootstrap build --
+# this is a full build, not an incremental one on top of bootstrap's cache.
+( cd "$EXPERIMENT_DIR" && CARGO_TARGET_DIR="$EXPERIMENT_DIR/target" time cargo build --release -p reco-cli --features cuda 2>&1 | tee -a segment.log )
+EXPERIMENT_BUILD_EXIT=${PIPESTATUS[0]}
+if [ "$EXPERIMENT_BUILD_EXIT" -ne 0 ]; then
+  echo "FATAL: experimental cargo build failed (exit $EXPERIMENT_BUILD_EXIT)" | tee -a segment.log
+  exit 1
+fi
+
+EXPERIMENT_BIN="$EXPERIMENT_DIR/target/release/reco"
+if [ ! -x "$EXPERIMENT_BIN" ]; then
+  echo "FATAL: $EXPERIMENT_BIN not found or not executable after experimental build" | tee -a segment.log
+  exit 1
+fi
+
+# Log the actual BINARY's hash, not just the source commit it was built
+# from -- proves what ran, independent of source-checkout correctness.
+EXPERIMENT_BIN_SHA256=$(sha256sum "$EXPERIMENT_BIN" | awk '{print $1}')
+echo "experiment_reco_binary_sha256=$EXPERIMENT_BIN_SHA256" | tee -a segment.log
+echo "Using EXPERIMENTAL binary (source $ACTUAL_EXPERIMENT_SHA, binary sha256 $EXPERIMENT_BIN_SHA256) for this test run -- NOT the gated production binary." | tee -a segment.log
+
+RECO_BIN="$EXPERIMENT_BIN"
+
 # --- Fixed-duration sample clip, NO internal re-trimming. ---
 # This is the baseline sample-pack test script: unlike
 # runpod_followcam_remote.sh (which expects the FULL original source
