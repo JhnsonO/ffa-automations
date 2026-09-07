@@ -94,7 +94,7 @@ echo "experiment_video-stitcher_source_sha=$ACTUAL_EXPERIMENT_SHA" | tee -a segm
 
 # Deliberately a SEPARATE CARGO_TARGET_DIR from the bootstrap build --
 # this is a full build, not an incremental one on top of bootstrap's cache.
-( cd "$EXPERIMENT_DIR" && CARGO_TARGET_DIR="$EXPERIMENT_DIR/target" time cargo build --release -p reco-cli --features cuda 2>&1 | tee -a segment.log )
+( cd "$EXPERIMENT_DIR" && CARGO_TARGET_DIR="$EXPERIMENT_DIR/target" cargo build --release -p reco-cli --features cuda 2>&1 | tee -a segment.log )
 EXPERIMENT_BUILD_EXIT=${PIPESTATUS[0]}
 if [ "$EXPERIMENT_BUILD_EXIT" -ne 0 ]; then
   echo "FATAL: experimental cargo build failed (exit $EXPERIMENT_BUILD_EXIT)" | tee -a segment.log
