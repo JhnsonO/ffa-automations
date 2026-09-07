@@ -64,16 +64,27 @@ if [ ! -x "$RECO_BIN" ]; then
   exit 1
 fi
 
-# --- EXPERIMENTAL TEST BINARY (one-off: spare-ball reacquisition confirmation) ---
-# The check above only proves runpod_bootstrap.sh's GATED PRODUCTION binary
-# (video-stitcher@main, EXPECTED_RECO_SHA-checked upstream) exists. It says
-# nothing about the binary this test actually runs. That binary is built
-# HERE, from a separate, pinned, unmerged commit -- runpod_bootstrap.sh and
-# video-stitcher@main are untouched by this block. Remove this block once
-# the experiment is resolved (merge-or-discard).
-EXPERIMENT_SHA="28b6d820c66ed42b2d2d6a3caa2fa657e417c852"
-EXPERIMENT_DIR="/tmp/video-stitcher-experiment"
-echo "Building experimental reco-cli at pinned SHA $EXPERIMENT_SHA..." | tee -a segment.log
+# --- EXPERIMENTAL TEST BINARY (one-off: v4 hysteresis/micro-damping + relaxed
+# ball-ROI reconstruction, at Johnson's request) ---
+# Reconstructs the pre-regression "v4" camera behavior (the accepted quality
+# reference, run 31913398625, which Johnson was happy with) on Reco
+# f27cbb6d -- this PREDATES frame-stride testing, B2b bridged-authority,
+# decaying-reacquire-grace, and the dead_zone/velocity-clamp retune
+# (bb1d38a964). None of that later work is included here, by design: a lot
+# of it existed to work around problems the fixed ROI polygon was actually
+# causing, which was only diagnosed on 6 Sep. The v3+v4 ball-trajectory-
+# hysteresis + containment + acceleration-limited-camera-dynamics +
+# micro-damping patch to run_loop.rs is reconstructed verbatim from
+# ffa-automations commits c91314ea (V3 patcher) + 8febf7a9 (V4 micro-damping
+# delta) -- both since removed from main, reconstructed and re-verified
+# byte-for-byte against those commits before use here. The ONE addition on
+# top of the original v4 behavior: the ball-class ROI vertical-margin
+# relaxation (+0.40) from commit 916529a61f, since we now know the fixed
+# ROI polygon was rejecting genuine lofted-ball detections. Remove this
+# block once the experiment is resolved (merge-or-discard).
+EXPERIMENT_RECO_SHA="f27cbb6d0d65fcf9a11fb4d82d119ae214695318"
+EXPERIMENT_DIR="/tmp/video-stitcher-v4-roi-experiment"
+echo "Building v4-hysteresis + ROI-relaxed reco-cli at pinned SHA $EXPERIMENT_RECO_SHA..." | tee -a segment.log
 
 if [ -d "$EXPERIMENT_DIR/.git" ]; then
   git -C "$EXPERIMENT_DIR" fetch origin || { echo "FATAL: git fetch failed for experimental checkout" | tee -a segment.log; exit 1; }
@@ -81,19 +92,606 @@ else
   git clone https://github.com/JhnsonO/video-stitcher.git "$EXPERIMENT_DIR" || { echo "FATAL: git clone failed for experimental checkout" | tee -a segment.log; exit 1; }
 fi
 
-# Checkout the EXACT pinned commit (detached), not a branch name -- a
-# branch ref can move under us between fetch and build. Hard-fail if the
-# resolved HEAD doesn't match, rather than silently testing drifted code.
-git -C "$EXPERIMENT_DIR" checkout --detach "$EXPERIMENT_SHA" || { echo "FATAL: checkout of pinned experimental SHA failed" | tee -a segment.log; exit 1; }
+git -C "$EXPERIMENT_DIR" checkout --detach "$EXPERIMENT_RECO_SHA" || { echo "FATAL: checkout of pinned experimental SHA failed" | tee -a segment.log; exit 1; }
 ACTUAL_EXPERIMENT_SHA=$(git -C "$EXPERIMENT_DIR" rev-parse HEAD)
-if [ "$ACTUAL_EXPERIMENT_SHA" != "$EXPERIMENT_SHA" ]; then
-  echo "FATAL: experimental checkout resolved to $ACTUAL_EXPERIMENT_SHA, expected $EXPERIMENT_SHA" | tee -a segment.log
+if [ "$ACTUAL_EXPERIMENT_SHA" != "$EXPERIMENT_RECO_SHA" ]; then
+  echo "FATAL: experimental checkout resolved to $ACTUAL_EXPERIMENT_SHA, expected $EXPERIMENT_RECO_SHA" | tee -a segment.log
   exit 1
 fi
-echo "experiment_video-stitcher_source_sha=$ACTUAL_EXPERIMENT_SHA" | tee -a segment.log
+echo "experiment_video-stitcher_source_sha=$ACTUAL_EXPERIMENT_SHA (v4-hysteresis+roi-relax base)" | tee -a segment.log
 
-# Deliberately a SEPARATE CARGO_TARGET_DIR from the bootstrap build --
-# this is a full build, not an incremental one on top of bootstrap's cache.
+echo "Applying reconstructed v3+v4 ball-hysteresis/containment/camera-dynamics patch to run_loop.rs" | tee -a segment.log
+python3 - "$EXPERIMENT_DIR/crates/reco-core/src/session/run_loop.rs" <<'RUNLOOP_PATCH'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+s = path.read_text()
+
+impl_marker = "\nimpl StitchSession {\n"
+if s.count(impl_marker) != 1:
+    raise SystemExit(
+        f"expected exactly one StitchSession impl marker, found {s.count(impl_marker)}"
+    )
+
+helper = r'''
+/// TEST-ONLY upstream ball-signal filter.
+///
+/// The production tracker is left untouched. This filter sits between tracking
+/// and the buffered panner/lookahead, so both the normal panner and the final
+/// containment guard see the same stabilized ball trajectory.
+#[derive(Default)]
+struct BallSignalFilterState {
+    last_trusted: Option<crate::detect::tracker::TrackedEntity>,
+    velocity_yaw: f32,
+    velocity_pitch: f32,
+    pending: Option<(crate::detect::tracker::TrackedEntity, u8)>,
+    missing_frames: u32,
+}
+
+fn experiment_angle_delta(target: f32, current: f32) -> f32 {
+    let raw = target - current;
+    raw.sin().atan2(raw.cos())
+}
+
+fn experiment_ball_distance_deg(a: (f32, f32), b: (f32, f32)) -> f32 {
+    let yaw = experiment_angle_delta(a.0, b.0).to_degrees();
+    let pitch = (a.1 - b.1).to_degrees();
+    yaw.hypot(pitch)
+}
+
+fn held_ball(
+    mut ball: crate::detect::tracker::TrackedEntity,
+    age_frames: u64,
+) -> crate::detect::tracker::TrackedEntity {
+    ball.state = crate::detect::tracker::TrackState::Coasting;
+    ball.confidence = 0.0;
+    ball.age_frames = ball.age_frames.max(age_frames);
+    ball
+}
+
+fn accept_filtered_ball(
+    candidate: crate::detect::tracker::TrackedEntity,
+    state: &mut BallSignalFilterState,
+    reset_velocity: bool,
+) {
+    if reset_velocity {
+        state.velocity_yaw = 0.0;
+        state.velocity_pitch = 0.0;
+    } else if let Some(last) = state.last_trusted {
+        const VELOCITY_ALPHA: f32 = 0.25;
+        let dy = experiment_angle_delta(candidate.yaw, last.yaw);
+        let dp = candidate.pitch - last.pitch;
+        state.velocity_yaw =
+            (1.0 - VELOCITY_ALPHA) * state.velocity_yaw + VELOCITY_ALPHA * dy;
+        state.velocity_pitch =
+            (1.0 - VELOCITY_ALPHA) * state.velocity_pitch + VELOCITY_ALPHA * dp;
+    }
+    state.last_trusted = Some(candidate);
+    state.pending = None;
+    state.missing_frames = 0;
+}
+
+/// Stabilize the current WorldState ball in-place.
+///
+/// At 60 fps, a 3-degree prediction error in one frame already corresponds to
+/// ~180 deg/s of unexpected angular motion, so it is deliberately generous.
+/// Anything beyond that is treated as a competing hypothesis. Because this is
+/// offline processing with 1.5 s lookahead, requiring 18 continuous frames of
+/// evidence still leaves roughly 1.2 s for the panner to anticipate a genuine
+/// switch before it is rendered.
+fn stabilize_world_ball(
+    world: &mut crate::detect::tracker::WorldState,
+    state: &mut BallSignalFilterState,
+    frame_index: u64,
+) {
+    const INNOVATION_GATE_DEG: f32 = 3.0;
+    const PENDING_MATCH_DEG: f32 = 4.0;
+    const PENDING_CONFIRM_FRAMES: u8 = 18;
+    const MAX_MISSING_HOLD_FRAMES: u32 = 24;
+
+    let raw_ball = world.ball;
+
+    match raw_ball {
+        Some(candidate)
+            if matches!(
+                candidate.state,
+                crate::detect::tracker::TrackState::Tracking
+            ) && candidate.yaw.is_finite()
+                && candidate.pitch.is_finite() =>
+        {
+            state.missing_frames = 0;
+
+            let Some(last) = state.last_trusted else {
+                accept_filtered_ball(candidate, state, true);
+                return;
+            };
+
+            let predicted = (
+                last.yaw + state.velocity_yaw,
+                last.pitch + state.velocity_pitch,
+            );
+            let innovation_deg = experiment_ball_distance_deg(
+                (candidate.yaw, candidate.pitch),
+                predicted,
+            );
+
+            if innovation_deg <= INNOVATION_GATE_DEG {
+                accept_filtered_ball(candidate, state, false);
+                return;
+            }
+
+            let next_count = match state.pending {
+                Some((pending, count))
+                    if experiment_ball_distance_deg(
+                        (candidate.yaw, candidate.pitch),
+                        (pending.yaw, pending.pitch),
+                    ) <= PENDING_MATCH_DEG =>
+                {
+                    count.saturating_add(1)
+                }
+                _ => 1,
+            };
+            state.pending = Some((candidate, next_count));
+
+            if next_count >= PENDING_CONFIRM_FRAMES {
+                log::info!(
+                    "BALL_SIGNAL_SWITCH_ACCEPT frame={} innovation_deg={:.3} confirmations={} confidence={:.3}",
+                    frame_index,
+                    innovation_deg,
+                    next_count,
+                    candidate.confidence,
+                );
+                accept_filtered_ball(candidate, state, true);
+                return;
+            }
+
+            log::info!(
+                "BALL_SIGNAL_HOLD frame={} innovation_deg={:.3} confirmation={}/{} raw_confidence={:.3}",
+                frame_index,
+                innovation_deg,
+                next_count,
+                PENDING_CONFIRM_FRAMES,
+                candidate.confidence,
+            );
+            world.ball = Some(held_ball(last, candidate.age_frames));
+        }
+        Some(candidate)
+            if matches!(
+                candidate.state,
+                crate::detect::tracker::TrackState::Coasting
+                    | crate::detect::tracker::TrackState::Lost
+            ) =>
+        {
+            state.pending = None;
+            state.missing_frames = state.missing_frames.saturating_add(1);
+            if state.missing_frames <= MAX_MISSING_HOLD_FRAMES {
+                if let Some(last) = state.last_trusted {
+                    world.ball = Some(held_ball(last, candidate.age_frames));
+                }
+            }
+        }
+        _ => {
+            state.pending = None;
+            state.missing_frames = state.missing_frames.saturating_add(1);
+            if state.missing_frames <= MAX_MISSING_HOLD_FRAMES {
+                if let Some(last) = state.last_trusted {
+                    world.ball = Some(held_ball(last, last.age_frames.saturating_add(1)));
+                }
+            }
+        }
+    }
+}
+
+/// TEST-ONLY final crop guard + camera dynamics.
+#[derive(Default)]
+struct BallContainmentGuardState {
+    last_guard_ball: Option<(f32, f32)>,
+    missing_frames: u32,
+    last_output_pose: Option<crate::detect::director::ViewportPosition>,
+    last_yaw_step: f32,
+    last_pitch_step: f32,
+}
+
+fn guard_ball_target(
+    world: &crate::detect::tracker::WorldState,
+    state: &mut BallContainmentGuardState,
+) -> Option<(f32, f32)> {
+    const MAX_GUARD_HOLD_FRAMES: u32 = 24;
+
+    match world.ball.as_ref() {
+        Some(ball)
+            if !matches!(ball.state, crate::detect::tracker::TrackState::Lost)
+                && ball.yaw.is_finite()
+                && ball.pitch.is_finite() =>
+        {
+            state.missing_frames = 0;
+            let target = (ball.yaw, ball.pitch);
+            state.last_guard_ball = Some(target);
+            Some(target)
+        }
+        _ => {
+            state.missing_frames = state.missing_frames.saturating_add(1);
+            if state.missing_frames <= MAX_GUARD_HOLD_FRAMES {
+                state.last_guard_ball
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn camera_axis_step(
+    desired_delta: f32,
+    previous_step: f32,
+    max_step: f32,
+    max_accel: f32,
+    reversal_brake: f32,
+) -> f32 {
+    if !desired_delta.is_finite() || desired_delta.abs() < 1.0e-6 {
+        return 0.0;
+    }
+
+    // v4 single-variable polish: adaptive damping only when the desired
+    // correction is already small. Large/medium pans retain the exact v3
+    // dynamics, so counters and clearances do not become sluggish.
+    const MICRO_ZONE_DEG: f32 = 4.0;
+    const MICRO_HOLD_DEG: f32 = 0.35;
+    let error_deg = desired_delta.abs().to_degrees();
+    let in_micro_zone = error_deg <= MICRO_ZONE_DEG;
+
+    let (effective_delta, effective_max_step, effective_max_accel, effective_reversal_brake) =
+        if in_micro_zone {
+            let t = (error_deg / MICRO_ZONE_DEG).clamp(0.0, 1.0);
+            let target_gain = 0.20 + 0.80 * t * t;
+            let speed_gain = 0.32 + 0.68 * t;
+            let accel_gain = 0.30 + 0.70 * t;
+            let reversal_gain = 0.14 + 0.86 * t;
+            (
+                desired_delta * target_gain,
+                max_step * speed_gain,
+                max_accel * accel_gain,
+                reversal_brake * reversal_gain,
+            )
+        } else {
+            (desired_delta, max_step, max_accel, reversal_brake)
+        };
+
+    if in_micro_zone
+        && error_deg <= MICRO_HOLD_DEG
+        && previous_step.abs() <= effective_max_accel
+    {
+        return 0.0;
+    }
+
+    if previous_step * effective_delta < 0.0 && previous_step.abs() > 1.0e-6 {
+        let brake = effective_reversal_brake.min(previous_step.abs());
+        return previous_step - previous_step.signum() * brake;
+    }
+
+    let stopping_limited =
+        (2.0 * effective_max_accel * effective_delta.abs())
+            .sqrt()
+            .min(effective_max_step);
+    let target_step = effective_delta.signum()
+        * stopping_limited.min(effective_delta.abs());
+
+    let change = (target_step - previous_step)
+        .clamp(-effective_max_accel, effective_max_accel);
+    let mut step = previous_step + change;
+
+    if step.signum() == effective_delta.signum()
+        && step.abs() > effective_delta.abs()
+    {
+        step = effective_delta;
+    }
+    step
+}
+
+/// Apply minimum ball containment, then smooth the final camera *dynamics*.
+///
+/// This is intentionally not another EMA. The panner/lookahead still selects
+/// the shot. We only bound speed and acceleration of the final requested crop.
+fn enforce_containment_and_dynamics(
+    mut pose: crate::detect::director::ViewportPosition,
+    world: &crate::detect::tracker::WorldState,
+    state: &mut BallContainmentGuardState,
+) -> (
+    crate::detect::director::ViewportPosition,
+    f32,
+    f32,
+    f32,
+    f32,
+) {
+    const ASPECT: f32 = 16.0 / 9.0;
+    const SAFE_MARGIN_DEG: f32 = 3.0;
+
+    const MAX_YAW_STEP_DEG: f32 = 0.75;
+    const MAX_PITCH_STEP_DEG: f32 = 0.50;
+    const MAX_YAW_ACCEL_DEG: f32 = 0.08;
+    const MAX_PITCH_ACCEL_DEG: f32 = 0.06;
+    const YAW_REVERSAL_BRAKE_DEG: f32 = 0.25;
+    const PITCH_REVERSAL_BRAKE_DEG: f32 = 0.15;
+
+    let original_yaw = pose.yaw;
+    let original_pitch = pose.pitch;
+
+    if let (Some(fov_deg), Some((ball_yaw, ball_pitch))) =
+        (pose.fov_degrees, guard_ball_target(world, state))
+    {
+        if fov_deg.is_finite()
+            && fov_deg > 0.0
+            && pose.yaw.is_finite()
+            && pose.pitch.is_finite()
+        {
+            let half_h_full = (0.5 * fov_deg).to_radians();
+            let margin = SAFE_MARGIN_DEG.to_radians();
+            let half_h_safe = (half_h_full - margin).max(0.5_f32.to_radians());
+            let half_v_full = (half_h_full.tan() / ASPECT).atan();
+            let half_v_safe = (half_v_full - margin).max(0.5_f32.to_radians());
+
+            let yaw_delta = experiment_angle_delta(ball_yaw, pose.yaw);
+            if yaw_delta > half_h_safe {
+                pose.yaw += yaw_delta - half_h_safe;
+            } else if yaw_delta < -half_h_safe {
+                pose.yaw += yaw_delta + half_h_safe;
+            }
+
+            let pitch_delta = ball_pitch - pose.pitch;
+            if pitch_delta > half_v_safe {
+                pose.pitch += pitch_delta - half_v_safe;
+            } else if pitch_delta < -half_v_safe {
+                pose.pitch += pitch_delta + half_v_safe;
+            }
+        }
+    }
+
+    let containment_yaw_deg =
+        experiment_angle_delta(pose.yaw, original_yaw).abs().to_degrees();
+    let containment_pitch_deg = (pose.pitch - original_pitch).abs().to_degrees();
+
+    let desired_yaw = pose.yaw;
+    let desired_pitch = pose.pitch;
+    let mut dynamics_yaw_reduction_deg = 0.0;
+    let mut dynamics_pitch_reduction_deg = 0.0;
+
+    if let Some(prev) = state.last_output_pose {
+        let desired_yaw_delta = experiment_angle_delta(desired_yaw, prev.yaw);
+        let desired_pitch_delta = desired_pitch - prev.pitch;
+
+        let yaw_step = camera_axis_step(
+            desired_yaw_delta,
+            state.last_yaw_step,
+            MAX_YAW_STEP_DEG.to_radians(),
+            MAX_YAW_ACCEL_DEG.to_radians(),
+            YAW_REVERSAL_BRAKE_DEG.to_radians(),
+        );
+        let pitch_step = camera_axis_step(
+            desired_pitch_delta,
+            state.last_pitch_step,
+            MAX_PITCH_STEP_DEG.to_radians(),
+            MAX_PITCH_ACCEL_DEG.to_radians(),
+            PITCH_REVERSAL_BRAKE_DEG.to_radians(),
+        );
+
+        pose.yaw = prev.yaw + yaw_step;
+        pose.pitch = prev.pitch + pitch_step;
+
+        dynamics_yaw_reduction_deg =
+            (desired_yaw_delta.abs() - yaw_step.abs()).max(0.0).to_degrees();
+        dynamics_pitch_reduction_deg =
+            (desired_pitch_delta.abs() - pitch_step.abs()).max(0.0).to_degrees();
+
+        state.last_yaw_step = yaw_step;
+        state.last_pitch_step = pitch_step;
+    } else {
+        state.last_yaw_step = 0.0;
+        state.last_pitch_step = 0.0;
+    }
+
+    state.last_output_pose = Some(pose);
+    (
+        pose,
+        containment_yaw_deg,
+        containment_pitch_deg,
+        dynamics_yaw_reduction_deg,
+        dynamics_pitch_reduction_deg,
+    )
+}
+'''
+
+s = s.replace(impl_marker, "\n" + helper + impl_marker, 1)
+
+produce_count_marker = "        let mut produce_count: u64 = 0;\n"
+if s.count(produce_count_marker) != 1:
+    raise SystemExit(
+        f"expected exactly one produce_count marker, found {s.count(produce_count_marker)}"
+    )
+s = s.replace(
+    produce_count_marker,
+    produce_count_marker
+    + "        let mut ball_signal_filter_state = BallSignalFilterState::default();\n",
+    1,
+)
+
+produce_closure = "        let produce_one = |session: &mut StitchSession,\n"
+if s.count(produce_closure) != 1:
+    raise SystemExit(
+        f"expected exactly one produce_one closure marker, found {s.count(produce_closure)}"
+    )
+s = s.replace(
+    produce_closure,
+    "        let mut produce_one = |session: &mut StitchSession,\n",
+    1,
+)
+
+world_match = "            let world_state = match detection_result {\n"
+if s.count(world_match) != 1:
+    raise SystemExit(
+        f"expected exactly one world_state match marker, found {s.count(world_match)}"
+    )
+s = s.replace(
+    world_match,
+    "            let mut world_state = match detection_result {\n",
+    1,
+)
+
+world_done = "            };\n            let detections = session.detection.last_detections.clone();\n"
+if s.count(world_done) != 1:
+    raise SystemExit(
+        f"expected exactly one world_state completion marker, found {s.count(world_done)}"
+    )
+s = s.replace(
+    world_done,
+    "            };\n"
+    "            stabilize_world_ball(&mut world_state, &mut ball_signal_filter_state, *produce_count);\n"
+    "            let detections = session.detection.last_detections.clone();\n",
+    1,
+)
+
+state_marker = "        let mut panner_frame_idx: u64 = 0;\n"
+if s.count(state_marker) != 1:
+    raise SystemExit(
+        f"expected exactly one panner_frame_idx marker, found {s.count(state_marker)}"
+    )
+s = s.replace(
+    state_marker,
+    state_marker
+    + "        let mut ball_containment_guard_state = BallContainmentGuardState::default();\n",
+    1,
+)
+
+render_call = (
+    "self.render_buffered_frame(oldest, smoothed_pose, start, &ctx, on_progress)?;"
+)
+if s.count(render_call) != 2:
+    raise SystemExit(
+        f"expected exactly two buffered render calls, found {s.count(render_call)}"
+    )
+
+guarded_render = r'''let (
+                    guarded_pose,
+                    guard_yaw_deg,
+                    guard_pitch_deg,
+                    dynamics_yaw_deg,
+                    dynamics_pitch_deg,
+                ) = enforce_containment_and_dynamics(
+                    smoothed_pose,
+                    &oldest.world_state,
+                    &mut ball_containment_guard_state,
+                );
+                if guard_yaw_deg > 0.001 || guard_pitch_deg > 0.001 {
+                    log::info!(
+                        "BALL_CONTAINMENT_GUARD frame={} yaw_correction_deg={:.3} pitch_correction_deg={:.3}",
+                        self.frame_count,
+                        guard_yaw_deg,
+                        guard_pitch_deg,
+                    );
+                }
+                if dynamics_yaw_deg > 0.001 || dynamics_pitch_deg > 0.001 {
+                    log::info!(
+                        "BALL_CAMERA_DYNAMICS frame={} yaw_reduction_deg={:.3} pitch_reduction_deg={:.3}",
+                        self.frame_count,
+                        dynamics_yaw_deg,
+                        dynamics_pitch_deg,
+                    );
+                }
+                self.render_buffered_frame(oldest, guarded_pose, start, &ctx, on_progress)?;'''
+
+s = s.replace(render_call, guarded_render)
+path.write_text(s)
+print(
+    "patched run_loop.rs: upstream trajectory-hysteresis ball filter + "
+    "post-smoothing containment + acceleration-limited camera dynamics + adaptive 4deg micro damping"
+)
+RUNLOOP_PATCH
+if [ $? -ne 0 ]; then
+  echo "FATAL: v3/v4 run_loop.rs patch failed" | tee -a segment.log
+  exit 1
+fi
+
+echo "Applying ball-ROI vertical-margin relaxation (+0.40) to roi_filter.rs" | tee -a segment.log
+python3 - "$EXPERIMENT_DIR/crates/reco-autocam/src/roi_filter.rs" <<'ROI_FILTER_PATCH'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+s = path.read_text()
+
+def repl(old, new, label):
+    global s
+    if old not in s:
+        raise SystemExit(f'roi diag patch anchor missing: {label}')
+    if s.count(old) != 1:
+        raise SystemExit(f'roi diag patch anchor not unique: {label}')
+    s = s.replace(old, new, 1)
+
+repl(
+    "pub struct RoiFilteredDetector {\n    inner: Box<dyn UnifiedDetector>,\n    roi: FieldRoi,\n    class_anchors: HashMap<u16, RoiAnchor>,\n    default_anchor: RoiAnchor,\n}",
+    "pub struct RoiFilteredDetector {\n    inner: Box<dyn UnifiedDetector>,\n    roi: FieldRoi,\n    class_anchors: HashMap<u16, RoiAnchor>,\n    default_anchor: RoiAnchor,\n    // Diagnostic-only (OEV ball-ROI hypothesis test). Every other class's\n    // filtering path above is untouched; ball_class_id stays None unless\n    // with_ball_roi_diagnostics is called, so default behaviour is identical\n    // to production.\n    ball_class_id: Option<u16>,\n    ball_vertical_margin: f64,\n    roi_diag_frame_left: u64,\n    roi_diag_frame_right: u64,\n    roi_diag_fps: f32,\n    roi_diag_frame_stride: u32,\n}",
+    "struct fields",
+)
+
+repl(
+    "    pub fn new(inner: Box<dyn UnifiedDetector>, roi: FieldRoi) -> Self {\n        Self {\n            inner,\n            roi,\n            class_anchors: HashMap::new(),\n            default_anchor: RoiAnchor::Center,\n        }\n    }",
+    "    pub fn new(inner: Box<dyn UnifiedDetector>, roi: FieldRoi) -> Self {\n        Self {\n            inner,\n            roi,\n            class_anchors: HashMap::new(),\n            default_anchor: RoiAnchor::Center,\n            ball_class_id: None,\n            ball_vertical_margin: 0.0,\n            roi_diag_frame_left: 0,\n            roi_diag_frame_right: 0,\n            roi_diag_fps: 60.0,\n            roi_diag_frame_stride: 1,\n        }\n    }",
+    "constructor",
+)
+
+repl(
+    "    /// Override the default anchor for classes without an explicit\n    /// [`with_class_anchor`](Self::with_class_anchor) entry. Chainable.\n    pub fn with_default_anchor(mut self, anchor: RoiAnchor) -> Self {\n        self.default_anchor = anchor;\n        self\n    }\n}",
+    "    /// Override the default anchor for classes without an explicit\n    /// [`with_class_anchor`](Self::with_class_anchor) entry. Chainable.\n    pub fn with_default_anchor(mut self, anchor: RoiAnchor) -> Self {\n        self.default_anchor = anchor;\n        self\n    }\n\n    /// Diagnostic-only (OEV ball-ROI hypothesis test, hard case 134-139s).\n    /// Gives `ball_class_id` a generous vertical allowance above the field\n    /// polygon's top edge before the ROI test, so a lofted ball whose\n    /// center is genuinely above the pitch line is not rejected purely for\n    /// being airborne. No other class is affected: `filter_by_roi` below\n    /// still runs unmodified for every class except this one. `fps` /\n    /// `frame_stride` are used only to derive an approximate timestamp for\n    /// window-scoped `eprintln!` diagnostics, matching the same cadence\n    /// formula used elsewhere in the autocam pipeline. Chainable.\n    pub fn with_ball_roi_diagnostics(\n        mut self,\n        ball_class_id: u16,\n        vertical_margin: f64,\n        fps: f32,\n        frame_stride: u32,\n    ) -> Self {\n        self.ball_class_id = Some(ball_class_id);\n        self.ball_vertical_margin = vertical_margin;\n        self.roi_diag_fps = fps;\n        self.roi_diag_frame_stride = frame_stride;\n        self\n    }\n}",
+    "builder method",
+)
+
+repl(
+    "    fn detect(\n        &mut self,\n        camera: CameraId,\n        frame: &DetectorFrame<'_>,\n    ) -> Result<Vec<Detection>, DetectorError> {\n        let detections = self.inner.detect(camera, frame)?;\n        Ok(filter_by_roi(\n            detections,\n            &self.roi,\n            &self.class_anchors,\n            self.default_anchor,\n        ))\n    }",
+    "    fn detect(\n        &mut self,\n        camera: CameraId,\n        frame: &DetectorFrame<'_>,\n    ) -> Result<Vec<Detection>, DetectorError> {\n        let detections = self.inner.detect(camera, frame)?;\n\n        // Diagnostic-only: everything below is a no-op (ball_dets always\n        // empty, kept == filter_by_roi(detections, ...)) unless\n        // with_ball_roi_diagnostics was called.\n        let frame_index = match camera {\n            CameraId::Left => {\n                let i = self.roi_diag_frame_left;\n                self.roi_diag_frame_left += 1;\n                i\n            }\n            CameraId::Right => {\n                let i = self.roi_diag_frame_right;\n                self.roi_diag_frame_right += 1;\n                i\n            }\n        };\n        let timestamp_ms = frame_index as f64 * 1000.0 * self.roi_diag_frame_stride as f64\n            / self.roi_diag_fps as f64;\n        let diag_window = (133000.0..=140000.0).contains(&timestamp_ms);\n\n        let (ball_dets, other_dets): (Vec<Detection>, Vec<Detection>) = detections\n            .into_iter()\n            .partition(|d| self.ball_class_id == Some(d.class_id));\n\n        let mut kept = filter_by_roi(other_dets, &self.roi, &self.class_anchors, self.default_anchor);\n\n        let polygon: &[[f64; 2]] = match camera {\n            CameraId::Left => &self.roi.left,\n            CameraId::Right => &self.roi.right,\n        };\n\n        if polygon.len() < 3 {\n            kept.extend(ball_dets);\n        } else {\n            for d in ball_dets {\n                let cx = d.center_x as f64;\n                let cy = d.center_y as f64;\n                let adj_cy = cy + self.ball_vertical_margin;\n                let roi_pass = point_in_polygon([cx, adj_cy], polygon);\n                if diag_window {\n                    eprintln!(\n                        \"OEV_ROI_DIAG cam={:?} t_ms={:.3} cx={:.4} cy={:.4} adj_cy={:.4} roi_pass={}\",\n                        camera, timestamp_ms, cx, cy, adj_cy, roi_pass\n                    );\n                }\n                if roi_pass {\n                    kept.push(d);\n                }\n            }\n        }\n\n        Ok(kept)\n    }",
+    "detect() ball diagnostics",
+)
+
+path.write_text(s)
+ROI_FILTER_PATCH
+if [ $? -ne 0 ]; then
+  echo "FATAL: roi_filter.rs relaxation patch failed" | tee -a segment.log
+  exit 1
+fi
+
+echo "Applying ball-ROI vertical-margin relaxation (+0.40) to lib.rs" | tee -a segment.log
+python3 - "$EXPERIMENT_DIR/crates/reco-autocam/src/lib.rs" <<'ROI_LIB_PATCH'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+s = path.read_text()
+
+def repl(old, new, label):
+    global s
+    if old not in s:
+        raise SystemExit(f'lib.rs diag patch anchor missing: {label}')
+    if s.count(old) != 1:
+        raise SystemExit(f'lib.rs diag patch anchor not unique: {label}')
+    s = s.replace(old, new, 1)
+
+repl(
+    'let person_id_for_roi = resolve_or(&class_names, &["person"], 0);',
+    'let person_id_for_roi = resolve_or(&class_names, &["person"], 0);\n    // Diagnostic-only (OEV ball-ROI hypothesis test). Resolved the same way\n    // as person_id_for_roi above; falls back to COCO\'s "sports ball" id (32)\n    // if the model\'s label list doesn\'t have an exact match.\n    let ball_id_for_roi = resolve_or(&class_names, &["ball", "sports ball", "football"], 32);',
+    "ball id resolution",
+)
+
+repl(
+    "    let wrap_with_roi = |inner: Box<dyn reco_core::detect::detector::UnifiedDetector>,\n                         roi: reco_core::calibration::FieldRoi|\n     -> Box<dyn reco_core::detect::detector::UnifiedDetector> {\n        Box::new(\n            RoiFilteredDetector::new(inner, roi)\n                .with_class_anchor(person_id_for_roi, RoiAnchor::Bottom),\n        )\n    };",
+    "    let wrap_with_roi = |inner: Box<dyn reco_core::detect::detector::UnifiedDetector>,\n                         roi: reco_core::calibration::FieldRoi|\n     -> Box<dyn reco_core::detect::detector::UnifiedDetector> {\n        Box::new(\n            RoiFilteredDetector::new(inner, roi)\n                .with_class_anchor(person_id_for_roi, RoiAnchor::Bottom)\n                // Diagnostic-only: deliberately generous vertical margin\n                // (0.40, normalized) to test the \"lofted ball rejected by\n                // ROI\" hypothesis. Not a tuned production value.\n                .with_ball_roi_diagnostics(ball_id_for_roi, 0.40, fps, frame_stride),\n        )\n    };",
+    "wrap_with_roi wiring",
+)
+
+path.write_text(s)
+ROI_LIB_PATCH
+if [ $? -ne 0 ]; then
+  echo "FATAL: lib.rs relaxation patch failed" | tee -a segment.log
+  exit 1
+fi
+
 ( cd "$EXPERIMENT_DIR" && { source "$HOME/.cargo/env" 2>/dev/null || true; } && CARGO_TARGET_DIR="$EXPERIMENT_DIR/target" cargo build --release -p reco-cli --features cuda 2>&1 | tee -a segment.log )
 EXPERIMENT_BUILD_EXIT=${PIPESTATUS[0]}
 if [ "$EXPERIMENT_BUILD_EXIT" -ne 0 ]; then
