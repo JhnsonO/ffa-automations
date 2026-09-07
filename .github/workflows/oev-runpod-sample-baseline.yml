@@ -846,7 +846,13 @@ jobs:
               print('No pod IDs recorded -- nothing to terminate.')
               raise SystemExit(0)
 
-          headers = {'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          headers = {
+              'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}",
+              # Same Cloudflare browser_signature_banned issue as the
+              # create-pod step -- this sweep has its own headers dict,
+              # so it needed the same header, separately.
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) ffa-automations-oev-runpod-sample-baseline',
+          }
           failures = []
 
           for pod_id in pod_ids:
