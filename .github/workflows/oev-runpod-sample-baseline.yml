@@ -109,6 +109,15 @@ jobs:
               'Authorization': f'Bearer {api_key}',
               'Content-Type': 'application/json',
               'Accept': 'application/json',
+              # Cloudflare in front of rest.runpod.io/v1 started 403ing
+              # requests with urllib's default User-Agent as a bot
+              # signature (confirmed live: error_code 1010
+              # "browser_signature_banned", all 3 pod-create attempts,
+              # instant, retryable=false). This exact failure mode and
+              # fix were already documented for the v2 catalog endpoint
+              # (commit d5ddb5b) -- that fix's own comment predicted v1
+              # could need this too if Cloudflare's policy tightened.
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) ffa-automations-oev-runpod-sample-baseline',
           }
           pub_key = open('/tmp/runpod_key.pub').read().strip()
 
