@@ -2104,3 +2104,29 @@ ROI-margin diagnostic + velocity-aware ball reacquisition.
 ball issue visually, and whether it interacts with the ROI margin work
 (still itself pending tune-down + neighbouring-pitch contamination
 check, unchanged from before).
+
+
+## 2026-09-07: Infra fixes, velocity-aware fix confirmed active, NEW finding — full-Lost reacquisition still unprotected
+
+**Infra fixes this session (all on `experiment/actionstate-b2b-bridged-authority-v2`):**
+- Cloudflare 403 (`error_code=1010 browser_signature_banned`) hit `rest.runpod.io/v1` pod-create -- same root cause as the previously-documented v2-endpoint fix (`d5ddb5b`), just never applied to this workflow. Fixed with an explicit `User-Agent` header on `oev-runpod-sample-baseline.yml`'s create-pod `headers` dict (commit `8eeca9d`).
+- Same Cloudflare block also hit the *separate* termination-step `headers` dict (a second, distinct dict, not covered by the fix above) -- pod `ahojsq2zaukdkr` (`EU-RO-1`) failed to confirm termination 3/3 attempts. **Johnson manually confirmed it stopped.** Fixed termination headers too (commit `e59ced5`).
+- `EXPECTED_RECO_SHA` in the same workflow was still hardcoded to `c8b0d74b...` -- updated to `d525ed2...` in the same commit (`e59ced5`) once that revision was independently verified (see below).
+- RunPod account balance ran out mid-session ("Your account balance is too low to rent a pod") -- Johnson topped up, confirmed working on redispatch.
+- Reconfirmed the long-standing "sticky-host allocator" issue (same broken 4090 host 3/3 attempts, `machine_id=0gg72skz1yog`) recurred once this session; resolved on a plain retry (no code change). `exclude_datacenters` in this workflow is still dead code (populated, never wired into the request body) -- same gap as the old `oev-runpod-followcam.yml` history. Candidate fix from that old history, still untried: reorder `gpuTypeIds` priority away from whichever type just failed NVDEC, between attempts within one run.
+
+**Velocity-aware ball reacquisition (`d525ed206740336973d1f46fcb4dbb2d1bc76857`, branch `experiment/velocity-aware-ball-reacquire-01`) -- verified, overlaid, confirmed active at scale:**
+Verified locally before any GPU spend: cloned at the exact commit, installed a local Rust toolchain (free, CPU-only), ran `cargo test -p reco-autocam --lib` directly -- 74/74 pass, 0 regressions, diff matches spec line-by-line (own independent re-derivation of all 5 new tests' arithmetic, not just trusting comments). Overlaid into the sample harness via a 1-line `BASE_SHA` repoint in `runpod_bootstrap.sh` (it's a strict 1-commit superset touching only `ball.rs`, untouched by the B2b/camera-response/ROI-diagnostic patches).
+
+Added `RUST_LOG=info,ort::logging=warn,reco_autocam::trackers::ball=debug` scoped to just the stitch step (`runpod_sample_baseline_yolo26_remote.sh`, commit `67734d8`) to make the previously-invisible `debug!`-level tracker lines visible. Run `34088607555` (`sample_02`/180s/`yolo26m`/stride-1/`EU-RO-1`, all 4 layers: B2b + camera-response + ROI-margin diagnostic + velocity-aware reacquisition): **519 mid-coast "reacquired after coast" events vs only 15 full "track lost after 20 coast frames" events** across the 180s clip -- confirms the mid-coast-catch mechanism is active and dominant. Caveat found on review: that log line is pre-existing and fires identically regardless of whether the new `score_predicted()` path or the old static-nearest fallback made the pick -- it does NOT by itself prove the new trajectory logic won any specific contest against a decoy.
+
+**Johnson watched this run's output: spare-ball pull still happens (e.g. ~25s in), but doesn't linger as long as before.**
+
+**NEW finding, root-caused:** checked the log at the ~25s mark directly. That specific moment is a **full `Lost` -> fresh-`acquired`** cycle, not a mid-coast reacquisition:
+```
+track lost after 20 coast frames (last yaw=-0.068 pitch=0.077)
+acquired yaw=-0.054 pitch=0.077 cam=Left conf=0.25   <- nearly identical position
+```
+Our fix only changes scoring during the *still-coasting* window. On a full `Lost` (coast budget exhausted, ~333ms of real time at 60fps/stride-1), `last` and `last_velocity` are both reset to `None` by design (matches the agreed spec: "full loss -> velocity state resets"). The very next acquisition therefore has **zero positional memory** and picks purely on raw detection confidence (`score()`'s `None` branch) -- if the spare ball has decent confidence and is sitting nearby, it can win outright with nothing to stop it. This is a real, different case from the one already fixed: **mid-coast catch-up is working; a fresh pickup immediately after a full loss is still an unconstrained coin-flip.**
+
+**Not yet designed or built:** a short-lived, decaying soft preference toward the last known trajectory for a brief grace window after `Lost` (not a hard gate -- a genuinely new possession should still be pickable), to reduce the fresh-acquire coin-flip without reintroducing a hard block on legitimate new plays. Needs the same rigor as the mid-coast fix (explicit spec, reviewed diff, tests covering: decaying preference still yields to a much higher-confidence alternative; grace window expires; a genuinely new/far possession is not blocked).
