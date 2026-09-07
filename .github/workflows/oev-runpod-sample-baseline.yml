@@ -278,21 +278,42 @@ jobs:
           winner = None
           summary_lines = []
           excluded_datacenters = set()
-          for attempt in range(1, MAX_ATTEMPTS + 1):
-              print(f'--- Pod allocation attempt {attempt}/{MAX_ATTEMPTS} ---')
+          # Tracks physical hosts we've already paid to discover are bad
+          # this run (RunPod's pod-create API has no "exclude this machine"
+          # param -- confirmed against the official schema -- so this is
+          # done client-side instead).
+          seen_machine_ids = set()
+          # Independent hard ceiling on total pod creates. A known-bad-host
+          # skip below does NOT consume a real attempt, so without this the
+          # loop could keep creating pods indefinitely if the allocator is
+          # unusually sticky. Set well above MAX_ATTEMPTS -- this is a safety
+          # backstop, not the expected path.
+          MAX_TOTAL_POD_CREATES = 8
+          attempt = 0
+          total_creates = 0
+          while attempt < MAX_ATTEMPTS:
+              if total_creates >= MAX_TOTAL_POD_CREATES:
+                  print(f'::error::Hit hard ceiling of {MAX_TOTAL_POD_CREATES} total pod creates '
+                        f'without completing {MAX_ATTEMPTS} real attempts -- stopping rather than '
+                        f'looping indefinitely.')
+                  break
+              total_creates += 1
+              print(f'--- Pod allocation attempt {attempt + 1}/{MAX_ATTEMPTS} (pod create #{total_creates}) ---')
               try:
                   pod_id = create_pod(excluded_datacenters)
               except Exception as exc:
-                  print(f'::error::Attempt {attempt}: pod create failed: {exc}')
-                  summary_lines.append(f'attempt={attempt} pod_id=none result=CREATE_FAILED error={exc}')
+                  print(f'::error::pod create failed: {exc}')
+                  summary_lines.append(f'create#={total_creates} pod_id=none result=CREATE_FAILED error={exc}')
+                  attempt += 1
                   continue
 
               try:
                   ip, port, info = wait_for_network(pod_id)
               except Exception as exc:
-                  print(f'Attempt {attempt}: {exc}')
-                  summary_lines.append(f'attempt={attempt} pod_id={pod_id} result=NETWORK_TIMEOUT')
+                  print(f'{exc}')
+                  summary_lines.append(f'create#={total_creates} pod_id={pod_id} result=NETWORK_TIMEOUT')
                   delete_pod(pod_id)
+                  attempt += 1
                   continue
 
               machine = info.get('machine') or {}
@@ -312,27 +333,47 @@ jobs:
               cost_per_hr = info.get('costPerHr')
               cost_str = f'{cost_per_hr}' if cost_per_hr is not None else 'unavailable'
 
-              if not wait_for_ssh(ip, port):
-                  print(f'Attempt {attempt}: SSH never came up on pod {pod_id} ({ip}:{port})')
+              # --- Known-bad-host skip: catch a repeat physical machine here,
+              # BEFORE paying for SSH-wait/preflight (the expensive part of an
+              # attempt). Deliberately does NOT increment `attempt` -- nothing
+              # about this host was actually (re)tested, so it shouldn't count
+              # against the real attempt budget.
+              if machine_id != 'unknown' and machine_id in seen_machine_ids:
+                  print(f'Pod {pod_id} landed on already-seen machine {machine_id} '
+                        f'(datacenter {data_center_id}) -- skipping preflight, deleting, '
+                        f'retrying without counting an attempt.')
                   summary_lines.append(
-                      f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                      f'create#={total_creates} pod_id={pod_id} machine_id={machine_id} '
+                      f'data_center_id={data_center_id} gpu={gpu_type} result=SKIPPED_KNOWN_BAD_HOST'
+                  )
+                  delete_pod(pod_id)
+                  continue
+              if machine_id != 'unknown':
+                  seen_machine_ids.add(machine_id)
+
+              if not wait_for_ssh(ip, port):
+                  print(f'SSH never came up on pod {pod_id} ({ip}:{port})')
+                  summary_lines.append(
+                      f'create#={total_creates} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
                       f'data_center_id={data_center_id} gpu={gpu_type} result=SSH_TIMEOUT'
                   )
                   delete_pod(pod_id)
+                  attempt += 1
                   continue
 
               try:
                   passed, preflight_output = run_preflight(ip, port)
               except Exception as exc:
-                  print(f'Attempt {attempt}: preflight upload/run failed: {exc}')
+                  print(f'preflight upload/run failed: {exc}')
                   summary_lines.append(
-                      f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                      f'create#={total_creates} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
                       f'data_center_id={data_center_id} gpu={gpu_type} result=PREFLIGHT_ERROR error={exc}'
                   )
                   delete_pod(pod_id)
+                  attempt += 1
                   continue
 
-              with open(f'preflight_attempt_{attempt}.txt', 'w') as f:
+              with open(f'preflight_attempt_{attempt + 1}.txt', 'w') as f:
                   f.write(preflight_output)
 
               driver_version = 'unknown'
@@ -342,10 +383,10 @@ jobs:
                       break
 
               result_str = 'PASS' if passed else 'FAIL'
-              print(f'Attempt {attempt}: pod={pod_id} host_ip={ip} machine_id={machine_id} '
+              print(f'create#={total_creates} pod={pod_id} host_ip={ip} machine_id={machine_id} '
                     f'data_center_id={data_center_id} gpu={gpu_type} driver={driver_version} preflight={result_str}')
               summary_lines.append(
-                  f'attempt={attempt} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
+                  f'create#={total_creates} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
                   f'data_center_id={data_center_id} gpu={gpu_type} driver={driver_version} '
                   f'cost_per_hr={cost_str} result={result_str}'
               )
@@ -360,19 +401,22 @@ jobs:
                   }
                   break
               else:
-                  print(f'Attempt {attempt}: NVDEC preflight FAILED on pod {pod_id} '
+                  print(f'Attempt {attempt + 1}: NVDEC preflight FAILED on pod {pod_id} '
                         f'(driver {driver_version}, machine {machine_id}, datacenter {data_center_id}, '
                         f'host {ip}) -- deleting and steering next attempt away from this datacenter.')
                   if data_center_id != 'unknown':
                       excluded_datacenters.add(data_center_id)
                   delete_pod(pod_id)
+                  attempt += 1
 
           with open('pod_selection_summary.txt', 'w') as f:
               f.write('\n'.join(summary_lines) + '\n')
 
           if winner is None:
-              print(f'::error::All {MAX_ATTEMPTS} pod allocation attempts failed (NVDEC preflight, SSH, or network). '
-                    f'See pod_selection_summary.txt and preflight_attempt_*.txt for per-host evidence.')
+              print(f'::error::All {MAX_ATTEMPTS} real pod allocation attempts failed (NVDEC preflight, '
+                    f'SSH, or network) across {total_creates} total pod creates (including any '
+                    f'known-bad-host skips). See pod_selection_summary.txt and preflight_attempt_*.txt '
+                    f'for per-host evidence.')
               sys.exit(1)
 
           launch_time = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
