@@ -71,7 +71,7 @@ fi
 # HERE, from a separate, pinned, unmerged commit -- runpod_bootstrap.sh and
 # video-stitcher@main are untouched by this block. Remove this block once
 # the experiment is resolved (merge-or-discard).
-EXPERIMENT_SHA="0636bc8ceb299c9238f40c456c2d5fd5c914c094"
+EXPERIMENT_SHA="c5d40225ad78236b9982646c6eec1988687f3f17"
 EXPERIMENT_DIR="/tmp/video-stitcher-experiment"
 echo "Building experimental reco-cli at pinned SHA $EXPERIMENT_SHA..." | tee -a segment.log
 
@@ -271,7 +271,7 @@ echo "=== stitch.log: reco stitch (field follow-cam, l-shape, shared-buffer GPU 
 STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
   --model "${YOLO26_VARIANT}.onnx"
   --tracking field
-  --panner-preset broadcast
+  --panner-preset v4_micro_damping
   --lookahead "${LOOKAHEAD}"
   --detection-interval 1
   --frame-stride 1
