@@ -71,7 +71,7 @@ fi
 # HERE, from a separate, pinned, unmerged commit -- runpod_bootstrap.sh and
 # video-stitcher@main are untouched by this block. Remove this block once
 # the experiment is resolved (merge-or-discard).
-EXPERIMENT_SHA="fa3c79e28c3e7ffa1fe9cfa802edd06ff452f6af"
+EXPERIMENT_SHA="2f79803e18418a0503c1138a2369e75fe216ad8a"
 EXPERIMENT_DIR="/tmp/video-stitcher-experiment"
 echo "Building experimental reco-cli at pinned SHA $EXPERIMENT_SHA..." | tee -a segment.log
 
