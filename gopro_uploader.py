@@ -558,8 +558,7 @@ def get_new_items(con):
     return session, new_items
 
 
-def get_concat_download_url(session, media_id):
-    quality_preference = ["2160p", "3000p", "1440p"]
+def get_concat_download_url(session, media_id, expected_size=0):
     label_preference = ["concat", "source"]
 
     def log_variants(variations):
@@ -620,11 +619,23 @@ def get_concat_download_url(session, media_id):
         variations = data.get("_embedded", {}).get("variations", [])
 
         for label in label_preference:
-            for quality in quality_preference:
-                for v in variations:
-                    if v.get("label") == label and v.get("quality") == quality and v.get("available") and v.get("url"):
-                        log.info(f"Using GoPro download variant: {label} {quality}")
-                        return v["url"]
+            candidates = [v for v in variations if v.get("label") == label and v.get("available") and v.get("url")]
+            if not candidates:
+                continue
+            best = max(candidates, key=lambda v: (quality_score(v), size_score(v)))
+            best_size = size_score(best)
+            if expected_size and best_size and best_size < 0.9 * expected_size:
+                log.warning(
+                    f"Best '{label}' variant for {media_id} is suspiciously small "
+                    f"({best_size/1e9:.2f} GB vs GoPro-reported {expected_size/1e9:.2f} GB) — "
+                    f"skipping, trying next label preference"
+                )
+                continue
+            log.info(
+                f"Using GoPro download variant: label={label} quality={best.get('quality','')} "
+                f"size={best_size/1e9:.2f} GB"
+            )
+            return best["url"]
 
         available = [v for v in variations if v.get("available") and v.get("url")]
         if not available:
@@ -632,7 +643,7 @@ def get_concat_download_url(session, media_id):
             log_variants(variations)
             return None
 
-        log.warning(f"No preferred 4K variant found for {media_id}; falling back to best available variant")
+        log.warning(f"No preferred label variant passed the size check for {media_id}; falling back to largest available variant")
         log_variants(variations)
         best = max(available, key=lambda v: (quality_score(v), label_score(v), size_score(v)))
         log.info(
@@ -876,7 +887,7 @@ def upload_item(con, yt, session, item, camera_label="", force=False):
     if effective_reason:
         log.warning(f"Using corrected date for {filename}: {effective_reason}. original_captured_at={original_captured_at or '(none)'}, created_at={created_at or '(none)'}, upload_date={upload_date}")
 
-    dl_url = get_concat_download_url(session, media_id)
+    dl_url = get_concat_download_url(session, media_id, expected_size=file_size)
     if not dl_url:
         log.warning(f"Skipping {filename} — no download URL")
         mark_failed(con, media_id, "no download URL")
@@ -885,6 +896,16 @@ def upload_item(con, yt, session, item, camera_label="", force=False):
     if not download_video(dl_url, dest):
         mark_failed(con, media_id, "download failed")
         return
+    if file_size:
+        actual_size = dest.stat().st_size
+        if actual_size < 0.9 * file_size:
+            log.error(
+                f"Downloaded file for {filename} is {actual_size/1e9:.2f} GB but GoPro reports "
+                f"{file_size/1e9:.2f} GB — wrong/truncated variant, aborting upload"
+            )
+            mark_failed(con, media_id, "downloaded file smaller than GoPro-reported size")
+            dest.unlink(missing_ok=True)
+            return
     if force:
         log.warning(f"Manual force upload enabled for {filename}; skipping DB/filename duplicate blockers")
     description = make_description(filename, upload_date, camera_label)
