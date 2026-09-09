@@ -1,0 +1,38 @@
+name: Diagnose Vultr Runner Box
+
+on:
+  workflow_dispatch:
+    inputs:
+      commands:
+        description: 'Shell commands to run on the box (default: standard diagnostics)'
+        required: false
+        default: ''
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Run diagnostics on Vultr box
+        env:
+          VULTR_HOST: ${{ secrets.VULTR_HOST }}
+          VULTR_ROOT_PASSWORD: ${{ secrets.VULTR_ROOT_PASSWORD }}
+          CUSTOM_CMDS: ${{ github.event.inputs.commands }}
+        run: |
+          set -e
+          CMDS="$CUSTOM_CMDS"
+          if [ -z "$CMDS" ]; then
+            CMDS='
+              echo "--- df -h ---"; df -h /
+              echo "--- chrome-ffa size ---"; du -sh /home/runner/.config/chrome-ffa 2>&1
+              echo "--- top home/runner dirs ---"; du -sh /home/runner/* 2>&1 | sort -rh | head -15
+              echo "--- maintenance timer ---"; systemctl list-timers vultr-disk-maintenance.timer --no-pager 2>&1
+              echo "--- maintenance timer status ---"; systemctl status vultr-disk-maintenance.timer --no-pager 2>&1 | head -20
+              echo "--- maintenance service last runs ---"; journalctl -u vultr-disk-maintenance.service --since "-30 days" --no-pager 2>&1 | tail -60
+              echo "--- runner service ---"; systemctl status "actions.runner.*" --no-pager 2>&1 | head -30
+              echo "--- runner diag log tail ---"; find /home/runner/_diag -name "Runner_*.log" -newer /home/runner 2>/dev/null | sort | tail -1 | xargs -r tail -50
+            '
+          fi
+          sshpass -p "$VULTR_ROOT_PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@"$VULTR_HOST" "$CMDS"
