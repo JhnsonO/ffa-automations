@@ -17,7 +17,13 @@ name: YouTube WebSub Resubscribe
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # daily, 6am UTC
+    # Every 3 hours rather than once daily: the per-run retry (6 attempts,
+    # up to 2min apart) doesn't help against a sustained multi-hour outage
+    # on Google's hub (observed 3-10 Sep) -- running more often just means
+    # we resubscribe within a few hours of the hub recovering, instead of
+    # waiting up to 24h for the next scheduled attempt. Re-subscribing is
+    # idempotent, so there's no downside to trying more often.
+    - cron: '0 */3 * * *'
   workflow_dispatch:
 
 env:
