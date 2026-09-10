@@ -27,7 +27,7 @@ env:
 jobs:
   resubscribe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 12
     steps:
       - name: Subscribe to channel push notifications
         env:
@@ -43,9 +43,15 @@ jobs:
               "hub.secret": os.environ["YOUTUBE_WEBSUB_SECRET"],
           }
 
-          # pubsubhubbub.appspot.com occasionally stalls on the response;
-          # retry a couple of times with a longer timeout before failing.
-          attempts = 3
+          # pubsubhubbub.appspot.com is a legacy Google App Engine service
+          # with a long history of intermittent 503s (documented flakiness
+          # going back years, not specific to this topic/callback). A few
+          # quick retries aren't enough to ride out a multi-minute blip, so
+          # spread more attempts further apart before giving up -- this is
+          # the only thing that actually renews the push-notification
+          # subscription (5-10 day lease), so a failed run here is a real
+          # problem, not just noise.
+          attempts = 6
           for attempt in range(1, attempts + 1):
               try:
                   resp = requests.post(
@@ -57,7 +63,7 @@ jobs:
                   print(f"attempt {attempt}/{attempts} failed: {e}")
                   if attempt == attempts:
                       sys.exit(1)
-                  time.sleep(5 * attempt)
+                  time.sleep(min(20 * attempt, 120))
                   continue
 
               print(f"hub responded HTTP {resp.status_code}")
@@ -66,5 +72,5 @@ jobs:
               print(resp.text[:500])
               if attempt == attempts:
                   sys.exit(1)
-              time.sleep(5 * attempt)
+              time.sleep(min(20 * attempt, 120))
           PY
