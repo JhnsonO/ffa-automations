@@ -1,6 +1,6 @@
 {
-  "operation": "list_routines",
-  "page": 2,
-  "page_size": 10,
-  "trigger": "2026-09-13T00:22:00+01:00"
+  "operation": "list_exercise_templates",
+  "page": 1,
+  "page_size": 100,
+  "trigger": "2026-09-13T00:28:00+01:00"
 }
