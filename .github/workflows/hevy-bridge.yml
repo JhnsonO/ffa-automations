@@ -48,7 +48,7 @@ jobs:
                       "api-key": api_key,
                       "Accept": "application/json",
                       "Content-Type": "application/json",
-                      "User-Agent": "ffa-automations-hevy-bridge/1.1",
+                      "User-Agent": "ffa-automations-hevy-bridge/1.2",
                   },
               )
               try:
@@ -86,7 +86,6 @@ jobs:
               status, data = call("PUT", f"/v1/routines/{routine_id}", payload)
 
           elif op == "ensure_mobility_routine":
-              # Load every exercise template so repeated runs are idempotent.
               templates = []
               page = 1
               while True:
@@ -98,8 +97,6 @@ jobs:
                   if page >= int(d.get("page_count", page)):
                       break
                   page += 1
-              else:
-                  pass
 
               if 'status' not in locals() or 200 <= status < 300:
                   by_title = {t.get("title", "").strip().lower(): t for t in templates}
@@ -122,7 +119,14 @@ jobs:
                           if s < 200 or s >= 300:
                               status, data = s, {"failed_exercise": spec["title"], "response": d, "created": created}
                               break
-                          tmpl = d.get("exercise_template", d) if isinstance(d, dict) else d
+                          if isinstance(d, str):
+                              tmpl = {"id": d, "title": spec["title"]}
+                          elif isinstance(d, dict):
+                              tmpl = d.get("exercise_template") or d.get("exercise") or d
+                              if "id" not in tmpl and "exercise_template_id" in tmpl:
+                                  tmpl = {"id": tmpl["exercise_template_id"], "title": spec["title"]}
+                          else:
+                              raise TypeError(f"Unexpected create exercise response: {type(d).__name__}")
                           created.append(tmpl)
                           by_title[key] = tmpl
                       resolved[spec["key"]] = tmpl["id"]
