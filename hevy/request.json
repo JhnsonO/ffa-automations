@@ -1,5 +1,20 @@
 {
-  "operation": "get_routine",
-  "routine_id": "75695751-e4a5-4bc0-a8b0-3c62ea57fa17",
-  "trigger": "2026-09-13T00:32:10+01:00"
+  "operation": "ensure_routine",
+  "trigger": "2026-09-13T00:58:00+01:00",
+  "exercise_templates": [
+    {"key":"accel","title":"Acceleration Sprint","exercise_type":"duration","equipment_category":"none","muscle_group":"full_body"},
+    {"key":"decel","title":"Planned Deceleration Run","exercise_type":"reps_only","equipment_category":"none","muscle_group":"full_body"},
+    {"key":"cod","title":"Planned Change of Direction","exercise_type":"reps_only","equipment_category":"none","muscle_group":"full_body"},
+    {"key":"easy_run","title":"Easy Aerobic Run","exercise_type":"duration","equipment_category":"none","muscle_group":"full_body"}
+  ],
+  "routine": {
+    "title":"Speed + COD + Aerobic — Full",
+    "notes":"Full conditioning day. Use when there is no extra hard football load. Quality first: sprint reps need full recovery. If a double football session appears, use the Quick version instead. If pain changes stride or rises, stop/regress.",
+    "exercises":[
+      {"template_key":"accel","rest_seconds":90,"notes":"6 x 15-20 m. Build progressively; fast and relaxed, not fatigued. Walk back then recover fully.","sets":[{"duration_seconds":4},{"duration_seconds":4},{"duration_seconds":4},{"duration_seconds":4},{"duration_seconds":4},{"duration_seconds":4}]},
+      {"template_key":"decel","rest_seconds":45,"notes":"Accelerate 10-15 m then brake under control inside a planned zone. 3 reps each side/lead pattern. Chest controlled, hips back, no collapsing knee.","sets":[{"reps":6}]},
+      {"template_key":"cod","rest_seconds":60,"notes":"Planned 45-90 degree cuts. 3 each side. Prioritise clean plant, body position and re-acceleration. Reactive COD belongs in football sessions.","sets":[{"reps":6}]},
+      {"template_key":"easy_run","rest_seconds":0,"notes":"Easy-moderate aerobic work. Conversational effort / roughly 60-70%. Do not turn this into another hard interval session.","sets":[{"duration_seconds":1500}]}
+    ]
+  }
 }
