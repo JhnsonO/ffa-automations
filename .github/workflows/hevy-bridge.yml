@@ -48,7 +48,7 @@ jobs:
                       "api-key": api_key,
                       "Accept": "application/json",
                       "Content-Type": "application/json",
-                      "User-Agent": "ffa-automations-hevy-bridge/1.2",
+                      "User-Agent": "ffa-automations-hevy-bridge/1.3",
                   },
               )
               try:
@@ -132,11 +132,10 @@ jobs:
                       resolved[spec["key"]] = tmpl["id"]
                   else:
                       routine_exercises = []
-                      for i, ex in enumerate(req["routine"]["exercises"]):
+                      for ex in req["routine"]["exercises"]:
                           sets = []
-                          for j, st in enumerate(ex["sets"]):
+                          for st in ex["sets"]:
                               sets.append({
-                                  "index": j,
                                   "type": st.get("type", "normal"),
                                   "weight_kg": st.get("weight_kg"),
                                   "reps": st.get("reps"),
@@ -145,7 +144,6 @@ jobs:
                                   "custom_metric": st.get("custom_metric"),
                               })
                           routine_exercises.append({
-                              "index": i,
                               "exercise_template_id": resolved[ex["template_key"]],
                               "superset_id": ex.get("superset_id"),
                               "rest_seconds": ex.get("rest_seconds", 15),
