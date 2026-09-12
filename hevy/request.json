@@ -1,6 +1,163 @@
 {
-  "operation": "list_exercise_templates",
-  "page": 1,
-  "page_size": 100,
-  "trigger": "2026-09-13T00:28:00+01:00"
+  "operation": "ensure_mobility_routine",
+  "routine_id": "75695751-e4a5-4bc0-a8b0-3c62ea57fa17",
+  "exercise_templates": [
+    {
+      "key": "ankle_knee_wall",
+      "title": "Knee-to-Wall Ankle Mobility",
+      "exercise_type": "reps_only",
+      "equipment_category": "none",
+      "muscle_group": "calves",
+      "other_muscles": []
+    },
+    {
+      "key": "hip_9090",
+      "title": "90/90 Hip Switch",
+      "exercise_type": "reps_only",
+      "equipment_category": "none",
+      "muscle_group": "glutes",
+      "other_muscles": ["adductors", "abductors"]
+    },
+    {
+      "key": "cossack",
+      "title": "Cossack Squat Mobility",
+      "exercise_type": "reps_only",
+      "equipment_category": "none",
+      "muscle_group": "adductors",
+      "other_muscles": ["quadriceps", "glutes", "hamstrings"]
+    },
+    {
+      "key": "deep_squat_hold",
+      "title": "Deep Squat Hold",
+      "exercise_type": "duration",
+      "equipment_category": "none",
+      "muscle_group": "full_body",
+      "other_muscles": ["quadriceps", "glutes", "adductors", "calves"]
+    },
+    {
+      "key": "straight_leg_raise",
+      "title": "Active Straight-Leg Raise",
+      "exercise_type": "reps_only",
+      "equipment_category": "none",
+      "muscle_group": "hamstrings",
+      "other_muscles": ["abdominals"]
+    },
+    {
+      "key": "hip_ir_liftoff",
+      "title": "90/90 Hip Internal Rotation Lift-Off",
+      "exercise_type": "reps_only",
+      "equipment_category": "none",
+      "muscle_group": "glutes",
+      "other_muscles": ["abductors", "adductors"]
+    },
+    {
+      "key": "couch_stretch",
+      "title": "Couch Stretch",
+      "exercise_type": "duration",
+      "equipment_category": "none",
+      "muscle_group": "quadriceps",
+      "other_muscles": ["glutes"]
+    },
+    {
+      "key": "front_split",
+      "title": "Front Split Hold",
+      "exercise_type": "duration",
+      "equipment_category": "none",
+      "muscle_group": "hamstrings",
+      "other_muscles": ["quadriceps", "glutes"]
+    },
+    {
+      "key": "middle_split",
+      "title": "Middle Split Hold",
+      "exercise_type": "duration",
+      "equipment_category": "none",
+      "muscle_group": "adductors",
+      "other_muscles": ["hamstrings", "glutes"]
+    }
+  ],
+  "routine": {
+    "title": "Stretch & Mobility",
+    "notes": "4-6 week football mobility block. Move slowly and stay below sharp pain. Weeks 1-2: own the positions. Weeks 3-4: add 2 reps or 10-15 sec where comfortable. Weeks 5-6: keep the same control and gradually increase depth/range. Main benchmarks: knee-to-wall, straight-leg raise, front split and middle split.",
+    "exercises": [
+      {
+        "template_key": "ankle_knee_wall",
+        "rest_seconds": 15,
+        "notes": "2 sets each side. Keep heel flat and drive knee over 2nd/3rd toe. Start with the foot close enough that the knee touches the wall without the heel lifting. Gradually move the foot back. Track your best pain-free distance in cm.",
+        "sets": [
+          {"type": "normal", "reps": 10},
+          {"type": "normal", "reps": 10}
+        ]
+      },
+      {
+        "template_key": "hip_9090",
+        "rest_seconds": 15,
+        "notes": "Sit tall with both knees bent about 90 degrees. Rotate both knees side-to-side under control without using momentum. Keep both hips as heavy as possible on the floor. One rep = switch to the opposite side.",
+        "sets": [
+          {"type": "normal", "reps": 8},
+          {"type": "normal", "reps": 8}
+        ]
+      },
+      {
+        "template_key": "cossack",
+        "rest_seconds": 30,
+        "notes": "Move into a wide stance, sit into one hip while the other leg stays long. Keep the working foot planted and chest tall. Go only as deep as you can control. Alternate sides; reps are per side.",
+        "sets": [
+          {"type": "normal", "reps": 6},
+          {"type": "normal", "reps": 6}
+        ]
+      },
+      {
+        "template_key": "deep_squat_hold",
+        "rest_seconds": 30,
+        "notes": "Heels flat, knees tracking over toes, ribs stacked. Sit as low as you can without collapsing. Use elbows inside the knees if useful. Goal over the block: build toward a relaxed 2-minute hold.",
+        "sets": [
+          {"type": "normal", "duration_seconds": 60}
+        ]
+      },
+      {
+        "template_key": "straight_leg_raise",
+        "rest_seconds": 15,
+        "notes": "Lie on your back with one leg straight on the floor. Raise the other leg with the knee locked and toes pulled toward you; do not let the pelvis roll. Reps are per side. Track how close you get to 90 degrees while staying controlled.",
+        "sets": [
+          {"type": "normal", "reps": 8},
+          {"type": "normal", "reps": 8}
+        ]
+      },
+      {
+        "template_key": "hip_ir_liftoff",
+        "rest_seconds": 20,
+        "notes": "From 90/90, keep the front thigh down and gently lift the front foot/shin away from the floor to train active internal rotation. Small clean range is fine. No twisting through the lower back. Reps are per side.",
+        "sets": [
+          {"type": "normal", "reps": 6},
+          {"type": "normal", "reps": 6}
+        ]
+      },
+      {
+        "template_key": "couch_stretch",
+        "rest_seconds": 20,
+        "notes": "Set one knee near a wall/bench with shin behind you, opposite foot in front. Squeeze the glute of the kneeling side and keep ribs down. Do not arch the lower back. Set 1 left, set 2 right.",
+        "sets": [
+          {"type": "normal", "duration_seconds": 45},
+          {"type": "normal", "duration_seconds": 45}
+        ]
+      },
+      {
+        "template_key": "front_split",
+        "rest_seconds": 30,
+        "notes": "Use supports/blocks if needed. Square the hips, front knee straight, back leg long. Sink only to strong stretch, not pain. Set 1 left leg forward; set 2 right leg forward. Measure floor gap every 1-2 weeks, not every session.",
+        "sets": [
+          {"type": "normal", "duration_seconds": 45},
+          {"type": "normal", "duration_seconds": 45}
+        ]
+      },
+      {
+        "template_key": "middle_split",
+        "rest_seconds": 30,
+        "notes": "Take a wide stance/straddle and slide out gradually with feet and knees aligned. Keep tension through the legs rather than hanging passively. Stop well before sharp groin pain. Track floor gap every 1-2 weeks.",
+        "sets": [
+          {"type": "normal", "duration_seconds": 60}
+        ]
+      }
+    ]
+  }
 }
