@@ -1,0 +1,187 @@
+name: TicketSource API Bridge
+
+on:
+  push:
+    branches:
+      - feature/ticketsource-api-bridge
+    paths:
+      - ticketsource/request.json
+      - .github/workflows/ticketsource-bridge.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Export TicketSource history
+        env:
+          TICKETSOURCE_API_KEY: ${{ secrets.TICKETSOURCE_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, time, urllib.error, urllib.parse, urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          api_key = os.environ.get('TICKETSOURCE_API_KEY')
+          if not api_key:
+              raise SystemExit('Missing repository secret TICKETSOURCE_API_KEY')
+
+          req = json.loads(Path('ticketsource/request.json').read_text())
+          if req.get('operation') != 'full_export':
+              raise SystemExit(f"Unsupported operation: {req.get('operation')!r}")
+
+          base = 'https://api.ticketsource.io'
+          headers = {
+              'Authorization': f'Bearer {api_key}',
+              'Accept': 'application/json',
+              'User-Agent': 'ffa-automations-ticketsource-bridge/1.0',
+          }
+          calls = 0
+
+          def get_json(url):
+              global calls
+              if url.startswith('/'):
+                  url = base + url
+              for attempt in range(6):
+                  request = urllib.request.Request(url, headers=headers)
+                  try:
+                      with urllib.request.urlopen(request, timeout=45) as response:
+                          raw = response.read().decode('utf-8')
+                          calls += 1
+                          time.sleep(0.27)
+                          return json.loads(raw) if raw else {}
+                  except urllib.error.HTTPError as exc:
+                      body = exc.read().decode('utf-8', errors='replace')
+                      calls += 1
+                      if exc.code == 429 or 500 <= exc.code < 600:
+                          delay = min(30, 2 ** attempt)
+                          print(f'HTTP {exc.code}; retrying in {delay}s: {url}')
+                          time.sleep(delay)
+                          continue
+                      raise SystemExit(f'HTTP {exc.code} for {url}: {body[:1000]}')
+                  except urllib.error.URLError as exc:
+                      if attempt == 5:
+                          raise
+                      delay = min(30, 2 ** attempt)
+                      print(f'Network error; retrying in {delay}s: {exc}')
+                      time.sleep(delay)
+              raise SystemExit(f'Failed after retries: {url}')
+
+          def paginated(path_or_url, params=None):
+              if path_or_url.startswith('http'):
+                  url = path_or_url
+              else:
+                  query = urllib.parse.urlencode(params or {})
+                  url = base + path_or_url + (('?' + query) if query else '')
+              items = []
+              pages = []
+              while url:
+                  payload = get_json(url)
+                  page_items = payload.get('data', [])
+                  if not isinstance(page_items, list):
+                      raise SystemExit(f'Expected list data from {url}')
+                  items.extend(page_items)
+                  pages.append({
+                      'meta': payload.get('meta'),
+                      'links': payload.get('links'),
+                      'count': len(page_items),
+                  })
+                  url = (payload.get('links') or {}).get('next')
+              return items, pages
+
+          event_params = {
+              'per_page': 100,
+              'filter[settled][operator]': 'any',
+              'filter[archived][operator]': 'any',
+              'filter[activated][operator]': 'any',
+              'filter[public][operator]': 'any',
+          }
+          events, event_pages = paginated('/events', event_params)
+          print(f'Events: {len(events)}')
+
+          dates_by_event = []
+          bookings_by_date = []
+          seats_by_booking = []
+          date_count = booking_count = seat_count = 0
+
+          for event_index, event in enumerate(events, 1):
+              event_id = event['id']
+              dates_url = (event.get('links') or {}).get('dates') or f'/events/{urllib.parse.quote(event_id, safe="")}/dates'
+              dates, date_pages = paginated(dates_url + ('&per_page=100' if '?' in dates_url else '?per_page=100'))
+              dates_by_event.append({'event_id': event_id, 'data': dates, 'pages': date_pages})
+              date_count += len(dates)
+              print(f'Event {event_index}/{len(events)} {event_id}: {len(dates)} dates')
+
+              for date in dates:
+                  date_id = date['id']
+                  bookings_url = (date.get('links') or {}).get('bookings') or f'/dates/{urllib.parse.quote(date_id, safe="")}/bookings'
+                  bookings, booking_pages = paginated(bookings_url + ('&per_page=100' if '?' in bookings_url else '?per_page=100'))
+                  bookings_by_date.append({
+                      'event_id': event_id,
+                      'date_id': date_id,
+                      'data': bookings,
+                      'pages': booking_pages,
+                  })
+                  booking_count += len(bookings)
+
+                  for booking in bookings:
+                      booking_id = booking['id']
+                      seats_url = (booking.get('links') or {}).get('seats') or f'/bookings/{urllib.parse.quote(booking_id, safe="")}/seats'
+                      seats, seat_pages = paginated(seats_url + ('&per_page=100' if '?' in seats_url else '?per_page=100'))
+                      seats_by_booking.append({
+                          'event_id': event_id,
+                          'date_id': date_id,
+                          'booking_id': booking_id,
+                          'data': seats,
+                          'pages': seat_pages,
+                      })
+                      seat_count += len(seats)
+
+          customers, customer_pages = paginated('/customers', {'per_page': 100})
+          print(f'Dates: {date_count}; bookings: {booking_count}; seats: {seat_count}; customers: {len(customers)}')
+
+          export = {
+              'meta': {
+                  'operation': 'full_export',
+                  'fetched_at_utc': datetime.now(timezone.utc).isoformat(),
+                  'api_base': base,
+                  'api_calls': calls,
+                  'event_filter': 'settled=any, archived=any, activated=any, public=any',
+              },
+              'events': {'data': events, 'pages': event_pages},
+              'dates_by_event': dates_by_event,
+              'bookings_by_date': bookings_by_date,
+              'seats_by_booking': seats_by_booking,
+              'customers': {'data': customers, 'pages': customer_pages},
+          }
+          summary = {
+              'events': len(events),
+              'dates': date_count,
+              'bookings': booking_count,
+              'seats': seat_count,
+              'customers': len(customers),
+              'api_calls': calls,
+              'fetched_at_utc': export['meta']['fetched_at_utc'],
+          }
+
+          out = Path('ticketsource/output')
+          out.mkdir(parents=True, exist_ok=True)
+          (out / 'ticketsource-export.json').write_text(json.dumps(export, indent=2))
+          (out / 'summary.json').write_text(json.dumps(summary, indent=2))
+          print(json.dumps(summary, indent=2))
+          PY
+
+      - name: Upload TicketSource export
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ticketsource-export
+          path: ticketsource/output/
+          if-no-files-found: warn
+          retention-days: 7
