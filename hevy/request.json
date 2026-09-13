@@ -1,12 +1,8 @@
 {
-"operation":"ensure_routine","trigger":"2026-09-13T01:18:01+01:00",
+"operation":"ensure_routine","trigger":"2026-09-13T01:18:02+01:00",
 "exercise_templates":[
-{"key":"accel","title":"Acceleration Sprint","exercise_type":"duration","equipment_category":"none","muscle_group":"full_body"},
-{"key":"decel","title":"Planned Deceleration Run","exercise_type":"reps_only","equipment_category":"none","muscle_group":"full_body"},
-{"key":"cod","title":"Planned Change of Direction","exercise_type":"reps_only","equipment_category":"none","muscle_group":"full_body"}
+{"key":"jt","title":"Football Sprint-Run-Walk Intervals","exercise_type":"duration","equipment_category":"none","muscle_group":"full_body"}
 ],
-"routine":{"title":"Speed + COD — Quick","notes":"Reduced version for a week/day with extra football load. Keep quality high and leave fresh. Skip entirely if the football session itself already provides hard sprint/COD exposure.","exercises":[
-{"template_key":"accel","rest_seconds":90,"notes":"4 x 15-20 m. Fast, relaxed, full recovery.","sets":[{"duration_seconds":4},{"duration_seconds":4},{"duration_seconds":4},{"duration_seconds":4}]},
-{"template_key":"decel","rest_seconds":45,"notes":"Controlled braking. 2 reps each side/lead pattern.","sets":[{"reps":4}]},
-{"template_key":"cod","rest_seconds":60,"notes":"Planned cuts only. 2 each side. Stop while movement quality is high.","sets":[{"reps":4}]}
+"routine":{"title":"Football Conditioning — No Game","notes":"Use only when a planned football session is NOT happening. Do not stack this on top of a hard game/double session. Built as a football-specific interval option rather than punishment volume.","exercises":[
+{"template_key":"jt","rest_seconds":120,"notes":"Sprint-run-walk block. Use the pace pattern you already know from your football conditioning work. Keep the sprint portions fast but repeatable; the final rep should still look like the first. Two blocks only when recovered.","sets":[{"duration_seconds":360},{"duration_seconds":360}]}
 ]}}
