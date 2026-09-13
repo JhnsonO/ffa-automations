@@ -1,6 +1,16 @@
 {
-"operation":"ensure_routine","trigger":"2026-09-13T01:18:03+01:00",
-"exercise_templates":[{"key":"easy","title":"Easy Aerobic Run","exercise_type":"duration","equipment_category":"none","muscle_group":"full_body"}],
-"routine":{"title":"Match Replacement — Aerobic","notes":"Use when Saturday/game football is cancelled and you still want an aerobic stimulus. This is deliberately easy; do not replace a cancelled match with a max conditioning session.","exercises":[
-{"template_key":"easy","rest_seconds":0,"notes":"25-30 min at roughly 60-70% / conversational effort. AssaultRunner, treadmill or outdoor run. Finish feeling like you could do more.","sets":[{"duration_seconds":1800}]}
+"operation":"ensure_routine","trigger":"2026-09-13T01:19:04+01:00",
+"exercise_templates":[
+{"key":"nordic","title":"Nordic Hamstrings Curls","exercise_type":"reps_only","equipment_category":"none","muscle_group":"hamstrings"},
+{"key":"copen","title":"Copenhagens","exercise_type":"duration","equipment_category":"none","muscle_group":"abductors"},
+{"key":"hip","title":"Hip Flexion With Kettlebell","exercise_type":"weight_reps","equipment_category":"kettlebell","muscle_group":"quadriceps"},
+{"key":"soleus","title":"Seated Calf Raise","exercise_type":"weight_reps","equipment_category":"machine","muscle_group":"calves"},
+{"key":"arab","title":"Arabesque","exercise_type":"reps_only","equipment_category":"none","muscle_group":"hamstrings"}
+],
+"routine":{"title":"Prehab — Mini","notes":"Short maintenance option for double-session days. Keep it comfortable and low fatigue.","exercises":[
+{"template_key":"nordic","rest_seconds":60,"notes":"Smooth controlled reps.","sets":[{"reps":4},{"reps":4}]},
+{"template_key":"copen","rest_seconds":30,"notes":"One quality hold each side.","sets":[{"duration_seconds":20},{"duration_seconds":20}]},
+{"template_key":"hip","rest_seconds":30,"notes":"Controlled raises, one set each side.","sets":[{"weight_kg":12,"reps":8},{"weight_kg":12,"reps":8}]},
+{"template_key":"soleus","rest_seconds":30,"notes":"Bent-knee calf, controlled range.","sets":[{"reps":10},{"reps":10}]},
+{"template_key":"arab","rest_seconds":30,"notes":"Slow and stable, one set each side.","sets":[{"reps":6},{"reps":6}]}
 ]}}
