@@ -1,8 +1,6 @@
 {
-"operation":"ensure_routine","trigger":"2026-09-13T01:18:02+01:00",
-"exercise_templates":[
-{"key":"jt","title":"Football Sprint-Run-Walk Intervals","exercise_type":"duration","equipment_category":"none","muscle_group":"full_body"}
-],
-"routine":{"title":"Football Conditioning — No Game","notes":"Use only when a planned football session is NOT happening. Do not stack this on top of a hard game/double session. Built as a football-specific interval option rather than punishment volume.","exercises":[
-{"template_key":"jt","rest_seconds":120,"notes":"Sprint-run-walk block. Use the pace pattern you already know from your football conditioning work. Keep the sprint portions fast but repeatable; the final rep should still look like the first. Two blocks only when recovered.","sets":[{"duration_seconds":360},{"duration_seconds":360}]}
+"operation":"ensure_routine","trigger":"2026-09-13T01:18:03+01:00",
+"exercise_templates":[{"key":"easy","title":"Easy Aerobic Run","exercise_type":"duration","equipment_category":"none","muscle_group":"full_body"}],
+"routine":{"title":"Match Replacement — Aerobic","notes":"Use when Saturday/game football is cancelled and you still want an aerobic stimulus. This is deliberately easy; do not replace a cancelled match with a max conditioning session.","exercises":[
+{"template_key":"easy","rest_seconds":0,"notes":"25-30 min at roughly 60-70% / conversational effort. AssaultRunner, treadmill or outdoor run. Finish feeling like you could do more.","sets":[{"duration_seconds":1800}]}
 ]}}
