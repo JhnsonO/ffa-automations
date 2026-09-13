@@ -1,16 +1,12 @@
 {
-"operation":"ensure_routine","trigger":"2026-09-13T01:19:04+01:00",
+"operation":"ensure_routine","trigger":"2026-09-13T01:19:05+01:00",
 "exercise_templates":[
-{"key":"nordic","title":"Nordic Hamstrings Curls","exercise_type":"reps_only","equipment_category":"none","muscle_group":"hamstrings"},
-{"key":"copen","title":"Copenhagens","exercise_type":"duration","equipment_category":"none","muscle_group":"abductors"},
-{"key":"hip","title":"Hip Flexion With Kettlebell","exercise_type":"weight_reps","equipment_category":"kettlebell","muscle_group":"quadriceps"},
-{"key":"soleus","title":"Seated Calf Raise","exercise_type":"weight_reps","equipment_category":"machine","muscle_group":"calves"},
-{"key":"arab","title":"Arabesque","exercise_type":"reps_only","equipment_category":"none","muscle_group":"hamstrings"}
+{"key":"squat","title":"Squat (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"quadriceps"},
+{"key":"rdl","title":"Romanian Deadlift (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"hamstrings"},
+{"key":"calf","title":"Single Leg Standing Calf Raise (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"calves"}
 ],
-"routine":{"title":"Prehab — Mini","notes":"Short maintenance option for double-session days. Keep it comfortable and low fatigue.","exercises":[
-{"template_key":"nordic","rest_seconds":60,"notes":"Smooth controlled reps.","sets":[{"reps":4},{"reps":4}]},
-{"template_key":"copen","rest_seconds":30,"notes":"One quality hold each side.","sets":[{"duration_seconds":20},{"duration_seconds":20}]},
-{"template_key":"hip","rest_seconds":30,"notes":"Controlled raises, one set each side.","sets":[{"weight_kg":12,"reps":8},{"weight_kg":12,"reps":8}]},
-{"template_key":"soleus","rest_seconds":30,"notes":"Bent-knee calf, controlled range.","sets":[{"reps":10},{"reps":10}]},
-{"template_key":"arab","rest_seconds":30,"notes":"Slow and stable, one set each side.","sets":[{"reps":6},{"reps":6}]}
+"routine":{"title":"Lower — Reduced","notes":"Use instead of a full lower session when the day also contains substantial football. Maintenance stimulus, not a second hard leg session. Keep around 2-3 reps in reserve.","exercises":[
+{"template_key":"squat","rest_seconds":150,"notes":"Two working sets only. Use a comfortable load for 5-7 clean reps.","sets":[{"weight_kg":60,"reps":7},{"weight_kg":60,"reps":7}]},
+{"template_key":"rdl","rest_seconds":120,"notes":"Two controlled working sets. Hamstrings loaded, no grinding.","sets":[{"weight_kg":80,"reps":7},{"weight_kg":80,"reps":7}]},
+{"template_key":"calf","rest_seconds":45,"notes":"Straight-knee calf maintenance, reps each side.","sets":[{"weight_kg":24,"reps":8},{"weight_kg":24,"reps":8}]}
 ]}}
