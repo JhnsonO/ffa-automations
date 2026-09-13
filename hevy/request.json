@@ -1,12 +1,14 @@
 {
-"operation":"ensure_routine","trigger":"2026-09-13T01:19:05+01:00",
+"operation":"ensure_routine","trigger":"2026-09-13T01:19:06+01:00",
 "exercise_templates":[
-{"key":"squat","title":"Squat (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"quadriceps"},
-{"key":"rdl","title":"Romanian Deadlift (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"hamstrings"},
-{"key":"calf","title":"Single Leg Standing Calf Raise (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"calves"}
+{"key":"bench","title":"Bench Press (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"chest"},
+{"key":"pull","title":"Pull Up","exercise_type":"reps_only","equipment_category":"none","muscle_group":"lats"},
+{"key":"row","title":"Bent Over Row (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"upper_back"},
+{"key":"ohp","title":"Overhead Press (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"shoulders"}
 ],
-"routine":{"title":"Lower — Reduced","notes":"Use instead of a full lower session when the day also contains substantial football. Maintenance stimulus, not a second hard leg session. Keep around 2-3 reps in reserve.","exercises":[
-{"template_key":"squat","rest_seconds":150,"notes":"Two working sets only. Use a comfortable load for 5-7 clean reps.","sets":[{"weight_kg":60,"reps":7},{"weight_kg":60,"reps":7}]},
-{"template_key":"rdl","rest_seconds":120,"notes":"Two controlled working sets. Hamstrings loaded, no grinding.","sets":[{"weight_kg":80,"reps":7},{"weight_kg":80,"reps":7}]},
-{"template_key":"calf","rest_seconds":45,"notes":"Straight-knee calf maintenance, reps each side.","sets":[{"weight_kg":24,"reps":8},{"weight_kg":24,"reps":8}]}
+"routine":{"title":"Upper — Quick","notes":"Short upper session for busy/double-session days. Four compounds, no accessory clutter. Leave 1-3 reps in reserve.","exercises":[
+{"template_key":"bench","rest_seconds":120,"notes":"Two quality working sets.","sets":[{"weight_kg":60,"reps":7},{"weight_kg":60,"reps":7}]},
+{"template_key":"pull","rest_seconds":90,"notes":"Clean reps, stop before form drops.","sets":[{"reps":8},{"reps":8}]},
+{"template_key":"row","rest_seconds":120,"notes":"Controlled torso and full pull.","sets":[{"weight_kg":70,"reps":7},{"weight_kg":70,"reps":7}]},
+{"template_key":"ohp","rest_seconds":120,"notes":"Two quality sets; no grinding.","sets":[{"weight_kg":40,"reps":7},{"weight_kg":40,"reps":7}]}
 ]}}
