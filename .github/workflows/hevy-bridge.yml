@@ -30,7 +30,7 @@ jobs:
           req=json.loads(Path('hevy/request.json').read_text()); op=req.get('operation'); base='https://api.hevyapp.com'
           def call(method,path,payload=None):
               body=None if payload is None else json.dumps(payload).encode()
-              r=urllib.request.Request(base+path,data=body,method=method,headers={'api-key':api_key,'Accept':'application/json','Content-Type':'application/json','User-Agent':'ffa-automations-hevy-bridge/1.5'})
+              r=urllib.request.Request(base+path,data=body,method=method,headers={'api-key':api_key,'Accept':'application/json','Content-Type':'application/json','User-Agent':'ffa-automations-hevy-bridge/1.6'})
               try:
                   with urllib.request.urlopen(r,timeout=30) as x: raw=x.read().decode(); status=x.status
               except urllib.error.HTTPError as e: raw=e.read().decode(errors='replace'); status=e.code
@@ -49,6 +49,10 @@ jobs:
               status,data=call('GET',f"/v1/routines?page={int(req.get('page',1))}&pageSize={min(int(req.get('page_size',10)),10)}")
           elif op=='get_routine':
               status,data=call('GET','/v1/routines/'+urllib.parse.quote(req['routine_id'],safe=''))
+          elif op=='list_workouts':
+              status,data=call('GET',f"/v1/workouts?page={int(req.get('page',1))}&pageSize={min(int(req.get('page_size',10)),10)}")
+          elif op=='get_workout':
+              status,data=call('GET','/v1/workouts/'+urllib.parse.quote(req['workout_id'],safe=''))
           elif op=='list_exercise_templates':
               status,data=call('GET',f"/v1/exercise_templates?page={int(req.get('page',1))}&pageSize={min(int(req.get('page_size',100)),100)}")
           elif op=='update_routine':
