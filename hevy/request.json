@@ -1,9 +1,9 @@
 {
-  "operation": "ensure_routine",
-  "trigger": "2026-09-14T06:44:00+01:00",
-  "exercise_templates": [
-    {"key":"box_jump","title":"Box Jump","exercise_type":"reps_only","equipment_category":"none","muscle_group":"quadriceps"},
-    {"key":"lateral_jump","title":"Lateral Box Jump","exercise_type":"reps_only","equipment_category":"none","muscle_group":"quadriceps"},
+  "operation":"ensure_routine",
+  "trigger":"2026-09-14T06:47:00+01:00",
+  "exercise_templates":[
+    {"key":"broad_jump","title":"Broad Jump","exercise_type":"reps_only","equipment_category":"none","muscle_group":"quadriceps"},
+    {"key":"lateral_bound","title":"Lateral Bound","exercise_type":"reps_only","equipment_category":"none","muscle_group":"quadriceps"},
     {"key":"box_squat","title":"Box Squat (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"quadriceps"},
     {"key":"rdl","title":"Romanian Deadlift (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"hamstrings"},
     {"key":"bulgarian","title":"Bulgarian Split Squat (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"quadriceps"},
@@ -11,18 +11,13 @@
     {"key":"standing_calf","title":"Single Leg Standing Calf Raise (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"calves"},
     {"key":"seated_calf","title":"Seated Calf Raise","exercise_type":"weight_reps","equipment_category":"machine","muscle_group":"calves"}
   ],
-  "routine": {
-    "title": "Lower — Power + Strength — Full",
-    "notes": "Main Monday lower session. Power first while fresh, then strength. Keep around 2 reps in reserve on strength work and do not chase fatigue on jumps. If Monday becomes a hard double football day, use Lower — Reduced instead.",
-    "exercises": [
-      {"template_key":"box_jump","rest_seconds":60,"notes":"Explosive quality only. Reset fully between reps; stop if jump height or landing quality drops.","sets":[{"reps":3},{"reps":3},{"reps":3}]},
-      {"template_key":"lateral_jump","rest_seconds":60,"notes":"3 reps each side per set. Stick the landing and re-set; do not turn this into conditioning.","sets":[{"reps":6},{"reps":6},{"reps":6}]},
-      {"template_key":"box_squat","rest_seconds":150,"notes":"3 working sets of 5-7. Start around your current 80 kg working load. Add weight only once all sets are clean with about 2 reps in reserve.","sets":[{"weight_kg":80,"reps":7},{"weight_kg":80,"reps":7},{"weight_kg":80,"reps":7}]},
-      {"template_key":"rdl","rest_seconds":120,"notes":"Controlled eccentric and full hamstring tension. Work in the 5-7 rep range, no grinding.","sets":[{"weight_kg":80,"reps":7},{"weight_kg":80,"reps":7},{"weight_kg":90,"reps":7}]},
-      {"template_key":"bulgarian","rest_seconds":120,"notes":"6-10 reps each side. Keep pelvis controlled and use a range you can own.","sets":[{"weight_kg":60,"reps":8},{"weight_kg":60,"reps":8},{"weight_kg":60,"reps":8}]},
-      {"template_key":"hip_thrust","rest_seconds":120,"notes":"2 strong sets of 6-8. Full lockout without overextending the lower back.","sets":[{"weight_kg":80,"reps":8},{"weight_kg":90,"reps":8}]},
-      {"template_key":"standing_calf","rest_seconds":45,"notes":"Straight-knee calf strength. Controlled full range, reps each side.","sets":[{"weight_kg":24,"reps":8},{"weight_kg":24,"reps":8},{"weight_kg":24,"reps":8}]},
-      {"template_key":"seated_calf","rest_seconds":45,"notes":"Bent-knee soleus work. 10-15 controlled reps with a pause at the top and full stretch at the bottom.","sets":[{"reps":12},{"reps":12},{"reps":12}]}
-    ]
-  }
-}
+  "routine":{"title":"Lower — Power + Strength — No Plyo Box","notes":"Full lower session for gyms without plyometric boxes. Broad jumps replace box jumps and lateral bounds replace lateral box jumps. Power first while fresh, then strength. Keep around 2 reps in reserve on strength work.","exercises":[
+    {"template_key":"broad_jump","rest_seconds":60,"notes":"3 explosive jumps. Stick each landing and reset fully before the next rep. Distance and landing quality over fatigue.","sets":[{"reps":3},{"reps":3},{"reps":3}]},
+    {"template_key":"lateral_bound","rest_seconds":60,"notes":"3 bounds each direction per set. Push sideways from one leg, land on the opposite leg and stabilise before the next rep.","sets":[{"reps":6},{"reps":6},{"reps":6}]},
+    {"template_key":"box_squat","rest_seconds":150,"notes":"3 working sets of 5-7. Start around 80 kg. Keep about 2 reps in reserve.","sets":[{"weight_kg":80,"reps":7},{"weight_kg":80,"reps":7},{"weight_kg":80,"reps":7}]},
+    {"template_key":"rdl","rest_seconds":120,"notes":"Controlled eccentric and full hamstring tension. No grinding.","sets":[{"weight_kg":80,"reps":7},{"weight_kg":80,"reps":7},{"weight_kg":90,"reps":7}]},
+    {"template_key":"bulgarian","rest_seconds":120,"notes":"6-10 reps each side. Controlled pelvis and full usable range.","sets":[{"weight_kg":60,"reps":8},{"weight_kg":60,"reps":8},{"weight_kg":60,"reps":8}]},
+    {"template_key":"hip_thrust","rest_seconds":120,"notes":"2 strong sets of 6-8. Full lockout without overextending lower back.","sets":[{"weight_kg":80,"reps":8},{"weight_kg":90,"reps":8}]},
+    {"template_key":"standing_calf","rest_seconds":45,"notes":"Straight-knee calf strength. Controlled full range, reps each side.","sets":[{"weight_kg":24,"reps":8},{"weight_kg":24,"reps":8},{"weight_kg":24,"reps":8}]},
+    {"template_key":"seated_calf","rest_seconds":45,"notes":"Bent-knee soleus work. 10-15 controlled reps.","sets":[{"reps":12},{"reps":12},{"reps":12}]}
+  ]}}
