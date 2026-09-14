@@ -30,13 +30,21 @@ jobs:
           req=json.loads(Path('hevy/request.json').read_text()); op=req.get('operation'); base='https://api.hevyapp.com'
           def call(method,path,payload=None):
               body=None if payload is None else json.dumps(payload).encode()
-              r=urllib.request.Request(base+path,data=body,method=method,headers={'api-key':api_key,'Accept':'application/json','Content-Type':'application/json','User-Agent':'ffa-automations-hevy-bridge/1.4'})
+              r=urllib.request.Request(base+path,data=body,method=method,headers={'api-key':api_key,'Accept':'application/json','Content-Type':'application/json','User-Agent':'ffa-automations-hevy-bridge/1.5'})
               try:
                   with urllib.request.urlopen(r,timeout=30) as x: raw=x.read().decode(); status=x.status
               except urllib.error.HTTPError as e: raw=e.read().decode(errors='replace'); status=e.code
               try: data=json.loads(raw) if raw else None
               except json.JSONDecodeError: data=raw
               return status,data
+          def all_routines():
+              items=[]; page=1
+              while True:
+                  s,d=call('GET',f'/v1/routines?page={page}&pageSize=10')
+                  if not 200<=s<300: return s,None
+                  items.extend(d.get('routines',[]))
+                  if page>=int(d.get('page_count',page)): return s,items
+                  page+=1
           if op=='list_routines':
               status,data=call('GET',f"/v1/routines?page={int(req.get('page',1))}&pageSize={min(int(req.get('page_size',10)),10)}")
           elif op=='get_routine':
@@ -54,12 +62,11 @@ jobs:
                   templates.extend(d.get('exercise_templates',[]))
                   if page>=int(d.get('page_count',page)): break
                   page+=1
-              else: pass
               if 'status' not in locals() or 200<=status<300:
-                  by_title={t.get('title','').strip().lower():t for t in templates}; created=[]; resolved={}
+                  by_title={t.get('title','').strip().casefold():t for t in templates}; created=[]; resolved={}
                   failed=False
                   for spec in req['exercise_templates']:
-                      key=spec['title'].strip().lower(); tmpl=by_title.get(key)
+                      key=spec['title'].strip().casefold(); tmpl=by_title.get(key)
                       if tmpl is None:
                           s,d=call('POST','/v1/exercise_templates',{'exercise':{'title':spec['title'],'exercise_type':spec['exercise_type'],'equipment_category':spec.get('equipment_category','none'),'muscle_group':spec.get('muscle_group','other'),'other_muscles':spec.get('other_muscles',[])}})
                           if not 200<=s<300: status,data=s,{'failed_exercise':spec['title'],'response':d,'created':created}; failed=True; break
@@ -77,9 +84,19 @@ jobs:
                       rp={'routine':{'title':req['routine']['title'],'notes':req['routine'].get('notes',''),'exercises':exercises}}
                       if req.get('routine_id'):
                           status,updated=call('PUT','/v1/routines/'+urllib.parse.quote(req['routine_id'],safe=''),rp)
+                          action='updated_by_id'
                       else:
-                          status,updated=call('POST','/v1/routines',rp)
-                      data={'created_exercises':created,'resolved_template_ids':resolved,'routine':updated}
+                          rs,routines=all_routines()
+                          if not 200<=rs<300:
+                              status,updated=rs,routines; action='routine_lookup_failed'
+                          else:
+                              wanted=req['routine']['title'].strip().casefold()
+                              matches=[r for r in routines if r.get('title','').strip().casefold()==wanted]
+                              if matches:
+                                  status=200; updated={'action':'skipped_existing','matches':[{'id':r.get('id'),'title':r.get('title')} for r in matches]}; action='skipped_existing'
+                              else:
+                                  status,updated=call('POST','/v1/routines',rp); action='created'
+                      data={'action':action,'created_exercises':created,'resolved_template_ids':resolved,'routine':updated}
           else: raise SystemExit(f'Unsupported operation: {op!r}')
           Path('hevy/response.json').write_text(json.dumps({'operation':op,'status':status,'response':data},indent=2)); print(f'Hevy API status: {status}')
           if not 200<=status<300: raise SystemExit(1)
