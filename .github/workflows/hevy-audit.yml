@@ -1,0 +1,52 @@
+name: Hevy Routine Audit
+
+on:
+  push:
+    branches:
+      - feature/hevy-api-bridge
+    paths:
+      - .github/workflows/hevy-audit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit Hevy routines
+        env:
+          HEVY_API_KEY: ${{ secrets.HEVY_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request, urllib.parse
+          from collections import defaultdict
+          from pathlib import Path
+          key=os.environ['HEVY_API_KEY']
+          base='https://api.hevyapp.com'
+          def get(path):
+              req=urllib.request.Request(base+path,headers={'api-key':key,'Accept':'application/json','User-Agent':'ffa-automations-hevy-audit/1.0'})
+              with urllib.request.urlopen(req,timeout=30) as r:
+                  return json.loads(r.read().decode())
+          routines=[]
+          page=1
+          while True:
+              d=get(f'/v1/routines?page={page}&pageSize=10')
+              routines.extend(d.get('routines',[]))
+              if page>=int(d.get('page_count',page)): break
+              page+=1
+          groups=defaultdict(list)
+          for r in routines:
+              groups[r.get('title','').strip().casefold()].append({'id':r.get('id'),'title':r.get('title'),'created_at':r.get('created_at'),'updated_at':r.get('updated_at')})
+          duplicates={k:v for k,v in groups.items() if len(v)>1}
+          out={'count':len(routines),'duplicates':duplicates,'routines':[{'id':r.get('id'),'title':r.get('title'),'created_at':r.get('created_at'),'updated_at':r.get('updated_at')} for r in routines]}
+          Path('hevy/audit.json').write_text(json.dumps(out,indent=2))
+          print(json.dumps({'count':len(routines),'duplicate_titles':list(duplicates)},indent=2))
+          PY
+      - name: Upload audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: hevy-audit
+          path: hevy/audit.json
