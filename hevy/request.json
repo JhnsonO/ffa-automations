@@ -1,6 +1,4 @@
 {
-  "operation": "list_workouts",
-  "trigger": "2026-09-15T08:00:00+01:00",
-  "page": 1,
-  "page_size": 5
+  "operation": "analyze_strength_pbs",
+  "targets": ["bench", "bulgarian", "pull up", "pull-up", "chin up", "chin-up"]
 }
