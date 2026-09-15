@@ -1,22 +1,6 @@
 {
-  "operation": "ensure_routine",
-  "trigger": "2026-09-15T07:53:00+01:00",
-  "exercise_templates": [
-    {"key":"abwheel","title":"Ab Wheel","exercise_type":"reps_only","equipment_category":"none","muscle_group":"abdominals"},
-    {"key":"sideplank","title":"Side Plank","exercise_type":"duration","equipment_category":"none","muscle_group":"abdominals"},
-    {"key":"pallof","title":"Pallof Press","exercise_type":"weight_reps","equipment_category":"machine","muscle_group":"abdominals"},
-    {"key":"legraise","title":"Parallel Bar Leg Raise","exercise_type":"reps_only","equipment_category":"none","muscle_group":"abdominals"},
-    {"key":"russian","title":"Russian Twist (Weighted)","exercise_type":"weight_reps","equipment_category":"other","muscle_group":"abdominals"}
-  ],
-  "routine": {
-    "title":"Core — Full",
-    "notes":"Simple football-focused core session. Main four movements cover anti-extension, lateral stability, anti-rotation and hip/trunk control. Russian twists are optional when fresh and time allows.",
-    "exercises":[
-      {"template_key":"abwheel","rest_seconds":60,"notes":"Keep ribs down and do not let the lower back sag. Progress within 6–10 clean reps.","sets":[{"type":"normal","reps":8},{"type":"normal","reps":8},{"type":"normal","reps":8}]},
-      {"template_key":"sideplank","rest_seconds":30,"notes":"30–45 sec each side. Keep hips high and body straight.","sets":[{"type":"normal","duration_seconds":45},{"type":"normal","duration_seconds":45},{"type":"normal","duration_seconds":45},{"type":"normal","duration_seconds":45}]},
-      {"template_key":"pallof","rest_seconds":45,"notes":"Stand sideways to cable. Press straight out and resist rotation. 8–12 reps each side; controlled, not excessively heavy.","sets":[{"type":"normal","reps":10},{"type":"normal","reps":10},{"type":"normal","reps":10},{"type":"normal","reps":10}]},
-      {"template_key":"legraise","rest_seconds":60,"notes":"Controlled reps. Avoid swinging; control the pelvis through the movement.","sets":[{"type":"normal","reps":12},{"type":"normal","reps":12},{"type":"normal","reps":12}]},
-      {"template_key":"russian","rest_seconds":45,"notes":"OPTIONAL. Do 2 sets of 20–30 total reps when fresh and time allows. Skip on high-football-load days.","sets":[{"type":"normal","weight_kg":9,"reps":20},{"type":"normal","weight_kg":9,"reps":20}]}
-    ]
-  }
+  "operation": "list_workouts",
+  "trigger": "2026-09-15T08:00:00+01:00",
+  "page": 1,
+  "page_size": 5
 }
