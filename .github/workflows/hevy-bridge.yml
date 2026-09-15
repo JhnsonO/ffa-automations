@@ -30,7 +30,7 @@ jobs:
           req=json.loads(Path('hevy/request.json').read_text()); op=req.get('operation'); base='https://api.hevyapp.com'
           def call(method,path,payload=None):
               body=None if payload is None else json.dumps(payload).encode()
-              r=urllib.request.Request(base+path,data=body,method=method,headers={'api-key':api_key,'Accept':'application/json','Content-Type':'application/json','User-Agent':'ffa-automations-hevy-bridge/1.6'})
+              r=urllib.request.Request(base+path,data=body,method=method,headers={'api-key':api_key,'Accept':'application/json','Content-Type':'application/json','User-Agent':'ffa-automations-hevy-bridge/1.7'})
               try:
                   with urllib.request.urlopen(r,timeout=30) as x: raw=x.read().decode(); status=x.status
               except urllib.error.HTTPError as e: raw=e.read().decode(errors='replace'); status=e.code
@@ -53,6 +53,41 @@ jobs:
               status,data=call('GET',f"/v1/workouts?page={int(req.get('page',1))}&pageSize={min(int(req.get('page_size',10)),10)}")
           elif op=='get_workout':
               status,data=call('GET','/v1/workouts/'+urllib.parse.quote(req['workout_id'],safe=''))
+          elif op=='analyze_strength_pbs':
+              targets=[x.casefold() for x in req.get('targets',['bench','bulgarian','pull up','pull-up','chin up','chin-up'])]
+              workouts=[]; page=1
+              while True:
+                  s,d=call('GET',f'/v1/workouts?page={page}&pageSize=10')
+                  if not 200<=s<300: status,data=s,d; break
+                  workouts.extend(d.get('workouts',[]))
+                  if page>=int(d.get('page_count',page)): break
+                  page+=1
+              else: pass
+              if 'status' not in locals() or 200<=status<300:
+                  hits=[]
+                  for w in workouts:
+                      for ex in w.get('exercises',[]):
+                          title=ex.get('title','')
+                          if any(t in title.casefold() for t in targets):
+                              for st in ex.get('sets',[]):
+                                  if st.get('type') in ('warmup','dropset'): continue
+                                  reps=st.get('reps'); wt=st.get('weight_kg')
+                                  if reps is not None:
+                                      hits.append({'date':w.get('start_time'),'workout':w.get('title'),'exercise':title,'weight_kg':wt,'reps':reps,'rpe':st.get('rpe'),'set_type':st.get('type')})
+                  by={}
+                  for h in hits:
+                      by.setdefault(h['exercise'],[]).append(h)
+                  summary={}
+                  for title,rows in by.items():
+                      weighted=[r for r in rows if r['weight_kg'] is not None]
+                      summary[title]={
+                          'max_weight': max(weighted,key=lambda r:(r['weight_kg'],r['reps'])) if weighted else None,
+                          'max_reps': max(rows,key=lambda r:r['reps']) if rows else None,
+                          'best_e1rm': max(weighted,key=lambda r:r['weight_kg']*(1+r['reps']/30)) if weighted else None,
+                          'top_weighted_sets': sorted(weighted,key=lambda r:(r['weight_kg']*(1+r['reps']/30),r['weight_kg'],r['reps']),reverse=True)[:10],
+                          'top_rep_sets': sorted(rows,key=lambda r:r['reps'],reverse=True)[:10]
+                      }
+                  status=200; data={'workout_count':len(workouts),'matching_sets':len(hits),'summary':summary}
           elif op=='list_exercise_templates':
               status,data=call('GET',f"/v1/exercise_templates?page={int(req.get('page',1))}&pageSize={min(int(req.get('page_size',100)),100)}")
           elif op=='update_routine':
