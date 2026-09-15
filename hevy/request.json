@@ -1,6 +1,28 @@
 {
-  "operation": "list_workouts",
-  "trigger": "2026-09-14T08:02:00+01:00",
-  "page": 1,
-  "page_size": 5
+  "operation": "ensure_routine",
+  "trigger": "2026-09-15T06:49:00+01:00",
+  "exercise_templates": [
+    {"key":"bench","title":"Bench Press (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"chest"},
+    {"key":"pullup","title":"Pull Up","exercise_type":"reps_only","equipment_category":"none","muscle_group":"lats"},
+    {"key":"row","title":"Bent Over Row (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"upper_back"},
+    {"key":"ohp","title":"Overhead Press (Barbell)","exercise_type":"weight_reps","equipment_category":"barbell","muscle_group":"shoulders"},
+    {"key":"facepull","title":"Face Pull","exercise_type":"weight_reps","equipment_category":"machine","muscle_group":"shoulders"},
+    {"key":"lateral","title":"Lateral Raise (Dumbbell)","exercise_type":"weight_reps","equipment_category":"dumbbell","muscle_group":"shoulders"},
+    {"key":"curl","title":"Bicep Curl (Dumbbell)","exercise_type":"weight_reps","equipment_category":"dumbbell","muscle_group":"biceps"},
+    {"key":"triceps","title":"Triceps Extension (Dumbbell)","exercise_type":"weight_reps","equipment_category":"dumbbell","muscle_group":"triceps"}
+  ],
+  "routine": {
+    "title":"Upper — Full",
+    "notes":"Full combined upper-body session. Keep about 2 reps in reserve on the main lifts. Use Upper — Quick when football load or general fatigue is high.",
+    "exercises":[
+      {"template_key":"bench","rest_seconds":150,"notes":"Main horizontal press. Aim for 3 x 5–7 with about 2 RIR.","sets":[{"type":"normal","weight_kg":60,"reps":7},{"type":"normal","weight_kg":60,"reps":7},{"type":"normal","weight_kg":70,"reps":7}]},
+      {"template_key":"pullup","rest_seconds":120,"notes":"Controlled full range. Add load only once 3 x 10 is clean.","sets":[{"type":"normal","reps":8},{"type":"normal","reps":8},{"type":"normal","reps":8}]},
+      {"template_key":"row","rest_seconds":120,"notes":"Heavy horizontal pull. Keep torso position controlled.","sets":[{"type":"normal","weight_kg":70,"reps":7},{"type":"normal","weight_kg":70,"reps":7},{"type":"normal","weight_kg":70,"reps":7}]},
+      {"template_key":"ohp","rest_seconds":120,"notes":"Main overhead press. Stop before grinding.","sets":[{"type":"normal","weight_kg":40,"reps":7},{"type":"normal","weight_kg":40,"reps":7}]},
+      {"template_key":"facepull","rest_seconds":60,"notes":"Rope around face height. Pull toward face, hands separate toward ears. Feel rear delts and upper back.","sets":[{"type":"normal","reps":12},{"type":"normal","reps":12},{"type":"normal","reps":12}]},
+      {"template_key":"lateral","rest_seconds":60,"notes":"Controlled reps; avoid swinging.","sets":[{"type":"normal","weight_kg":7.5,"reps":12},{"type":"normal","weight_kg":7.5,"reps":12}]},
+      {"template_key":"curl","rest_seconds":60,"notes":"Accessory. 2 x 8–12.","sets":[{"type":"normal","weight_kg":20,"reps":10},{"type":"normal","weight_kg":20,"reps":10}]},
+      {"template_key":"triceps","rest_seconds":60,"notes":"Accessory. 2 x 8–12.","sets":[{"type":"normal","weight_kg":22.5,"reps":10},{"type":"normal","weight_kg":22.5,"reps":10}]}
+    ]
+  }
 }
