@@ -1,0 +1,7 @@
+{
+  "name": "johnson-os-health-webhook",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal Health Connect Webhook receiver for Johnson OS (Vercel + Upstash Redis REST, zero dependencies)",
+  "engines": { "node": ">=20" }
+}
