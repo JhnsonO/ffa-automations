@@ -23,4 +23,17 @@ async function pipeline(commands) {
   return out.map((r) => r.result);
 }
 
-module.exports = { pipeline };
+// Optional key prefix so a Preview deployment can share a database with Production
+// without touching its data (Production leaves HC_KEY_PREFIX unset).
+const k = (name) => (process.env.HC_KEY_PREFIX || '') + name;
+
+// Run many commands in bounded batches (keeps each request small).
+async function pipelineBatched(commands, size = 100) {
+  const out = [];
+  for (let i = 0; i < commands.length; i += size) {
+    out.push(...(await pipeline(commands.slice(i, i + size))));
+  }
+  return out;
+}
+
+module.exports = { pipeline, pipelineBatched, k };

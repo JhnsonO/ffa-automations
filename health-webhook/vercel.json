@@ -1,6 +1,7 @@
 {
   "ignoreCommand": "git diff --quiet HEAD^ HEAD -- .",
   "functions": {
-    "api/*.js": { "maxDuration": 10 }
+    "api/*.js": { "maxDuration": 10 },
+    "api/admin/*.js": { "maxDuration": 60 }
   }
 }

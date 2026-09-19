@@ -1,7 +1,8 @@
 'use strict';
 const { isAuthorised } = require('../lib/auth');
 const { validatePayload, MAX_BODY_BYTES } = require('../lib/validate');
-const { pipeline } = require('../lib/redis');
+const { pipeline, k } = require('../lib/redis');
+const { writeAggregates } = require('../lib/aggregate');
 
 const RAW_KEEP = 50; // rolling list of raw payloads
 
@@ -30,19 +31,19 @@ module.exports = async function handler(req, res) {
 
   const receivedAt = new Date().toISOString();
   const cmds = [
-    ['LPUSH', 'hc:raw', JSON.stringify({ received_at: receivedAt, payload: body })],
-    ['LTRIM', 'hc:raw', 0, RAW_KEEP - 1],
+    ['LPUSH', k('hc:raw'), JSON.stringify({ received_at: receivedAt, payload: body })],
+    ['LTRIM', k('hc:raw'), 0, RAW_KEEP - 1],
   ];
   const names = Object.keys(v.types);
   for (const name of names) {
-    cmds.push(['SET', `hc:latest:${name}`, JSON.stringify({
+    cmds.push(['SET', k(`hc:latest:${name}`), JSON.stringify({
       received_at: receivedAt,
       payload_timestamp: body.timestamp,
       app_version: body.app_version,
       count: v.types[name].length,
       records: v.types[name],
     })]);
-    cmds.push(['SADD', 'hc:types', name]);
+    cmds.push(['SADD', k('hc:types'), name]);
   }
 
   try {
@@ -51,5 +52,12 @@ module.exports = async function handler(req, res) {
     console.error('storage failure:', e.message);
     return res.status(502).json({ error: 'storage unavailable' }); // non-2xx => app retries
   }
-  return res.status(200).json({ ok: true, stored_types: names, received_at: receivedAt });
+  // Daily aggregates: best-effort. A failure here must never fail ingest (would trigger app retries).
+  let aggregated = null;
+  try {
+    aggregated = await writeAggregates(body);
+  } catch (e) {
+    console.error('aggregation failure:', e.message);
+  }
+  return res.status(200).json({ ok: true, stored_types: names, received_at: receivedAt, aggregated: aggregated ? { records: aggregated.records, skipped: aggregated.skipped } : false });
 };
