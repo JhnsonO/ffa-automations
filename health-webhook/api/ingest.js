@@ -33,6 +33,7 @@ module.exports = async function handler(req, res) {
   const cmds = [
     ['LPUSH', k('hc:raw'), JSON.stringify({ received_at: receivedAt, payload: body })],
     ['LTRIM', k('hc:raw'), 0, RAW_KEEP - 1],
+    ['SET', k('hc:last_sync'), receivedAt],
   ];
   const names = Object.keys(v.types);
   for (const name of names) {

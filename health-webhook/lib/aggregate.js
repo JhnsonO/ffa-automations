@@ -1,5 +1,5 @@
 'use strict';
-const { localDate } = require('./tz');
+const { localDate, localHour } = require('./tz');
 const { pipelineBatched, k } = require('./redis');
 
 const TTL_SECONDS = 90 * 24 * 3600;
@@ -111,7 +111,20 @@ function rollup(type, entries) {
     const last = a[a.length - 1]; return { last: last[1], last_time: last[0], n: a.length };
   }
   const sessions = vals.map(parse).filter(Boolean).sort((x, y) => Date.parse(x.e) - Date.parse(y.e));
-  if (type === 'sleep') return { sessions: sessions.length, total_seconds: sessions.reduce((x, s) => x + (s.d || 0), 0), stages: sessions.reduce((acc, s) => { for (const [n, d] of Object.entries(s.st || {})) acc[n] = (acc[n] || 0) + d; return acc; }, {}), last_end: sessions[sessions.length - 1].e };
+  if (type === 'sleep') {
+    // Overnight = session ends before 12:00 local (Samsung may split a night into several sessions); the rest are naps.
+    const night = sessions.filter((x) => localHour(x.e) < 12); const naps = sessions.filter((x) => localHour(x.e) >= 12);
+    const sum = (a) => a.reduce((t, x) => t + (x.d || 0), 0);
+    const stages = {}; for (const x of night) for (const [n, d] of Object.entries(x.st || {})) stages[n] = (stages[n] || 0) + d;
+    const startMs = night.length ? Math.min(...night.map((x) => Date.parse(x.e) - (x.d || 0) * 1000)) : null;
+    return {
+      sessions: sessions.length, total_seconds: sum(sessions),
+      overnight_seconds: sum(night), overnight_stages: stages, nap_seconds: sum(naps),
+      overnight_start: startMs === null ? null : new Date(startMs).toISOString(),
+      overnight_end: night.length ? night[night.length - 1].e : null,
+      last_end: sessions[sessions.length - 1].e,
+    };
+  }
   return { sessions };
 }
 
