@@ -38,7 +38,7 @@ function redirectTo(res, uri, extra) {
 
 async function register(req, res) {
   if (req.method !== 'POST') return oauthErr(res, 405, 'invalid_request', 'POST required');
-  if (!(await O.rateLimit('reg', ipOf(req), 20, 3600))) return oauthErr(res, 429, 'slow_down', 'too many registrations');
+  if (!(await O.rateLimit('reg', ipOf(req), O.dcrPerHour(), 3600))) return oauthErr(res, 429, 'slow_down', 'too many registrations');
   const b = params(req);
   const uris = b.redirect_uris;
   if (!Array.isArray(uris) || uris.length === 0 || uris.length > 5 || !uris.every((u) => typeof u === 'string' && O.isAllowedRedirect(u))) {
@@ -46,9 +46,10 @@ async function register(req, res) {
   }
   const method = b.token_endpoint_auth_method;
   if (method !== undefined && method !== 'none') return oauthErr(res, 400, 'invalid_client_metadata', 'only token_endpoint_auth_method "none" (PKCE public client) is supported');
+  if (!(await O.reserveClientSlot())) { res.setHeader('Retry-After', '3600'); return oauthErr(res, 503, 'temporarily_unavailable', 'client registration limit reached'); }
   const clientId = O.random(24);
   const rec = { redirect_uris: uris, client_name: typeof b.client_name === 'string' ? b.client_name.slice(0, 80) : 'client', created: O.now() };
-  await pipeline([['SET', k(`oauth:client:${clientId}`), JSON.stringify(rec), 'EX', O.CLIENT_TTL]]);
+  await O.saveClient(clientId, rec);
   res.setHeader('Cache-Control', 'no-store');
   return res.status(201).json({
     client_id: clientId, client_id_issued_at: rec.created, client_name: rec.client_name, redirect_uris: uris,
@@ -119,6 +120,7 @@ async function token(req, res) {
   } else {
     return oauthErr(res, 400, 'unsupported_grant_type', 'authorization_code or refresh_token');
   }
+  try { await O.touchClient(p.client_id); } catch (e) { console.error('client touch failed:', e.message); }
   res.setHeader('Cache-Control', 'no-store'); res.setHeader('Pragma', 'no-cache');
   return res.status(200).json(out);
 }
