@@ -7,7 +7,6 @@ Vercel serverless + Upstash Redis (REST). Zero npm dependencies. Isolated from t
 |---|---|---|
 | `/api/ingest` | POST | App posts health JSON here. Requires `X-Webhook-Secret`. |
 | `/api/daily` | GET | Per-day rollups (Europe/London days), `?days=7` (max 14). Same header. |
-| `/api/admin/backfill` | POST | TEMPORARY. Replays `hc:raw` into daily aggregates; `?dry=1` counts only. Same header. `?reset=1` first deletes summed-type day hashes before replay. Delete after the one-off run. |
 | `/api/latest` | GET | Johnson OS reads back. Same header. `?type=sleep`, or `?raw=1&n=5`, or no params for an index. |
 
 ## Storage keys (Redis)
