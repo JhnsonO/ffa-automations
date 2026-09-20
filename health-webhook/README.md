@@ -7,6 +7,8 @@ Vercel serverless + Upstash Redis (REST). Zero npm dependencies. Isolated from t
 |---|---|---|
 | `/api/ingest` | POST | App posts health JSON here. Requires `X-Webhook-Secret`. |
 | `/api/daily` | GET | Per-day rollups (Europe/London days), `?days=7` (max 14). Same header. |
+| `/mcp` | POST | Read-only MCP server, one tool `get_checkin`. OAuth-protected (see below). |
+| `/.well-known/oauth-*`, `/oauth/{register,authorize,token}` | | Minimal single-user OAuth 2.1 server (PKCE S256, DCR, refresh rotation) for the MCP endpoint. |
 | `/api/latest` | GET | Johnson OS reads back. Same header. `?type=sleep`, or `?raw=1&n=5`, or no params for an index. |
 
 ## Storage keys (Redis)
@@ -31,3 +33,12 @@ Vercel serverless + Upstash Redis (REST). Zero npm dependencies. Isolated from t
 Vercel project root directory: `health-webhook`. Then `BASE_URL=... HEALTH_WEBHOOK_SECRET=... ./scripts/smoke.sh`.
 
 Status codes: 200 stored, 400 malformed, 401 bad/missing secret, 405 wrong method, 413 too large, 502 storage down (app retries).
+
+## MCP check-in (Phase 2)
+`get_checkin` returns last night's sleep (overnight vs naps), today-so-far and yesterday, a 7-day baseline, data freshness, missing metrics, and recent Hevy workouts. Health data never leaves Upstash except in that response.
+- ChatGPT cannot send API keys or custom headers to MCP servers, so `/mcp` uses OAuth 2.1: protected-resource + authorization-server metadata, DCR (public clients, redirect URIs restricted to chatgpt.com), authorization code + PKCE S256 with a passphrase consent page, `iss` on every authorization response, `resource` audience binding, 1h HMAC-signed access tokens, rotating 30d refresh tokens. Passphrase attempts are rate limited.
+- `initialize`/`tools/list` are public (no data); `tools/call` without a valid token returns a tool error with `_meta["mcp/www_authenticate"]`, which triggers ChatGPT's linking UI.
+- Env vars: `PUBLIC_BASE_URL` (https origin, no trailing slash), `OAUTH_SIGNING_SECRET` (>=32 chars), `CHECKIN_PASSPHRASE` (>=16 chars), `HEVY_API_KEY` (optional; Hevy section degrades gracefully), `ALLOW_LOCALHOST_REDIRECT=1` only for MCP Inspector testing.
+- DCR abuse controls: registration is rate limited per IP (`OAUTH_DCR_PER_HOUR`, default 5), hard-capped on live clients (`OAUTH_CLIENT_CAP`, default 25, 503 when full), unused clients expire after 24h, and active clients use a sliding 30-day TTL refreshed on every token grant (so the daily check-in keeps its client alive). Expired clients are pruned from a sorted-set index. CIMD is OpenAI's preferred registration method and could replace DCR later.
+- End-to-end check of any deployment: `node scripts/e2e.js https://<deployment>`: prompts for the passphrase and optional Vercel bypass token with hidden input (nothing lands in shell history). Non-interactive: env vars, or an untracked `.env.e2e` via `node --env-file=.env.e2e scripts/e2e.js <url>`. Secrets are never printed.
+- ChatGPT connector URL: `<PUBLIC_BASE_URL>/mcp`, authentication: OAuth.

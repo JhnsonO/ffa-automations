@@ -1,0 +1,5 @@
+# local secrets for scripts/e2e.js etc.
+.env
+.env.*
+!.env.example
+node_modules/
