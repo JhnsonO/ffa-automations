@@ -9,7 +9,7 @@ name: YouTube Feed Poll Fallback
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '0 */4 * * *'
   workflow_dispatch:
 
 concurrency:
