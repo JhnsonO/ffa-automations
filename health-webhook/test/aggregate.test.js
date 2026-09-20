@@ -47,3 +47,15 @@ test('malformed records skipped; missing metrics tolerated; sensitive types igno
   assert.deepEqual(b.hashes, {});
   assert.equal(rollup('weight', {}), null);
 });
+
+test('cumulative day-so-far windows (same start, growing end) count once; latest wins', () => {
+  const acc = {};
+  for (const [end, count] of [['2026-09-19T10:00:00Z', 5000], ['2026-09-19T11:00:00Z', 5600], ['2026-09-19T23:00:00Z', 16341]]) {
+    merge(acc, buildDayWrites({ steps: [{ count, start_time: '2026-09-18T23:00:00Z', end_time: end }] }));
+  }
+  assert.equal(rollup('steps', acc['hc:day:2026-09-19:steps']).sum, 16341);
+});
+test('distinct-start intervals still sum', () => {
+  const b = buildDayWrites({ steps: [{ count: 10, start_time: '2026-09-19T08:00:00Z', end_time: '2026-09-19T09:00:00Z' }, { count: 20, start_time: '2026-09-19T09:00:00Z', end_time: '2026-09-19T10:00:00Z' }] });
+  assert.equal(rollup('steps', b.hashes['hc:day:2026-09-19:steps']).sum, 30);
+});

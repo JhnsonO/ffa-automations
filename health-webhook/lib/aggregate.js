@@ -27,7 +27,9 @@ function mapRecord(type, r) {
   if (type in SUM) {
     const v = num(r[SUM[type]]);
     if (v === null || !r.start_time) return null;
-    return { date: localDate(r.start_time), field: ident(r, [r.start_time, r.end_time || '']), value: String(v) };
+    // The app sends cumulative "day so far" windows (same start, growing end) for these types,
+    // so identity is origin|start only: the latest window replaces the earlier one.
+    return { date: localDate(r.start_time), field: ident(r, [r.start_time]), value: String(v) };
   }
   if (type in STAT) {
     const avg = num(r.avg) ?? num(r[STAT[type]]);
@@ -113,4 +115,4 @@ function rollup(type, entries) {
   return { sessions };
 }
 
-module.exports = { buildDayWrites, writeAggregates, rollup, AGGREGATED_TYPES, TTL_SECONDS };
+module.exports = { SUM_TYPES: Object.keys(SUM), buildDayWrites, writeAggregates, rollup, AGGREGATED_TYPES, TTL_SECONDS };

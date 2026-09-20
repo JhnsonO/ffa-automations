@@ -7,7 +7,7 @@ Vercel serverless + Upstash Redis (REST). Zero npm dependencies. Isolated from t
 |---|---|---|
 | `/api/ingest` | POST | App posts health JSON here. Requires `X-Webhook-Secret`. |
 | `/api/daily` | GET | Per-day rollups (Europe/London days), `?days=7` (max 14). Same header. |
-| `/api/admin/backfill` | POST | TEMPORARY. Replays `hc:raw` into daily aggregates; `?dry=1` counts only. Same header. Delete after the one-off run. |
+| `/api/admin/backfill` | POST | TEMPORARY. Replays `hc:raw` into daily aggregates; `?dry=1` counts only. Same header. `?reset=1` first deletes summed-type day hashes before replay. Delete after the one-off run. |
 | `/api/latest` | GET | Johnson OS reads back. Same header. `?type=sleep`, or `?raw=1&n=5`, or no params for an index. |
 
 ## Storage keys (Redis)
@@ -19,7 +19,7 @@ Vercel serverless + Upstash Redis (REST). Zero npm dependencies. Isolated from t
 - One Redis **hash** per type per local day: `hc:day:<YYYY-MM-DD>:<type>`, one field per record, written with multi-field `HSET`; `EXPIRE` refreshed to 90 days on every affected hash. Hash fields make writes idempotent and race-free (re-sent records overwrite their own field).
 - Aggregated types: steps, distance, active/total calories, hydration (summed); heart rate, HRV, SpO2, respiratory rate (avg/min/max); resting HR, weight, body fat, VO2 max, lean mass (latest); sleep, exercise (sessions). Reproductive/sensitive types are never aggregated.
 - Day allocation (Europe/London, DST-aware): sleep -> date the session ends; exercise, intervals and samples -> local start/sample date. Intervals crossing midnight are not split (known limit).
-- Record identity: native `id` if the payload carries one, else `origin|start|end` (never the value, so corrections overwrite). Records with identical origin and timestamps collapse into one.
+- Record identity: native `id` if present, else `origin|timestamps` (never the value, so corrections overwrite). Summed types (steps, distance, calories, hydration) use `origin|start` only: the app sends cumulative day-so-far windows (same start, growing end), so the latest window replaces the earlier one. Records with identical identity collapse into one.
 - Aggregation runs after raw/latest are stored and is guarded: a failure never fails ingest.
 - `npm test` runs unit tests (DST boundaries, identity, rollups).
 
