@@ -1,14 +1,35 @@
 #!/usr/bin/env node
 'use strict';
 // End-to-end check of a deployed receiver's OAuth + MCP path. Zero dependencies (Node >= 18).
-//   BASE_URL=https://<deployment> CHECKIN_PASSPHRASE='...' [VERCEL_BYPASS=<token>] node scripts/e2e.js
-// Secrets are read from the environment and never printed. Registers one OAuth client (expires with disuse).
+//   node scripts/e2e.js https://<deployment>
+// The passphrase and (optional) Vercel bypass token are prompted for with hidden input, so they never touch
+// shell history. Non-interactive alternatives: env vars CHECKIN_PASSPHRASE / VERCEL_BYPASS, or an untracked file
+// via `node --env-file=.env.e2e scripts/e2e.js <url>` (Node >= 20.6; .env* is gitignored).
+// Secrets are never printed. Registers one OAuth client (expires with disuse).
 const crypto = require('crypto');
-const BASE = (process.env.BASE_URL || '').replace(/\/+$/, '');
-const PASS = process.env.CHECKIN_PASSPHRASE;
-if (!BASE || !PASS) { console.error('Set BASE_URL and CHECKIN_PASSPHRASE'); process.exit(2); }
+
+function ask(question) {
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    if (!stdin.isTTY) return reject(new Error('no interactive terminal: set the env var or use --env-file'));
+    process.stdout.write(question);
+    stdin.setRawMode(true); stdin.resume(); stdin.setEncoding('utf8');
+    let buf = '';
+    const done = (fn) => { stdin.setRawMode(false); stdin.pause(); stdin.removeListener('data', onData); process.stdout.write('\n'); fn(); };
+    function onData(chunk) {
+      for (const c of chunk) {
+        if (c === '\r' || c === '\n') return done(() => resolve(buf));
+        if (c === '\u0003') return done(() => process.exit(130));
+        if (c === '\u007f' || c === '\b') buf = buf.slice(0, -1); else buf += c;
+      }
+    }
+    stdin.on('data', onData);
+  });
+}
+
+const BASE = (process.argv[2] || process.env.BASE_URL || '').replace(/\/+$/, '');
+let PASS; let bypass = {};
 const RU = 'https://chatgpt.com/connector_platform_oauth_redirect';
-const bypass = process.env.VERCEL_BYPASS ? { 'x-vercel-protection-bypass': process.env.VERCEL_BYPASS } : {};
 let failed = 0;
 const ok = (c, name, extra = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${name}${extra ? '  ' + extra : ''}`); if (!c) failed++; return c; };
 async function j(path, opts = {}) {
@@ -20,6 +41,11 @@ const form = (o) => ({ method: 'POST', headers: { 'content-type': 'application/x
 const rpc = (method, params, tok) => j('/mcp', { method: 'POST', headers: { 'content-type': 'application/json', ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
 
 (async () => {
+  if (!BASE) throw new Error('usage: node scripts/e2e.js https://<deployment>');
+  PASS = process.env.CHECKIN_PASSPHRASE || await ask('Check-in passphrase (hidden): ');
+  if (!PASS) throw new Error('passphrase required');
+  const byp = process.env.VERCEL_BYPASS !== undefined ? process.env.VERCEL_BYPASS : (process.stdin.isTTY ? await ask('Vercel bypass token, Enter to skip (hidden): ') : '');
+  if (byp) bypass = { 'x-vercel-protection-bypass': byp };
   let r = await j('/.well-known/oauth-protected-resource');
   if (!ok(r.s === 200 && r.d.resource, 'protected-resource metadata')) return;
   const RES = r.d.resource; const ISS = r.d.authorization_servers[0];
