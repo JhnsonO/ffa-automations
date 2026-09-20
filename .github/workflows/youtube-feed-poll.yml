@@ -1,0 +1,68 @@
+name: YouTube Feed Poll Fallback
+
+# Fallback for YouTube WebSub push, which is down while Google's hub
+# (pubsubhubbub.appspot.com) returns 503. Fetches the channel's Atom
+# feed and replays it to ffa-media's /api/youtube/webhook, signed with
+# YOUTUBE_WEBSUB_SECRET exactly as the hub would. The endpoint dedupes
+# via _register_youtube_video, so replaying already-known videos is a
+# no-op. Safe to leave running alongside the resubscribe workflow.
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: youtube-feed-poll
+  cancel-in-progress: false
+
+env:
+  RAILWAY_URL: https://web-production-e9d28.up.railway.app
+  FFA_CHANNEL_ID: UCSj-hQdqQ9La4FMM3HFqvXw
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Replay channel feed to webhook
+        env:
+          YOUTUBE_WEBSUB_SECRET: ${{ secrets.YOUTUBE_WEBSUB_SECRET }}
+        run: |
+          python3 << 'PY'
+          import hashlib, hmac, os, sys, time, requests
+
+          feed = f"https://www.youtube.com/feeds/videos.xml?channel_id={os.environ['FFA_CHANNEL_ID']}"
+          secret = os.environ["YOUTUBE_WEBSUB_SECRET"].encode()
+
+          body = None
+          for attempt in range(1, 4):
+              r = requests.get(feed, timeout=20)
+              print(f"feed HTTP {r.status_code}")
+              if r.status_code == 200 and b"<entry" in r.content:
+                  body = r.content
+                  break
+              time.sleep(10 * attempt)
+          if body is None:
+              print("could not fetch feed")
+              sys.exit(1)
+
+          sig = "sha1=" + hmac.new(secret, body, hashlib.sha1).hexdigest()
+          for attempt in range(1, 4):
+              try:
+                  resp = requests.post(
+                      f"{os.environ['RAILWAY_URL']}/api/youtube/webhook",
+                      data=body,
+                      headers={"Content-Type": "application/atom+xml", "X-Hub-Signature": sig},
+                      timeout=60,
+                  )
+              except requests.RequestException as exc:
+                  print(f"post error: {exc}")
+                  time.sleep(15 * attempt)
+                  continue
+              print(f"webhook HTTP {resp.status_code} {resp.text[:200]}")
+              if resp.status_code == 200:
+                  sys.exit(0)
+              time.sleep(15 * attempt)
+          sys.exit(1)
+          PY
