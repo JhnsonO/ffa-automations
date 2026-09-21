@@ -29,17 +29,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node <<'NODE'
-          const fs = require('fs');
-          const value = JSON.parse(fs.readFileSync('health-checkin/ack.json', 'utf8'));
-          if (value.operation !== 'delete_artifact') {
-            throw new Error('ack.operation must be delete_artifact');
-          }
-          if (!Number.isSafeInteger(value.artifact_id) || value.artifact_id <= 0) {
-            throw new Error('ack.artifact_id must be a positive integer');
-          }
-          process.stdout.write(`artifact_id=${value.artifact_id}\n`);
-          NODE
+          ARTIFACT_ID="$(node -e "
+            const value = require('./health-checkin/ack.json');
+            if (value.operation !== 'delete_artifact') throw new Error('ack.operation must be delete_artifact');
+            if (!Number.isSafeInteger(value.artifact_id) || value.artifact_id <= 0) throw new Error('ack.artifact_id must be a positive integer');
+            process.stdout.write(String(value.artifact_id));
+          ")"
+          echo "artifact_id=$ARTIFACT_ID" >> "$GITHUB_OUTPUT"
 
       - name: Delete encrypted artifact
         env:
@@ -48,4 +44,4 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh api --method DELETE             "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}"
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}"
