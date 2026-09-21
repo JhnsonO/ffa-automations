@@ -6,7 +6,6 @@ on:
       - feature/johnson-os-github-bridge
     paths:
       - health-checkin/ack.json
-      - .github/workflows/health-checkin-cleanup.yml
   workflow_dispatch:
 
 permissions:
@@ -21,7 +20,7 @@ jobs:
   delete-artifact:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out request
+      - name: Check out acknowledgement
         uses: actions/checkout@v4
 
       - name: Validate acknowledgement
@@ -29,15 +28,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ARTIFACT_ID="$(node -e "
-            const value = require('./health-checkin/ack.json');
-            if (value.operation !== 'delete_artifact') throw new Error('ack.operation must be delete_artifact');
+          node <<'NODE' >> "$GITHUB_OUTPUT"
+          const value = require('./health-checkin/ack.json');
+          if (value.operation === 'idle') {
+            console.log('delete=false');
+            console.log('artifact_id=0');
+          } else {
+            if (value.operation !== 'delete_artifact') throw new Error('unsupported ack.operation');
             if (!Number.isSafeInteger(value.artifact_id) || value.artifact_id <= 0) throw new Error('ack.artifact_id must be a positive integer');
-            process.stdout.write(String(value.artifact_id));
-          ")"
-          echo "artifact_id=$ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+            console.log('delete=true');
+            console.log(`artifact_id=${value.artifact_id}`);
+          }
+          NODE
 
       - name: Delete encrypted artifact
+        if: steps.ack.outputs.delete == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_ID: ${{ steps.ack.outputs.artifact_id }}
