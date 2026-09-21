@@ -1,6 +1,6 @@
 {
-  "operation": "idle",
-  "artifact_id": 0,
-  "run_id": 0,
-  "trigger": "initial"
+  "operation": "delete_artifact",
+  "artifact_id": 10634620633,
+  "run_id": 35590394778,
+  "trigger": "2026-09-21T10:46:57.720Z"
 }
