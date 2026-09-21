@@ -1,6 +1,6 @@
 {
-  "operation": "delete_artifact",
+  "operation": "idle",
   "artifact_id": 0,
   "run_id": 0,
-  "trigger": "replace-me"
+  "trigger": "initial"
 }
