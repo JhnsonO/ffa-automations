@@ -1,0 +1,85 @@
+name: Johnson OS Check-in Bridge
+
+on:
+  push:
+    branches:
+      - feature/johnson-os-github-bridge
+    paths:
+      - health-checkin/request.json
+      - .github/workflows/health-checkin-bridge.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate request
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          request = json.loads(Path('health-checkin/request.json').read_text())
+          if request.get('operation') != 'export_checkin':
+              raise SystemExit('Unsupported operation')
+          PY
+
+      - name: Fetch check-in
+        env:
+          CHECKIN_EXPORT_KEY: ${{ secrets.CHECKIN_EXPORT_KEY }}
+        run: |
+          test -n "$CHECKIN_EXPORT_KEY" || { echo "Missing repository secret CHECKIN_EXPORT_KEY"; exit 1; }
+          curl --fail --silent --show-error \
+            --connect-timeout 10 --max-time 45 \
+            -H "Authorization: Bearer $CHECKIN_EXPORT_KEY" \
+            -H "Accept: application/json" \
+            https://johnson-os-health-webhook.vercel.app/api/export \
+            -o health-checkin/response.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('health-checkin/response.json').read_text())
+          required = {'generated_at', 'date', 'today', 'yesterday', 'baseline_7d', 'hevy'}
+          missing = sorted(required - payload.keys())
+          if missing:
+              raise SystemExit(f'Invalid check-in response; missing: {missing}')
+          print('Check-in response validated')
+          PY
+
+      - name: Encrypt response
+        env:
+          CHECKIN_ARTIFACT_KEY: ${{ secrets.CHECKIN_ARTIFACT_KEY }}
+        run: |
+          test -n "$CHECKIN_ARTIFACT_KEY" || { echo "Missing repository secret CHECKIN_ARTIFACT_KEY"; exit 1; }
+          node <<'NODE'
+          const fs = require('fs');
+          const crypto = require('crypto');
+          const plaintext = fs.readFileSync('health-checkin/response.json');
+          const key = crypto.createHash('sha256').update(process.env.CHECKIN_ARTIFACT_KEY, 'utf8').digest();
+          const iv = crypto.randomBytes(12);
+          const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+          const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+          const envelope = {
+            version: 1,
+            algorithm: 'aes-256-gcm',
+            key_derivation: 'sha256-utf8',
+            iv_b64: iv.toString('base64'),
+            tag_b64: cipher.getAuthTag().toString('base64'),
+            ciphertext_b64: ciphertext.toString('base64')
+          };
+          fs.writeFileSync('health-checkin/response.enc.json', JSON.stringify(envelope));
+          fs.rmSync('health-checkin/response.json');
+          console.log('Encrypted check-in ready');
+          NODE
+
+      - name: Upload encrypted response
+        uses: actions/upload-artifact@v4
+        with:
+          name: johnson-os-checkin-${{ github.run_id }}
+          path: health-checkin/response.enc.json
+          if-no-files-found: error
+          retention-days: 1
