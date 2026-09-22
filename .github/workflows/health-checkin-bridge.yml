@@ -1,6 +1,10 @@
 name: Johnson OS Check-in Bridge
 
 on:
+  schedule:
+    # GitHub cron is UTC. Running both covers 06:50 Europe/London across GMT/BST.
+    - cron: '50 5 * * *'
+    - cron: '50 6 * * *'
   push:
     branches:
       - feature/johnson-os-github-bridge
@@ -18,7 +22,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Decide whether this scheduled run is the 06:50 London run
+        id: gate
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          event = os.environ.get('GITHUB_EVENT_NAME', '')
+          if event != 'schedule':
+              print('run=true')
+          else:
+              now = datetime.now(ZoneInfo('Europe/London'))
+              print('run=' + ('true' if (now.hour == 6 and 45 <= now.minute <= 59) else 'false'))
+              print(f'london_time={now.isoformat()}')
+          PY
+
       - name: Validate request
+        if: steps.gate.outputs.run == 'true' && github.event_name != 'schedule'
         run: |
           python - <<'PY'
           import json
@@ -29,6 +51,7 @@ jobs:
           PY
 
       - name: Fetch check-in
+        if: steps.gate.outputs.run == 'true'
         env:
           CHECKIN_EXPORT_KEY: ${{ secrets.CHECKIN_EXPORT_KEY }}
         run: |
@@ -51,6 +74,7 @@ jobs:
           PY
 
       - name: Encrypt response
+        if: steps.gate.outputs.run == 'true'
         env:
           CHECKIN_ARTIFACT_KEY: ${{ secrets.CHECKIN_ARTIFACT_KEY }}
         run: |
@@ -77,6 +101,7 @@ jobs:
           NODE
 
       - name: Upload encrypted response
+        if: steps.gate.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: johnson-os-checkin-${{ github.run_id }}
