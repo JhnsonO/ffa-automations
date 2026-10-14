@@ -901,6 +901,7 @@ def upload_source_to_r2(yt_id: str, file_path: Path) -> bool:
             pass
         log.info(f"Uploading original to R2: {key}")
         s3.upload_file(str(file_path), bucket, key, ExtraArgs={"ContentType": "video/mp4"})
+        s3.put_object(Bucket=bucket, Key=key.rsplit("/", 1)[0] + "/original.keep", Body=b"")
         log.info(f"R2 upload complete: {key}")
         return True
     except Exception as e:
