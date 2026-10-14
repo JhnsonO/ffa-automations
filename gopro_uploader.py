@@ -13,6 +13,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import requests
 from google.auth.transport.requests import Request
@@ -833,37 +834,37 @@ def upload_to_youtube(service, video_path, title, description, gopro_filename=""
     return None
 
 
-def make_title(filename, captured_at, camera_label=""):
+def _session_day_and_date(captured_at):
+    """Return (day_name, 'D Mon YYYY', is_monday) in Europe/London, or None if unparseable."""
     try:
         dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
-        day_name = dt.strftime("%A")
-        day = int(dt.strftime("%d"))
-        suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
-        date_str = f"{day}{suffix} {dt.strftime('%B %Y')}"
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(ZoneInfo("Europe/London"))
+        return dt.strftime("%A"), f"{dt.day} {dt.strftime('%b %Y')}", dt.weekday() == 0
     except Exception:
-        day_name, date_str = "Session", captured_at[:10]
-    cam = f" | Camera {camera_label}" if camera_label else ""
-    return f"{day_name} Session | {date_str} | FFA Leicester{cam}"
+        return None
+
+
+def make_title(filename, captured_at, camera_label=""):
+    # camera_label is intentionally ignored: titles are camera-neutral. POV/player
+    # suffixes (e.g. " | POVCam: Amani") are added manually in YouTube Studio.
+    parts = _session_day_and_date(captured_at)
+    when = f"{parts[0]} {parts[1]}" if parts else captured_at[:10]
+    return f"Football Session in Leicester | {when} | FFA Leicester"
 
 
 def make_description(filename, captured_at, camera_label=""):
-    try:
-        dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
-        day_name = dt.strftime("%A")
-        day = int(dt.strftime("%d"))
-        suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
-        date_str = f"{day}{suffix} {dt.strftime('%B %Y')}"
-        is_monday = dt.weekday() == 0
-    except Exception:
-        day_name, date_str, is_monday = "Session", captured_at[:10], False
-    cam_line = f"Camera {camera_label} footage.\n" if camera_label else ""
+    # camera_label is intentionally ignored: descriptions are camera-neutral.
+    parts = _session_day_and_date(captured_at)
+    when = f"{parts[0]} {parts[1]}" if parts else captured_at[:10]
+    is_monday = parts[2] if parts else False
     monday_section = "\n\nThis is part of the FFA Monday League — our weekly competitive kickabout with individual player standings.\nCheck the league table: https://www.officialffa.co.uk/mnl\n" if is_monday else ""
     return (
-        f"FFA Leicester | {day_name} Session | {date_str}\n"
-        f"{cam_line}\nCompetitive kickabouts in Leicester, running weekly. All levels welcome.\n"
-        f"{monday_section}\nWant to play? Book your spot:\nhttps://www.officialffa.co.uk\n\n"
-        f"Interested in tournaments or events? Get in touch via our website or socials.\n\n"
-        f"Shop FFA merch: https://www.officialffa.co.uk/store\n\n"
+        f"Watch FFA's community football session in Leicester on {when}.\n\n"
+        f"Want to play with FFA? See upcoming sessions and book your place:\nhttps://www.officialffa.co.uk/book\n\n"
+        f"FFA runs organised community football sessions and tournaments in Leicester. Players of different levels are welcome.\n"
+        f"{monday_section}\nShop FFA merch: https://www.officialffa.co.uk/store\n\n"
         f"Follow us:\nInstagram: https://www.instagram.com/_official_ffa\nTikTok: https://www.tiktok.com/@official_ffa\n\n"
         f"#FFA #FFALeicester #FootballForAll #Leicester #GrassrootsFootball #5aside #MondayLeague"
     )
