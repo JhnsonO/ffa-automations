@@ -56,7 +56,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests google-auth google-auth-oauthlib google-api-python-client
+        run: pip install requests google-auth google-auth-oauthlib google-api-python-client boto3
 
       - name: Write YouTube credentials
         run: echo '${{ secrets.YOUTUBE_CREDENTIALS }}' > youtube_credentials.json
@@ -180,6 +180,10 @@ jobs:
           GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
           GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
         run: python3 gopro_uploader.py
 
       - name: Remove uploaded item from queue
