@@ -875,6 +875,41 @@ def filename_from_direct_url(url):
     return name if name and "." in name else f"manual_upload_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.mp4"
 
 
+def upload_source_to_r2(yt_id: str, file_path: Path) -> bool:
+    """Best-effort: save the original to R2 at the key ffa-media's worker
+    reads (cache/youtube/<id>/master.mp4) so renders skip YouTube.
+    No-op unless the S3_* env vars are set. Never raises."""
+    endpoint = os.environ.get("S3_ENDPOINT_URL")
+    bucket = os.environ.get("S3_BUCKET")
+    key_id = os.environ.get("S3_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID")
+    secret = os.environ.get("S3_SECRET_ACCESS_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY")
+    if not (endpoint and bucket and key_id and secret and yt_id):
+        log.info("R2: not configured - skipping original upload")
+        return False
+    try:
+        import boto3
+
+        s3 = boto3.client(
+            "s3", endpoint_url=endpoint, aws_access_key_id=key_id,
+            aws_secret_access_key=secret, region_name="auto",
+        )
+        key = f"cache/youtube/{re.sub(r'[^A-Za-z0-9._-]', '_', yt_id)}/master.mp4"
+        try:
+            s3.head_object(Bucket=bucket, Key=key)
+            log.info(f"R2: {key} already present - skipping")
+            return True
+        except Exception:
+            pass
+        log.info(f"Uploading original to R2: {key}")
+        s3.upload_file(str(file_path), bucket, key, ExtraArgs={"ContentType": "video/mp4"})
+        s3.put_object(Bucket=bucket, Key=key.rsplit("/", 1)[0] + "/original.keep", Body=b"")
+        log.info(f"R2 upload complete: {key}")
+        return True
+    except Exception as e:
+        log.warning(f"R2 original upload failed for {file_path.name}: {e}")
+        return False
+
+
 def upload_item(con, yt, session, item, camera_label="", force=False):
     media_id = item["id"]
     filename = item["filename"]
@@ -914,6 +949,7 @@ def upload_item(con, yt, session, item, camera_label="", force=False):
     yt_id = upload_to_youtube(yt, dest, make_title(filename, upload_date, camera_label), description, gopro_filename=filename)
     if yt_id:
         mark_uploaded(con, media_id, filename, upload_date, yt_id)
+        upload_source_to_r2(yt_id, dest)
         upload_source_to_drive(get_drive_service(), dest)
         dest.unlink(missing_ok=True)
         log.info(f"Done: {filename} Camera {camera_label or '-'} -> https://youtu.be/{yt_id}")
