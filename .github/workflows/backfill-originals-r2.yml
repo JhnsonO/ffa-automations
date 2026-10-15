@@ -1,0 +1,49 @@
+name: Backfill originals to R2 (one-off)
+
+# Copies original GoPro files from Drive FFA/Sources to R2 for videos already
+# on YouTube, so ffa-media renders skip the YouTube relay. Safe to re-run: files
+# already in R2 are skipped. Defaults to a DRY RUN that copies nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Only videos from the last N days
+        default: '60'
+      dry_run:
+        description: Dry run (list what would be copied, copy nothing)
+        type: boolean
+        default: true
+      max_files:
+        description: Maximum files to copy in this run
+        default: '100'
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests google-auth google-auth-oauthlib google-api-python-client boto3
+
+      - name: Write YouTube credentials
+        run: echo '${{ secrets.YOUTUBE_CREDENTIALS }}' > youtube_credentials.json
+
+      - name: Write YouTube token
+        run: echo '${{ secrets.YOUTUBE_TOKEN }}' > youtube_token.json
+
+      - name: Copy originals to R2
+        env:
+          DAYS: ${{ github.event.inputs.days }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          MAX_FILES: ${{ github.event.inputs.max_files }}
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+        run: python3 backfill_originals_r2.py
