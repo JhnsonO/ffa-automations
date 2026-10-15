@@ -161,9 +161,13 @@ jobs:
           S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
           S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
+          ALERT_EMAIL_PASSWORD: ${{ secrets.ALERT_EMAIL_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
         run: |
           python3 - <<'PY'
-          import glob, os, shutil, subprocess, time, requests, boto3
+          import glob, os, shutil, smtplib, subprocess, time, requests, boto3
+          from email.message import EmailMessage
           from botocore.config import Config
 
           base = os.environ["RAILWAY_URL"]
@@ -218,6 +222,62 @@ jobs:
           )
           bucket = os.environ["S3_BUCKET"]
 
+          # Consecutive-failure counter per video (a tiny R2 object). The relay
+          # runs every 5 minutes, so alert after 6 failed runs in a row (~30
+          # min) and then once a day, instead of on every transient hiccup.
+          ALERT_AFTER, REPEAT_EVERY = 6, 288
+
+          def bump_failures(ref):
+              k = f"relay-fails/{ref}"
+              try:
+                  n = int(s3.get_object(Bucket=bucket, Key=k)["Body"].read() or 0)
+              except Exception:
+                  n = 0
+              n += 1
+              try:
+                  s3.put_object(Bucket=bucket, Key=k, Body=str(n).encode())
+              except Exception:
+                  pass
+              return n
+
+          def clear_failures(ref):
+              try:
+                  s3.delete_object(Bucket=bucket, Key=f"relay-fails/{ref}")
+              except Exception:
+                  pass
+
+          def alert(ref, n, detail):
+              try:
+                  msg = EmailMessage()
+                  msg["Subject"] = f"FFA relay: YouTube download failing for {ref}"
+                  msg["From"] = os.environ["ALERT_EMAIL_FROM"]
+                  msg["To"] = os.environ["ALERT_EMAIL_TO"]
+                  msg.set_content(
+                      f"The YouTube relay has failed {n} runs in a row fetching "
+                      f"https://youtu.be/{ref}.\n\nLast error:\n{(detail or '')[-600:]}\n\n"
+                      "Clips for this video may stay on 'rendering' until it works."
+                  )
+                  with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
+                      smtp.starttls()
+                      smtp.login(os.environ["ALERT_EMAIL_FROM"], os.environ["ALERT_EMAIL_PASSWORD"])
+                      smtp.send_message(msg)
+                  print(f"alert emailed for {ref}")
+              except Exception as exc:
+                  print(f"could not send alert for {ref}: {exc}")
+
+          def download(ref, local, fmt):
+              subprocess.run(
+                  ["yt-dlp",
+                   "-f", fmt,
+                   "--merge-output-format", "mp4",
+                   "--no-part", "--no-warnings",
+                   "--cookies-from-browser", f"chrome:{chrome_profile}",
+                   "--extractor-args", "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
+                   "-o", local,
+                   f"https://www.youtube.com/watch?v={ref}"],
+                  stderr=subprocess.PIPE, text=True, timeout=3600, check=True,
+              )
+
           # Same burst-limit issue as the probe loop above -- a cron
           # backlog can queue up several masters at once, and unlike
           # probes these are full yt-dlp invocations (still one
@@ -249,25 +309,27 @@ jobs:
 
               local = os.path.join(DOWNLOAD_DIR, f"{ref}.mp4")
               try:
-                  subprocess.run(
-                      ["yt-dlp",
-                       "-f", "bestvideo[height>=2160]+bestaudio/bestvideo+bestaudio/best",
-                       "--merge-output-format", "mp4",
-                       "--no-part", "--no-warnings",
-                       "--cookies-from-browser", f"chrome:{chrome_profile}",
-                       "--extractor-args", "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
-                       "-o", local,
-                       f"https://www.youtube.com/watch?v={ref}"],
-                      stderr=subprocess.PIPE, text=True, timeout=3600, check=True,
-                  )
+                  try:
+                      download(ref, local, "bestvideo[height>=2160]+bestaudio/bestvideo+bestaudio/best")
+                  except subprocess.CalledProcessError as first:
+                      # YouTube sometimes refuses the first format choice;
+                      # retry once with a plain "best" before giving up.
+                      if "not a bot" in (first.stderr or ""):
+                          raise
+                      print(f"{ref}: first format failed, retrying with best")
+                      download(ref, local, "best")
                   s3.upload_file(local, bucket, key)
                   print(f"uploaded {ref} -> {key}")
                   consecutive_bot_walls = 0
+                  clear_failures(ref)
               except Exception as exc:
                   detail = getattr(exc, "stderr", None) or str(exc)
                   if "not a bot" in detail:
                       consecutive_bot_walls += 1
                   print(f"fetch failed for {ref}: {detail if detail else exc}")
+                  n = bump_failures(ref)
+                  if n == ALERT_AFTER or (n > ALERT_AFTER and n % REPEAT_EVERY == 0):
+                      alert(ref, n, detail)
               finally:
                   cleanup_ref(ref)
           PY
