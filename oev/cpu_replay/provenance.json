@@ -1,0 +1,26 @@
+{
+  "ticket": "OEV-001",
+  "sample": "sample_02, 180 s, GX010197-seed1384188843, YOLO26m, stride 1, lookahead",
+  "fps": "60000/1001",
+  "event_semantics": {
+    "detections_raw": "post-wrapper mapped tracker input (ROI-filtered, projected to panorama). NOT a pre-ROI detector cache.",
+    "world_state.timestamp_ms": "exact tracker input time. Stride 1 => wall-clock processing time since session start (~210-224 ms per frame on these runs), NOT source video time.",
+    "world_state.ball": "post backward-bridge. Bridged only replaces tracker None/Coasting.",
+    "world_state.players": "player tracker (ClassProvider person=0) output fed to BallTracker.observe_world.",
+    "frame_start.timestamp_ms": "render-loop wall clock; not used."
+  },
+  "sha256_source": "computed on download 2026-10-16; byte sizes match the OEV-001 table. The audit report SHA256 values were not available to this session for cross-check.",
+  "runs": [
+    {"run_id": "34202680125", "role": "static-site exclusion control", "video_stitcher_ref": "0636bc8ceb299c9238f40c456c2d5fd5c914c094", "drive_id": "1MKH18WeUYK41SQYAr69dl6nBsz2ciczI", "bytes": 68179480, "sha256": "81db58cc5bf281855ba4ce700d69266b84ea857356b36e3afdabc207e02cd63c"},
+    {"run_id": "34228909395", "role": "v4 micro-damping control", "video_stitcher_ref": "c5d40225ad78236b9982646c6eec1988687f3f17", "drive_id": "1AfPO8LYcdLBfMfvpAZZ21kWbSgQ4bHZJ", "bytes": 68178235, "sha256": "b07baf46d3de0ee0f816f3f1c9a6fa5f18adaedf4a46f2603bc9a9ca8352b4b8"},
+    {"run_id": "34236809938", "role": "ROI +0.40 regression", "video_stitcher_ref": "fa3c79e28c3e7ffa1fe9cfa802edd06ff452f6af", "drive_id": "1qAMhkVjN3NhgDpysIKEb6IgQ07jkmxpe", "bytes": 71395983, "sha256": "963ede96c18bf9dec50ec6788da38be38381bfade5e86b2ea0ad775f2f3ef204"},
+    {"run_id": "34278293284", "role": "8-a-side panner tuning (panner-only on ROI lineage)", "video_stitcher_ref": "f0fd7936 (experiment/8aside-panner-tuning-test-01)", "drive_id": "1f1skFgcPlf2HbS0cYamJzHQZEwXAARaY", "bytes": 71391679, "sha256": "cd854e3732761c6c809d82febbf64c7d44ef1048e441d37160d2b02ce13dd8e3"}
+  ],
+  "committed_fixture": {
+    "repo": "JhnsonO/video-stitcher",
+    "path": "crates/reco-autocam/tests/fixtures/sample02_run34236809938_f0000-1299.jsonl.gz",
+    "derived_from": "34236809938 frames 0-1299: frame_start, ball-class (32) detections_raw, full world_state",
+    "sha256_gz": "d7c7c23da805bcc560bf57c01886b27f9f6b2940ef8ddc0d285639bef18f37f5",
+    "sha256_uncompressed": "9dba34b9f714aaba7af99ad318e52b4ec9c7fae87dc5e350ae33bcbbc9297ef8"
+  }
+}
