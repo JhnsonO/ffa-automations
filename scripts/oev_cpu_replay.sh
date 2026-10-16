@@ -72,9 +72,12 @@ BIN="$(build_example "$STITCHER" "$STITCHER/target")"
 
 # 3. Replay every run on both clocks.
 for run in $(python3 -c "import json;print(' '.join(r['run_id'] for r in json.load(open('$MANIFEST'))['runs']))"); do
-  for clock in historical media; do
+  for clock in historical media production-media; do
     "$BIN" --events "$DATA/run$run.jsonl" --clock "$clock" \
       --out "$OUT/${clock}_$run.json" --trace "$OUT/${clock}_$run.csv" --label "${clock}_$run"
+    # Same files under the p2_ prefix used by oev_clock_compare.py.
+    cp "$OUT/${clock}_$run.json" "$OUT/p2_${clock}_$run.json"
+    cp "$OUT/${clock}_$run.csv" "$OUT/p2_${clock}_$run.csv"
   done
 done
 
@@ -109,4 +112,7 @@ if [[ -f "$OUT/ablation_historical_34236809938.json" ]]; then
   python3 "$CMP" "$OUT/historical_34236809938.json" "$OUT/ablation_historical_34236809938.json" \
     --markdown-out "$OUT/compare_roi_vs_release_ablation.md" >/dev/null
 fi
+python3 "$ROOT/scripts/oev_clock_compare.py" --dir "$OUT" \
+  --runs 34202680125 34228909395 34236809938 34278293284 \
+  --markdown-out "$OUT/compare_historical_vs_production_media.md" >/dev/null
 echo "OEV_CPU_REPLAY=DONE out=$OUT"
