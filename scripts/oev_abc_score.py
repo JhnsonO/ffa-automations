@@ -115,13 +115,15 @@ def neighbour_switches(cam: Camera, ann: dict, min_dwell: float):
     polys = ann.get("neighbour_pitch_polygons") or []
     if not polys:
         return None, None
+    # One outline per camera from the annotator, or the single schema polygon.
+    targets = ann.get("target_pitch_polygons") or [ann["target_pitch_polygon"]]
     switches = 0
     seconds = 0.0
     run_start = None
     rows = cam.rows
     for k, r in enumerate(rows):
-        on_neighbour = any(point_in_polygon(r["yaw"], r["pitch"], p) for p in polys) and not point_in_polygon(
-            r["yaw"], r["pitch"], ann["target_pitch_polygon"]
+        on_neighbour = any(point_in_polygon(r["yaw"], r["pitch"], p) for p in polys) and not any(
+            point_in_polygon(r["yaw"], r["pitch"], t) for t in targets
         )
         if on_neighbour and run_start is None:
             run_start = r["t"]

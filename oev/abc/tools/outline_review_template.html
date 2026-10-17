@@ -1,0 +1,177 @@
+<title>Aylestone Pitch Outline</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: review sheet. Header with decision state, the two camera views side by side
+   (stacked on phones) with the editable outline, then the decision bar and coordinates. */
+:root {
+  --bg: #eef2ee; --panel: #ffffff; --ink: #17221b; --muted: #5b6a60; --line: #cdd8cf;
+  --turf: #1f6b45; --turf-ink: #ffffff; --outline: #19d4ff; --warn: #b23a2e; --ok: #1f6b45;
+  --f-display: "Barlow Semi Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "Barlow", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f1612; --panel: #17211b; --ink: #e4ece6; --muted: #93a598; --line: #2a3a30;
+  --turf: #37a56c; --turf-ink: #06120b; --warn: #ef7a6c; --ok: #4fe08f; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0f1612; --panel: #17211b; --ink: #e4ece6; --muted: #93a598; --line: #2a3a30;
+  --turf: #37a56c; --turf-ink: #06120b; --warn: #ef7a6c; --ok: #4fe08f; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 14px 32px; }
+.wrap { max-width: 1500px; margin: 0 auto; display: grid; gap: 14px; }
+h1 { font: 700 1.5rem var(--f-display); margin: 0; text-wrap: balance; }
+h2 { font: 700 .95rem var(--f-display); text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 0; }
+p { margin: 0; max-width: 72ch; }
+.muted { color: var(--muted); }
+.head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; align-items: end; }
+.state { font: 600 .82rem var(--f-mono); padding: 4px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+.state[data-s=approved] { color: var(--ok); border-color: var(--ok); }
+.state[data-s=corrected] { color: var(--ok); border-color: var(--ok); }
+.state[data-s=rejected] { color: var(--warn); border-color: var(--warn); }
+.views { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 760px) { .views { grid-template-columns: 1fr; } }
+figure { margin: 0; display: grid; gap: 6px; min-width: 0; }
+.stage { position: relative; border-radius: 8px; overflow: hidden; background: #000; aspect-ratio: 16/9; max-width: 100%; }
+.stage img, .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.stage svg { touch-action: none; }
+figcaption { font-size: .88rem; color: var(--muted); }
+figcaption b { color: var(--ink); font-family: var(--f-display); letter-spacing: .03em; }
+.bar { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: grid; gap: 10px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button { font: 600 .92rem var(--f-display); letter-spacing: .02em; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+button:hover { border-color: var(--turf); }
+button:focus-visible, textarea:focus-visible { outline: 2px solid var(--turf); outline-offset: 1px; }
+button.primary { background: var(--turf); color: var(--turf-ink); border-color: var(--turf); }
+button.on { background: var(--ink); color: var(--panel); }
+textarea { width: 100%; min-height: 3.2em; font: 15px var(--f-body); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .86rem; color: var(--muted); }
+.legend i { display: inline-block; width: 22px; height: 0; border-top: 3px solid var(--outline); vertical-align: middle; margin-right: 6px; }
+.legend i.n { border-top: 3px dashed #ff5a4e; }
+pre { font: .78rem var(--f-mono); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow-x: auto; margin: 0; }
+.msg { font-size: .9rem; min-height: 1.4em; }
+</style>
+
+<div class="wrap">
+  <div class="head">
+    <div style="display:grid;gap:4px;min-width:0">
+      <h1>Aylestone Pitch Outline</h1>
+      <p class="muted">Draft outline of our pitch for the held-out session (GX010175 left, GX010198 right, stills at 10:00). Detections inside it count as our match for the A0/A1 filter, and players who stay inside it become "ours" for B2 and C. Drag a corner to correct it.</p>
+    </div>
+    <span class="state" id="state" data-s="draft">Draft, not yet reviewed</span>
+  </div>
+
+  <div class="views">
+    <figure>
+      <div class="stage" id="stL"><img alt="Aylestone left camera GX010175 at 10:00" src="__RV_LEFT__"><svg id="svL" viewBox="0 0 1000 562.5" preserveAspectRatio="none"></svg></div>
+      <figcaption><b>Left camera · GX010175</b> fence at the left edge; neighbouring match visible top right.</figcaption>
+    </figure>
+    <figure>
+      <div class="stage" id="stR"><img alt="Aylestone right camera GX010198 at 10:00" src="__RV_RIGHT__"><svg id="svR" viewBox="0 0 1000 562.5" preserveAspectRatio="none"></svg></div>
+      <figcaption><b>Right camera · GX010198</b> fence at the right edge; neighbouring match visible top left.</figcaption>
+    </figure>
+  </div>
+  <div class="legend"><span><i></i>Our pitch (draft)</span><span>Drag a corner to move it · click a line to add a corner · double-click a corner to remove it</span></div>
+
+  <div class="bar">
+    <h2>Your decision</h2>
+    <div class="row">
+      <button class="primary" id="bApprove" type="button">Approve outline</button>
+      <button id="bCorrected" type="button">Save my corrections</button>
+      <button id="bReject" type="button">Reject, redraw needed</button>
+      <button id="bReset" type="button">Reset to draft</button>
+    </div>
+    <label for="note" class="muted" style="font-size:.86rem">Note (optional): for example "far touchline is the line behind the orange cones"</label>
+    <textarea id="note"></textarea>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="bar">
+    <h2>Coordinates (fractions of each camera frame)</h2>
+    <pre id="coords"></pre>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const DRAFT = __DRAFT__;
+  const H = 562.5;
+  let roi = JSON.parse(JSON.stringify({ left: DRAFT.left, right: DRAFT.right }));
+  let edited = false;
+  let store = null;
+  const $ = (id) => document.getElementById(id);
+  const say = (t) => ($("msg").textContent = t);
+  const state = (s, label) => { $("state").dataset.s = s; $("state").textContent = label; };
+
+  function draw(side) {
+    const svg = $(side === "left" ? "svL" : "svR");
+    const pts = roi[side];
+    const P = (p) => `${(p[0] * 1000).toFixed(1)},${(p[1] * H).toFixed(1)}`;
+    let h = `<polygon points="${pts.map(P).join(" ")}" fill="rgba(25,212,255,0.13)" stroke="#19d4ff" stroke-width="3" vector-effect="non-scaling-stroke"/>`;
+    pts.forEach((p, i) => {
+      const q = pts[(i + 1) % pts.length];
+      h += `<line data-edge="${i}" x1="${p[0] * 1000}" y1="${p[1] * H}" x2="${q[0] * 1000}" y2="${q[1] * H}" stroke="transparent" stroke-width="16" vector-effect="non-scaling-stroke" style="cursor:copy"/>`;
+    });
+    pts.forEach((p, i) => {
+      h += `<circle data-i="${i}" cx="${p[0] * 1000}" cy="${p[1] * H}" r="9" fill="#ffffff" stroke="#0b6b80" stroke-width="3" style="cursor:grab" tabindex="0" aria-label="Corner ${i + 1}"/>`;
+    });
+    svg.innerHTML = h;
+  }
+  function drawAll() {
+    draw("left"); draw("right");
+    $("coords").textContent = JSON.stringify({ left: roi.left, right: roi.right }, (k, v) => (typeof v === "number" ? +v.toFixed(4) : v), 1);
+  }
+  function svgPoint(svg, e) {
+    const b = svg.getBoundingClientRect();
+    return [Math.min(1, Math.max(0, (e.clientX - b.left) / b.width)), Math.min(1, Math.max(0, (e.clientY - b.top) / b.height))];
+  }
+  function wire(side) {
+    const svg = $(side === "left" ? "svL" : "svR");
+    let drag = null;
+    svg.addEventListener("pointerdown", (e) => {
+      const i = e.target.dataset.i; const edge = e.target.dataset.edge;
+      if (i !== undefined) { drag = +i; svg.setPointerCapture(e.pointerId); e.preventDefault(); }
+      else if (edge !== undefined) { roi[side].splice(+edge + 1, 0, svgPoint(svg, e)); edited = true; drawAll(); say("Corner added. Drag it into place."); }
+    });
+    svg.addEventListener("pointermove", (e) => { if (drag === null) return; roi[side][drag] = svgPoint(svg, e); edited = true; drawAll(); });
+    svg.addEventListener("pointerup", () => { if (drag !== null) say("Corner moved. Save your corrections when you are happy."); drag = null; });
+    svg.addEventListener("dblclick", (e) => {
+      const i = e.target.dataset.i; if (i === undefined) return;
+      if (roi[side].length <= 3) { say("An outline needs at least 3 corners."); return; }
+      roi[side].splice(+i, 1); edited = true; drawAll(); say("Corner removed.");
+    });
+  }
+  async function save(decision) {
+    const doc = { decision, left: roi.left, right: roi.right, edited, note: $("note").value.trim(),
+      draft: { left: DRAFT.left, right: DRAFT.right }, decided_at: new Date().toISOString() };
+    if (!store) { say("Could not save here (sign in to claude.ai to record the decision). Copy the coordinates below instead."); return; }
+    try {
+      await store.doc("aylestone").set(doc);
+      const label = { approved: "Approved", corrected: "Corrections saved", rejected: "Rejected, redraw needed" }[decision];
+      state(decision, label); say(`${label}. Claude will read this decision before any held-out scoring.`);
+    } catch (e) { say("Save failed (" + ((e && e.code) || "error") + "). Copy the coordinates below instead."); }
+  }
+  $("bApprove").onclick = () => { if (edited) { say("You moved corners: use Save my corrections so the edits are recorded."); return; } save("approved"); };
+  $("bCorrected").onclick = () => { if (!edited) { say("Nothing has changed yet. Drag a corner first, or use Approve outline."); return; } save("corrected"); };
+  $("bReject").onclick = () => save("rejected");
+  $("bReset").onclick = () => { roi = JSON.parse(JSON.stringify({ left: DRAFT.left, right: DRAFT.right })); edited = false; drawAll(); say("Back to the draft."); };
+
+  wire("left"); wire("right"); drawAll();
+  (async () => {
+    if (!window.claude || !window.claude.use) return;
+    let db = null; try { db = await window.claude.use("db"); } catch {}
+    if (!db) return;
+    store = db.collection("outlines");
+    try {
+      const snap = await store.doc("aylestone").get();
+      if (snap.exists) {
+        const d = snap.data(); roi = { left: d.left, right: d.right }; edited = !!d.edited; $("note").value = d.note || ""; drawAll();
+        state(d.decision, { approved: "Approved", corrected: "Corrections saved", rejected: "Rejected, redraw needed" }[d.decision] || "Saved");
+      }
+    } catch {}
+  })();
+})();
+</script>

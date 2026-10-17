@@ -1,0 +1,556 @@
+<title>OEV Match Annotator</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: broadcast-desk tool. Top bar (window + save state), two synced camera panes,
+   transport + marking toolbar, then the annotation log. Stacks to one column on phones. */
+:root {
+  --bg: #eef2ee;          /* pitch-side paper */
+  --panel: #ffffff;
+  --ink: #17221b;
+  --muted: #5b6a60;
+  --line: #cdd8cf;
+  --turf: #1f6b45;        /* accent: 3G turf green */
+  --turf-ink: #ffffff;
+  --bib: #ef6c1a;         /* training-bib orange: action points */
+  --goal: #c2185b;
+  --attack: #6d4bd8;
+  --pass: #1b7fc4;
+  --near: #0f8f8a;
+  --restart: #8a6d1f;
+  --neigh: #b23a2e;
+  --pitch: #20c06a;
+  --shadow: 0 1px 2px rgba(20,40,28,.08);
+  --f-display: "Barlow Semi Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "Barlow", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f1612; --panel: #17211b; --ink: #e4ece6; --muted: #93a598; --line: #2a3a30;
+  --turf: #37a56c; --turf-ink: #06120b; --bib: #ff8a3d; --goal: #f06292; --attack: #9b84ff;
+  --pass: #4fb0f0; --near: #39c6c0; --restart: #d6b45a; --neigh: #ef7a6c; --pitch: #4fe08f;
+  --shadow: none; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0f1612; --panel: #17211b; --ink: #e4ece6; --muted: #93a598; --line: #2a3a30;
+  --turf: #37a56c; --turf-ink: #06120b; --bib: #ff8a3d; --goal: #f06292; --attack: #9b84ff;
+  --pass: #4fb0f0; --near: #39c6c0; --restart: #d6b45a; --neigh: #ef7a6c; --pitch: #4fe08f;
+  --shadow: none; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.45 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 12px 32px; }
+h1, h2 { font-family: var(--f-display); font-weight: 700; margin: 0; text-wrap: balance; }
+h1 { font-size: 1.45rem; letter-spacing: .01em; }
+h2 { font-size: 1.05rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.wrap { max-width: 1500px; margin: 0 auto; display: grid; gap: 12px; }
+.top { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+label.f { display: grid; gap: 2px; font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+input[type=text], input[type=number], select { font: 500 .95rem var(--f-body); color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; min-width: 0; }
+input[type=number] { width: 6.5em; }
+.save { font: 600 .8rem var(--f-mono); padding: 4px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+.save[data-s=ok] { color: var(--turf); border-color: var(--turf); }
+.save[data-s=err] { color: var(--neigh); border-color: var(--neigh); }
+.panes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 760px) { .panes { grid-template-columns: 1fr; } }
+.pane { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; max-width: 100%; }
+.pane video, .pane img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.pane canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: manipulation; }
+.pane .tag { position: absolute; left: 8px; top: 8px; font: 600 .72rem var(--f-mono); color: #fff; background: rgba(0,0,0,.55);
+  padding: 2px 7px; border-radius: 4px; pointer-events: none; }
+.pane .drop { position: absolute; inset: auto 8px 8px auto; display: flex; gap: 6px; }
+.pane .example { position: absolute; right: 8px; top: 8px; font: 600 .7rem var(--f-mono); color: #111; background: #ffd34d;
+  padding: 2px 7px; border-radius: 4px; pointer-events: none; }
+.bar { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow);
+  padding: 10px; display: grid; gap: 10px; }
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+button, .filebtn { font: 600 .9rem var(--f-display); letter-spacing: .02em; color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+button:hover, .filebtn:hover { border-color: var(--turf); }
+button:focus-visible, .filebtn:focus-within, input:focus-visible, select:focus-visible { outline: 2px solid var(--turf); outline-offset: 1px; }
+button.on { background: var(--turf); color: var(--turf-ink); border-color: var(--turf); }
+button kbd, .k { font: 600 .68rem var(--f-mono); color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+button.on kbd { color: inherit; border-color: currentColor; }
+.filebtn input { display: none; }
+.time { font: 600 1.05rem var(--f-mono); font-variant-numeric: tabular-nums; min-width: 9.5em; }
+.sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
+.ev { border-left: 4px solid var(--c, var(--line)); }
+.status { font-size: .9rem; color: var(--muted); min-height: 1.4em; }
+.status b { color: var(--ink); }
+.strip { width: 100%; height: 46px; display: block; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); cursor: pointer; }
+.grid2 { display: grid; grid-template-columns: minmax(0,2fr) minmax(0,1fr); gap: 12px; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+.tablebox { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .88rem; font-variant-numeric: tabular-nums; }
+th { text-align: left; font: 600 .7rem var(--f-body); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); }
+td { padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td.mono { font-family: var(--f-mono); font-size: .8rem; }
+.chip { display: inline-block; font: 600 .72rem var(--f-display); padding: 1px 7px; border-radius: 99px; color: #fff; background: var(--c, var(--muted)); }
+.counts { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
+.count { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.count b { font: 700 1.25rem var(--f-display); display: block; }
+.count span { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.help { font-size: .88rem; color: var(--muted); max-width: 70ch; }
+.help code, pre { font-family: var(--f-mono); font-size: .78rem; }
+pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow-x: auto; white-space: pre; max-height: 260px; }
+.warn { border: 1px solid var(--neigh); color: var(--ink); border-radius: 8px; padding: 8px 10px; background: var(--panel); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<div class="wrap">
+  <div class="top">
+    <div style="display:grid;gap:2px;min-width:0">
+      <h1>OEV Match Annotator</h1>
+      <div class="help">Mark where a good cameraman would point, plus goals, attacks, long passes and neighbour-pitch balls. Saved for the OEV-006 A/B/C scorer.</div>
+    </div>
+    <div class="meta">
+      <label class="f" for="win">Window
+        <select id="win"></select></label>
+      <label class="f" for="newwin">New window id
+        <input id="newwin" type="text" placeholder="stmargarets_s01" size="16"></label>
+      <button id="addwin" type="button">Add window</button>
+      <span id="save" class="save" data-s="">not saved</span>
+    </div>
+  </div>
+
+  <div class="panes">
+    <div class="pane" id="paneL">
+      <img id="exL" alt="Example frame, left camera" src="__EX_LEFT__">
+      <video id="vL" playsinline muted preload="auto" hidden></video>
+      <canvas id="cL"></canvas>
+      <span class="tag">LEFT camera</span><span class="example" id="exTagL">example frame</span>
+      <div class="drop"><label class="filebtn" for="fL">Load left clip<input id="fL" type="file" accept="video/*"></label></div>
+    </div>
+    <div class="pane" id="paneR">
+      <img id="exR" alt="Example frame, right camera" src="__EX_RIGHT__">
+      <video id="vR" playsinline muted preload="auto" hidden></video>
+      <canvas id="cR"></canvas>
+      <span class="tag">RIGHT camera</span><span class="example" id="exTagR">example frame</span>
+      <div class="drop"><label class="filebtn" for="fR">Load right clip<input id="fR" type="file" accept="video/*"></label></div>
+    </div>
+  </div>
+  <div id="codecWarn" class="warn" hidden></div>
+
+  <div class="bar">
+    <div class="row">
+      <button id="bPlay" type="button" title="Play / pause">Play <kbd>Space</kbd></button>
+      <button id="bBack1" type="button">−1 s <kbd>←</kbd></button>
+      <button id="bBackF" type="button">−1 frame <kbd>,</kbd></button>
+      <button id="bFwdF" type="button">+1 frame <kbd>.</kbd></button>
+      <button id="bFwd1" type="button">+1 s <kbd>→</kbd></button>
+      <label class="f" for="rate">Speed<select id="rate"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option></select></label>
+      <span class="time" id="time">00:00.00</span>
+      <label class="f" for="offset">Right offset (frames)<input id="offset" type="number" step="1" value="0"></label>
+      <label class="f" for="adv">Auto-step<select id="adv"><option value="1">1 s (play)</option><option value="0.2">0.2 s (event)</option><option value="0">off</option></select></label>
+    </div>
+    <div class="row">
+      <button class="mode on" data-mode="aim" type="button">Aim point <kbd>A</kbd></button>
+      <button id="bNoBall" type="button">Ball not visible <kbd>N</kbd></button>
+      <button id="bUnsure" type="button">Unsure <kbd>U</kbd></button>
+      <span class="sep"></span>
+      <button class="evb ev" data-ev="goal" type="button" style="--c:var(--goal)">Goal <kbd>G</kbd></button>
+      <button class="evb ev" data-ev="shot" type="button" style="--c:var(--goal)">Shot <kbd>S</kbd></button>
+      <button class="evb ev" data-ev="counterattack" type="button" style="--c:var(--attack)">Counterattack <kbd>C</kbd></button>
+      <button class="evb ev" data-ev="long_pass" type="button" style="--c:var(--pass)">Long pass <kbd>L</kbd></button>
+      <button class="evb ev" data-ev="near_side_ball" type="button" style="--c:var(--near)">Near-side ball <kbd>P</kbd></button>
+      <button class="evb ev" data-ev="restart" type="button" style="--c:var(--restart)">Restart <kbd>R</kbd></button>
+      <button class="evb ev" data-ev="neighbour_ball_present" type="button" style="--c:var(--neigh)">Neighbour-pitch ball <kbd>W</kbd></button>
+      <button id="bEnd" type="button">End event <kbd>E</kbd></button>
+      <span class="sep"></span>
+      <button class="mode" data-mode="poly_target" type="button">Draw our pitch</button>
+      <button class="mode" data-mode="poly_neigh" type="button">Draw neighbour pitch</button>
+      <button id="bClose" type="button">Finish outline <kbd>Enter</kbd></button>
+      <button id="bUndo" type="button">Undo <kbd>Z</kbd></button>
+    </div>
+    <div class="status" id="status"></div>
+    <canvas class="strip" id="strip" aria-label="Timeline: aim points and events; click to jump"></canvas>
+  </div>
+
+  <div class="grid2">
+    <div class="bar" style="align-content:start">
+      <h2>Events</h2>
+      <div class="tablebox"><table>
+        <thead><tr><th>Type</th><th>Start</th><th>Key moment</th><th>End</th><th>Camera</th><th>Target x, y</th><th></th></tr></thead>
+        <tbody id="evRows"></tbody>
+      </table></div>
+    </div>
+    <div class="bar" style="align-content:start">
+      <h2>Window</h2>
+      <div class="counts" id="counts"></div>
+      <div class="row">
+        <label class="f" for="session">Session<input id="session" type="text" size="18"></label>
+        <label class="f" for="role">Role<select id="role"><option value="development">development</option><option value="held_out">held_out</option><option value="regression">regression</option></select></label>
+        <label class="f" for="start">Start in source (s)<input id="start" type="number" step="0.01"></label>
+      </div>
+      <div class="row">
+        <button id="bExport" type="button">Show JSON</button>
+        <button id="bSaveFile" type="button" hidden>Save JSON file</button>
+        <button id="bCopy" type="button" hidden>Copy JSON</button>
+        <label class="filebtn" for="fImport">Import JSON<input id="fImport" type="file" accept="application/json,.json"></label>
+      </div>
+      <pre id="json" hidden></pre>
+      <div class="help">Coordinates are stored as fractions of each camera frame, so a smaller proxy copy of a clip gives the same values. The scorer converts them to panorama angles from the window's own detections.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const FPS = 60000 / 1001;
+  const EV = {
+    goal: ["Goal", "--goal"], shot: ["Shot", "--goal"], counterattack: ["Counterattack", "--attack"],
+    long_pass: ["Long pass", "--pass"], near_side_ball: ["Near-side ball", "--near"],
+    restart: ["Restart", "--restart"], neighbour_ball_present: ["Neighbour-pitch ball", "--neigh"],
+  };
+  const $ = (id) => document.getElementById(id);
+  const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const vL = $("vL"), vR = $("vR"), cL = $("cL"), cR = $("cR");
+  const panes = { left: { v: vL, c: cL, img: $("exL"), tag: $("exTagL") }, right: { v: vR, c: cR, img: $("exR"), tag: $("exTagR") } };
+
+  const blank = (id) => ({
+    schema: "oev-abc-annot-camera/1", window_id: id, session: "", role: "development", window_start_s: null,
+    source: { left: "", right: "", right_offset_frames: 0 }, fps: FPS, duration_s: null,
+    points: [], events: [], polygons: { target: { left: [], right: [] }, neighbour: { left: [], right: [] } },
+    updated_at: null,
+  });
+  // Example window shown before any clip is loaded (clearly labelled; not real annotations).
+  const EXAMPLE_ID = "example";
+  const example = () => {
+    const w = blank(EXAMPLE_ID);
+    w.session = "Example only"; w.role = "regression";
+    w.points = [
+      { t: 0, cam: "left", x: 0.44, y: 0.6, ball: true },
+      { t: 1, cam: "left", x: 0.52, y: 0.58, ball: true },
+      { t: 2, cam: "right", x: 0.3, y: 0.62, ball: false },
+    ];
+    w.events = [{ id: "e1", type: "long_pass", t_start: 1.2, key_t: 2.4, t_end: 3.1, cam: "right", x: 0.36, y: 0.55 }];
+    return w;
+  };
+
+  let windows = {};          // id -> annotation
+  let cur = example();
+  let mode = "aim";          // aim | poly_target | poly_neigh
+  let openEvent = null;      // event awaiting target click / end
+  let polyDraft = null;      // {kind, cam, pts}
+  let undo = [];
+  let duration = 0;
+  let db = null, coll = null, saveTimer = null, saving = false, pending = false;
+
+  // ---------- persistence ----------
+  const LS = "oev-annotator-v1";
+  const lsGet = () => { try { return JSON.parse(localStorage.getItem(LS) || "{}"); } catch { return {}; } };
+  const lsSet = (o) => { try { localStorage.setItem(LS, JSON.stringify(o)); } catch {} };
+  function setSave(text, s) { const el = $("save"); el.textContent = text; el.dataset.s = s || ""; }
+  function scheduleSave() {
+    if (cur.window_id === EXAMPLE_ID) { setSave("example: not saved", ""); return; }
+    cur.updated_at = new Date().toISOString();
+    windows[cur.window_id] = cur;
+    const all = lsGet(); all[cur.window_id] = cur; lsSet(all);
+    if (!coll) { setSave("saved in this browser", "ok"); return; }
+    setSave("saving…", "");
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(flush, 1200);
+  }
+  async function flush() {
+    if (saving) { pending = true; return; }
+    saving = true;
+    try { await coll.doc(cur.window_id).set(JSON.parse(JSON.stringify(cur))); setSave("saved for scoring", "ok"); }
+    catch (e) { setSave("save failed: " + (e && e.code || "error") + " (kept in this browser)", "err"); }
+    saving = false;
+    if (pending) { pending = false; flush(); }
+  }
+  async function initDb() {
+    if (!window.claude || !window.claude.use) return;
+    try { db = await window.claude.use("db"); } catch { db = null; }
+    if (!db) { setSave("saved in this browser only", ""); return; }
+    coll = db.collection("annotations");
+    try {
+      const snap = await coll.get();
+      snap.docs.forEach((d) => { windows[d.id] = d.data(); });
+      refreshWinSelect();
+    } catch (e) { setSave("could not load saved windows", "err"); }
+  }
+  async function initDownloads() {
+    try {
+      const dl = window.claude && window.claude.use ? await window.claude.use("downloads") : null;
+      if (dl) { $("bSaveFile").hidden = false; $("bSaveFile").onclick = () => dl.save({ filename: (cur.window_id || "annotation") + ".json", data: JSON.stringify(cur, null, 1) }).catch(() => {}); }
+    } catch {}
+  }
+
+  function refreshWinSelect() {
+    const sel = $("win"); const ids = Object.keys(windows).sort();
+    sel.innerHTML = "";
+    const ex = document.createElement("option"); ex.value = EXAMPLE_ID; ex.textContent = "Example (not saved)"; sel.appendChild(ex);
+    ids.forEach((id) => { const o = document.createElement("option"); o.value = id; o.textContent = id; sel.appendChild(o); });
+    sel.value = cur.window_id in windows || cur.window_id === EXAMPLE_ID ? cur.window_id : EXAMPLE_ID;
+  }
+  function loadWindow(id) {
+    cur = id === EXAMPLE_ID ? example() : JSON.parse(JSON.stringify(windows[id]));
+    openEvent = null; polyDraft = null; undo = [];
+    $("session").value = cur.session || ""; $("role").value = cur.role || "development";
+    $("start").value = cur.window_start_s ?? ""; $("offset").value = cur.source.right_offset_frames || 0;
+    render(); refreshWinSelect();
+    say(id === EXAMPLE_ID ? "Showing an example. Add a window, then load its left and right clips." : `Window <b>${id}</b> loaded. Load the matching clips to continue.`);
+  }
+
+  // ---------- video ----------
+  const now = () => (vL.hidden ? 0 : vL.currentTime);
+  const fmt = (t) => { if (t == null || isNaN(t)) return "–"; const m = Math.floor(t / 60), s = t - m * 60; return String(m).padStart(2, "0") + ":" + s.toFixed(2).padStart(5, "0"); };
+  function loadClip(side, file) {
+    const p = panes[side]; const url = URL.createObjectURL(file);
+    p.v.src = url; p.v.hidden = false; p.img.hidden = true; p.tag.hidden = true;
+    cur.source[side] = file.name;
+    p.v.onerror = () => {
+      $("codecWarn").hidden = false;
+      $("codecWarn").innerHTML = `This browser cannot play <b>${file.name}</b> (GoPro 4K files are HEVC). Make a small proxy copy and load that instead; clicks map the same way:<pre>ffmpeg -i "${file.name}" -vf scale=1280:-2 -c:v libx264 -preset veryfast -crf 26 -an "proxy_${file.name.replace(/\.[^.]+$/, "")}.mp4"</pre>Chrome or Edge on a recent Windows/Mac machine, or Safari, usually play the originals directly.`;
+    };
+    p.v.onloadedmetadata = () => { if (side === "left") { duration = p.v.duration; cur.duration_s = duration; } render(); };
+    if (cur.window_id !== EXAMPLE_ID) scheduleSave();
+    say(`Loaded ${side} clip <b>${file.name}</b>.`);
+  }
+  function syncRight() {
+    if (vR.hidden || vL.hidden) return;
+    const want = vL.currentTime + (Number($("offset").value) || 0) / FPS;
+    if (Math.abs(vR.currentTime - want) > 0.04) vR.currentTime = Math.max(0, want);
+  }
+  function seek(t) {
+    if (vL.hidden) return;
+    vL.currentTime = Math.max(0, Math.min(duration || 1e9, t)); syncRight(); render();
+  }
+  function togglePlay() {
+    if (vL.hidden) { say("Load the left clip first."); return; }
+    if (vL.paused) { vL.play(); if (!vR.hidden) vR.play(); } else { vL.pause(); vR.pause(); syncRight(); }
+    $("bPlay").firstChild.textContent = vL.paused ? "Play " : "Pause ";
+  }
+  vL.addEventListener("timeupdate", () => { if (!vL.paused) syncRight(); render(); });
+  vL.addEventListener("seeked", render);
+  $("rate").onchange = () => { vL.playbackRate = vR.playbackRate = Number($("rate").value); };
+  $("offset").onchange = () => { cur.source.right_offset_frames = Number($("offset").value) || 0; syncRight(); scheduleSave(); };
+
+  // ---------- geometry ----------
+  function contentRect(side) {
+    const p = panes[side]; const c = p.c.getBoundingClientRect();
+    const src = p.v.hidden ? p.img : p.v;
+    const w0 = (p.v.hidden ? p.img.naturalWidth : p.v.videoWidth) || 16, h0 = (p.v.hidden ? p.img.naturalHeight : p.v.videoHeight) || 9;
+    const s = Math.min(c.width / w0, c.height / h0); const w = w0 * s, h = h0 * s;
+    return { x: (c.width - w) / 2, y: (c.height - h) / 2, w, h, cw: c.width, ch: c.height, src };
+  }
+  function toNorm(side, ev) {
+    const r = contentRect(side); const b = panes[side].c.getBoundingClientRect();
+    const x = (ev.clientX - b.left - r.x) / r.w, y = (ev.clientY - b.top - r.y) / r.h;
+    return x < 0 || x > 1 || y < 0 || y > 1 ? null : { x: +x.toFixed(4), y: +y.toFixed(4) };
+  }
+
+  // ---------- marking ----------
+  function say(html) { $("status").innerHTML = html; }
+  function push(kind, item) { undo.push({ kind, item }); }
+  function advance(stepFallback) {
+    const step = openEvent ? 0.2 : Number($("adv").value);
+    const s = step || stepFallback || 0;
+    if (s > 0) seek(now() + s);
+  }
+  function onClick(side, ev) {
+    const n = toNorm(side, ev); if (!n) return;
+    if (mode === "poly_target" || mode === "poly_neigh") {
+      const kind = mode === "poly_target" ? "target" : "neighbour";
+      if (!polyDraft || polyDraft.cam !== side || polyDraft.kind !== kind) polyDraft = { kind, cam: side, pts: [] };
+      polyDraft.pts.push([n.x, n.y]);
+      say(`Outline (${kind === "target" ? "our pitch" : "neighbour pitch"}, ${side}): ${polyDraft.pts.length} points. Press <b>Finish outline</b> or Enter.`);
+      render(); return;
+    }
+    if (openEvent && openEvent.key_t == null) {
+      Object.assign(openEvent, { key_t: +now().toFixed(3), cam: side, x: n.x, y: n.y });
+      say(`${EV[openEvent.type][0]}: target set at ${fmt(openEvent.key_t)}. Press <b>End event</b> (E) when it is over.`);
+      scheduleSave(); render(); return;
+    }
+    const t = +now().toFixed(3);
+    const pt = { t, cam: side, x: n.x, y: n.y, ball: true };
+    cur.points = cur.points.filter((p) => Math.abs(p.t - t) > 0.05);
+    cur.points.push(pt); cur.points.sort((a, b) => a.t - b.t); push("point", pt);
+    say(`Aim point at ${fmt(t)} (${side}).`);
+    scheduleSave(); render(); advance();
+  }
+  function markNoXY(flag) {
+    const t = +now().toFixed(3);
+    const pt = flag === "unsure" ? { t, cam: null, x: null, y: null, ball: "UNSURE", unsure: true } : { t, cam: null, x: null, y: null, ball: false, unsure: true };
+    cur.points = cur.points.filter((p) => Math.abs(p.t - t) > 0.05);
+    cur.points.push(pt); cur.points.sort((a, b) => a.t - b.t); push("point", pt);
+    say(flag === "unsure" ? `Marked ${fmt(t)} as unsure (not scored).` : `Ball not visible at ${fmt(t)} (aim point skipped, not scored).`);
+    scheduleSave(); render(); advance();
+  }
+  function startEvent(type) {
+    if (openEvent) endEvent(true);
+    openEvent = { id: "e" + Date.now().toString(36), type, t_start: +now().toFixed(3), key_t: null, t_end: null, cam: null, x: null, y: null };
+    cur.events.push(openEvent); push("event", openEvent);
+    $("adv").value = "0.2";
+    say(`<b>${EV[type][0]}</b> started at ${fmt(openEvent.t_start)}. Play to the key moment and click the spot that must be in frame${type === "counterattack" ? " (the attacking end)" : ""}.`);
+    scheduleSave(); render();
+  }
+  function endEvent(silent) {
+    if (!openEvent) { if (!silent) say("No event is open."); return; }
+    openEvent.t_end = +Math.max(now(), openEvent.key_t ?? openEvent.t_start).toFixed(3);
+    if (openEvent.key_t == null) openEvent.unsure = true;
+    if (!silent) say(`${EV[openEvent.type][0]} ended at ${fmt(openEvent.t_end)}${openEvent.unsure ? " (no target clicked, kept as unsure)" : ""}.`);
+    openEvent = null; $("adv").value = "1"; scheduleSave(); render();
+  }
+  function finishPoly() {
+    if (!polyDraft || polyDraft.pts.length < 3) { say("An outline needs at least 3 points."); return; }
+    const { kind, cam, pts } = polyDraft;
+    if (kind === "target") cur.polygons.target[cam] = pts; else cur.polygons.neighbour[cam].push(pts);
+    push("poly", { kind, cam });
+    say(`Saved ${kind === "target" ? "our pitch" : "a neighbour pitch"} outline for the ${cam} camera (${pts.length} points).`);
+    polyDraft = null; setMode("aim"); scheduleSave(); render();
+  }
+  function doUndo() {
+    if (polyDraft && polyDraft.pts.length) { polyDraft.pts.pop(); render(); return; }
+    const u = undo.pop(); if (!u) { say("Nothing to undo."); return; }
+    if (u.kind === "point") cur.points = cur.points.filter((p) => p !== u.item);
+    if (u.kind === "event") { cur.events = cur.events.filter((e) => e !== u.item); if (openEvent === u.item) openEvent = null; }
+    if (u.kind === "poly") { if (u.item.kind === "target") cur.polygons.target[u.item.cam] = []; else cur.polygons.neighbour[u.item.cam].pop(); }
+    say("Undone."); scheduleSave(); render();
+  }
+  function setMode(m) {
+    mode = m; polyDraft = null;
+    document.querySelectorAll("button.mode").forEach((b) => b.classList.toggle("on", b.dataset.mode === m));
+    if (m !== "aim") say(`Click the corners of ${m === "poly_target" ? "our pitch" : "the neighbouring pitch"} on one camera view, then press <b>Finish outline</b>.`);
+  }
+
+  // ---------- drawing ----------
+  function drawPane(side) {
+    const p = panes[side]; const c = p.c; const dpr = window.devicePixelRatio || 1;
+    const b = c.getBoundingClientRect(); c.width = Math.round(b.width * dpr); c.height = Math.round(b.height * dpr);
+    const g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, b.width, b.height);
+    const r = contentRect(side); const X = (x) => r.x + x * r.w, Y = (y) => r.y + y * r.h;
+    const poly = (pts, color, fill, dash) => {
+      if (!pts || pts.length < 2) return; g.beginPath(); pts.forEach(([x, y], i) => (i ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y))));
+      if (pts.length > 2) g.closePath(); g.setLineDash(dash || []); g.lineWidth = 2; g.strokeStyle = color; g.stroke();
+      if (fill) { g.fillStyle = fill; g.fill(); } g.setLineDash([]);
+    };
+    poly(cur.polygons.target[side], css("--pitch"), "rgba(40,200,110,0.10)");
+    cur.polygons.neighbour[side].forEach((pts) => poly(pts, css("--neigh"), "rgba(220,70,60,0.10)", [6, 4]));
+    if (polyDraft && polyDraft.cam === side) {
+      poly(polyDraft.pts, polyDraft.kind === "target" ? css("--pitch") : css("--neigh"), null, [3, 3]);
+      polyDraft.pts.forEach(([x, y]) => { g.fillStyle = "#fff"; g.beginPath(); g.arc(X(x), Y(y), 3.5, 0, 7); g.fill(); });
+    }
+    const t = now();
+    cur.points.forEach((pt) => {
+      if (pt.cam !== side || pt.x == null) return; const dt = Math.abs(pt.t - t); if (dt > 1.5) return;
+      const a = 1 - dt / 1.5; g.globalAlpha = Math.max(0.15, a);
+      g.strokeStyle = css("--bib"); g.lineWidth = 2.5; g.beginPath(); g.arc(X(pt.x), Y(pt.y), dt < 0.06 ? 11 : 7, 0, 7); g.stroke();
+      g.beginPath(); g.moveTo(X(pt.x) - 16, Y(pt.y)); g.lineTo(X(pt.x) + 16, Y(pt.y)); g.moveTo(X(pt.x), Y(pt.y) - 16); g.lineTo(X(pt.x), Y(pt.y) + 16); g.stroke();
+      g.globalAlpha = 1;
+    });
+    cur.events.forEach((e) => {
+      if (e.cam !== side || e.x == null) return; if (t < e.t_start - 0.5 || t > (e.t_end ?? e.key_t + 2) + 0.5) return;
+      const col = css(EV[e.type][1]); g.fillStyle = col; g.strokeStyle = "#fff"; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(X(e.x), Y(e.y) - 12); g.lineTo(X(e.x) + 10, Y(e.y)); g.lineTo(X(e.x), Y(e.y) + 12); g.lineTo(X(e.x) - 10, Y(e.y)); g.closePath(); g.fill(); g.stroke();
+      g.font = "600 12px " + css("--f-display"); g.fillStyle = "#fff"; g.strokeStyle = "rgba(0,0,0,.7)"; g.lineWidth = 3;
+      g.strokeText(EV[e.type][0], X(e.x) + 14, Y(e.y) + 4); g.fillText(EV[e.type][0], X(e.x) + 14, Y(e.y) + 4);
+    });
+  }
+  function drawStrip() {
+    const c = $("strip"); const dpr = window.devicePixelRatio || 1; const b = c.getBoundingClientRect();
+    c.width = Math.round(b.width * dpr); c.height = Math.round(b.height * dpr);
+    const g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, b.width, b.height);
+    const T = Math.max(duration || 0, ...cur.points.map((p) => p.t + 1), ...cur.events.map((e) => (e.t_end ?? e.key_t ?? e.t_start) + 1), 10);
+    const X = (t) => 4 + (t / T) * (b.width - 8);
+    g.fillStyle = css("--line"); for (let s = 0; s <= T; s += 10) g.fillRect(X(s), b.height - 6, 1, 6);
+    cur.events.forEach((e, i) => {
+      g.fillStyle = css(EV[e.type][1]); g.globalAlpha = 0.85;
+      const lane = 4 + (i % 3) * 7; g.fillRect(X(e.t_start), lane, Math.max(3, X(e.t_end ?? (e.key_t ?? e.t_start) + 0.5) - X(e.t_start)), 5); g.globalAlpha = 1;
+    });
+    cur.points.forEach((p) => { g.fillStyle = p.x == null ? css("--muted") : css("--bib"); g.fillRect(X(p.t), 26, 2, 12); });
+    g.fillStyle = css("--ink"); g.fillRect(X(now()) - 1, 0, 2, b.height);
+  }
+  function renderTable() {
+    const rows = $("evRows"); rows.innerHTML = "";
+    if (!cur.events.length) { const tr = document.createElement("tr"); tr.innerHTML = `<td colspan="7" style="color:var(--muted);white-space:normal">No events yet. Press an event button at the moment it starts.</td>`; rows.appendChild(tr); }
+    cur.events.forEach((e) => {
+      const tr = document.createElement("tr");
+      const chip = `<span class="chip" style="--c:var(${EV[e.type][1]})">${EV[e.type][0]}</span>${e.unsure ? ' <span class="k">unsure</span>' : ""}`;
+      tr.innerHTML = `<td>${chip}</td><td class="mono"></td><td class="mono"></td><td class="mono"></td><td></td><td class="mono"></td><td></td>`;
+      const td = tr.children;
+      [e.t_start, e.key_t, e.t_end].forEach((v, i) => { const btn = document.createElement("button"); btn.type = "button"; btn.textContent = fmt(v); btn.style.padding = "1px 6px"; btn.onclick = () => v != null && seek(v); td[1 + i].appendChild(btn); });
+      td[4].textContent = e.cam || "–"; td[5].textContent = e.x == null ? "–" : `${e.x.toFixed(3)}, ${e.y.toFixed(3)}`;
+      const del = document.createElement("button"); del.type = "button"; del.textContent = "Delete"; del.onclick = () => { cur.events = cur.events.filter((x) => x !== e); if (openEvent === e) openEvent = null; scheduleSave(); render(); };
+      td[6].appendChild(del); rows.appendChild(tr);
+    });
+  }
+  function renderCounts() {
+    const scored = cur.points.filter((p) => p.x != null).length, skipped = cur.points.length - scored;
+    const by = (t) => cur.events.filter((e) => e.type === t).length;
+    const items = [["Aim points", scored], ["Not scored", skipped], ["Goals", by("goal")], ["Shots", by("shot")], ["Counters", by("counterattack")],
+      ["Long passes", by("long_pass")], ["Near-side", by("near_side_ball")], ["Restarts", by("restart")], ["Neighbour ball", by("neighbour_ball_present")],
+      ["Our pitch", ["left", "right"].filter((s) => cur.polygons.target[s].length).join(" + ") || "not drawn"]];
+    $("counts").innerHTML = items.map(([k, v]) => `<div class="count"><b>${v}</b><span>${k}</span></div>`).join("");
+  }
+  function render() {
+    $("time").textContent = fmt(now()) + (duration ? " / " + fmt(duration) : "");
+    drawPane("left"); drawPane("right"); drawStrip(); renderTable(); renderCounts();
+    if (!$("json").hidden) $("json").textContent = JSON.stringify(cur, null, 1);
+  }
+
+  // ---------- wiring ----------
+  cL.addEventListener("click", (e) => onClick("left", e));
+  cR.addEventListener("click", (e) => onClick("right", e));
+  $("fL").onchange = (e) => e.target.files[0] && loadClip("left", e.target.files[0]);
+  $("fR").onchange = (e) => e.target.files[0] && loadClip("right", e.target.files[0]);
+  $("bPlay").onclick = togglePlay;
+  $("bBack1").onclick = () => seek(now() - 1); $("bFwd1").onclick = () => seek(now() + 1);
+  $("bBackF").onclick = () => { vL.pause(); vR.pause(); seek(now() - 1 / FPS); };
+  $("bFwdF").onclick = () => { vL.pause(); vR.pause(); seek(now() + 1 / FPS); };
+  $("bNoBall").onclick = () => markNoXY("noball"); $("bUnsure").onclick = () => markNoXY("unsure");
+  document.querySelectorAll(".evb").forEach((b) => (b.onclick = () => startEvent(b.dataset.ev)));
+  document.querySelectorAll("button.mode").forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
+  $("bEnd").onclick = () => endEvent(false); $("bClose").onclick = finishPoly; $("bUndo").onclick = doUndo;
+  $("strip").addEventListener("click", (e) => {
+    const b = e.currentTarget.getBoundingClientRect(); const T = Math.max(duration || 0, 10);
+    seek(((e.clientX - b.left - 4) / (b.width - 8)) * T);
+  });
+  $("win").onchange = (e) => loadWindow(e.target.value);
+  $("addwin").onclick = () => {
+    const id = $("newwin").value.trim().replace(/[^A-Za-z0-9_.-]/g, "_");
+    if (!id) { say("Type a window id first, for example <b>stmargarets_s01</b>."); return; }
+    if (windows[id]) { loadWindow(id); return; }
+    windows[id] = blank(id); cur = windows[id]; cur.source.left = panes.left.v.hidden ? "" : cur.source.left;
+    $("newwin").value = ""; refreshWinSelect(); loadWindow(id); scheduleSave();
+  };
+  ["session", "role", "start"].forEach((k) => ($(k).onchange = () => {
+    if (k === "start") cur.window_start_s = $("start").value === "" ? null : Number($("start").value); else cur[k] = $(k).value;
+    scheduleSave(); render();
+  }));
+  $("bExport").onclick = () => { const j = $("json"); j.hidden = !j.hidden; $("bCopy").hidden = j.hidden; $("bExport").textContent = j.hidden ? "Show JSON" : "Hide JSON"; render(); };
+  $("bCopy").onclick = () => {
+    const txt = JSON.stringify(cur, null, 1);
+    navigator.clipboard.writeText(txt).then(() => say("JSON copied."), () => { const r = document.createRange(); r.selectNodeContents($("json")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); say("Copy blocked here: the JSON is selected, press Ctrl/Cmd+C."); });
+  };
+  $("fImport").onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    try { const o = JSON.parse(await f.text()); if (o.schema !== "oev-abc-annot-camera/1" || !o.window_id) throw new Error("not an OEV annotation file");
+      windows[o.window_id] = o; loadWindow(o.window_id); scheduleSave(); say(`Imported <b>${o.window_id}</b>.`); }
+    catch (err) { say("Import failed: " + err.message + "."); }
+  };
+  document.addEventListener("keydown", (e) => {
+    if (e.target.matches("input,select,textarea")) return;
+    const k = e.key;
+    const map = { a: () => setMode("aim"), n: () => markNoXY("noball"), u: () => markNoXY("unsure"), g: () => startEvent("goal"), s: () => startEvent("shot"),
+      c: () => startEvent("counterattack"), l: () => startEvent("long_pass"), p: () => startEvent("near_side_ball"), r: () => startEvent("restart"),
+      w: () => startEvent("neighbour_ball_present"), e: () => endEvent(false), z: () => doUndo() };
+    if (k === " ") { e.preventDefault(); togglePlay(); }
+    else if (k === "ArrowLeft") seek(now() - 1); else if (k === "ArrowRight") seek(now() + 1);
+    else if (k === ",") { vL.pause(); vR.pause(); seek(now() - 1 / FPS); } else if (k === ".") { vL.pause(); vR.pause(); seek(now() + 1 / FPS); }
+    else if (k === "Enter") finishPoly();
+    else if (map[k.toLowerCase()] && !e.metaKey && !e.ctrlKey) map[k.toLowerCase()]();
+  });
+  window.addEventListener("resize", render);
+  [panes.left.img, panes.right.img].forEach((im) => im.addEventListener("load", render));
+
+  windows = Object.assign({}, lsGet());
+  delete windows[EXAMPLE_ID];
+  refreshWinSelect(); loadWindow(EXAMPLE_ID);
+  initDb(); initDownloads();
+})();
+</script>
