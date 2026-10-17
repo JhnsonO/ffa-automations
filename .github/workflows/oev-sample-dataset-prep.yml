@@ -164,17 +164,22 @@ jobs:
           [ -n "$STARTS_INPUT" ] && EXTRA_ARGS+=(--starts "$STARTS_INPUT")
           [ -n "$DURATIONS_INPUT" ] && EXTRA_ARGS+=(--durations "$DURATIONS_INPUT")
           [ -n "$SET_ID_INPUT" ] && EXTRA_ARGS+=(--set-id "$SET_ID_INPUT")
-          mkdir -p /tmp/oev_samples
+          set -o pipefail
           LEFT_SRC=/tmp/oev_pack/left_full.mp4
           RIGHT_SRC=/tmp/oev_pack/right_full.mp4
           if [ -n "$STARTS_INPUT" ]; then
-            ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
-            echo "::add-mask::$ACCESS_TOKEN"
-            export DRIVE_AUTH_HEADER="Authorization: Bearer $ACCESS_TOKEN"
-            LEFT_SRC="https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media"
-            RIGHT_SRC="https://www.googleapis.com/drive/v3/files/$RIGHT_ID?alt=media"
-            EXTRA_ARGS+=(--input-header-env DRIVE_AUTH_HEADER)
+            # OEV-006: cut fixed windows by ranged reads through a local
+            # proxy (scripts/oev_drive_range_proxy.py); the Drive API path
+            # returned 403 after the throttled bulk download. Clips go on
+            # the large /mnt disk (~2.2 GB per 300 s side).
+            sudo mkdir -p /mnt/oev_samples && sudo chown "$USER" /mnt/oev_samples
+            ln -sfn /mnt/oev_samples /tmp/oev_samples
+            nohup python3 scripts/oev_drive_range_proxy.py 8765 > /tmp/range_proxy.log 2>&1 &
+            for i in $(seq 1 20); do curl -fsI "http://127.0.0.1:8765/$LEFT_ID" >/dev/null 2>&1 && break; sleep 1; done
+            LEFT_SRC="http://127.0.0.1:8765/$LEFT_ID"
+            RIGHT_SRC="http://127.0.0.1:8765/$RIGHT_ID"
           fi
+          mkdir -p /tmp/oev_samples
           python3 scripts/oev_generate_sample_dataset.py \
             --left "$LEFT_SRC" \
             --right "$RIGHT_SRC" \
@@ -187,11 +192,23 @@ jobs:
           echo "sample_set_id=$SAMPLE_SET_ID" >> "$GITHUB_OUTPUT"
 
       - name: Upload sample dataset (artifact)
-        if: always()
+        if: always() && inputs.starts == ''
         uses: actions/upload-artifact@v4
         with:
           name: oev-sample-dataset-${{ github.run_id }}
           path: /tmp/oev_samples/
+          retention-days: 30
+
+      - name: Upload manifest + logs only (fixed windows; clips go to Drive)
+        if: always() && inputs.starts != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: oev-sample-dataset-${{ github.run_id }}
+          path: |
+            /tmp/oev_samples/manifest.json
+            /tmp/oev_samples/generate.log
+            /tmp/oev_samples/generate_stdout.log
+            /tmp/range_proxy.log
           retention-days: 30
 
       - name: Upload sample dataset to OEV Drive Samples/<sample-set-id>/ folder
