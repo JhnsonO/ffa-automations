@@ -24,6 +24,7 @@ manifest so the run can still be reproduced later.
 
 import argparse
 import json
+import os
 import random
 import subprocess
 import sys
@@ -40,12 +41,21 @@ NUM_SAMPLES = 5
 MIN_GAP_FRACTION = 0.12
 
 
-def ffprobe_duration(path: Path) -> float:
+# Optional HTTP header for URL inputs (e.g. a Drive API bearer token), so
+# windows can be cut by ranged reads without downloading whole sources.
+INPUT_HEADER_ARGS: list = []
+
+
+def ffprobe_duration(path) -> float:
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+        ["ffprobe", "-v", "error", *INPUT_HEADER_ARGS, "-select_streams", "v:0",
          "-show_entries", "stream=duration", "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=False,
     )
+    if out.returncode != 0 or not out.stdout.strip():
+        # Never echo the command: it may carry an auth header.
+        safe = str(path).split("?")[0]
+        raise RuntimeError(f"ffprobe failed for {safe} (rc={out.returncode}): {out.stderr.strip()[-300:]}")
     return float(out.stdout.strip())
 
 
@@ -74,9 +84,12 @@ def pick_start_timestamps(usable_end: float, num_samples: int, seed: int) -> lis
     return [round(i * step, 2) for i in range(num_samples)]
 
 
-def run_ffmpeg_cut(src: Path, start_s: float, duration_s: int, dest: Path, log_lines: list):
-    cmd = ["ffmpeg", "-y", "-ss", str(start_s), "-i", str(src), "-t", str(duration_s), "-c", "copy", str(dest)]
-    log_lines.append(f"$ {' '.join(cmd)}")
+def run_ffmpeg_cut(src, start_s: float, duration_s: int, dest: Path, log_lines: list):
+    is_url = str(src).startswith("http")
+    hdr = INPUT_HEADER_ARGS if is_url else []
+    cmd = ["ffmpeg", "-y", *hdr, "-ss", str(start_s), "-i", str(src), "-t", str(duration_s), "-c", "copy", str(dest)]
+    shown = ["<header>" if a in INPUT_HEADER_ARGS[1:] else a for a in cmd]
+    log_lines.append(f"$ {' '.join(shown)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     log_lines.append(result.stderr[-2000:])
     if result.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
@@ -85,8 +98,10 @@ def run_ffmpeg_cut(src: Path, start_s: float, duration_s: int, dest: Path, log_l
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--left", required=True, type=Path, help="Path to full-source left camera file")
-    ap.add_argument("--right", required=True, type=Path, help="Path to full-source right camera file")
+    ap.add_argument("--left", required=True, help="Path or URL of full-source left camera file")
+    ap.add_argument("--right", required=True, help="Path or URL of full-source right camera file")
+    ap.add_argument("--input-header-env", default="",
+                    help="Name of an env var holding one HTTP header line for URL inputs (never logged)")
     ap.add_argument("--left-name", required=True, help="Source left filename as identifier (e.g. GX010197.MP4)")
     ap.add_argument("--right-name", required=True, help="Source right filename as identifier (e.g. GX010173.MP4)")
     ap.add_argument("--outdir", required=True, type=Path)
@@ -99,6 +114,12 @@ def main():
     ap.add_argument("--set-id", default="",
                     help="Explicit sample_set_id (required with --starts)")
     args = ap.parse_args()
+    if args.input_header_env:
+        header = os.environ.get(args.input_header_env, "")
+        if not header:
+            print(f"FATAL: env {args.input_header_env} is empty", file=sys.stderr)
+            sys.exit(2)
+        INPUT_HEADER_ARGS.extend(["-headers", header + "\r\n"])
 
     durations = tuple(sorted(int(x) for x in args.durations.split(",") if x.strip())) or DURATIONS
     max_duration = max(durations)
@@ -130,8 +151,8 @@ def main():
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     log_lines = [
-        f"left_source={args.left} ({left_dur}s)",
-        f"right_source={args.right} ({right_dur}s)",
+        f"left_source={args.left_name} ({left_dur}s)",
+        f"right_source={args.right_name} ({right_dur}s)",
         f"source_duration_used={source_duration}s (min of left/right)",
         f"usable_end={usable_end}s (source_duration - {max_duration}s)",
         f"durations={list(durations)}",

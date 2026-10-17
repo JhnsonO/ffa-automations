@@ -124,9 +124,18 @@ jobs:
         env:
           LEFT_ID: ${{ steps.resolve.outputs.left_id }}
           RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
+          STARTS_INPUT: ${{ inputs.starts }}
         run: |
           ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          echo "::add-mask::$ACCESS_TOKEN"
           sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends aria2 ffmpeg
+          if [ -n "$STARTS_INPUT" ]; then
+            # OEV-006: fixed windows are cut straight from Drive by ranged
+            # reads in the next step; no full-source download (avoids the
+            # multi-GB parallel download Drive throttles with HTTP 403).
+            echo "Fixed starts given: skipping full-source download"
+            exit 0
+          fi
           mkdir -p /tmp/oev_pack
           aria2c -x 8 -s 8 --file-allocation=none --header="Authorization: Bearer $ACCESS_TOKEN" \
             --dir=/tmp/oev_pack --out=left_full.mp4 "https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media"
@@ -144,6 +153,8 @@ jobs:
           STARTS_INPUT: ${{ inputs.starts }}
           DURATIONS_INPUT: ${{ inputs.durations }}
           SET_ID_INPUT: ${{ inputs.set_id }}
+          LEFT_ID: ${{ steps.resolve.outputs.left_id }}
+          RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
         run: |
           SEED_ARG=""
           if [ -n "$SEED_INPUT" ]; then
@@ -154,9 +165,19 @@ jobs:
           [ -n "$DURATIONS_INPUT" ] && EXTRA_ARGS+=(--durations "$DURATIONS_INPUT")
           [ -n "$SET_ID_INPUT" ] && EXTRA_ARGS+=(--set-id "$SET_ID_INPUT")
           mkdir -p /tmp/oev_samples
+          LEFT_SRC=/tmp/oev_pack/left_full.mp4
+          RIGHT_SRC=/tmp/oev_pack/right_full.mp4
+          if [ -n "$STARTS_INPUT" ]; then
+            ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+            echo "::add-mask::$ACCESS_TOKEN"
+            export DRIVE_AUTH_HEADER="Authorization: Bearer $ACCESS_TOKEN"
+            LEFT_SRC="https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media"
+            RIGHT_SRC="https://www.googleapis.com/drive/v3/files/$RIGHT_ID?alt=media"
+            EXTRA_ARGS+=(--input-header-env DRIVE_AUTH_HEADER)
+          fi
           python3 scripts/oev_generate_sample_dataset.py \
-            --left /tmp/oev_pack/left_full.mp4 \
-            --right /tmp/oev_pack/right_full.mp4 \
+            --left "$LEFT_SRC" \
+            --right "$RIGHT_SRC" \
             --left-name "$LEFT_CLIP" \
             --right-name "$RIGHT_CLIP" \
             --outdir /tmp/oev_samples \
