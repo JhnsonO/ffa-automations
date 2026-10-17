@@ -22,6 +22,7 @@ on:
           - '30'
           - '60'
           - '180'
+          - '300'
       sample_set_id:
         description: 'Sample-set directory name on the network volume under /runpod-volume/oev-samples/'
         required: false
@@ -48,6 +49,14 @@ on:
         required: false
         default: ''
         type: string
+      field_roi_mode:
+        description: "OEV-006: 'stmargarets' injects the fixed St Margaret's field ROI (historical default); 'none' records every detection unfiltered."
+        required: false
+        default: 'stmargarets'
+        type: choice
+        options:
+          - stmargarets
+          - none
 
 permissions:
   contents: read
@@ -653,6 +662,7 @@ jobs:
           MODEL_VARIANT: ${{ inputs.model_variant }}
           LOOKAHEAD: ${{ inputs.lookahead }}
           CLUSTER_ALPHA_OVERRIDE: ${{ inputs.cluster_alpha_override }}
+          FIELD_ROI_MODE: ${{ inputs.field_roi_mode }}
         run: |
           SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
@@ -669,7 +679,7 @@ jobs:
           # Bootstrap exports live only in its SSH shell. Reconstruct the
           # exact proven runtime environment in the shell that runs the real
           # football workload; do not install anything here.
-          remote_cmd="test -d /usr/local/cuda-12.8/lib64 && test -f /tmp/nvidia_egl_icd.json || { echo 'FATAL: validated RunPod CUDA/Vulkan runtime files missing'; exit 10; }; export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}; export VK_DRIVER_FILES=/tmp/nvidia_egl_icd.json; export VK_ICD_FILENAMES=/tmp/nvidia_egl_icd.json; unset DISPLAY; SAMPLE_ID='$SAMPLE_ID' DURATION_S='$DURATION_S' LEFT_CLIP='$LEFT_CLIP' RIGHT_CLIP='$RIGHT_CLIP' YOLO26_VARIANT='$MODEL_VARIANT' LOOKAHEAD='$LOOKAHEAD' CLUSTER_ALPHA_OVERRIDE='$CLUSTER_ALPHA_OVERRIDE' stdbuf -oL -eL /tmp/oev_run/$REMOTE_SCRIPT"
+          remote_cmd="test -d /usr/local/cuda-12.8/lib64 && test -f /tmp/nvidia_egl_icd.json || { echo 'FATAL: validated RunPod CUDA/Vulkan runtime files missing'; exit 10; }; export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}; export VK_DRIVER_FILES=/tmp/nvidia_egl_icd.json; export VK_ICD_FILENAMES=/tmp/nvidia_egl_icd.json; unset DISPLAY; SAMPLE_ID='$SAMPLE_ID' DURATION_S='$DURATION_S' LEFT_CLIP='$LEFT_CLIP' RIGHT_CLIP='$RIGHT_CLIP' YOLO26_VARIANT='$MODEL_VARIANT' LOOKAHEAD='$LOOKAHEAD' CLUSTER_ALPHA_OVERRIDE='$CLUSTER_ALPHA_OVERRIDE' OEV_FIELD_ROI_MODE='$FIELD_ROI_MODE' stdbuf -oL -eL /tmp/oev_run/$REMOTE_SCRIPT"
           processing_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           echo "processing_start=$processing_start" >> "$GITHUB_OUTPUT"
           remote_rc=0

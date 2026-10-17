@@ -30,6 +30,21 @@ on:
         required: false
         default: ''
         type: string
+      starts:
+        description: 'OEV-006: optional comma-separated fixed start times in seconds (left file), e.g. 1000,1550,2090. Blank = random seeded picks.'
+        required: false
+        default: ''
+        type: string
+      durations:
+        description: 'Optional comma-separated clip durations in seconds, e.g. 300. Blank = 30,60,180.'
+        required: false
+        default: ''
+        type: string
+      set_id:
+        description: 'Explicit sample_set_id (required with starts).'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -126,11 +141,18 @@ jobs:
           LEFT_CLIP: ${{ inputs.left_clip }}
           RIGHT_CLIP: ${{ inputs.right_clip }}
           SEED_INPUT: ${{ inputs.seed }}
+          STARTS_INPUT: ${{ inputs.starts }}
+          DURATIONS_INPUT: ${{ inputs.durations }}
+          SET_ID_INPUT: ${{ inputs.set_id }}
         run: |
           SEED_ARG=""
           if [ -n "$SEED_INPUT" ]; then
             SEED_ARG="--seed $SEED_INPUT"
           fi
+          EXTRA_ARGS=()
+          [ -n "$STARTS_INPUT" ] && EXTRA_ARGS+=(--starts "$STARTS_INPUT")
+          [ -n "$DURATIONS_INPUT" ] && EXTRA_ARGS+=(--durations "$DURATIONS_INPUT")
+          [ -n "$SET_ID_INPUT" ] && EXTRA_ARGS+=(--set-id "$SET_ID_INPUT")
           mkdir -p /tmp/oev_samples
           python3 scripts/oev_generate_sample_dataset.py \
             --left /tmp/oev_pack/left_full.mp4 \
@@ -138,7 +160,7 @@ jobs:
             --left-name "$LEFT_CLIP" \
             --right-name "$RIGHT_CLIP" \
             --outdir /tmp/oev_samples \
-            $SEED_ARG | tee /tmp/oev_samples/generate_stdout.log
+            $SEED_ARG "${EXTRA_ARGS[@]}" | tee /tmp/oev_samples/generate_stdout.log
 
           SAMPLE_SET_ID=$(grep '^sample_set_id=' /tmp/oev_samples/generate_stdout.log | cut -d= -f2)
           echo "sample_set_id=$SAMPLE_SET_ID" >> "$GITHUB_OUTPUT"

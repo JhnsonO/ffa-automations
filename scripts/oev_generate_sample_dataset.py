@@ -92,27 +92,50 @@ def main():
     ap.add_argument("--outdir", required=True, type=Path)
     ap.add_argument("--seed", type=int, default=None, help="Random seed; omit for a fresh random seed")
     ap.add_argument("--num-samples", type=int, default=NUM_SAMPLES)
+    ap.add_argument("--starts", default="",
+                    help="Comma-separated fixed start times (s, left file) instead of random picks, e.g. 1000,1550,2090 (OEV-006 frozen windows)")
+    ap.add_argument("--durations", default="",
+                    help="Comma-separated clip durations (s); default 30,60,180")
+    ap.add_argument("--set-id", default="",
+                    help="Explicit sample_set_id (required with --starts)")
     args = ap.parse_args()
+
+    durations = tuple(sorted(int(x) for x in args.durations.split(",") if x.strip())) or DURATIONS
+    max_duration = max(durations)
+    fixed_starts = [round(float(x), 2) for x in args.starts.split(",") if x.strip()]
+    if fixed_starts and not args.set_id:
+        print("FATAL: --starts requires --set-id", file=sys.stderr)
+        sys.exit(2)
 
     seed = args.seed if args.seed is not None else random.SystemRandom().randint(0, 2**31 - 1)
 
     left_dur = ffprobe_duration(args.left)
     right_dur = ffprobe_duration(args.right)
     source_duration = min(left_dur, right_dur)
-    usable_end = source_duration - MAX_DURATION
+    usable_end = source_duration - max_duration
     if usable_end <= 0:
         print(f"FATAL: usable window <= 0 (source_duration={source_duration}s, "
-              f"need >= {MAX_DURATION}s of footage after any start point)", file=sys.stderr)
+              f"need >= {max_duration}s of footage after any start point)", file=sys.stderr)
         sys.exit(1)
 
-    starts = pick_start_timestamps(usable_end, args.num_samples, seed)
+    if fixed_starts:
+        bad = [st for st in fixed_starts if st < 0 or st > usable_end]
+        if bad:
+            print(f"FATAL: fixed starts {bad} leave less than {max_duration}s before the end "
+                  f"of the shorter source ({source_duration}s)", file=sys.stderr)
+            sys.exit(1)
+        starts = fixed_starts
+    else:
+        starts = pick_start_timestamps(usable_end, args.num_samples, seed)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     log_lines = [
         f"left_source={args.left} ({left_dur}s)",
         f"right_source={args.right} ({right_dur}s)",
         f"source_duration_used={source_duration}s (min of left/right)",
-        f"usable_end={usable_end}s (source_duration - {MAX_DURATION}s)",
+        f"usable_end={usable_end}s (source_duration - {max_duration}s)",
+        f"durations={list(durations)}",
+        f"fixed_starts={bool(fixed_starts)}",
         f"seed={seed}",
         f"starts={starts}",
     ]
@@ -126,23 +149,24 @@ def main():
             # Cut the longest duration once, then derive the shorter
             # durations from that cut (still stream copy, no re-decode of
             # the full source for each duration).
-            longest = max(DURATIONS)
+            longest = max(durations)
             longest_path = sample_dir / f"{tag}_{side}_{longest}s.mp4"
             run_ffmpeg_cut(src, start_s, longest, longest_path, log_lines)
-            for duration_s in sorted(d for d in DURATIONS if d != longest):
+            for duration_s in sorted(d for d in durations if d != longest):
                 dest = sample_dir / f"{tag}_{side}_{duration_s}s.mp4"
                 run_ffmpeg_cut(longest_path, 0, duration_s, dest, log_lines)
         samples_manifest.append({"index": idx, "tag": tag, "start_s": start_s})
 
-    sample_set_id = f"{Path(args.left_name).stem}-seed{seed}"
+    sample_set_id = args.set_id or f"{Path(args.left_name).stem}-seed{seed}"
     manifest = {
         "source_left": args.left_name,
         "source_right": args.right_name,
         "sample_set_id": sample_set_id,
-        "seed": seed,
+        "seed": None if fixed_starts else seed,
+        "fixed_starts": bool(fixed_starts),
         "source_duration_s": round(source_duration, 2),
         "samples": samples_manifest,
-        "durations_s": list(DURATIONS),
+        "durations_s": list(durations),
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     manifest_path = args.outdir / "manifest.json"
@@ -152,7 +176,7 @@ def main():
 
     print(f"sample_set_id={sample_set_id}")
     print(f"seed={seed}")
-    print(f"Wrote {len(samples_manifest)} samples x 2 sides x {len(DURATIONS)} durations to {args.outdir}")
+    print(f"Wrote {len(samples_manifest)} samples x 2 sides x {len(durations)} durations to {args.outdir}")
     print(f"Manifest: {manifest_path}")
 
 

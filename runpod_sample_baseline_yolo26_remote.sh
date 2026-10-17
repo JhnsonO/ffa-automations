@@ -71,7 +71,8 @@ fi
 # HERE, from a separate, pinned, unmerged commit -- runpod_bootstrap.sh and
 # video-stitcher@main are untouched by this block. Remove this block once
 # the experiment is resolved (merge-or-discard).
-EXPERIMENT_SHA="119fc4fb8eb0e641df651e0c88c31515a1269fdc"
+# OEV-006 P1: experiment/oev-006-director-01 (OEV-004 stack + director replay).
+EXPERIMENT_SHA="481ee83ef661eade050b23e15df9e70a9b0fae4b"
 EXPERIMENT_DIR="/tmp/video-stitcher-experiment"
 echo "Building experimental reco-cli at pinned SHA $EXPERIMENT_SHA..." | tee -a segment.log
 
@@ -196,6 +197,18 @@ echo "Calibrate OK: match.json written" | tee -a calibrate.log
 # match.json after calibrate, before stitch, so reco stitch's already-
 # existing field_roi auto-load filters out detections from the
 # neighbouring pitch.
+# OEV-006: OEV_FIELD_ROI_MODE=none records EVERY detection (no ROI filter)
+# so venue outlines / pitch ownership are applied per arm in CPU replay.
+# Default (unset or 'stmargarets') keeps the historical behaviour.
+OEV_FIELD_ROI_MODE="${OEV_FIELD_ROI_MODE:-stmargarets}"
+echo "field_roi_mode=$OEV_FIELD_ROI_MODE" | tee -a calibrate.log
+if [ "$OEV_FIELD_ROI_MODE" = "none" ]; then
+  echo "OEV_FIELD_ROI_MODE=none: no field_roi injected; detections_raw is unfiltered" | tee -a calibrate.log
+else
+if [ "$OEV_FIELD_ROI_MODE" != "stmargarets" ]; then
+  echo "FATAL: unknown OEV_FIELD_ROI_MODE=$OEV_FIELD_ROI_MODE (expected stmargarets or none)" | tee -a calibrate.log
+  exit 2
+fi
 echo "Injecting St Margaret's field_roi into match.json" | tee -a calibrate.log
 python3 - <<'PYROI'
 import json
@@ -257,6 +270,7 @@ assert isinstance(roi.get('right'), list) and len(roi['right']) > 0, 'field_roi.
   exit 2
 fi
 echo "field_roi validated in match.json (left/right polygons present)" | tee -a calibrate.log
+fi
 
 echo "=== stitch.log: reco stitch (field follow-cam, l-shape, shared-buffer GPU path) ===" | tee stitch.log
 # Same flag set agreed with Johnson as the Vast script: normal
