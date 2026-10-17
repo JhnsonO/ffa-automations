@@ -15,17 +15,36 @@ import re
 import socketserver
 import ssl
 import sys
+import time
 import urllib.request
 
 CA = os.environ.get("SSL_CERT_FILE")
 CTX = ssl.create_default_context(cafile=CA) if CA else ssl.create_default_context()
 SIZES = {}
 def url(fid): return f"https://drive.usercontent.google.com/download?id={fid}&export=download&confirm=t"
-def fetch(fid, start, end):
-    req = urllib.request.Request(url(fid), headers={"Range": f"bytes={start}-{end}", "User-Agent": "oev-range-proxy"})
-    r = urllib.request.urlopen(req, context=CTX, timeout=120)
-    total = int(r.headers["Content-Range"].split("/")[1])
-    return r, total
+def fetch(fid, start, end, attempts=6):
+    """Ranged GET with bounded retries: Drive occasionally answers a ranged
+    request with its HTML interstitial (no Content-Range) or a 5xx/429."""
+    last = None
+    for attempt in range(attempts):
+        try:
+            req = urllib.request.Request(
+                url(fid),
+                headers={"Range": f"bytes={start}-{end}", "User-Agent": "oev-range-proxy"},
+            )
+            r = urllib.request.urlopen(req, context=CTX, timeout=120)
+            cr = r.headers.get("Content-Range")
+            if r.status == 206 and cr:
+                return r, int(cr.split("/")[1])
+            r.close()
+            last = f"status {r.status}, content-type {r.headers.get('Content-Type')}"
+        except Exception as e:  # noqa: BLE001 - logged and retried
+            last = repr(e)
+        sys.stderr.write(f"range_proxy: {fid} bytes={start}-{end} attempt {attempt + 1}: {last}\n")
+        time.sleep(min(30, 2 ** attempt))
+    raise RuntimeError(f"range_proxy: giving up on {fid} bytes={start}-{end}: {last}")
+
+
 CHUNK = 64 * 1024 * 1024
 
 
@@ -63,20 +82,29 @@ class H(http.server.BaseHTTPRequestHandler):
         if head:
             return
         pos = start
+        stalls = 0
         while pos <= end:
             piece_end = min(pos + CHUNK - 1, end)
             r, _ = fetch(fid, pos, piece_end)
-            while True:
-                chunk = r.read(1 << 20)
-                if not chunk:
-                    break
-                try:
-                    self.wfile.write(chunk)
-                except (BrokenPipeError, ConnectionResetError):
-                    return
-                pos += len(chunk)
+            try:
+                while pos <= piece_end:
+                    chunk = r.read(1 << 20)
+                    if not chunk:
+                        break
+                    try:
+                        self.wfile.write(chunk)
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                    pos += len(chunk)
+            except Exception as e:  # noqa: BLE001 - upstream dropped mid-piece
+                sys.stderr.write(f"range_proxy: {fid} read error at {pos}: {e!r}\n")
             if pos <= piece_end:
-                return  # upstream ended early; let the client re-request
+                stalls += 1
+                if stalls > 6:
+                    return  # give up; the client sees a short read
+                time.sleep(min(30, 2 ** stalls))
+            else:
+                stalls = 0
 
 
 class S(socketserver.ThreadingMixIn, http.server.HTTPServer):
