@@ -344,6 +344,13 @@ jobs:
               except Exception as exc:
                   print(f'::error::pod create failed: {exc}')
                   summary_lines.append(f'create#={total_creates} pod_id=none result=CREATE_FAILED error={exc}')
+                  if 'no instances currently available' in str(exc):
+                      # Capacity says nothing about any host: wait and retry
+                      # without using a real attempt or a create-ceiling slot;
+                      # LAUNCH_DEADLINE_S bounds the total wait.
+                      total_creates -= 1
+                      time.sleep(30)
+                      continue
                   attempt += 1
                   continue
 
