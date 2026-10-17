@@ -1,0 +1,115 @@
+name: OEV — Detector Frame Sample (OEV-005, no GPU)
+
+# OEV-005 dataset step 1: pull ~N keyframes from each full-session GoPro clip
+# straight from the Drive API (authenticated range reads, no full download)
+# and return them as one artifact per clip. Read-only on Drive. Token step is
+# copied from oev-sample-dataset-prep.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      frames_per_clip:
+        description: 'Keyframes to sample per clip'
+        required: false
+        default: '350'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  sample:
+    name: Sample ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - { id: 1BmMRssWTC3mATgu_K1kmdxId5EOZ7D1L, name: GX010230 }
+          - { id: 1lF1QnWiUeb5HXqLnDoGydU_a9zm2yMtl, name: GX010236 }
+          - { id: 1QYvutsMR09JGV_BRh3-xlZlreY19uhAV, name: GX010242 }
+          - { id: 1obHGZnncOOSxNONx0dfvH5PzSxcbm29U, name: GX010247 }
+          - { id: 1sUxm1KkK0B6aOWmxlrVZ5xW5J6UBB2dg, name: GX010250 }
+          - { id: 1sos1oM5GToPyU21N0blt3dNCWo9gddVR, name: GX010254 }
+          - { id: 1rluY9PXzggcPiRp_7Fko28Zt0gNI_rAJ, name: GX010501 }
+          - { id: 1RAmEscSRngdXBTKNbe-NMFXBbgaAckT7, name: GX010504 }
+          - { id: 1dtNOIR77jYYpjLq7IT1Mwg9Mi_l09CeN, name: GX010507 }
+          - { id: 1g6WG1Jay_xll8O0UNtnh1RTrO75aq0a9, name: GX010509 }
+          - { id: 1GaUwyDZUUTkr7iS8r5uHk6viMsN-zHi_, name: GX010510 }
+
+    steps:
+      - name: Get Drive access token
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
+          echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
+          python3 -u - << 'PY'
+          import json
+          import urllib.request as req
+
+          token_data = json.loads(open('/tmp/youtube_token.json').read())
+          creds_data = json.loads(open('/tmp/youtube_credentials.json').read())
+          payload = json.dumps({
+              'client_id': token_data.get('client_id') or creds_data['installed']['client_id'],
+              'client_secret': token_data.get('client_secret') or creds_data['installed']['client_secret'],
+              'refresh_token': token_data['refresh_token'],
+              'grant_type': 'refresh_token',
+          }).encode()
+          response = req.urlopen(req.Request(
+              'https://oauth2.googleapis.com/token',
+              data=payload,
+              headers={'Content-Type': 'application/json'},
+              method='POST',
+          ))
+          token = json.loads(response.read())
+          if 'access_token' not in token:
+              raise RuntimeError('Token refresh failed')
+          access_token = token['access_token']
+          print(f'::add-mask::{access_token}')
+          open('/tmp/drive_token.txt', 'w').write(access_token)
+          PY
+          rm -f /tmp/youtube_token.json /tmp/youtube_credentials.json
+
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+
+      - name: Sample keyframes
+        env:
+          FILE_ID: ${{ matrix.id }}
+          NAME: ${{ matrix.name }}
+          N: ${{ inputs.frames_per_clip }}
+        run: |
+          set -u
+          TOK=$(cat /tmp/drive_token.txt)
+          SRC="https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media"
+          HDR=$(printf 'Authorization: Bearer %s\r\n' "$TOK")
+          OUT=frames/$NAME; mkdir -p "$OUT"
+          DUR=$(ffprobe -v error -headers "$HDR" -show_entries format=duration -of csv=p=0 "$SRC" | cut -d. -f1)
+          [ -n "$DUR" ] || { echo "::error::probe failed for $NAME"; exit 1; }
+          STEP=$(( (DUR - 120) / N )); ok=0; fail=0
+          RANDOM=$(echo "$NAME" | cksum | cut -d' ' -f1)
+          for i in $(seq 0 $((N-1))); do
+            T=$(( 60 + i*STEP + RANDOM % (STEP>1?STEP:1) ))
+            F=$OUT/${NAME}_t$(printf %05d $T).jpg
+            for try in 1 2 3; do
+              ffmpeg -v error -headers "$HDR" -skip_frame nokey -ss $T -i "$SRC" -map 0:v:0 -frames:v 1 -q:v 3 -y "$F" 2>/dev/null && [ -s "$F" ] && break
+              rm -f "$F"; sleep $((try*5))
+            done
+            if [ -s "$F" ]; then ok=$((ok+1)); else fail=$((fail+1)); fi
+          done
+          echo "$NAME dur=${DUR}s ok=$ok fail=$fail" | tee "$OUT/summary.txt"
+          echo "### $NAME: $ok frames, $fail failed (${DUR}s clip)" >> "$GITHUB_STEP_SUMMARY"
+          rm -f /tmp/drive_token.txt
+          [ "$ok" -gt 0 ] || exit 1
+
+      - name: Upload frames
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ matrix.name }}
+          path: frames/${{ matrix.name }}
+          retention-days: 14
+          compression-level: 0
