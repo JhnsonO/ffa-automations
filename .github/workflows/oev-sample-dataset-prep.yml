@@ -45,6 +45,11 @@ on:
         required: false
         default: ''
         type: string
+      probe_only:
+        description: 'OEV-006: only test authenticated Drive API access (one ~1 MB ranged GET + one 10 s cut), then stop. No full download, no uploads.'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -120,7 +125,41 @@ jobs:
               output.write(f'left_id={left_id}\nright_id={right_id}\n')
           PY
 
+      - name: Probe authenticated Drive API access (probe_only)
+        if: inputs.probe_only
+        env:
+          LEFT_ID: ${{ steps.resolve.outputs.left_id }}
+        run: |
+          set -o pipefail
+          ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          echo "::add-mask::$ACCESS_TOKEN"
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          URL="https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media&acknowledgeAbuse=false"
+          code=$(curl -s -o /tmp/probe.bin -D /tmp/probe.hdr -w '%{http_code}' -r 0-1048575 \
+            -H "Authorization: Bearer $ACCESS_TOKEN" "$URL")
+          echo "ranged GET status=$code bytes=$(stat -c %s /tmp/probe.bin)"
+          grep -iE '^(content-type|content-range|content-length):' /tmp/probe.hdr || true
+          if [ "$code" != "206" ]; then
+            echo "::error::Drive API ranged GET returned $code (not 206); body head:"
+            head -c 400 /tmp/probe.bin; echo
+            exit 1
+          fi
+          if head -c 12 /tmp/probe.bin | grep -q ftyp; then echo "MP4 signature (ftyp) present: genuine video bytes"; else echo "::error::no ftyp signature"; exit 1; fi
+          export DRIVE_AUTH_HEADER="Authorization: Bearer $ACCESS_TOKEN"
+          mkdir -p /tmp/probe_cut
+          python3 scripts/oev_generate_sample_dataset.py \
+            --left "https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media" \
+            --right "https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media" \
+            --left-name probe.MP4 --right-name probe.MP4 \
+            --outdir /tmp/probe_cut --starts 1000 --durations 10 --set-id probe \
+            --input-header-env DRIVE_AUTH_HEADER 2>&1 | tail -3
+          f=/tmp/probe_cut/sample_01/sample_01_left_10s.mp4
+          dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
+          frames=$(ffprobe -v error -count_packets -select_streams v:0 -show_entries stream=nb_read_packets -of csv=p=0 "$f")
+          echo "PROBE OK: 10 s cut playable: duration=${dur}s video_packets=${frames} size=$(stat -c %s "$f")"
+
       - name: Download full source clips
+        if: ${{ !inputs.probe_only }}
         env:
           LEFT_ID: ${{ steps.resolve.outputs.left_id }}
           RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
@@ -145,6 +184,7 @@ jobs:
           ls -lh /tmp/oev_pack/
 
       - name: Generate sample dataset (5 locations x 30/60/180s, both sides)
+        if: ${{ !inputs.probe_only }}
         id: generate
         env:
           LEFT_CLIP: ${{ inputs.left_clip }}
@@ -192,7 +232,7 @@ jobs:
           echo "sample_set_id=$SAMPLE_SET_ID" >> "$GITHUB_OUTPUT"
 
       - name: Upload sample dataset (artifact)
-        if: always() && inputs.starts == ''
+        if: always() && inputs.starts == '' && !inputs.probe_only
         uses: actions/upload-artifact@v4
         with:
           name: oev-sample-dataset-${{ github.run_id }}
@@ -200,7 +240,7 @@ jobs:
           retention-days: 30
 
       - name: Upload manifest + logs only (fixed windows; clips go to Drive)
-        if: always() && inputs.starts != ''
+        if: always() && inputs.starts != '' && !inputs.probe_only
         uses: actions/upload-artifact@v4
         with:
           name: oev-sample-dataset-${{ github.run_id }}
@@ -212,6 +252,7 @@ jobs:
           retention-days: 30
 
       - name: Upload sample dataset to OEV Drive Samples/<sample-set-id>/ folder
+        if: ${{ !inputs.probe_only }}
         env:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
