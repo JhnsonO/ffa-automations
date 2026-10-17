@@ -178,19 +178,33 @@ jobs:
               except Exception as exc:
                   print(f'Delete warning for pod {pod_id}: {exc} (final cleanup step will retry).')
 
-          def create_pod(exclude_datacenters):
+          # Preferred GPUs first (unchanged order), then pricier fallbacks. A GPU
+          # type is dropped from later creates once a machine of that type has
+          # failed this run (RunPod has no "exclude machine" param, but a
+          # machine of an un-requested type cannot be returned).
+          GPU_TYPES = [
+              'NVIDIA GeForce RTX 4090',
+              'NVIDIA RTX A5000',
+              'NVIDIA GeForce RTX 3090',
+              'NVIDIA L4',
+              'NVIDIA A40',
+              'NVIDIA RTX A6000',
+              'NVIDIA L40',
+              'NVIDIA L40S',
+              'NVIDIA RTX 6000 Ada Generation',
+          ]
+
+          def create_pod(exclude_datacenters, skip_gpu_types=()):
+              gpu_ids = [g for g in GPU_TYPES if g not in skip_gpu_types]
+              if not gpu_ids:
+                  raise RuntimeError('no GPU types left to request after excluding failed types')
               create_body = {
                   'name': 'oev-runpod-followcam',
                   'imageName': 'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',
                   # GPU order/config deliberately UNCHANGED this cycle -- only
                   # datacenter steering is under test, to isolate which lever
                   # (if either) actually escapes the sticky-host allocator.
-                  'gpuTypeIds': [
-                      'NVIDIA GeForce RTX 4090',
-                      'NVIDIA RTX A5000',
-                      'NVIDIA GeForce RTX 3090',
-                      'NVIDIA L4',
-                  ],
+                  'gpuTypeIds': gpu_ids,
                   'gpuTypePriority': 'custom',
                   'gpuCount': 1,
                   'cloudType': 'SECURE',
@@ -288,7 +302,30 @@ jobs:
           # loop could keep creating pods indefinitely if the allocator is
           # unusually sticky. Set well above MAX_ATTEMPTS -- this is a safety
           # backstop, not the expected path.
-          MAX_TOTAL_POD_CREATES = 8
+          MAX_TOTAL_POD_CREATES = 12
+          # Bad pods are HELD (not deleted) so their GPU slot cannot be handed
+          # straight back to us; up to MAX_HELD_PODS. They are all deleted as
+          # soon as the launch loop ends (and the final cleanup step still
+          # sweeps POD_IDS_FILE). Held cost ~= price/hr per pod, billed per second.
+          MAX_HELD_PODS = 10
+          LAUNCH_DEADLINE_S = 600
+          launch_started = time.time()
+          held_pods = []
+          skip_gpu_types = set()
+
+          def mark_bad(pod_id, gpu_type):
+              # Exclude this machine's GPU type from later creates and hold
+              # the pod (or delete it if the hold budget is spent).
+              for g in GPU_TYPES:
+                  gl = (gpu_type or '').lower()
+                  if gl and gl != 'unknown' and (g.lower() == gl or gl in g.lower()):
+                      skip_gpu_types.add(g)
+              if len(held_pods) < MAX_HELD_PODS:
+                  held_pods.append(pod_id)
+                  print(f'Holding bad pod {pod_id} ({len(held_pods)}/{MAX_HELD_PODS}); '
+                        f'GPU types excluded from next creates: {sorted(skip_gpu_types)}')
+              else:
+                  delete_pod(pod_id)
           attempt = 0
           total_creates = 0
           while attempt < MAX_ATTEMPTS:
@@ -297,10 +334,13 @@ jobs:
                         f'without completing {MAX_ATTEMPTS} real attempts -- stopping rather than '
                         f'looping indefinitely.')
                   break
+              if time.time() - launch_started > LAUNCH_DEADLINE_S:
+                  print(f'::error::Launch phase exceeded {LAUNCH_DEADLINE_S}s -- stopping.')
+                  break
               total_creates += 1
               print(f'--- Pod allocation attempt {attempt + 1}/{MAX_ATTEMPTS} (pod create #{total_creates}) ---')
               try:
-                  pod_id = create_pod(excluded_datacenters)
+                  pod_id = create_pod(excluded_datacenters, skip_gpu_types)
               except Exception as exc:
                   print(f'::error::pod create failed: {exc}')
                   summary_lines.append(f'create#={total_creates} pod_id=none result=CREATE_FAILED error={exc}')
@@ -346,7 +386,7 @@ jobs:
                       f'create#={total_creates} pod_id={pod_id} machine_id={machine_id} '
                       f'data_center_id={data_center_id} gpu={gpu_type} result=SKIPPED_KNOWN_BAD_HOST'
                   )
-                  delete_pod(pod_id)
+                  mark_bad(pod_id, gpu_type)
                   continue
               if machine_id != 'unknown':
                   seen_machine_ids.add(machine_id)
@@ -357,7 +397,7 @@ jobs:
                       f'create#={total_creates} pod_id={pod_id} host_ip={ip} machine_id={machine_id} '
                       f'data_center_id={data_center_id} gpu={gpu_type} result=SSH_TIMEOUT'
                   )
-                  delete_pod(pod_id)
+                  mark_bad(pod_id, gpu_type)
                   attempt += 1
                   continue
 
@@ -404,10 +444,11 @@ jobs:
                   print(f'Attempt {attempt + 1}: NVDEC preflight FAILED on pod {pod_id} '
                         f'(driver {driver_version}, machine {machine_id}, datacenter {data_center_id}, '
                         f'host {ip}) -- deleting and steering next attempt away from this datacenter.')
-                  if data_center_id != 'unknown':
-                      excluded_datacenters.add(data_center_id)
-                  delete_pod(pod_id)
+                  mark_bad(pod_id, gpu_type)
                   attempt += 1
+
+          for held in held_pods:
+              delete_pod(held)
 
           with open('pod_selection_summary.txt', 'w') as f:
               f.write('\n'.join(summary_lines) + '\n')
