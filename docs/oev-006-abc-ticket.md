@@ -1,6 +1,6 @@
 # OEV-006: A/B/C director comparison on unseen footage
 
-**Status:** P0 done (17 Oct 2026). P1 (GPU detection dumps) needs Johnson's approval. Nothing merged, no GPU used.
+**Status (18 Oct 2026):** P0 done. P1 approved (GBP 6 cap) but blocked by Drive download quota; retry after reset. P2 (CPU) built: all six steps runnable. Nothing merged; GBP 0 GPU spent.
 **Decision doc:** "OEV Build-vs-Rebuild Decision", sections 1 and 11 (Claude artifact).
 **Supersedes:** further single-clip tuning on `sample_02`. OEV-005 detector fine-tune is preserved, not cancelled.
 

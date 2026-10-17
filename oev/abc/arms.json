@@ -19,12 +19,14 @@
       "worlds": "tracker",
       "active_ball": true,
       "ball_weight": null,
-      "status": "runnable now (director_replay)"
+      "status": "runnable (f938f41)",
+      "replay_cmd": "director_replay --events <window events.jsonl> --worlds tracker --panner-preset v4_micro_damping --active-ball --roi <venue roi json>"
     },
     "A1": {
       "role": "A0 + ownership-gated ball acceptance",
       "measures": "pitch ownership",
-      "status": "P2 build"
+      "status": "runnable (f938f41)",
+      "replay_cmd": "director_replay --events <window events.jsonl> --worlds tracker --panner-preset v4_micro_damping --active-ball --roi <venue roi json> --ball-gate --ownership-roi <venue roi json>"
     },
     "B0": {
       "role": "player-first, stateless players, polygon only",
@@ -32,22 +34,26 @@
       "active_ball": true,
       "ball_weight": 0.0,
       "measures": "camerawork alone",
-      "status": "runnable now (director_replay --ball-weight 0)"
+      "status": "runnable (f938f41)",
+      "replay_cmd": "director_replay --events <window events.jsonl> --worlds tracker --panner-preset v4_micro_damping --active-ball --roi <venue roi json> --ball-weight 0"
     },
     "B1": {
       "role": "B0 + persistent player IDs (ByteTrack / OC-SORT port)",
       "measures": "player IDs",
-      "status": "P2 build"
+      "status": "runnable (f938f41)",
+      "replay_cmd": "director_replay --events <window events.jsonl> --worlds tracker --panner-preset v4_micro_damping --active-ball --roi <venue roi json> --ball-weight 0 --players tracked"
     },
     "B2": {
       "role": "B1 + sticky target-pitch ownership",
       "measures": "pitch ownership",
-      "status": "P2 build"
+      "status": "runnable (f938f41)",
+      "replay_cmd": "director_replay --events <window events.jsonl> --worlds tracker --panner-preset v4_micro_damping --active-ball --ball-weight 0 --players owned --ownership-roi <venue roi json>"
     },
     "C": {
       "role": "hybrid four-state director: ball_tracked / ball_missing / uncertain / stoppage_restart",
       "measures": "the state machine",
-      "status": "P2 build"
+      "status": "runnable (f938f41)",
+      "replay_cmd": "director_replay --events <window events.jsonl> --worlds tracker --panner-preset v4_micro_damping --active-ball --players owned --ownership-roi <venue roi json> --ball-gate --director hybrid"
     }
   },
   "thresholds": {
@@ -199,5 +205,17 @@
     },
     "half_time": "unknown; windows not shifted",
     "camera_side_note": "Aylestone: GX010175 is the LEFT camera (fence at its far left, view runs into the pitch), GX010198 the RIGHT (fence at its far right; its partner GoPro is visible on that fence). Opposite file pairing to St Margaret's (left GX010197). Calibrate is the final check."
+  },
+  "engine_replay_sha": "f938f41",
+  "detection_dump_engine_sha": "481ee83 (P1 GPU runs, field_roi_mode=none)",
+  "frozen_params_first_pass": {
+    "player_tracker": "PlayerTrackerConfig::oev_default (own 1.5 s, disown 5 s, gate 0.015-0.08 rad, confirm 3, max_missed 1 s)",
+    "ball_gate": "player 0.35 rad, last tracked ball 0.30 rad",
+    "hybrid": "HybridConfig::oev006 (neighbourhood 0.30 rad, missing 2.0 s, decay 0.97, dwell 0.5 s, stoppage 0.02 rad/s for 1.5 s)",
+    "rule": "May be tuned on St Margaret's development windows only; values in force when the held-out first pass runs are recorded with its results."
+  },
+  "venues": {
+    "stmargarets": "oev/abc/venues/stmargarets_roi.json (production polygon, verbatim)",
+    "aylestone": "oev/abc/venues/aylestone_roi_DRAFT.json (DRAFT from 600 s stills; Johnson to confirm before held-out scoring)"
   }
 }
