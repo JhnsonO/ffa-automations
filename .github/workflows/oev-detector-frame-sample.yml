@@ -6,6 +6,10 @@ name: OEV — Detector Frame Sample (OEV-005, no GPU)
 # copied from oev-sample-dataset-prep.yml.
 
 on:
+  # push trigger: workflow_dispatch needs the file on main, which this branch must not touch
+  push:
+    branches: [data/oev-detector-finetune-01]
+    paths: [.github/workflows/oev-detector-frame-sample.yml]
   workflow_dispatch:
     inputs:
       frames_per_clip:
@@ -81,7 +85,7 @@ jobs:
         env:
           FILE_ID: ${{ matrix.id }}
           NAME: ${{ matrix.name }}
-          N: ${{ inputs.frames_per_clip }}
+          N: ${{ inputs.frames_per_clip || '350' }}
         run: |
           set -u
           TOK=$(cat /tmp/drive_token.txt)
