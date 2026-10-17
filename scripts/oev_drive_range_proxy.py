@@ -16,12 +16,31 @@ import socketserver
 import ssl
 import sys
 import time
+import urllib.error
 import urllib.request
 
 CA = os.environ.get("SSL_CERT_FILE")
 CTX = ssl.create_default_context(cafile=CA) if CA else ssl.create_default_context()
 SIZES = {}
-def url(fid): return f"https://drive.usercontent.google.com/download?id={fid}&export=download&confirm=t"
+# Upstream: the public download endpoint by default, or the authenticated
+# Drive API when DRIVE_AUTH_HEADER ("Authorization: Bearer ...") is set.
+# The API serves bounded ranged reads even when an unranged whole-file
+# download is quota-blocked (OEV-006 probe run 39079662639).
+AUTH = os.environ.get("DRIVE_AUTH_HEADER", "")
+
+
+def url(fid):
+    if AUTH:
+        return f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
+    return f"https://drive.usercontent.google.com/download?id={fid}&export=download&confirm=t"
+
+
+def headers(start, end):
+    h = {"Range": f"bytes={start}-{end}", "User-Agent": "oev-range-proxy"}
+    if AUTH:
+        name, _, value = AUTH.partition(":")
+        h[name.strip()] = value.strip()
+    return h
 def fetch(fid, start, end, attempts=6):
     """Ranged GET with bounded retries: Drive occasionally answers a ranged
     request with its HTML interstitial (no Content-Range) or a 5xx/429."""
@@ -30,7 +49,7 @@ def fetch(fid, start, end, attempts=6):
         try:
             req = urllib.request.Request(
                 url(fid),
-                headers={"Range": f"bytes={start}-{end}", "User-Agent": "oev-range-proxy"},
+                headers=headers(start, end),
             )
             r = urllib.request.urlopen(req, context=CTX, timeout=120)
             cr = r.headers.get("Content-Range")
@@ -38,6 +57,11 @@ def fetch(fid, start, end, attempts=6):
                 return r, int(cr.split("/")[1])
             r.close()
             last = f"status {r.status}, content-type {r.headers.get('Content-Type')}"
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                # Quota/permission refusal: never hammer it.
+                raise RuntimeError(f"range_proxy: {fid} bytes={start}-{end}: HTTP {e.code}, not retrying") from e
+            last = repr(e)
         except Exception as e:  # noqa: BLE001 - logged and retried
             last = repr(e)
         sys.stderr.write(f"range_proxy: {fid} bytes={start}-{end} attempt {attempt + 1}: {last}\n")

@@ -146,13 +146,16 @@ jobs:
           fi
           if head -c 12 /tmp/probe.bin | grep -q ftyp; then echo "MP4 signature (ftyp) present: genuine video bytes"; else echo "::error::no ftyp signature"; exit 1; fi
           export DRIVE_AUTH_HEADER="Authorization: Bearer $ACCESS_TOKEN"
+          # ffmpeg's own first request is unranged (whole file), which the
+          # quota blocks; the proxy turns every read into a bounded range.
+          nohup python3 scripts/oev_drive_range_proxy.py 8765 > /tmp/range_proxy.log 2>&1 &
+          for i in $(seq 1 20); do curl -fsI "http://127.0.0.1:8765/$LEFT_ID" >/dev/null 2>&1 && break; sleep 1; done
           mkdir -p /tmp/probe_cut
           python3 scripts/oev_generate_sample_dataset.py \
-            --left "https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media" \
-            --right "https://www.googleapis.com/drive/v3/files/$LEFT_ID?alt=media" \
+            --left "http://127.0.0.1:8765/$LEFT_ID" \
+            --right "http://127.0.0.1:8765/$LEFT_ID" \
             --left-name probe.MP4 --right-name probe.MP4 \
-            --outdir /tmp/probe_cut --starts 1000 --durations 10 --set-id probe \
-            --input-header-env DRIVE_AUTH_HEADER 2>&1 | tail -3
+            --outdir /tmp/probe_cut --starts 1000 --durations 10 --set-id probe 2>&1 | tail -3 || { tail -5 /tmp/range_proxy.log; exit 1; }
           f=/tmp/probe_cut/sample_01/sample_01_left_10s.mp4
           dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
           frames=$(ffprobe -v error -count_packets -select_streams v:0 -show_entries stream=nb_read_packets -of csv=p=0 "$f")
@@ -214,6 +217,10 @@ jobs:
             # the large /mnt disk (~2.2 GB per 300 s side).
             sudo mkdir -p /mnt/oev_samples && sudo chown "$USER" /mnt/oev_samples
             ln -sfn /mnt/oev_samples /tmp/oev_samples
+            ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+            echo "::add-mask::$ACCESS_TOKEN"
+            # Authenticated Drive API upstream, bounded ranged reads only.
+            export DRIVE_AUTH_HEADER="Authorization: Bearer $ACCESS_TOKEN"
             nohup python3 scripts/oev_drive_range_proxy.py 8765 > /tmp/range_proxy.log 2>&1 &
             for i in $(seq 1 20); do curl -fsI "http://127.0.0.1:8765/$LEFT_ID" >/dev/null 2>&1 && break; sleep 1; done
             LEFT_SRC="http://127.0.0.1:8765/$LEFT_ID"
