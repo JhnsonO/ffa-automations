@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "oev/abc/annotation.schema.json",
+  "title": "OEV-006 window annotation",
+  "description": "Human ground truth for one evaluation window, framework-neutral. All angles are panorama yaw/pitch in radians, the same space as reco ViewportPosition and the director_replay trace (yaw 0 = camera seam, pitch positive = up). Times are seconds from the window start (trace t_s minus window_start_s). UNSURE is always allowed and is excluded from scoring.",
+  "type": "object",
+  "required": ["schema_version", "window_id", "session", "source", "window_start_s", "duration_s", "target_pitch_polygon", "action_points", "events"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "window_id": {"type": "string", "description": "e.g. stmargarets_m10"},
+    "session": {"type": "string"},
+    "role": {"enum": ["development", "held_out", "regression"]},
+    "source": {
+      "type": "object",
+      "required": ["left", "right"],
+      "properties": {
+        "left": {"type": "string"},
+        "right": {"type": "string"},
+        "sync_offset_frames": {"type": "integer"}
+      }
+    },
+    "window_start_s": {"type": "number", "description": "offset into the source recording"},
+    "duration_s": {"type": "number"},
+    "players_per_side": {"type": ["integer", "null"]},
+    "bibs": {"type": "array", "items": {"type": "string"}},
+    "target_pitch_polygon": {
+      "type": "array",
+      "minItems": 3,
+      "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+      "description": "[yaw, pitch] vertices of OUR pitch, in order"
+    },
+    "neighbour_pitch_polygons": {
+      "type": "array",
+      "items": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}}
+    },
+    "action_points": {
+      "type": "array",
+      "description": "Where a competent cameraman would aim. 1 Hz baseline, 5 Hz inside event windows.",
+      "items": {
+        "type": "object",
+        "required": ["t", "yaw", "pitch"],
+        "properties": {
+          "t": {"type": "number"},
+          "yaw": {"type": ["number", "null"]},
+          "pitch": {"type": ["number", "null"]},
+          "match_ball_visible": {"enum": [true, false, "UNSURE"]},
+          "unsure": {"type": "boolean"}
+        }
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "t_start", "t_end", "key_t", "target"],
+        "properties": {
+          "type": {"enum": ["long_pass", "counterattack", "shot", "goal", "near_side_ball", "restart", "neighbour_ball_present"]},
+          "t_start": {"type": "number"},
+          "t_end": {"type": "number"},
+          "key_t": {"type": "number", "description": "moment that must be in frame: pass arrival, shot/goal moment, restart moment; for counterattack the transition moment"},
+          "target": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "[yaw, pitch] that must be in frame at key_t (counterattack: the attacking end)"},
+          "unsure": {"type": "boolean"},
+          "note": {"type": "string"}
+        }
+      }
+    },
+    "annotator": {"type": "string"},
+    "prelabel": {"type": "string", "description": "e.g. opus-pass1; human-corrected flag below"},
+    "human_corrected": {"type": "boolean"}
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "ticket": "OEV-006",
+  "frozen_at": "2026-10-17",
+  "frozen_note": "Thresholds, arm definitions and the held-out window rule are frozen before any arm is run on held-out footage. Change only via a new frozen_at entry recorded BEFORE results are seen.",
+  "engine_branch": "video-stitcher@experiment/oev-006-director-01",
+  "engine_base_sha": "481ee83",
+  "replay_tool": "reco-autocam example director_replay (CPU, parity-verified)",
+  "detections": "One frozen GPU detect run per window (P1, approval required). Every arm and ablation replays the same detections_raw.",
+  "lookahead_secs": 1.5,
+  "fps": [60000, 1001],
+  "panner_preset": "v4_micro_damping",
+  "arms": {
+    "A0": {
+      "role": "ball-first baseline: current best stack",
+      "worlds": "tracker",
+      "active_ball": true,
+      "ball_weight": null,
+      "status": "runnable now (director_replay)"
+    },
+    "A1": {
+      "role": "A0 + ownership-gated ball acceptance",
+      "measures": "pitch ownership",
+      "status": "P2 build"
+    },
+    "B0": {
+      "role": "player-first, stateless players, polygon only",
+      "worlds": "tracker",
+      "active_ball": true,
+      "ball_weight": 0.0,
+      "measures": "camerawork alone",
+      "status": "runnable now (director_replay --ball-weight 0)"
+    },
+    "B1": {
+      "role": "B0 + persistent player IDs (ByteTrack / OC-SORT port)",
+      "measures": "player IDs",
+      "status": "P2 build"
+    },
+    "B2": {
+      "role": "B1 + sticky target-pitch ownership",
+      "measures": "pitch ownership",
+      "status": "P2 build"
+    },
+    "C": {
+      "role": "hybrid four-state director: ball_tracked / ball_missing / uncertain / stoppage_restart",
+      "measures": "the state machine",
+      "status": "P2 build"
+    }
+  },
+  "thresholds": {
+    "hard_gates": {
+      "goals_missed": {"max": 0},
+      "neighbour_switches_per_10min": {"max": 1.0, "min_dwell_s": 1.0}
+    },
+    "ranking": {
+      "shots_goals_in_frame_frac": {"min": 0.95},
+      "counterattacks_captured_frac": {"min": 0.85, "within_s": 2.0},
+      "long_passes_captured_frac": {"min": 0.80},
+      "near_side_balls_in_frame_frac": {"min": 0.90},
+      "action_in_frame_frac": {"min": 0.90},
+      "pan_accel_spikes_per_min": {"max_vs_A0": "no worse"},
+      "zoom_reversals_per_min": {"max_vs_A0": "no worse"},
+      "blind_preference_frac": {"min": 0.60}
+    },
+    "diagnostic_only": ["ball_recall", "idf1", "hota"]
+  },
+  "counterattack_definition": "possession change to attacking third within 4 s (9v9 on 7v7-size pitch; tightened from 6 s)",
+  "comfort_params": {
+    "pan_accel_spike_rad_s2": 1.5,
+    "zoom_reversal_deadband_deg": 0.5,
+    "in_frame_margin": 0.9,
+    "output_aspect": [16, 9]
+  },
+  "footage": {
+    "development": {
+      "session": "St Margaret's, smaller pitch, 9v9 (Johnson)",
+      "cameras": ["GX010197.MP4", "GX010173.MP4"],
+      "windows_rule": "3 x 5 min at minutes 10, 25, 40 (shift only to avoid half-time); sample_02 180 s stays regression-only"
+    },
+    "held_out": {
+      "session": "Aylestone Rec, bigger pitch, ~10v10 (Johnson; count to verify)",
+      "cameras": ["GX010198.MP4", "GX010175.MP4"],
+      "windows_rule": "3 x 5 min at minutes 10, 25, 40 (shift only to avoid half-time)",
+      "rules": [
+        "first-pass results recorded and published before any tuning",
+        "after that Aylestone is development data, not independent",
+        "excluded from OEV-005 detector training"
+      ]
+    },
+    "limitations": "2 sessions / 2 venues: ranks arms and detects transfer failure; does not accept the MVP. Acceptance needs 4-5 sessions including adjacent matches."
+  }
+}
