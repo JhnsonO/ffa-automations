@@ -8,7 +8,10 @@
   "replay_tool": "reco-autocam example director_replay (CPU, parity-verified)",
   "detections": "One frozen GPU detect run per window (P1, approval required). Every arm and ablation replays the same detections_raw.",
   "lookahead_secs": 1.5,
-  "fps": [60000, 1001],
+  "fps": [
+    60000,
+    1001
+  ],
   "panner_preset": "v4_micro_damping",
   "arms": {
     "A0": {
@@ -49,38 +52,73 @@
   },
   "thresholds": {
     "hard_gates": {
-      "goals_missed": {"max": 0},
-      "neighbour_switches_per_10min": {"max": 1.0, "min_dwell_s": 1.0}
+      "goals_missed": {
+        "max": 0
+      },
+      "neighbour_switches_per_10min": {
+        "max": 1.0,
+        "min_dwell_s": 1.0
+      }
     },
     "ranking": {
-      "shots_goals_in_frame_frac": {"min": 0.95},
-      "counterattacks_captured_frac": {"min": 0.85, "within_s": 2.0},
-      "long_passes_captured_frac": {"min": 0.80},
-      "near_side_balls_in_frame_frac": {"min": 0.90},
-      "action_in_frame_frac": {"min": 0.90},
-      "pan_accel_spikes_per_min": {"max_vs_A0": "no worse"},
-      "zoom_reversals_per_min": {"max_vs_A0": "no worse"},
-      "blind_preference_frac": {"min": 0.60}
+      "shots_goals_in_frame_frac": {
+        "min": 0.95
+      },
+      "counterattacks_captured_frac": {
+        "min": 0.85,
+        "within_s": 2.0
+      },
+      "long_passes_captured_frac": {
+        "min": 0.8
+      },
+      "near_side_balls_in_frame_frac": {
+        "min": 0.9
+      },
+      "action_in_frame_frac": {
+        "min": 0.9
+      },
+      "pan_accel_spikes_per_min": {
+        "max_vs_A0": "no worse"
+      },
+      "zoom_reversals_per_min": {
+        "max_vs_A0": "no worse"
+      },
+      "blind_preference_frac": {
+        "min": 0.6
+      }
     },
-    "diagnostic_only": ["ball_recall", "idf1", "hota"]
+    "diagnostic_only": [
+      "ball_recall",
+      "idf1",
+      "hota"
+    ]
   },
   "counterattack_definition": "possession change to attacking third within 4 s (9v9 on 7v7-size pitch; tightened from 6 s)",
   "comfort_params": {
     "pan_accel_spike_rad_s2": 1.5,
     "zoom_reversal_deadband_deg": 0.5,
     "in_frame_margin": 0.9,
-    "output_aspect": [16, 9]
+    "output_aspect": [
+      16,
+      9
+    ]
   },
   "footage": {
     "development": {
       "session": "St Margaret's, smaller pitch, 9v9 (Johnson)",
-      "cameras": ["GX010197.MP4", "GX010173.MP4"],
-      "windows_rule": "3 x 5 min at minutes 10, 25, 40 (shift only to avoid half-time); sample_02 180 s stays regression-only"
+      "cameras": [
+        "GX010197.MP4",
+        "GX010173.MP4"
+      ],
+      "windows_rule": "see window_freeze"
     },
     "held_out": {
       "session": "Aylestone Rec, bigger pitch, ~10v10 (Johnson; count to verify)",
-      "cameras": ["GX010198.MP4", "GX010175.MP4"],
-      "windows_rule": "3 x 5 min at minutes 10, 25, 40 (shift only to avoid half-time)",
+      "cameras": [
+        "GX010175.MP4",
+        "GX010198.MP4"
+      ],
+      "windows_rule": "see window_freeze",
       "rules": [
         "first-pass results recorded and published before any tuning",
         "after that Aylestone is development data, not independent",
@@ -88,5 +126,78 @@
       ]
     },
     "limitations": "2 sessions / 2 venues: ranks arms and detects transfer failure; does not accept the MVP. Acceptance needs 4-5 sessions including adjacent matches."
+  },
+  "window_freeze": {
+    "frozen_at": "2026-10-18T00:10+01:00",
+    "reason": "Corrections from Johnson/ChatGPT review: Aylestone is 2611.6 s (43:32) so 40-45 min was invalid; St Margaret's 10-15 min overlapped sample_02 (769.33-949.33 s). Replaces the earlier 3x5-min-at-10/25/40 rule and the older 8-window draft.",
+    "duration_s": 300,
+    "times_are": "seconds into the LEFT source file; both sides are cut at the same start (as the existing sample sets); inter-camera sync is solved by reco calibrate",
+    "existing_samples_avoided": {
+      "set": "GX010197-seed1384188843",
+      "ranges_s": [
+        [
+          284.98,
+          464.98
+        ],
+        [
+          769.33,
+          949.33
+        ],
+        [
+          1324.63,
+          1504.63
+        ],
+        [
+          1901.44,
+          2081.44
+        ],
+        [
+          2409.03,
+          2589.03
+        ]
+      ]
+    },
+    "development": {
+      "sample_set_id": "GX010197-oev006-dev",
+      "left": "GX010197.MP4",
+      "right": "GX010173.MP4",
+      "source_duration_s": 2952.95,
+      "windows": [
+        {
+          "tag": "sample_01",
+          "start_s": 1000
+        },
+        {
+          "tag": "sample_02",
+          "start_s": 1550
+        },
+        {
+          "tag": "sample_03",
+          "start_s": 2090
+        }
+      ]
+    },
+    "held_out": {
+      "sample_set_id": "GX010175-oev006-heldout",
+      "left": "GX010175.MP4",
+      "right": "GX010198.MP4",
+      "source_duration_s": 2612.61,
+      "windows": [
+        {
+          "tag": "sample_01",
+          "start_s": 600
+        },
+        {
+          "tag": "sample_02",
+          "start_s": 1320
+        },
+        {
+          "tag": "sample_03",
+          "start_s": 2040
+        }
+      ]
+    },
+    "half_time": "unknown; windows not shifted",
+    "camera_side_note": "Aylestone: GX010175 is the LEFT camera (fence at its far left, view runs into the pitch), GX010198 the RIGHT (fence at its far right; its partner GoPro is visible on that fence). Opposite file pairing to St Margaret's (left GX010197). Calibrate is the final check."
   }
 }

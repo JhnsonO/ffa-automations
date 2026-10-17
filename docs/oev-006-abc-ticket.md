@@ -88,7 +88,7 @@ Player-first is an experiment, not the expected answer. The likely winner is bal
   - stitch alignment quality: this needs `reco calibrate`, which runs in the P1 detection job.
 
 **Held-out rules:**
-- Windows are fixed by rule before any run.
+- Windows are frozen in `arms.json` (`window_freeze`) before any run.
 - First-pass results are published before any tuning; after that Aylestone counts as development data.
 - Aylestone is excluded from OEV-005 detector training.
 
@@ -98,10 +98,22 @@ Player-first is an experiment, not the expected answer. The likely winner is bal
 
 ## Next phases (each needs approval where marked)
 
-**P1 (GPU, approval needed).** For each of 6 windows (3 × 5 min per session at minutes 10/25/40), run one stitch with `--events` on engine `481ee83`.
-- Settings: `--tracking field --panner-preset v4_micro_damping --lookahead 1.5 --frame-stride 1`.
-- These are the frozen detections for every arm. Rendered output is kept as the A0 reference video.
-- Estimate: about £2–£6 in total at the about £0.30 per 180 s sample-baseline rate (RunPod rates not re-verified).
+**P1 (GPU, approved 18 Oct with a GBP 6 cap).**
+
+*Frozen windows* (`arms.json` -> `window_freeze`, frozen 18 Oct 00:10 before any run). Each window is 300 s; start times are seconds into the left file.
+
+| Session | Window starts | Notes |
+|---|---|---|
+| St Margaret's (development), left GX010197 / right GX010173 | 1000, 1550, 2090 s | Avoids all five existing `GX010197-seed1384188843` samples, including `sample_02` at 769.33-949.33 s. |
+| Aylestone (held-out), **left GX010175** / right GX010198 | 600, 1320, 2040 s | Last window ends at 2340 s; the recording is 2612.6 s. |
+
+Aylestone's camera sides are confirmed from the stills: GX010175 shows the fence at its far left. This is the opposite file pairing to St Margaret's.
+
+This six-window plan supersedes the earlier 3 × 5-min "minutes 10/25/40" rule (invalid for Aylestone; overlapped `sample_02` at St Margaret's) and the older eight-window draft.
+
+*Run settings.* Engine `481ee83`, stride 1. **No field ROI injected** (`OEV_FIELD_ROI_MODE=none`), so `detections_raw` holds every detection. Venue pitch outlines and ownership are applied per arm in the CPU replay, so the ROI is part of what the arms compete on rather than decided upstream.
+
+*Process.* One run per window, rendered video kept, with a running cost check that stops at GBP 6.
 
 **P2 (CPU, branch-only).** Build B1, B2, A1 and C as panners/trackers selectable in `director_replay`:
 1. Validate the player-tracker port against Roboflow `trackers` (Python, offline) on the same detections.
