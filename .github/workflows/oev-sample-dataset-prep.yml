@@ -93,8 +93,9 @@ jobs:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
           AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
-          PREFIX: ${{ inputs.debug_overlay }}
+          RAW_PREFIX: ${{ inputs.debug_overlay }}
         run: |
+          export PREFIX="${RAW_PREFIX#proxy:}"
           sudo apt-get install -y -qq ffmpeg >/dev/null
           pip install -q boto3 opencv-python-headless numpy
           python3 - <<'PY2'
@@ -104,7 +105,16 @@ jobs:
               s3.download_file(os.environ['S3_BUCKET'], f"{os.environ['PREFIX']}_{side}_300s.mp4", f'/tmp/{side}.mp4')
               print(side, os.path.getsize(f'/tmp/{side}.mp4'))
           PY2
+      - name: Annotation proxies (1280-wide H.264)
+        if: startsWith(inputs.debug_overlay, 'proxy:')
+        run: |
+          mkdir -p out
+          for side in left right; do
+            ffmpeg -v error -y -i /tmp/$side.mp4 -an -vf scale=1280:-2 -c:v libx264 -preset veryfast -crf 26 -pix_fmt yuv420p -movflags +faststart out/proxy_$side.mp4
+          done
+          ls -la out
       - name: Render
+        if: ${{ !startsWith(inputs.debug_overlay, 'proxy:') }}
         run: |
           mkdir -p out/stills
           python3 scripts/oev_debug_overlay.py --events oev/abc/debug/dev_s01_events.jsonl.gz \
