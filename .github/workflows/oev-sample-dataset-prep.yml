@@ -154,7 +154,7 @@ jobs:
           set -o pipefail
           pip install -q boto3 requests google-auth google-auth-oauthlib google-api-python-client playwright
           python3 -m playwright install --with-deps chromium >/dev/null 2>&1 || echo "playwright browser install failed (only needed if cookies are stale)"
-          printf '%s' "${GOPRO_COOKIES:-{}}" > gopro_cookies.json
+          python3 -c "import os,pathlib; pathlib.Path('gopro_cookies.json').write_text(os.environ.get('GOPRO_COOKIES','').strip() or '{}')"
           # Sizes are the Drive originals' exact byte counts: only an identical file is accepted.
           python3 -u scripts/oev_gopro_to_r2.py --part-mb 256 --budget-min 320 \
             --file GX010197.MP4=22129086718 \
