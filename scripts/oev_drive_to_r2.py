@@ -37,6 +37,32 @@ class Blocked(Exception):
     pass
 
 
+class Token:
+    """Drive access token, refreshed every 45 min when OAuth refresh
+    credentials are available (YOUTUBE_TOKEN / YOUTUBE_CREDENTIALS JSON env,
+    as the other workflows use); otherwise DRIVE_ACCESS_TOKEN as given."""
+
+    def __init__(self):
+        self.value = os.environ.get("DRIVE_ACCESS_TOKEN", "")
+        self.at = time.time()
+
+    def get(self) -> str:
+        if time.time() - self.at > 45 * 60 and os.environ.get("YOUTUBE_TOKEN"):
+            t = json.loads(os.environ["YOUTUBE_TOKEN"])
+            c = json.loads(os.environ.get("YOUTUBE_CREDENTIALS") or "{}").get("installed", {})
+            body = json.dumps({"client_id": t.get("client_id") or c["client_id"],
+                               "client_secret": t.get("client_secret") or c["client_secret"],
+                               "refresh_token": t["refresh_token"], "grant_type": "refresh_token"}).encode()
+            r = json.loads(urllib.request.urlopen(urllib.request.Request(
+                "https://oauth2.googleapis.com/token", data=body,
+                headers={"Content-Type": "application/json"}, method="POST"), timeout=60).read())
+            self.value = r["access_token"]
+            self.at = time.time()
+            print(f"::add-mask::{self.value}")
+            print("drive token refreshed")
+        return self.value
+
+
 def drive_size(fid: str, token: str) -> int:
     req = urllib.request.Request(
         f"https://www.googleapis.com/drive/v3/files/{fid}?fields=size&supportsAllDrives=true",
@@ -79,7 +105,7 @@ def main(argv=None) -> int:
     ap.add_argument("--part-mb", type=int, default=256)
     ap.add_argument("--budget-min", type=float, default=330)
     a = ap.parse_args(argv)
-    token = os.environ["DRIVE_ACCESS_TOKEN"]
+    tok = Token()
     s3 = boto3.client(
         "s3", endpoint_url=os.environ["S3_ENDPOINT_URL"],
         aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
@@ -96,7 +122,7 @@ def main(argv=None) -> int:
         name, fid = spec.split("=", 1)
         key = PREFIX + name
         state_key = key + ".copy-state.json"
-        size = drive_size(fid, token)
+        size = drive_size(fid, tok.get())
         try:
             head = s3.head_object(Bucket=bucket, Key=key)
             if head["ContentLength"] == size:
@@ -128,7 +154,7 @@ def main(argv=None) -> int:
             start = (pn - 1) * part
             end = min(size, pn * part) - 1
             try:
-                data = drive_range(fid, token, start, end)
+                data = drive_range(fid, tok.get(), start, end)
             except Blocked as e:
                 blocked = f"{name} part {pn}: {e}"
                 print(f"::warning::Drive refused {blocked}; stopping (no retry). Resume after the quota resets.")

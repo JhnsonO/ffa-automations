@@ -45,6 +45,11 @@ on:
         required: false
         default: ''
         type: string
+      copy_to_r2:
+        description: 'OEV-006: copy the four source videos Drive -> R2 (oev/sources/), resumable, stops on Drive 403. Skips all other steps.'
+        required: false
+        default: false
+        type: boolean
       probe_only:
         description: 'OEV-006: only test authenticated Drive API access (one ~1 MB ranged GET + one 10 s cut), then stop. No full download, no uploads.'
         required: false
@@ -59,7 +64,7 @@ jobs:
     name: Generate 5x3 sample clips + manifest, upload to Drive
     # ffmpeg stream-copy trims only -- no decode/re-encode, no GPU needed.
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: ${{ inputs.copy_to_r2 && 350 || 90 }}
 
     steps:
       - name: Checkout
@@ -125,8 +130,28 @@ jobs:
               output.write(f'left_id={left_id}\nright_id={right_id}\n')
           PY
 
+      - name: Copy source videos Drive -> R2 (copy_to_r2)
+        if: inputs.copy_to_r2
+        env:
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+        run: |
+          set -o pipefail
+          export DRIVE_ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
+          echo "::add-mask::$DRIVE_ACCESS_TOKEN"
+          pip install -q boto3
+          python3 -u scripts/oev_drive_to_r2.py --part-mb 256 --budget-min 320 \
+            --file GX010197.MP4=1WaXjRq-QSwKseCZM7X_GJgZVqU3LffPE \
+            --file GX010173.MP4=1iUJe84rQUkyFBo6BBZnhNBWQQp6LMSay \
+            --file GX010175.MP4=1_b4_ojm8iqyMNFtd6qYdfQdke253FQqI \
+            --file GX010198.MP4=10Wui460oIqnMMR-5U7EzKuCHBkYMgIDB
+
       - name: Probe authenticated Drive API access (probe_only)
-        if: inputs.probe_only
+        if: inputs.probe_only && !inputs.copy_to_r2
         env:
           LEFT_ID: ${{ steps.resolve.outputs.left_id }}
         run: |
@@ -162,7 +187,7 @@ jobs:
           echo "PROBE OK: 10 s cut playable: duration=${dur}s video_packets=${frames} size=$(stat -c %s "$f")"
 
       - name: Download full source clips
-        if: ${{ !inputs.probe_only }}
+        if: ${{ !inputs.probe_only && !inputs.copy_to_r2 }}
         env:
           LEFT_ID: ${{ steps.resolve.outputs.left_id }}
           RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
@@ -187,7 +212,7 @@ jobs:
           ls -lh /tmp/oev_pack/
 
       - name: Generate sample dataset (5 locations x 30/60/180s, both sides)
-        if: ${{ !inputs.probe_only }}
+        if: ${{ !inputs.probe_only && !inputs.copy_to_r2 }}
         id: generate
         env:
           LEFT_CLIP: ${{ inputs.left_clip }}
@@ -239,7 +264,7 @@ jobs:
           echo "sample_set_id=$SAMPLE_SET_ID" >> "$GITHUB_OUTPUT"
 
       - name: Upload sample dataset (artifact)
-        if: always() && inputs.starts == '' && !inputs.probe_only
+        if: always() && inputs.starts == '' && !inputs.probe_only && !inputs.copy_to_r2
         uses: actions/upload-artifact@v4
         with:
           name: oev-sample-dataset-${{ github.run_id }}
@@ -247,7 +272,7 @@ jobs:
           retention-days: 30
 
       - name: Upload manifest + logs only (fixed windows; clips go to Drive)
-        if: always() && inputs.starts != '' && !inputs.probe_only
+        if: always() && inputs.starts != '' && !inputs.probe_only && !inputs.copy_to_r2
         uses: actions/upload-artifact@v4
         with:
           name: oev-sample-dataset-${{ github.run_id }}
@@ -259,7 +284,7 @@ jobs:
           retention-days: 30
 
       - name: Upload sample dataset to OEV Drive Samples/<sample-set-id>/ folder
-        if: ${{ !inputs.probe_only }}
+        if: ${{ !inputs.probe_only && !inputs.copy_to_r2 }}
         env:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
