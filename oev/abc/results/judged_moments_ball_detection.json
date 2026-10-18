@@ -1,0 +1,326 @@
+[
+ {
+  "win": "d01",
+  "q": 1,
+  "t": 1.8,
+  "c_right": 0,
+  "our_ball_seen": 0.26,
+  "foreign_seen": 0.96,
+  "c_follows_foreign": 0.74
+ },
+ {
+  "win": "d01",
+  "q": 2,
+  "t": 20.7,
+  "c_right": 1,
+  "our_ball_seen": 0.99,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 0.16
+ },
+ {
+  "win": "d01",
+  "q": 3,
+  "t": 37.3,
+  "c_right": 1,
+  "our_ball_seen": 0.82,
+  "foreign_seen": 0.94,
+  "c_follows_foreign": 0.13
+ },
+ {
+  "win": "d01",
+  "q": 4,
+  "t": 45.3,
+  "c_right": 1,
+  "our_ball_seen": 1.0,
+  "foreign_seen": 0.93,
+  "c_follows_foreign": 0.28
+ },
+ {
+  "win": "d01",
+  "q": 5,
+  "t": 54.3,
+  "c_right": 1,
+  "our_ball_seen": 0.7,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 1.0
+ },
+ {
+  "win": "d01",
+  "q": 6,
+  "t": 62.3,
+  "c_right": 0,
+  "our_ball_seen": 0.66,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 1.0
+ },
+ {
+  "win": "d01",
+  "q": 7,
+  "t": 91.0,
+  "c_right": 1,
+  "our_ball_seen": 0.95,
+  "foreign_seen": 0.17,
+  "c_follows_foreign": 0.01
+ },
+ {
+  "win": "d01",
+  "q": 8,
+  "t": 114.2,
+  "c_right": 0,
+  "our_ball_seen": 0.06,
+  "foreign_seen": 0.15,
+  "c_follows_foreign": 0.58
+ },
+ {
+  "win": "d01",
+  "q": 9,
+  "t": 125.8,
+  "c_right": null,
+  "our_ball_seen": 0.05,
+  "foreign_seen": 0.84,
+  "c_follows_foreign": 1.0
+ },
+ {
+  "win": "d01",
+  "q": 10,
+  "t": 133.8,
+  "c_right": 0,
+  "our_ball_seen": 0.18,
+  "foreign_seen": 0.76,
+  "c_follows_foreign": 0.97
+ },
+ {
+  "win": "d01",
+  "q": 11,
+  "t": 211.5,
+  "c_right": null,
+  "our_ball_seen": 0.12,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 0.87
+ },
+ {
+  "win": "d01",
+  "q": 12,
+  "t": 258.4,
+  "c_right": 1,
+  "our_ball_seen": 0.97,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 0.0
+ },
+ {
+  "win": "d02",
+  "q": 1,
+  "t": 12.0,
+  "c_right": false,
+  "our_ball_seen": 0.98,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 1.0
+ },
+ {
+  "win": "d02",
+  "q": 2,
+  "t": 20.0,
+  "c_right": false,
+  "our_ball_seen": 0.02,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 1.0
+ },
+ {
+  "win": "d02",
+  "q": 3,
+  "t": 28.0,
+  "c_right": true,
+  "our_ball_seen": 0.8,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 0.02
+ },
+ {
+  "win": "d02",
+  "q": 4,
+  "t": 49.0,
+  "c_right": true,
+  "our_ball_seen": 0.98,
+  "foreign_seen": 0.03,
+  "c_follows_foreign": 0.0
+ },
+ {
+  "win": "d02",
+  "q": 5,
+  "t": 90.0,
+  "c_right": true,
+  "our_ball_seen": 0.46,
+  "foreign_seen": 0.62,
+  "c_follows_foreign": 0.39
+ },
+ {
+  "win": "d02",
+  "q": 6,
+  "t": 143.0,
+  "c_right": null,
+  "our_ball_seen": 0.0,
+  "foreign_seen": 0.72,
+  "c_follows_foreign": 1.0
+ },
+ {
+  "win": "d02",
+  "q": 7,
+  "t": 158.0,
+  "c_right": false,
+  "our_ball_seen": 0.73,
+  "foreign_seen": 0.95,
+  "c_follows_foreign": 1.0
+ },
+ {
+  "win": "d02",
+  "q": 8,
+  "t": 166.0,
+  "c_right": true,
+  "our_ball_seen": 0.98,
+  "foreign_seen": 0.92,
+  "c_follows_foreign": 0.1
+ },
+ {
+  "win": "d02",
+  "q": 9,
+  "t": 228.0,
+  "c_right": false,
+  "our_ball_seen": 0.26,
+  "foreign_seen": 0.97,
+  "c_follows_foreign": 0.4
+ },
+ {
+  "win": "d02",
+  "q": 10,
+  "t": 247.0,
+  "c_right": true,
+  "our_ball_seen": 0.97,
+  "foreign_seen": 0.98,
+  "c_follows_foreign": 0.0
+ },
+ {
+  "win": "d02",
+  "q": 11,
+  "t": 270.0,
+  "c_right": false,
+  "our_ball_seen": 0.85,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 1.0
+ },
+ {
+  "win": "d02",
+  "q": 12,
+  "t": 286.0,
+  "c_right": false,
+  "our_ball_seen": 0.74,
+  "foreign_seen": 0.99,
+  "c_follows_foreign": 0.98
+ },
+ {
+  "win": "d03",
+  "q": 1,
+  "t": 3.0,
+  "c_right": true,
+  "our_ball_seen": 1.0,
+  "foreign_seen": 0.51,
+  "c_follows_foreign": 0.0
+ },
+ {
+  "win": "d03",
+  "q": 2,
+  "t": 11.0,
+  "c_right": null,
+  "our_ball_seen": 0.22,
+  "foreign_seen": 0.88,
+  "c_follows_foreign": 0.93
+ },
+ {
+  "win": "d03",
+  "q": 3,
+  "t": 21.0,
+  "c_right": false,
+  "our_ball_seen": 0.89,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 0.98
+ },
+ {
+  "win": "d03",
+  "q": 4,
+  "t": 56.0,
+  "c_right": null,
+  "our_ball_seen": 0.07,
+  "foreign_seen": 0.66,
+  "c_follows_foreign": 0.98
+ },
+ {
+  "win": "d03",
+  "q": 5,
+  "t": 72.0,
+  "c_right": true,
+  "our_ball_seen": 0.84,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 0.48
+ },
+ {
+  "win": "d03",
+  "q": 6,
+  "t": 81.0,
+  "c_right": false,
+  "our_ball_seen": 0.96,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 0.26
+ },
+ {
+  "win": "d03",
+  "q": 7,
+  "t": 116.0,
+  "c_right": true,
+  "our_ball_seen": 0.61,
+  "foreign_seen": 0.99,
+  "c_follows_foreign": 0.72
+ },
+ {
+  "win": "d03",
+  "q": 8,
+  "t": 142.0,
+  "c_right": false,
+  "our_ball_seen": 0.91,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 1.0
+ },
+ {
+  "win": "d03",
+  "q": 9,
+  "t": 155.0,
+  "c_right": false,
+  "our_ball_seen": 0.72,
+  "foreign_seen": 0.97,
+  "c_follows_foreign": 0.25
+ },
+ {
+  "win": "d03",
+  "q": 10,
+  "t": 187.0,
+  "c_right": true,
+  "our_ball_seen": 0.05,
+  "foreign_seen": 1.0,
+  "c_follows_foreign": 0.94
+ },
+ {
+  "win": "d03",
+  "q": 11,
+  "t": 281.0,
+  "c_right": null,
+  "our_ball_seen": 0.16,
+  "foreign_seen": 0.97,
+  "c_follows_foreign": 0.99
+ },
+ {
+  "win": "d03",
+  "q": 12,
+  "t": 295.0,
+  "c_right": true,
+  "our_ball_seen": 0.78,
+  "foreign_seen": 0.87,
+  "c_follows_foreign": 0.0
+ }
+]
