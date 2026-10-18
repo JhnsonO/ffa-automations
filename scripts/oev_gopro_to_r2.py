@@ -36,8 +36,17 @@ import gopro_uploader as gu  # noqa: E402
 PREFIX = "oev/sources/"
 
 
-def find_media(session, wanted: set[str], max_pages: int) -> dict:
-    found = {}
+def _ts(v: str) -> float:
+    from datetime import datetime
+    return datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+
+
+def find_media(session, expected: dict, max_pages: int, window_s: float = 6 * 3600) -> dict:
+    """expected: filename -> recording time (ISO, from the Drive file's own
+    creation_time tag). GoPro reuses filenames, so collect EVERY media item
+    with a wanted name and keep the one captured within window_s of the
+    expected time; ambiguous or missing matches are reported, not guessed."""
+    cands = {n: [] for n in expected}
     for page in range(1, max_pages + 1):
         data = gu.gopro_get(session, "/media/search", params={
             "fields": "id,filename,file_size,captured_at,type", "per_page": 100, "page": page,
@@ -46,11 +55,21 @@ def find_media(session, wanted: set[str], max_pages: int) -> dict:
         items = data.get("_embedded", {}).get("media", [])
         for it in items:
             fn = it.get("filename") or ""
-            if fn in wanted and fn not in found:
-                found[fn] = it
-                print(f"{fn}: GoPro media {it.get('id')} captured {it.get('captured_at')} size {it.get('file_size')}")
-        if len(found) == len(wanted) or not items:
+            if fn in cands:
+                cands[fn].append(it)
+        if not items:
             break
+    found = {}
+    for fn, items in cands.items():
+        want = _ts(expected[fn])
+        for it in items:
+            print(f"{fn}: candidate {it.get('id')} captured {it.get('captured_at')}")
+        close = [it for it in items if it.get("captured_at") and abs(_ts(it["captured_at"]) - want) <= window_s]
+        if len(close) == 1:
+            found[fn] = close[0]
+            print(f"{fn}: MATCH {close[0]['id']} (captured {close[0]['captured_at']}, expected ~{expected[fn]})")
+        else:
+            print(f"::warning::{fn}: {len(items)} with this name, {len(close)} near {expected[fn]}; not copying")
     return found
 
 
@@ -159,12 +178,16 @@ def main(argv=None) -> int:
     from boto3.s3.transfer import TransferConfig
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--file", action="append", required=True, help="NAME=DRIVE_DURATION_S")
+    ap.add_argument("--file", action="append", required=True, help="NAME=DRIVE_DURATION_S@RECORDED_ISO")
     ap.add_argument("--workdir", default="/mnt/oev_gopro")
     ap.add_argument("--max-pages", type=int, default=80)
     ap.add_argument("--tolerance-s", type=float, default=0.1)
     a = ap.parse_args(argv)
-    want = {k: float(v) for k, v in (x.split("=", 1) for x in a.file)}
+    want, recorded = {}, {}
+    for x in a.file:
+        k, v = x.split("=", 1)
+        d, t = v.split("@", 1)
+        want[k], recorded[k] = float(d), t
     s3 = boto3.client(
         "s3", endpoint_url=os.environ["S3_ENDPOINT_URL"],
         aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
@@ -191,7 +214,16 @@ def main(argv=None) -> int:
     if session is None:
         print("::error::GoPro session could not be authenticated")
         return 1
-    media = find_media(session, set(todo), a.max_pages)
+    media = find_media(session, {n: recorded[n] for n in todo}, a.max_pages)
+    # Pair check: both cameras of a session must have been recording together.
+    for left, right in (("GX010197.MP4", "GX010173.MP4"), ("GX010175.MP4", "GX010198.MP4")):
+        if left in media and right in media:
+            gap = abs(_ts(media[left]["captured_at"]) - _ts(media[right]["captured_at"]))
+            print(f"pair {left}/{right}: captured {gap:.0f} s apart")
+            if gap > 30 * 60:
+                print(f"::error::{left} and {right} were not recorded together ({gap:.0f} s apart); not copying either")
+                media.pop(left)
+                media.pop(right)
     os.makedirs(a.workdir, exist_ok=True)
     tcfg = TransferConfig(multipart_threshold=256 << 20, multipart_chunksize=256 << 20, max_concurrency=4)
 

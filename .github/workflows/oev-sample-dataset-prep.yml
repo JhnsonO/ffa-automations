@@ -160,10 +160,10 @@ jobs:
           # The Drive files are the GoPro chapters joined; the joined result must
           # match each Drive original's duration (s) so frozen window times hold.
           python3 -u scripts/oev_gopro_to_r2.py --workdir /mnt/oev_gopro \
-            --file GX010197.MP4=2952.95 \
-            --file GX010173.MP4=2951.949 \
-            --file GX010175.MP4=2612.61 \
-            --file GX010198.MP4=2611.609
+            --file GX010197.MP4=2952.95@2026-08-05T21:38:05Z \
+            --file GX010173.MP4=2951.949@2026-08-05T21:38:50Z \
+            --file GX010175.MP4=2612.61@2026-08-06T22:39:26Z \
+            --file GX010198.MP4=2611.609@2026-08-06T22:37:39Z
 
       - name: Copy source videos Drive -> R2 (copy_to_r2)
         if: inputs.copy_to_r2 && !inputs.copy_from_gopro
