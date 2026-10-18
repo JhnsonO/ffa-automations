@@ -1,0 +1,32 @@
+{
+ "t0": 126.0,
+ "t1": 141.0,
+ "thr": 0.5,
+ "tiles_per_frame": 6,
+ "frames": 900,
+ "our_ball_rate": {
+  "left": 0.343,
+  "right": 0.021,
+  "either": 0.346
+ },
+ "foreign_ball_rate": {
+  "left": 0.213,
+  "right": 0.959
+ },
+ "left_our_ball_rate_by_shift_s": {
+  "-3": 0.304,
+  "-2": 0.336,
+  "-1": 0.331,
+  "0": 0.343,
+  "1": 0.339,
+  "2": 0.338,
+  "3": 0.326
+ },
+ "yolo26m_reference": {
+  "left": 0.25,
+  "right": 0.013,
+  "either": 0.259,
+  "source": "run 39124520077 events, class 32 in St Margaret's ROI"
+ },
+ "runtime_s": 223
+}
