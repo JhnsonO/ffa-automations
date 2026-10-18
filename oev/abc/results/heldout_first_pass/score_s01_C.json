@@ -1,0 +1,58 @@
+{
+  "arm": "C",
+  "window_id": "heldout_s01",
+  "role": null,
+  "metrics": {
+    "action_in_frame_frac": null,
+    "shots_goals_in_frame_frac": null,
+    "goals_missed": null,
+    "counterattacks_captured_frac": null,
+    "long_passes_captured_frac": null,
+    "near_side_balls_in_frame_frac": null,
+    "restarts_in_frame_frac": null,
+    "neighbour_switches": null,
+    "neighbour_switch_seconds": null,
+    "neighbour_switches_per_10min": null,
+    "pan_accel_spikes_per_min": 0.4004903777731284,
+    "zoom_reversals_per_min": 15.61912473315201
+  },
+  "counts": {
+    "action_points": 0,
+    "long_pass": 0,
+    "counterattack": 0,
+    "shot": 0,
+    "goal": 0,
+    "near_side_ball": 0,
+    "restart": 0,
+    "minutes": 4.993877783333334
+  },
+  "events": {
+    "long_pass": [],
+    "counterattack": [],
+    "shot": [],
+    "goal": [],
+    "near_side_ball": [],
+    "restart": []
+  },
+  "gates": {
+    "goals_missed": null,
+    "neighbour_switches_per_10min": null,
+    "shots_goals_in_frame_frac": null,
+    "counterattacks_captured_frac": null,
+    "long_passes_captured_frac": null,
+    "near_side_balls_in_frame_frac": null,
+    "action_in_frame_frac": null,
+    "pan_accel_spikes_per_min": true,
+    "zoom_reversals_per_min": true
+  },
+  "hard_gates_pass": null,
+  "not_measurable": [
+    "action_in_frame_frac",
+    "counterattacks_captured_frac",
+    "goals_missed",
+    "long_passes_captured_frac",
+    "near_side_balls_in_frame_frac",
+    "neighbour_switches_per_10min",
+    "shots_goals_in_frame_frac"
+  ]
+}
