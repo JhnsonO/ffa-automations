@@ -95,6 +95,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
           PREFIX: ${{ inputs.debug_overlay }}
         run: |
+          sudo apt-get install -y -qq ffmpeg >/dev/null
           pip install -q boto3 opencv-python-headless numpy
           python3 - <<'PY2'
           import os, boto3

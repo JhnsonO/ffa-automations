@@ -263,7 +263,9 @@ def main(argv=None):
         if i % 1800 == 0:
             print(f"  {i}/{n_total} frames", flush=True)
     vw.release()
-    os.system(f"ffmpeg -v error -y -i '{a.out}.tmp.mp4' -c:v libx264 -preset veryfast -crf 26 -pix_fmt yuv420p -movflags +faststart '{a.out}'")
+    rc = os.system(f"ffmpeg -v error -y -i '{a.out}.tmp.mp4' -c:v libx264 -preset veryfast -crf 26 -pix_fmt yuv420p -movflags +faststart '{a.out}'")
+    if rc != 0:
+        raise SystemExit(f"ffmpeg transcode failed ({rc}); raw file kept at {a.out}.tmp.mp4")
     os.remove(a.out + ".tmp.mp4")
     print(f"wrote {a.out} ({i} source frames, every {a.every})")
 
