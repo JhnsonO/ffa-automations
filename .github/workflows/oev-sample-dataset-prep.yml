@@ -65,6 +65,11 @@ on:
         required: false
         default: false
         type: boolean
+      debug_overlay:
+        description: 'OEV-006: render the ring debug video for this R2 sample prefix (e.g. oev/samples/GX010197-oev006-dev/sample_01/sample_01). Inputs from oev/abc/debug/. Skips everything else.'
+        required: false
+        default: ''
+        type: string
       probe_only:
         description: 'OEV-006: only test authenticated Drive API access (one ~1 MB ranged GET + one 10 s cut), then stop. No full download, no uploads.'
         required: false
@@ -75,9 +80,47 @@ permissions:
   contents: read
 
 jobs:
+  debug-overlay:
+    name: OEV-006 ring debug video
+    if: inputs.debug_overlay != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - name: Fetch sample clips from R2
+        env:
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          PREFIX: ${{ inputs.debug_overlay }}
+        run: |
+          pip install -q boto3 opencv-python-headless numpy
+          python3 - <<'PY2'
+          import os, boto3
+          s3 = boto3.client('s3', endpoint_url=os.environ['S3_ENDPOINT_URL'], region_name='auto')
+          for side in ('left', 'right'):
+              s3.download_file(os.environ['S3_BUCKET'], f"{os.environ['PREFIX']}_{side}_300s.mp4", f'/tmp/{side}.mp4')
+              print(side, os.path.getsize(f'/tmp/{side}.mp4'))
+          PY2
+      - name: Render
+        run: |
+          mkdir -p out/stills
+          python3 scripts/oev_debug_overlay.py --events oev/abc/debug/dev_s01_events.jsonl.gz \
+            --left /tmp/left.mp4 --right /tmp/right.mp4 --roi oev/abc/venues/stmargarets_roi.json \
+            --trace-a0 oev/abc/debug/dev_s01_A0.csv --out out/debug_dev_s01.mp4 --every 2 \
+            --stills-dir out/stills
+          ls -la out out/stills
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oev006-debug-overlay
+          path: out/
+          retention-days: 14
+
   prepare-sample-dataset:
     name: Generate 5x3 sample clips + manifest, upload to Drive
     # ffmpeg stream-copy trims only -- no decode/re-encode, no GPU needed.
+    if: inputs.debug_overlay == ''
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.copy_to_r2 || inputs.copy_from_gopro) && 350 || 90 }}
 
