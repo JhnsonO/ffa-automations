@@ -25,6 +25,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import boto3
@@ -61,6 +62,43 @@ class Token:
             print(f"::add-mask::{self.value}")
             print("drive token refreshed")
         return self.value
+
+
+TMP_PREFIX = "OEV006_TMP_"
+
+
+def drive_api(method: str, path: str, token: str, body: dict | None = None) -> dict:
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        "https://www.googleapis.com/drive/v3/" + path, data=data, method=method,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=600) as r:
+        raw = r.read()
+    return json.loads(raw) if raw else {}
+
+
+def free_bytes(token: str) -> int | None:
+    q = drive_api("GET", "about?fields=storageQuota", token)["storageQuota"]
+    if "limit" not in q:
+        return None  # unlimited
+    return int(q["limit"]) - int(q["usage"])
+
+
+def temp_copy(fid: str, name: str, token: str) -> str:
+    """Server-side copy (no download, no quota use). Reuses an existing
+    temp copy from an earlier run so copies are never duplicated."""
+    meta = drive_api("GET", f"files/{fid}?fields=parents&supportsAllDrives=true", token)
+    parent = meta["parents"][0]
+    tmp_name = TMP_PREFIX + name
+    q = urllib.parse.quote(f"name='{tmp_name}' and '{parent}' in parents and trashed=false")
+    found = drive_api("GET", f"files?q={q}&fields=files(id,size)&supportsAllDrives=true&includeItemsFromAllDrives=true", token)["files"]
+    if found:
+        print(f"{name}: reusing temp copy {found[0]['id']}")
+        return found[0]["id"]
+    c = drive_api("POST", f"files/{fid}/copy?fields=id,size&supportsAllDrives=true", token, {"name": tmp_name, "parents": [parent]})
+    print(f"{name}: made temp copy {c['id']} ({c.get('size')} bytes)")
+    return c["id"]
 
 
 def drive_size(fid: str, token: str) -> int:
@@ -104,6 +142,8 @@ def main(argv=None) -> int:
     ap.add_argument("--file", action="append", required=True, help="NAME=DRIVE_ID")
     ap.add_argument("--part-mb", type=int, default=256)
     ap.add_argument("--budget-min", type=float, default=330)
+    ap.add_argument("--temp-copies", action="store_true",
+                    help="read from a fresh server-side Drive copy of each file (fresh download quota); the copy is deleted once R2 is verified")
     a = ap.parse_args(argv)
     tok = Token()
     s3 = boto3.client(
@@ -118,11 +158,27 @@ def main(argv=None) -> int:
     summary = {}
     blocked = None
 
+    if a.temp_copies:
+        need = 0
+        for spec in a.file:
+            name, fid = spec.split("=", 1)
+            try:
+                s3.head_object(Bucket=bucket, Key=PREFIX + name)
+                continue  # already in R2, no copy needed
+            except s3.exceptions.ClientError:
+                need += drive_size(fid, tok.get())
+        free = free_bytes(tok.get())
+        print(f"temp copies need {need / 1e9:.1f} GB; Drive free {'unlimited' if free is None else f'{free / 1e9:.1f} GB'}")
+        if free is not None and free < need * 1.05:
+            print("::error::Not enough Drive space for temporary copies; nothing copied.")
+            return 1
+
     for spec in a.file:
-        name, fid = spec.split("=", 1)
+        name, src_fid = spec.split("=", 1)
         key = PREFIX + name
         state_key = key + ".copy-state.json"
-        size = drive_size(fid, tok.get())
+        size = drive_size(src_fid, tok.get())
+        fid = src_fid
         try:
             head = s3.head_object(Bucket=bucket, Key=key)
             if head["ContentLength"] == size:
@@ -131,6 +187,11 @@ def main(argv=None) -> int:
                 continue
         except s3.exceptions.ClientError:
             pass
+        if a.temp_copies:
+            fid = temp_copy(src_fid, name, tok.get())
+            if drive_size(fid, tok.get()) != size:
+                print(f"::error::{name}: temp copy size differs from original; skipping")
+                continue
         try:
             st = json.loads(s3.get_object(Bucket=bucket, Key=state_key)["Body"].read())
             if st.get("size") != size or st.get("part_bytes") != part:
@@ -175,6 +236,9 @@ def main(argv=None) -> int:
                 return 1
             s3.delete_object(Bucket=bucket, Key=state_key)
             print(f"{name}: COMPLETE in R2 at {key} ({got} bytes, size verified)")
+            if a.temp_copies and fid != src_fid:
+                drive_api("DELETE", f"files/{fid}?supportsAllDrives=true", tok.get())
+                print(f"{name}: temp copy {fid} deleted (original untouched)")
             summary[name] = "done"
         # Drive's quota is per file: a refused file is left for a later run,
         # the next file still gets its one attempt.

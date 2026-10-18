@@ -46,7 +46,7 @@ on:
         default: ''
         type: string
       copy_to_r2:
-        description: 'OEV-006: copy the four source videos Drive -> R2 (oev/sources/), resumable, stops on Drive 403. Skips all other steps.'
+        description: 'OEV-006: copy the four source videos Drive -> R2 (oev/sources/) via temporary server-side Drive copies (fresh download quota; deleted after R2 verify). Resumable. Skips all other steps.'
         required: false
         default: false
         type: boolean
@@ -149,7 +149,7 @@ jobs:
           export DRIVE_ACCESS_TOKEN=$(cat /tmp/drive_token.txt)
           echo "::add-mask::$DRIVE_ACCESS_TOKEN"
           pip install -q boto3
-          python3 -u scripts/oev_drive_to_r2.py --part-mb 256 --budget-min 320 \
+          python3 -u scripts/oev_drive_to_r2.py --part-mb 256 --budget-min 320 --temp-copies \
             --file GX010197.MP4=1WaXjRq-QSwKseCZM7X_GJgZVqU3LffPE \
             --file GX010173.MP4=1iUJe84rQUkyFBo6BBZnhNBWQQp6LMSay \
             --file GX010175.MP4=1_b4_ojm8iqyMNFtd6qYdfQdke253FQqI \
