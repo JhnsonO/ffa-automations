@@ -216,6 +216,6 @@
   },
   "venues": {
     "stmargarets": "oev/abc/venues/stmargarets_roi.json (production polygon, verbatim)",
-    "aylestone": "oev/abc/venues/aylestone_roi_DRAFT.json (DRAFT from 600 s stills; Johnson to confirm before held-out scoring)"
+    "aylestone": "oev/abc/venues/aylestone_roi.json (APPROVED 2026-10-18 01:08, coordinates unchanged from draft)"
   }
 }
