@@ -50,6 +50,11 @@ on:
         required: false
         default: false
         type: boolean
+      source_from_r2:
+        description: 'OEV-006: cut fixed windows from the R2 copies (oev/sources/<name>) instead of Drive. Requires copy_to_r2 to have completed.'
+        required: false
+        default: false
+        type: boolean
       probe_only:
         description: 'OEV-006: only test authenticated Drive API access (one ~1 MB ranged GET + one 10 s cut), then stop. No full download, no uploads.'
         required: false
@@ -221,6 +226,11 @@ jobs:
           STARTS_INPUT: ${{ inputs.starts }}
           DURATIONS_INPUT: ${{ inputs.durations }}
           SET_ID_INPUT: ${{ inputs.set_id }}
+          SOURCE_FROM_R2: ${{ inputs.source_from_r2 }}
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
           LEFT_ID: ${{ steps.resolve.outputs.left_id }}
           RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
         run: |
@@ -235,7 +245,29 @@ jobs:
           set -o pipefail
           LEFT_SRC=/tmp/oev_pack/left_full.mp4
           RIGHT_SRC=/tmp/oev_pack/right_full.mp4
-          if [ -n "$STARTS_INPUT" ]; then
+          if [ -n "$STARTS_INPUT" ] && [ "$SOURCE_FROM_R2" = "true" ]; then
+            # OEV-006: R2 has no per-file download quota; ffmpeg reads
+            # presigned URLs directly with HTTP range requests.
+            sudo mkdir -p /mnt/oev_samples && sudo chown "$USER" /mnt/oev_samples
+            ln -sfn /mnt/oev_samples /tmp/oev_samples
+            pip install -q boto3
+            read -r LEFT_SRC RIGHT_SRC < <(python3 - <<'PY'
+          import os, boto3
+          from botocore.config import Config
+          s3 = boto3.client("s3", endpoint_url=os.environ["S3_ENDPOINT_URL"], aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
+                            aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"], region_name="auto", config=Config(signature_version="s3v4"))
+          b = os.environ["S3_BUCKET"]
+          urls = []
+          for name in (os.environ["LEFT_CLIP"], os.environ["RIGHT_CLIP"]):
+              key = "oev/sources/" + name
+              s3.head_object(Bucket=b, Key=key)  # fails loudly if the copy has not finished
+              urls.append(s3.generate_presigned_url("get_object", Params={"Bucket": b, "Key": key}, ExpiresIn=6 * 3600))
+          for u in urls:
+              print(f"::add-mask::{u}")
+          print(" ".join(urls))
+          PY
+          )
+          elif [ -n "$STARTS_INPUT" ]; then
             # OEV-006: cut fixed windows by ranged reads through a local
             # proxy (scripts/oev_drive_range_proxy.py); the Drive API path
             # returned 403 after the throttled bulk download. Clips go on
