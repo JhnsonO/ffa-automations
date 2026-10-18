@@ -299,11 +299,11 @@ jobs:
               key = "oev/sources/" + name
               s3.head_object(Bucket=b, Key=key)  # fails loudly if the copy has not finished
               urls.append(s3.generate_presigned_url("get_object", Params={"Bucket": b, "Key": key}, ExpiresIn=6 * 3600))
-          for u in urls:
-              print(f"::add-mask::{u}")
           print(" ".join(urls))
           PY
           )
+            echo "::add-mask::$LEFT_SRC"
+            echo "::add-mask::$RIGHT_SRC"
           elif [ -n "$STARTS_INPUT" ]; then
             # OEV-006: cut fixed windows by ranged reads through a local
             # proxy (scripts/oev_drive_range_proxy.py); the Drive API path
