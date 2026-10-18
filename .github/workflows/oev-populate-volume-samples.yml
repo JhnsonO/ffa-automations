@@ -132,6 +132,9 @@ jobs:
           base = 'https://rest.runpod.io/v1'
           headers = {
               'Authorization': f'Bearer {api_key}',
+              # Cloudflare in front of rest.runpod.io 403s urllib's default UA
+              # (browser_signature_banned); same fix as oev-runpod-sample-baseline.yml.
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) ffa-automations-oev-populate-volume-samples',
               'Content-Type': 'application/json',
               'Accept': 'application/json',
           }
@@ -335,7 +338,8 @@ jobs:
               print('No pod ID recorded -- nothing to terminate.')
               raise SystemExit(0)
 
-          headers = {'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}"}
+          headers = {'Authorization': f"Bearer {os.environ['RUNPOD_API_KEY']}",
+                     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) ffa-automations-oev-populate-volume-samples'}
           url = f'https://rest.runpod.io/v1/pods/{pod_id}'
           confirmed = False
           last_error = None
