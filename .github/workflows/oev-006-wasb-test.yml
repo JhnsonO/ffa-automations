@@ -487,12 +487,13 @@ jobs:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
         run: |
+          set -o pipefail
           SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no"
           $SCP oev/abc/wasb/wasb_eval.py oev/abc/venues/stmargarets_roi.json root@$IP:/tmp/oev_run/
           $SSH "set -euo pipefail
             (command -v ffmpeg >/dev/null || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >/dev/null))
-            pip install -q omegaconf hydra-core scipy opencv-python-headless gdown 2>&1 | tail -1
+            pip install -q --break-system-packages omegaconf hydra-core scipy opencv-python-headless gdown
             cd /tmp && rm -rf wasb && git clone -q https://github.com/nttcom/WASB-SBDT wasb && git -C wasb log -1 --format='wasb_sha=%H'
             gdown -q $WASB_SOCCER_GDRIVE_ID -O /tmp/wasb_soccer.pth.tar || gdown -q 'https://drive.google.com/uc?id=$WASB_SOCCER_GDRIVE_ID' -O /tmp/wasb_soccer.pth.tar
             ls -la /tmp/wasb_soccer.pth.tar; nvidia-smi --query-gpu=name --format=csv,noheader
