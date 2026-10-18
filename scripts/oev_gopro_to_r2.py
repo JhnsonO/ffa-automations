@@ -60,15 +60,25 @@ def variants(session, media_id: str) -> list:
 
 
 def pick_url(session, media_id: str, expected: int):
+    """GoPro's listing reports size 0, so each variant URL is measured with a
+    one-byte ranged GET; only an exact match to the Drive original is used."""
     vs = variants(session, media_id)
+    source_total = 0
+    match = (None, None)
     for v in vs:
         size = int(v.get("file_size") or v.get("size") or 0)
-        print(f"  variant label={v.get('label')} quality={v.get('quality')} size={size} available={v.get('available')} url={bool(v.get('url'))}")
-    for v in vs:
-        size = int(v.get("file_size") or v.get("size") or 0)
-        if v.get("url") and v.get("available", True) and size == expected:
-            return v["url"], v
-    return None, None
+        if not size and v.get("url"):
+            try:
+                size = url_size(v["url"]) or 0
+            except Exception as e:  # noqa: BLE001
+                print(f"  (size probe failed: {e!r})")
+        if v.get("label") == "source":
+            source_total += size
+        print(f"  variant label={v.get('label')} quality={v.get('quality')} item={v.get('item_number', '')} size={size} url={bool(v.get('url'))}")
+        if v.get("url") and size == expected and match[0] is None:
+            match = (v["url"], v)
+    print(f"  source parts total {source_total} bytes vs Drive original {expected}")
+    return match
 
 
 def url_size(url: str) -> int | None:
