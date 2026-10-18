@@ -45,6 +45,11 @@ on:
         required: false
         default: ''
         type: string
+      copy_from_gopro:
+        description: 'OEV-006: copy the four source videos from GoPro cloud -> R2 (oev/sources/), only exact-size matches to the Drive originals. Resumable. Skips all other steps.'
+        required: false
+        default: false
+        type: boolean
       copy_to_r2:
         description: 'OEV-006: copy the four source videos Drive -> R2 (oev/sources/) via temporary server-side Drive copies (fresh download quota; deleted after R2 verify). Resumable. Skips all other steps.'
         required: false
@@ -69,7 +74,7 @@ jobs:
     name: Generate 5x3 sample clips + manifest, upload to Drive
     # ffmpeg stream-copy trims only -- no decode/re-encode, no GPU needed.
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.copy_to_r2 && 350 || 90 }}
+    timeout-minutes: ${{ (inputs.copy_to_r2 || inputs.copy_from_gopro) && 350 || 90 }}
 
     steps:
       - name: Checkout
@@ -135,8 +140,30 @@ jobs:
               output.write(f'left_id={left_id}\nright_id={right_id}\n')
           PY
 
+      - name: Copy source videos GoPro cloud -> R2 (copy_from_gopro)
+        if: inputs.copy_from_gopro
+        env:
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+          GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
+          GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
+        run: |
+          set -o pipefail
+          pip install -q boto3 requests google-auth google-auth-oauthlib google-api-python-client playwright
+          python3 -m playwright install --with-deps chromium >/dev/null 2>&1 || echo "playwright browser install failed (only needed if cookies are stale)"
+          printf '%s' "${GOPRO_COOKIES:-{}}" > gopro_cookies.json
+          # Sizes are the Drive originals' exact byte counts: only an identical file is accepted.
+          python3 -u scripts/oev_gopro_to_r2.py --part-mb 256 --budget-min 320 \
+            --file GX010197.MP4=22129086718 \
+            --file GX010173.MP4=22123474750 \
+            --file GX010175.MP4=19580880915 \
+            --file GX010198.MP4=19574136539
+
       - name: Copy source videos Drive -> R2 (copy_to_r2)
-        if: inputs.copy_to_r2
+        if: inputs.copy_to_r2 && !inputs.copy_from_gopro
         env:
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
@@ -156,7 +183,7 @@ jobs:
             --file GX010198.MP4=10Wui460oIqnMMR-5U7EzKuCHBkYMgIDB
 
       - name: Probe authenticated Drive API access (probe_only)
-        if: inputs.probe_only && !inputs.copy_to_r2
+        if: inputs.probe_only && !inputs.copy_to_r2 && !inputs.copy_from_gopro
         env:
           LEFT_ID: ${{ steps.resolve.outputs.left_id }}
         run: |
@@ -192,7 +219,7 @@ jobs:
           echo "PROBE OK: 10 s cut playable: duration=${dur}s video_packets=${frames} size=$(stat -c %s "$f")"
 
       - name: Download full source clips
-        if: ${{ !inputs.probe_only && !inputs.copy_to_r2 }}
+        if: ${{ !inputs.probe_only && !inputs.copy_to_r2 && !inputs.copy_from_gopro }}
         env:
           LEFT_ID: ${{ steps.resolve.outputs.left_id }}
           RIGHT_ID: ${{ steps.resolve.outputs.right_id }}
@@ -217,7 +244,7 @@ jobs:
           ls -lh /tmp/oev_pack/
 
       - name: Generate sample dataset (5 locations x 30/60/180s, both sides)
-        if: ${{ !inputs.probe_only && !inputs.copy_to_r2 }}
+        if: ${{ !inputs.probe_only && !inputs.copy_to_r2 && !inputs.copy_from_gopro }}
         id: generate
         env:
           LEFT_CLIP: ${{ inputs.left_clip }}
@@ -296,7 +323,7 @@ jobs:
           echo "sample_set_id=$SAMPLE_SET_ID" >> "$GITHUB_OUTPUT"
 
       - name: Upload sample dataset (artifact)
-        if: always() && inputs.starts == '' && !inputs.probe_only && !inputs.copy_to_r2
+        if: always() && inputs.starts == '' && !inputs.probe_only && !inputs.copy_to_r2 && !inputs.copy_from_gopro
         uses: actions/upload-artifact@v4
         with:
           name: oev-sample-dataset-${{ github.run_id }}
@@ -304,7 +331,7 @@ jobs:
           retention-days: 30
 
       - name: Upload manifest + logs only (fixed windows; clips go to Drive)
-        if: always() && inputs.starts != '' && !inputs.probe_only && !inputs.copy_to_r2
+        if: always() && inputs.starts != '' && !inputs.probe_only && !inputs.copy_to_r2 && !inputs.copy_from_gopro
         uses: actions/upload-artifact@v4
         with:
           name: oev-sample-dataset-${{ github.run_id }}
@@ -316,7 +343,7 @@ jobs:
           retention-days: 30
 
       - name: Upload sample dataset to OEV Drive Samples/<sample-set-id>/ folder
-        if: ${{ !inputs.probe_only && !inputs.copy_to_r2 }}
+        if: ${{ !inputs.probe_only && !inputs.copy_to_r2 && !inputs.copy_from_gopro }}
         env:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
