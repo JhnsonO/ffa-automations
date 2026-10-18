@@ -182,6 +182,7 @@ def main(argv=None) -> int:
     ap.add_argument("--workdir", default="/mnt/oev_gopro")
     ap.add_argument("--max-pages", type=int, default=80)
     ap.add_argument("--tolerance-s", type=float, default=0.1)
+    ap.add_argument("--only", default="", help="copy just this file (others are still matched + pair-checked)")
     a = ap.parse_args(argv)
     want, recorded = {}, {}
     for x in a.file:
@@ -228,6 +229,8 @@ def main(argv=None) -> int:
     tcfg = TransferConfig(multipart_threshold=256 << 20, multipart_chunksize=256 << 20, max_concurrency=4)
 
     for name, drive_dur in todo.items():
+        if a.only and name != a.only:
+            continue
         if name not in media:
             summary[name] = "not found in GoPro cloud"
             continue

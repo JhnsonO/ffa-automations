@@ -50,6 +50,11 @@ on:
         required: false
         default: false
         type: boolean
+      gopro_only:
+        description: 'With copy_from_gopro: copy just this file name (run one dispatch per file in parallel). Blank = all.'
+        required: false
+        default: ''
+        type: string
       copy_to_r2:
         description: 'OEV-006: copy the four source videos Drive -> R2 (oev/sources/) via temporary server-side Drive copies (fresh download quota; deleted after R2 verify). Resumable. Skips all other steps.'
         required: false
@@ -150,6 +155,7 @@ jobs:
           GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
           GOPRO_EMAIL: ${{ secrets.GOPRO_EMAIL }}
           GOPRO_PASSWORD: ${{ secrets.GOPRO_PASSWORD }}
+          GOPRO_ONLY: ${{ inputs.gopro_only }}
         run: |
           set -o pipefail
           pip install -q boto3 requests google-auth google-auth-oauthlib google-api-python-client playwright
@@ -159,7 +165,7 @@ jobs:
           sudo mkdir -p /mnt/oev_gopro && sudo chown "$USER" /mnt/oev_gopro && df -h /mnt | tail -1
           # The Drive files are the GoPro chapters joined; the joined result must
           # match each Drive original's duration (s) so frozen window times hold.
-          python3 -u scripts/oev_gopro_to_r2.py --workdir /mnt/oev_gopro \
+          python3 -u scripts/oev_gopro_to_r2.py --workdir /mnt/oev_gopro --only "$GOPRO_ONLY" \
             --file GX010197.MP4=2952.95@2026-08-05T21:38:05Z \
             --file GX010173.MP4=2951.949@2026-08-05T21:38:50Z \
             --file GX010175.MP4=2612.61@2026-08-06T22:39:26Z \
