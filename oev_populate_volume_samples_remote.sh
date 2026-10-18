@@ -48,6 +48,35 @@ mkdir -p "$SAMPLES_ROOT"
 echo "timing_populate_samples_start=$(ts)" | tee -a timing.log
 echo "samples_filter='${SAMPLES_FILTER}' (empty means: all samples)" | tee -a timing.log
 
+if [ -s /tmp/r2_files.json ]; then
+  echo "=== download.log: staging ${SAMPLE_SET_ID} from R2 (presigned) ===" | tee download.log
+  SAMPLES_ROOT="$SAMPLES_ROOT" python3 -u - << 'PY' 2>&1 | tee -a download.log
+import json, os, sys, urllib.request
+from pathlib import Path
+root = Path(os.environ["SAMPLES_ROOT"])
+files = json.load(open("/tmp/r2_files.json"))
+for rel, url in sorted(files.items()):
+    dest = root / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with urllib.request.urlopen(url, timeout=600) as r, open(dest, "wb") as out:
+        expected = int(r.headers.get("Content-Length", "0"))
+        while True:
+            chunk = r.read(8 << 20)
+            if not chunk:
+                break
+            out.write(chunk)
+    size = dest.stat().st_size
+    if expected and size != expected:
+        print(f"FATAL: {rel} size {size} != {expected}"); sys.exit(1)
+    print(f"Downloaded {dest} ({size} bytes)")
+print(f"OK: {len(files)} files from R2")
+PY
+  rc=${PIPESTATUS[0]}
+  echo "timing_populate_samples_end=$(ts)" | tee -a timing.log
+  [ "$rc" -eq 0 ] && echo "Populate-volume-samples OK: sample set ${SAMPLE_SET_ID} written to ${SAMPLES_ROOT} (from R2)" | tee -a download.log
+  exit $rc
+fi
+
 echo "$YOUTUBE_TOKEN" > /tmp/youtube_token.json
 echo "$YOUTUBE_CREDENTIALS" > /tmp/youtube_credentials.json
 

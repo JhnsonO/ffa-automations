@@ -39,6 +39,11 @@ on:
         required: false
         default: ''
         type: string
+      from_r2:
+        description: 'OEV-006: stage from R2 oev/samples/<sample_set_id>/ (presigned URLs) instead of Drive'
+        required: false
+        default: false
+        type: boolean
       force_repopulate:
         description: 'Re-download even if the volume already has this sample_set_id'
         required: false
@@ -274,6 +279,31 @@ jobs:
               output.write(f'port={winner["port"]}\n')
           PY
 
+      - name: Presign R2 sample files (from_r2)
+        id: r2
+        if: inputs.from_r2
+        env:
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          SET_ID: ${{ inputs.sample_set_id }}
+        run: |
+          pip install -q boto3
+          python3 - <<'PY'
+          import json, os, boto3
+          from botocore.config import Config
+          s3 = boto3.client("s3", endpoint_url=os.environ["S3_ENDPOINT_URL"], aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
+                            aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"], region_name="auto", config=Config(signature_version="s3v4"))
+          b = os.environ["S3_BUCKET"]; prefix = f"oev/samples/{os.environ['SET_ID']}/"
+          objs = s3.list_objects_v2(Bucket=b, Prefix=prefix).get("Contents", [])
+          if not objs:
+              raise SystemExit(f"no objects under R2 {prefix}")
+          m = {o["Key"][len(prefix):]: s3.generate_presigned_url("get_object", Params={"Bucket": b, "Key": o["Key"]}, ExpiresIn=6 * 3600) for o in objs}
+          open("/tmp/r2_files.json", "w").write(json.dumps(m))
+          print(f"{len(m)} files presigned: {sorted(m)}")
+          PY
+
       - name: Upload + run populate-volume-samples script
         id: populate
         env:
@@ -288,6 +318,7 @@ jobs:
           SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
           SCP="scp -i /tmp/runpod_key -P $PORT -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes"
           $SCP oev_populate_volume_samples_remote.sh root@$IP:/tmp/oev_populate_volume_samples_remote.sh
+          if [ -f /tmp/r2_files.json ]; then $SCP /tmp/r2_files.json root@$IP:/tmp/r2_files.json; fi
           $SSH "chmod +x /tmp/oev_populate_volume_samples_remote.sh"
 
           remote_rc=0
