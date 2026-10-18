@@ -109,15 +109,62 @@ def fetch(url: str, start: int, end: int) -> bytes:
     raise RuntimeError(f"bytes {start}-{end}: {last}")
 
 
+def chapters(session, media_id: str) -> list:
+    vs = [v for v in variants(session, media_id) if v.get("label") == "source" and v.get("url")]
+    return sorted(vs, key=lambda v: int(v.get("item_number") or 0))
+
+
+def download(url_fn, dest: str) -> int:
+    """Stream one chapter to disk, resuming with Range on drops; url_fn()
+    returns a fresh signed URL when the current one expires."""
+    url = url_fn()
+    total = url_size(url)
+    pos = os.path.getsize(dest) if os.path.exists(dest) else 0
+    tries = 0
+    with open(dest, "ab") as f:
+        while total is None or pos < total:
+            try:
+                r = requests.get(url, headers={"Range": f"bytes={pos}-"}, stream=True, timeout=600)
+                if r.status_code in (401, 403):
+                    url = url_fn()
+                    tries += 1
+                    if tries > 5:
+                        raise RuntimeError("signed URL refused repeatedly")
+                    continue
+                r.raise_for_status()
+                for chunk in r.iter_content(8 << 20):
+                    f.write(chunk)
+                    pos += len(chunk)
+                if total is None:
+                    break
+            except requests.RequestException as e:
+                tries += 1
+                if tries > 8:
+                    raise
+                print(f"    download hiccup at {pos}: {e!r}; resuming")
+                time.sleep(10 * tries)
+    return pos
+
+
+def ffprobe_duration(path: str) -> float:
+    import subprocess
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                         capture_output=True, text=True, check=True)
+    return float(out.stdout.strip())
+
+
 def main(argv=None) -> int:
+    import shutil
+    import subprocess
+    from boto3.s3.transfer import TransferConfig
+
     ap = argparse.ArgumentParser()
-    ap.add_argument("--file", action="append", required=True, help="NAME=EXPECTED_BYTES")
-    ap.add_argument("--part-mb", type=int, default=256)
-    ap.add_argument("--budget-min", type=float, default=320)
+    ap.add_argument("--file", action="append", required=True, help="NAME=DRIVE_DURATION_S")
+    ap.add_argument("--workdir", default="/mnt/oev_gopro")
     ap.add_argument("--max-pages", type=int, default=80)
+    ap.add_argument("--tolerance-s", type=float, default=0.1)
     a = ap.parse_args(argv)
-    want = dict(s.split("=", 1) for s in a.file)
-    want = {k: int(v) for k, v in want.items()}
+    want = {k: float(v) for k, v in (x.split("=", 1) for x in a.file)}
     s3 = boto3.client(
         "s3", endpoint_url=os.environ["S3_ENDPOINT_URL"],
         aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
@@ -125,99 +172,90 @@ def main(argv=None) -> int:
         region_name="auto", config=Config(signature_version="s3v4"),
     )
     bucket = os.environ["S3_BUCKET"]
-    part = a.part_mb * 1024 * 1024
-    deadline = time.time() + a.budget_min * 60
     summary = {}
-
     todo = {}
-    for name, size in want.items():
+    for name, dur in want.items():
         try:
-            if s3.head_object(Bucket=bucket, Key=PREFIX + name)["ContentLength"] == size:
-                print(f"{name}: already in R2, skipping")
+            meta = s3.head_object(Bucket=bucket, Key=PREFIX + name).get("Metadata", {})
+            if abs(float(meta.get("duration-s", "-1")) - dur) <= a.tolerance_s:
+                print(f"{name}: already in R2 (duration {meta['duration-s']} s), skipping")
                 summary[name] = "done"
                 continue
         except s3.exceptions.ClientError:
             pass
-        todo[name] = size
+        todo[name] = dur
     if not todo:
         print("SUMMARY " + json.dumps(summary))
         return 0
-
     session = gu.get_authenticated_gopro_session()
     if session is None:
-        print("::error::GoPro session could not be authenticated (cookies invalid and refresh failed)")
+        print("::error::GoPro session could not be authenticated")
         return 1
     media = find_media(session, set(todo), a.max_pages)
+    os.makedirs(a.workdir, exist_ok=True)
+    tcfg = TransferConfig(multipart_threshold=256 << 20, multipart_chunksize=256 << 20, max_concurrency=4)
 
-    for name, size in todo.items():
+    for name, drive_dur in todo.items():
         if name not in media:
             summary[name] = "not found in GoPro cloud"
-            print(f"::warning::{name}: not found in the first {a.max_pages} pages of GoPro cloud media")
             continue
         mid = media[name]["id"]
-        url, v = pick_url(session, mid, size)
-        if not url:
-            summary[name] = "no variant matching the Drive original's size"
-            print(f"::warning::{name}: no GoPro variant is exactly {size} bytes; skipped so window times stay valid")
-            continue
-        got = url_size(url)
-        if got != size:
-            summary[name] = f"variant URL size {got} != {size}"
-            print(f"::warning::{name}: download URL reports {got} bytes, expected {size}; skipped")
-            continue
-        key = PREFIX + name
-        state_key = key + ".copy-state.json"
-        try:
-            st = json.loads(s3.get_object(Bucket=bucket, Key=state_key)["Body"].read())
-            if st.get("size") != size or st.get("part_bytes") != part:
-                raise ValueError("stale")
-            print(f"{name}: resuming, {len(st['parts'])} parts done")
-        except Exception:
-            up = s3.create_multipart_upload(Bucket=bucket, Key=key, ContentType="video/mp4")
-            st = {"upload_id": up["UploadId"], "size": size, "part_bytes": part, "source": f"gopro:{mid}:{v.get('label')}", "parts": []}
-            s3.put_object(Bucket=bucket, Key=state_key, Body=json.dumps(st).encode())
-            print(f"{name}: new upload from GoPro variant {v.get('label')}, {-(-size // part)} parts")
-        n = -(-size // part)
-        done = {p["PartNumber"] for p in st["parts"]}
+        chs = chapters(session, mid)
+        print(f"{name}: {len(chs)} source chapters")
+        work = os.path.join(a.workdir, name)
+        os.makedirs(work, exist_ok=True)
+        parts = []
         t0 = time.time()
-        for pn in range(1, n + 1):
-            if pn in done:
-                continue
-            if time.time() > deadline:
-                summary[name] = f"paused {len(st['parts'])}/{n}"
-                break
-            start, end = (pn - 1) * part, min(size, pn * part) - 1
-            try:
-                data = fetch(url, start, end)
-            except PermissionError:
-                url, _ = pick_url(session, mid, size)  # signed URL expired: get a fresh one
-                if not url:
-                    summary[name] = f"url refresh failed at {len(st['parts'])}/{n}"
-                    break
-                data = fetch(url, start, end)
-            r = s3.upload_part(Bucket=bucket, Key=key, UploadId=st["upload_id"], PartNumber=pn, Body=data)
-            st["parts"].append({"PartNumber": pn, "ETag": r["ETag"]})
-            s3.put_object(Bucket=bucket, Key=state_key, Body=json.dumps(st).encode())
-            mb = (end - start + 1) / 1e6
-            print(f"{name}: part {pn}/{n} ok ({mb / max(time.time() - t0, 1e-6):.0f} MB/s)")
-            t0 = time.time()
-        else:
-            s3.complete_multipart_upload(Bucket=bucket, Key=key, UploadId=st["upload_id"],
-                                         MultipartUpload={"Parts": sorted(st["parts"], key=lambda p: p["PartNumber"])})
-            got = s3.head_object(Bucket=bucket, Key=key)["ContentLength"]
-            if got != size:
-                print(f"::error::{name}: R2 size {got} != {size}")
-                return 1
-            s3.delete_object(Bucket=bucket, Key=state_key)
-            print(f"{name}: COMPLETE in R2 at {key} ({got} bytes, matches Drive original)")
-            summary[name] = "done"
-        if time.time() > deadline:
-            break
+        for i, ch in enumerate(chs, start=1):
+            dest = os.path.join(work, f"ch{i:02d}.mp4")
+            item = ch.get("item_number")
+
+            first = {"url": ch["url"]}
+
+            def url_fn(item=item, first=first):
+                # First call: the URL just listed; later calls (expiry): re-list.
+                if first.get("url"):
+                    return first.pop("url")
+                for v in chapters(session, mid):
+                    if v.get("item_number") == item:
+                        return v["url"]
+                raise RuntimeError(f"chapter {item} vanished")
+
+            n = download(url_fn, dest)
+            parts.append(dest)
+            print(f"  chapter {i}/{len(chs)}: {n / 1e9:.2f} GB ({ffprobe_duration(dest):.2f} s)")
+        print(f"  downloaded in {time.time() - t0:.0f} s")
+        lst = os.path.join(work, "list.txt")
+        with open(lst, "w") as f:
+            f.writelines(f"file '{p}'\n" for p in parts)
+        out = os.path.join(work, name)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst,
+                        "-map", "0:v:0", "-map", "0:a:0", "-c", "copy", "-movflags", "+faststart", out], check=True)
+        for pth in parts:
+            os.remove(pth)  # free disk before upload
+        dur = ffprobe_duration(out)
+        print(f"  joined: {os.path.getsize(out) / 1e9:.2f} GB, {dur:.3f} s (Drive original {drive_dur:.3f} s)")
+        if abs(dur - drive_dur) > a.tolerance_s:
+            summary[name] = f"joined duration {dur:.3f} s != Drive {drive_dur:.3f} s"
+            print(f"::warning::{name}: joined duration differs from the Drive original; not uploaded")
+            shutil.rmtree(work, ignore_errors=True)
+            continue
+        s3.upload_file(out, bucket, PREFIX + name, Config=tcfg, ExtraArgs={
+            "ContentType": "video/mp4",
+            "Metadata": {"duration-s": f"{dur:.3f}", "source": f"gopro:{mid}", "chapters": str(len(chs)),
+                         "built": "ffmpeg concat -c copy (video+audio)"}})
+        size = s3.head_object(Bucket=bucket, Key=PREFIX + name)["ContentLength"]
+        if size != os.path.getsize(out):
+            print(f"::error::{name}: R2 size {size} != local {os.path.getsize(out)}")
+            return 1
+        print(f"{name}: COMPLETE in R2 at {PREFIX + name} ({size} bytes, {dur:.3f} s)")
+        summary[name] = "done"
+        shutil.rmtree(work, ignore_errors=True)
 
     print("SUMMARY " + json.dumps(summary))
     with open(os.environ.get("GITHUB_STEP_SUMMARY", os.devnull), "a") as f:
         f.write("### OEV GoPro cloud -> R2\n\n```\n" + json.dumps(summary, indent=1) + "\n```\n")
-    return 0
+    return 0 if all(v == "done" for v in summary.values()) else 2
 
 
 if __name__ == "__main__":

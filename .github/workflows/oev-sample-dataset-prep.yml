@@ -155,12 +155,15 @@ jobs:
           pip install -q boto3 requests google-auth google-auth-oauthlib google-api-python-client playwright
           python3 -m playwright install --with-deps chromium >/dev/null 2>&1 || echo "playwright browser install failed (only needed if cookies are stale)"
           python3 -c "import os,pathlib; pathlib.Path('gopro_cookies.json').write_text(os.environ.get('GOPRO_COOKIES','').strip() or '{}')"
-          # Sizes are the Drive originals' exact byte counts: only an identical file is accepted.
-          python3 -u scripts/oev_gopro_to_r2.py --part-mb 256 --budget-min 320 \
-            --file GX010197.MP4=22129086718 \
-            --file GX010173.MP4=22123474750 \
-            --file GX010175.MP4=19580880915 \
-            --file GX010198.MP4=19574136539
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          sudo mkdir -p /mnt/oev_gopro && sudo chown "$USER" /mnt/oev_gopro && df -h /mnt | tail -1
+          # The Drive files are the GoPro chapters joined; the joined result must
+          # match each Drive original's duration (s) so frozen window times hold.
+          python3 -u scripts/oev_gopro_to_r2.py --workdir /mnt/oev_gopro \
+            --file GX010197.MP4=2952.95 \
+            --file GX010173.MP4=2951.949 \
+            --file GX010175.MP4=2612.61 \
+            --file GX010198.MP4=2611.609
 
       - name: Copy source videos Drive -> R2 (copy_to_r2)
         if: inputs.copy_to_r2 && !inputs.copy_from_gopro
