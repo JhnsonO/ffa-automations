@@ -156,8 +156,8 @@ def main(argv=None) -> int:
             try:
                 data = drive_range(fid, tok.get(), start, end)
             except Blocked as e:
-                blocked = f"{name} part {pn}: {e}"
-                print(f"::warning::Drive refused {blocked}; stopping (no retry). Resume after the quota resets.")
+                blocked = (blocked + "; " if blocked else "") + f"{name} part {pn}: {e}"
+                print(f"::warning::Drive refused {name} part {pn}: {e}; leaving this file for a later run (no retry).")
                 summary[name] = f"blocked {len(st['parts'])}/{n_parts}"
                 break
             r = s3.upload_part(Bucket=bucket, Key=key, UploadId=st["upload_id"], PartNumber=pn, Body=data)
@@ -176,7 +176,9 @@ def main(argv=None) -> int:
             s3.delete_object(Bucket=bucket, Key=state_key)
             print(f"{name}: COMPLETE in R2 at {key} ({got} bytes, size verified)")
             summary[name] = "done"
-        if blocked or time.time() > deadline:
+        # Drive's quota is per file: a refused file is left for a later run,
+        # the next file still gets its one attempt.
+        if time.time() > deadline:
             break
 
     print("SUMMARY " + json.dumps(summary))
