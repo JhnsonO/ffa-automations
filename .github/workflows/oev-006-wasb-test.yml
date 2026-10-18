@@ -96,7 +96,7 @@ jobs:
           PINNED_DATACENTER = os.environ['PINNED_DATACENTER']
           volume_map = json.loads(os.environ['VOLUME_MAP_JSON'])
           pinned_volume_id = volume_map.get(PINNED_DATACENTER)
-          if not pinned_volume_id:
+          if False:  # WASB test: no network volume needed, any datacenter
               print(f'::error::datacenter={PINNED_DATACENTER!r} is not a key in '
                     f'OEV_NETWORK_VOLUME_MAP={volume_map!r}. Run oev-network-volume-setup.yml '
                     f'for this datacenter first.')
@@ -179,15 +179,15 @@ jobs:
                   'ports': ['22/tcp'],
                   'supportPublicIp': True,
                   'allowedCudaVersions': ['12.8'],
-                  'networkVolumeId': pinned_volume_id,
-                  'volumeMountPath': '/runpod-volume',
+                  # WASB test: no volume; any datacenter with capacity (RunPod picks one).
+                  'dataCenterIds': [dc for dc in ALL_DATACENTERS if dc not in exclude_datacenters] or ALL_DATACENTERS,
+                  'dataCenterPriority': 'availability',
                   # Pinned to the single requested datacenter, always --
                   # deliberately NOT using the production workflow's
                   # exclude/widen-to-ALL_DATACENTERS steering logic, since
                   # the sample pack does not exist outside EU-RO-1/EUR-IS-1
                   # and a widened fallback would silently land this run
                   # somewhere the samples aren't staged.
-                  'dataCenterIds': [PINNED_DATACENTER],
                   # RunPod documentation/templates use both names in different
                   # SSH-key paths. Supplying both is harmless and makes this
                   # ephemeral per-run key explicit for the stock image.
