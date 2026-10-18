@@ -552,9 +552,56 @@ jobs:
             echo "volume_hit=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Download sample clips from R2 (OEV-006; when not on volume)
+        id: r2_copy
+        if: steps.volume_copy.outputs.volume_hit != 'true'
+        env:
+          IP: ${{ steps.launch.outputs.ip }}
+          PORT: ${{ steps.launch.outputs.port }}
+          SAMPLE_SET_ID: ${{ inputs.sample_set_id }}
+          SAMPLE_ID: ${{ inputs.sample_id }}
+          DURATION_S: ${{ inputs.duration_s }}
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+        run: |
+          pip install -q boto3
+          urls=$(python3 - <<'PY'
+          import os, boto3
+          from botocore.config import Config
+          s3 = boto3.client("s3", endpoint_url=os.environ["S3_ENDPOINT_URL"], aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
+                            aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"], region_name="auto", config=Config(signature_version="s3v4"))
+          b = os.environ["S3_BUCKET"]; sid = os.environ["SAMPLE_ID"]; d = os.environ["DURATION_S"]
+          out = []
+          for side in ("left", "right"):
+              key = f"oev/samples/{os.environ['SAMPLE_SET_ID']}/{sid}/{sid}_{side}_{d}s.mp4"
+              try:
+                  size = s3.head_object(Bucket=b, Key=key)["ContentLength"]
+              except Exception:
+                  print("MISSING"); raise SystemExit(0)
+              out.append(f"{s3.generate_presigned_url('get_object', Params={'Bucket': b, 'Key': key}, ExpiresIn=3 * 3600)}|{size}")
+          print(" ".join(out))
+          PY
+          )
+          if [ "$urls" = "MISSING" ] || [ -z "$urls" ]; then
+            echo "Not in R2 either -- Drive fallback will run."
+            echo "r2_hit=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          read -r L R <<< "$urls"
+          echo "::add-mask::${L%|*}"; echo "::add-mask::${R%|*}"
+          SSH="ssh -i /tmp/runpod_key -p $PORT -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes root@$IP"
+          $SSH "mkdir -p /tmp/oev_run && curl -fsS --retry 3 -o /tmp/oev_run/left.mp4 '${L%|*}' && curl -fsS --retry 3 -o /tmp/oev_run/right.mp4 '${R%|*}'"
+          got=$($SSH "stat -c %s /tmp/oev_run/left.mp4 /tmp/oev_run/right.mp4" | tr '\n' ' ')
+          if [ "$got" != "${L##*|} ${R##*|} " ]; then
+            echo "::error::R2 download size mismatch: got '$got' expected '${L##*|} ${R##*|}'"; exit 1
+          fi
+          echo "Downloaded ${SAMPLE_ID} left/right from R2 ($got bytes)"
+          echo "r2_hit=true" >> "$GITHUB_OUTPUT"
+
       - name: Resolve + download sample clips from Drive (fallback only, when not on volume)
         id: resolve_drive_fallback
-        if: steps.volume_copy.outputs.volume_hit != 'true'
+        if: steps.volume_copy.outputs.volume_hit != 'true' && steps.r2_copy.outputs.r2_hit != 'true'
         env:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
@@ -627,7 +674,7 @@ jobs:
           PY
 
       - name: Download clip pair to pod (Drive fallback only)
-        if: steps.volume_copy.outputs.volume_hit != 'true'
+        if: steps.volume_copy.outputs.volume_hit != 'true' && steps.r2_copy.outputs.r2_hit != 'true'
         env:
           IP: ${{ steps.launch.outputs.ip }}
           PORT: ${{ steps.launch.outputs.port }}
