@@ -282,6 +282,12 @@ echo "=== stitch.log: reco stitch (field follow-cam, l-shape, shared-buffer GPU 
 # The merged path was hardware-verified on RTX 4090 and L4 without the old
 # green/corrupt direct-shared-VkImage failure.
 : "${LOOKAHEAD:=1.5}"
+# OEV-006: render a precomputed camera path. The CSV poses are already the
+# final smoothed poses, so lookahead is 0 to avoid smoothing them twice.
+if [ -n "${OEV_TRAJECTORY:-}" ]; then
+  test -s "$OEV_TRAJECTORY" || { echo "FATAL: OEV_TRAJECTORY=$OEV_TRAJECTORY missing" | tee -a stitch.log; exit 1; }
+  LOOKAHEAD=0
+fi
 STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
   --model "${YOLO26_VARIANT}.onnx"
   --tracking field
@@ -291,6 +297,10 @@ STITCH_ARGS=(stitch left.mp4 right.mp4 -c match.json -o followcam.mp4
   --frame-stride 1
   --events events.jsonl
   --width 1920 --height 1080)
+if [ -n "${OEV_TRAJECTORY:-}" ]; then
+  STITCH_ARGS+=(--trajectory "$OEV_TRAJECTORY")
+  echo "Trajectory render: $OEV_TRAJECTORY (lookahead 0)" | tee -a stitch.log
+fi
 
 # --- Measurement-only overlay: optional cluster_alpha override on top of
 # the broadcast preset. Blank/unset CLUSTER_ALPHA_OVERRIDE (the default)
