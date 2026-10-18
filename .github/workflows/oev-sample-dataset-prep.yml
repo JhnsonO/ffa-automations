@@ -164,8 +164,9 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg
           sudo mkdir -p /mnt/oev_gopro && sudo chown "$USER" /mnt/oev_gopro && df -h /mnt | tail -1
           # The Drive files are the GoPro chapters joined; the joined result must
-          # match each Drive original's duration (s) so frozen window times hold.
-          python3 -u scripts/oev_gopro_to_r2.py --workdir /mnt/oev_gopro --only "$GOPRO_ONLY" \
+          # match each Drive original's duration (s) within 0.5 s (St Margaret's 6-chapter joins measured
+          # 0.27-0.44 s short, runs 39120617002/39120621372); window starts shift by < 0.5 s.
+          python3 -u scripts/oev_gopro_to_r2.py --workdir /mnt/oev_gopro --only "$GOPRO_ONLY" --tolerance-s 0.5 \
             --file GX010197.MP4=2952.95@2026-08-05T21:38:05Z \
             --file GX010173.MP4=2951.949@2026-08-05T21:38:50Z \
             --file GX010175.MP4=2612.61@2026-08-06T22:39:26Z \

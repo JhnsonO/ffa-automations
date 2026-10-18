@@ -277,7 +277,7 @@ def main(argv=None) -> int:
             continue
         s3.upload_file(out, bucket, PREFIX + name, Config=tcfg, ExtraArgs={
             "ContentType": "video/mp4",
-            "Metadata": {"duration-s": f"{dur:.3f}", "source": f"gopro:{mid}", "chapters": str(len(chs)),
+            "Metadata": {"duration-s": f"{dur:.3f}", "drive-duration-s": f"{drive_dur:.3f}", "source": f"gopro:{mid}", "chapters": str(len(chs)),
                          "built": "ffmpeg concat -c copy (video+audio)"}})
         size = s3.head_object(Bucket=bucket, Key=PREFIX + name)["ContentLength"]
         if size != os.path.getsize(out):
