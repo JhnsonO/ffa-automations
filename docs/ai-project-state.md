@@ -1,6 +1,6 @@
-# FFA / OEV — Current Status (updated 24 Aug 2026)
+# FFA / OEV — Current Status (summary needs reconciliation; latest dated top entry: 15 Oct 2026)
 
-One line per active or recently-closed track. Full detail is below, newest generally near the top but not guaranteed — check dates. Closed self-contained sagas (Clip Extractor, Flatcam, Runner failsafe) live in `docs/ai-project-state-archive.md`.
+The first status entry is dated 15 October; several following entries are older and may be stale. Verify them against current evidence before acting. The file contains extensive historical notes: read only the relevant sections, not the full 450 KB by default. Closed self-contained sagas (Clip Extractor, Flatcam, Runner failsafe) live in `docs/ai-project-state-archive.md`.
 
 - **YouTube uploader title/description — MERGED to `main` @ `a85d003` (15 Oct 2026); first live upload not yet observed.** `gopro_uploader.py` `make_title`/`make_description` now camera-neutral: title `Football Session in Leicester | Tuesday 13 Oct 2026 | FFA Leicester` (Europe/London date); new session+`/book` intro and "FFA runs organised community football sessions…" line; Monday League section, shop link, socials, hashtags unchanged. `camera_label` ignored (POV suffix is added manually in YouTube Studio). Duplicate detection is the `uploaded.db` media_id/filename check and the `FFA_*` block lines in `upload_item()`/`run_direct_upload()` are byte-unchanged. Verified: 9 new tests in `tests/test_session_metadata.py` pass (stubbed dry run, standard vs POV label identical title, FFA block byte-for-byte); existing `ball_tracker/tests` = 1 pre-existing failure (`test_physics_corridor_rejects_implausible_jump`) identical on base `d835a6b`. Future uploads only; no published video touched.
 
