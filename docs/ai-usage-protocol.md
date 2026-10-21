@@ -5,7 +5,7 @@ Use the AI account you are already in. It owns a bounded task end to end when it
 ## Start and finish
 
 1. For substantial or cross-account work, read the private Drive **AI Project Hub — Home**, **AI Shared Rules and Handover**, and the relevant project handover.
-2. For this repo, read `CLAUDE.md`, then the current-status summary and only relevant sections of `docs/ai-project-state.md`. The state file is large; do not load its full history by default.
+2. For this repo, read `CLAUDE.md`, then `docs/current-state.md` and only relevant sections of `docs/ai-project-state.md`. The state file is large; do not load its full history by default.
 3. Inspect current evidence, make the smallest useful change, run cheap checks first, then verify the resulting artifact or behaviour.
 4. Update the canonical board/roadmap and project handover with verified changes, decisions, blockers and the next action. Keep technical detail in the repo; keep the Drive hub as navigation and concise cross-account context.
 
