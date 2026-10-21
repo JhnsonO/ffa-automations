@@ -2,18 +2,11 @@
 
 ## First action
 
-Read `docs/ai-project-state.md`. It is the source of truth for the current stage, frozen files, known evidence, active gate, and next action. A pinned "Current Status" block at the top of that file summarizes every active/open track — check it first. Closed, self-contained sagas (e.g. Clip Extractor, Flatcam) are moved to `docs/ai-project-state-archive.md`; only read it if the active task genuinely concerns one of those closed areas.
+Read `docs/ai-project-state.md` as the technical source of truth. Start with its current-status summary, then search and read only the sections relevant to the task. This file is about 450 KB and contains extensive history; do not load it all by default. Verify the dates and evidence before acting. Closed sagas live in `docs/ai-project-state-archive.md`; read them only when the active task needs them. For cross-account or portfolio work, also read the private Drive AI Project Hub — Home and the relevant project handover; keep detailed engineering state in this repo.
 
 ## Operating model
 
-**Capability-first direct execution — effective 22 August 2026.** This supersedes the old fixed ChatGPT/Codex/Claude role split.
-
-- **The current connected agent owns the bounded task end-to-end when it has the required tools.** If the user says "implement it", "go", "fix it", or equivalent, do the repo work yourself instead of drafting a prompt for another AI.
-- **ChatGPT with connected GitHub access may read/write repo files, create feature branches and PRs, merge verified changes, dispatch the OEV harness/workflows, inspect run status/logs/artifacts, and update docs/state.** Do not hand work to Codex or Claude merely because code or GitHub is involved.
-- **Claude with equivalent repo/tool access may do the same.** Claude is not a mandatory gate for work already implemented and verified by another connected agent.
-- **Codex is optional, not mandatory.** Use it only when the user explicitly wants it or when the current agent genuinely lacks the execution capability needed for the task.
-- **Handoff is a capability fallback, not a workflow default.** Only hand work to another tool/agent when the current environment genuinely cannot perform a required action. State the missing capability plainly.
-- **The user owns product trade-offs and final product acceptance.** A green workflow proves execution, not that a rendered video is good enough.
+Follow the capability-first rule in AI Shared Rules and Handover: the AI currently in use owns the bounded task when it has the tools; do not assign fixed roles to ChatGPT, Claude or Codex. Handoff only when a needed capability is genuinely missing or Johnson asks. Johnson owns product trade-offs and final acceptance.
 
 For repo changes, use a feature/test branch and verify before merging. Do not edit production Reco or other frozen production paths merely to run an experiment unless the user explicitly authorizes that promotion.
 
@@ -95,7 +88,7 @@ For clear correctness/ops defects with an established cause (syntax error, broke
 Before acting on a repo task:
 
 1. Read `CLAUDE.md`.
-2. Read `docs/ai-project-state.md`.
+2. Read the current-status summary at the top of `docs/ai-project-state.md`, then search/read only the relevant dated sections; do not load the full history by default.
 3. Read only files explicitly needed for the active task.
 4. State the current gate and exact files to change in no more than three lines, then proceed.
 
