@@ -2,7 +2,7 @@
 
 ## First action
 
-Read `docs/ai-project-state.md` as the technical source of truth. Start with its current-status summary, then search and read only the sections relevant to the task. This file is about 450 KB and contains extensive history; do not load it all by default. Verify the dates and evidence before acting. Closed sagas live in `docs/ai-project-state-archive.md`; read them only when the active task needs them. For cross-account or portfolio work, also read the private Drive AI Project Hub — Home and the relevant project handover; keep detailed engineering state in this repo.
+Read `docs/current-state.md` first for the reconciled summary, canonical tracker links and next action. Use `docs/ai-project-state.md` for dated technical evidence; search and read only the relevant sections. This file is about 450 KB and contains extensive history; do not load it all by default. Verify the dates and evidence before acting. Closed sagas live in `docs/ai-project-state-archive.md`; read them only when the active task needs them. For cross-account or portfolio work, also read the private Drive AI Project Hub — Home and the relevant project handover; keep detailed engineering state in this repo.
 
 ## Operating model
 
