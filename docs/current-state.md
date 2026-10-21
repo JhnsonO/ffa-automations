@@ -17,6 +17,9 @@ This repo contains FFA uploader/relay automation plus OEV experiment infrastruct
 ## OEV milestone evidence
 The repository's M1 acceptance gate [#28](https://github.com/JhnsonO/ffa-automations/issues/28) remains open, last updated 6 August, with zero comments at this review. BOM [#24](https://github.com/JhnsonO/ffa-automations/issues/24) and housing [#35](https://github.com/JhnsonO/ffa-automations/issues/35) also remain open. This is evidence of incomplete tracking, not proof that physical work did or did not happen. Require an accepted clip/checklist and a current hardware update before committing new delivery dates.
 
+## Additional observation, 21 October
+The live FFA homepage's YouTube player showed “Football Session in Leicester | Monday 19 Oct 2026 | FFA Leicester”, matching the intended camera-neutral title style. The video's description and the exact uploader version that produced it were not verified; do not equate a matching public title with full uploader acceptance.
+
 ## Roadmap
 1. **Now — reconcile evidence:** observe the next uploader result, revalidate active workflow/runner issues from current logs before changing infrastructure.
 2. **Next — bounded fixes:** address confirmed GoPro resume or relay failures with the smallest testable change. Retain existing authentication and working upload behavior.
