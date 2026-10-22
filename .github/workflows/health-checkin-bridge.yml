@@ -2,6 +2,8 @@ name: Johnson OS Check-in Bridge
 
 on:
   schedule:
+    # One-time test trigger; remove after verification.
+    - cron: '15 16 * * *'
     # These paired UTC times keep the export at 06:50 Europe/London through DST.
     # Gate by scheduled cron, not runner time, because GitHub may queue scheduled runs.
     - cron: '50 5 * * *'
@@ -38,15 +40,21 @@ jobs:
           if event != 'schedule':
               print('run=true')
           else:
-              now = datetime.now(ZoneInfo('Europe/London'))
-              is_bst = now.utcoffset() == timedelta(hours=1)
-              expected = '50 5 * * *' if is_bst else '50 6 * * *'
               scheduled = os.environ.get('SCHEDULE', '')
-              run = scheduled == expected
+              if scheduled == '15 16 * * *':
+                  run = True
+                  print('london_time=' + datetime.now(ZoneInfo('Europe/London')).isoformat())
+                  print('scheduled_cron=' + scheduled)
+                  print('expected_cron=' + scheduled)
+              else:
+                  now = datetime.now(ZoneInfo('Europe/London'))
+                  is_bst = now.utcoffset() == timedelta(hours=1)
+                  expected = '50 5 * * *' if is_bst else '50 6 * * *'
+                  run = scheduled == expected
+                  print('london_time=' + now.isoformat())
+                  print('scheduled_cron=' + scheduled)
+                  print('expected_cron=' + expected)
               print('run=' + str(run).lower())
-              print(f'london_time={now.isoformat()}')
-              print(f'scheduled_cron={scheduled}')
-              print(f'expected_cron={expected}')
           PY
 
       - name: Explain skipped DST duplicate
