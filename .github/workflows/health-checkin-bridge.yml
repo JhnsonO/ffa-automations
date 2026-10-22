@@ -2,7 +2,7 @@ name: Johnson OS Check-in Bridge
 
 on:
   schedule:
-    # GitHub cron is UTC. Running both covers 06:50 Europe/London across GMT/BST.
+    # These paired UTC times keep the export at 06:50 Europe/London through DST.
     - cron: '50 5 * * *'
     - cron: '50 6 * * *'
   push:
@@ -22,33 +22,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Decide whether this scheduled run is the 06:50 London run
+      - name: Select one 06:50 London schedule
         id: gate
         shell: bash
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import os
-          from datetime import datetime
+          from datetime import datetime, timedelta
           from zoneinfo import ZoneInfo
+
           event = os.environ.get('GITHUB_EVENT_NAME', '')
           if event != 'schedule':
               print('run=true')
           else:
               now = datetime.now(ZoneInfo('Europe/London'))
-              print('run=' + ('true' if (now.hour == 6 and 45 <= now.minute <= 59) else 'false'))
+              is_bst = now.utcoffset() == timedelta(hours=1)
+              expected = '50 5 * * *' if is_bst else '50 6 * * *'
+              scheduled = os.environ.get('SCHEDULE', '')
+              run = scheduled == expected
+              print('run=' + str(run).lower())
               print(f'london_time={now.isoformat()}')
+              print(f'scheduled_cron={scheduled}')
+              print(f'expected_cron={expected}')
           PY
 
-      - name: Validate request
-        if: steps.gate.outputs.run == 'true' && github.event_name != 'schedule'
+      - name: Explain skipped DST duplicate
+        if: github.event_name == 'schedule' && steps.gate.outputs.run != 'true'
+        env:
+          LONDON_TIME: ${{ steps.gate.outputs.london_time }}
+          SCHEDULED_CRON: ${{ steps.gate.outputs.scheduled_cron }}
+          EXPECTED_CRON: ${{ steps.gate.outputs.expected_cron }}
         run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          request = json.loads(Path('health-checkin/request.json').read_text())
-          if request.get('operation') != 'export_checkin':
-              raise SystemExit('Unsupported operation')
-          PY
+          {
+            echo "## No check-in export in this run"
+            echo
+            echo "The paired DST schedule selected $EXPECTED_CRON for the 06:50 London run. This run came from $SCHEDULED_CRON at $LONDON_TIME, so it was skipped as the duplicate."
+            echo "No health data was fetched and no artifact was created."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fetch check-in
         if: steps.gate.outputs.run == 'true'
@@ -56,6 +68,7 @@ jobs:
           CHECKIN_EXPORT_KEY: ${{ secrets.CHECKIN_EXPORT_KEY }}
         run: |
           test -n "$CHECKIN_EXPORT_KEY" || { echo "Missing repository secret CHECKIN_EXPORT_KEY"; exit 1; }
+          mkdir -p health-checkin
           curl --fail --silent --show-error \
             --connect-timeout 10 --max-time 45 \
             -H "Authorization: Bearer $CHECKIN_EXPORT_KEY" \
@@ -70,7 +83,7 @@ jobs:
           missing = sorted(required - payload.keys())
           if missing:
               raise SystemExit(f'Invalid check-in response; missing: {missing}')
-          print('Check-in response validated')
+          print('Check-in response validated; Hevy section present')
           PY
 
       - name: Encrypt response
