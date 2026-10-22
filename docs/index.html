@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f3f2ec">
+<meta name="description" content="Johnson's project directory: one place to open the current boards, roadmaps and project pages.">
+<title>Project Hub — Johnson</title>
+<style>
+:root{--paper:#f3f2ec;--white:#fffef9;--ink:#1e2823;--muted:#65716a;--line:#d8ddd3;--green:#b8ed68;--dark:#17211c;--orange:#e9a266;--blue:#9fc8e6;--shadow:0 18px 48px rgba(24,37,28,.07);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);min-height:100vh}
+a{color:inherit}
+button,input{font:inherit}
+.shell{max-width:1440px;margin:auto;min-height:100vh;display:grid;grid-template-columns:248px 1fr}
+.rail{background:var(--dark);color:#edf2ea;padding:30px 20px;display:flex;flex-direction:column;gap:36px}
+.brand{display:flex;align-items:center;gap:12px;padding:4px 8px}
+.brand-mark{width:38px;height:38px;border-radius:12px;background:var(--green);color:#17211c;display:grid;place-items:center;font-weight:900;letter-spacing:-.06em}
+.brand strong{font-size:15px;letter-spacing:-.02em}.brand small{display:block;color:#9daaa0;font-size:11px;margin-top:3px}
+.nav-title{font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:#87948a;margin:0 10px 10px}
+.nav{display:grid;gap:5px}
+.nav a{padding:10px 12px;border-radius:10px;text-decoration:none;font-size:13px;color:#c4cec5;display:flex;align-items:center;gap:10px}
+.nav a:hover,.nav a.active{background:#28352d;color:#fff}
+.nav a.active:before{content:"";width:6px;height:6px;background:var(--green);border-radius:50%}
+.rail-note{margin-top:auto;border:1px solid #354339;padding:14px;border-radius:13px;color:#b8c3b9;font-size:11px;line-height:1.55}
+.rail-note b{color:#f2f5ef;display:block;margin-bottom:5px;font-size:12px}
+main{padding:38px clamp(24px,5vw,72px) 64px;min-width:0}
+.topline{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:36px}
+.eyebrow{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700}
+.updated{font-size:11px;color:var(--muted)}
+.hero{display:grid;grid-template-columns:minmax(0,1fr) 235px;gap:30px;align-items:end;margin-bottom:30px}
+h1{font-size:clamp(38px,5.7vw,72px);letter-spacing:-.075em;line-height:.95;margin:12px 0 16px;font-weight:760}
+.hero p{max-width:610px;color:var(--muted);font-size:15px;line-height:1.65;margin:0}
+.hero-card{background:var(--green);border-radius:18px;padding:20px 20px 18px;box-shadow:var(--shadow)}
+.hero-card span{font-size:10px;text-transform:uppercase;letter-spacing:.12em;font-weight:800}
+.hero-card strong{display:block;font-size:29px;letter-spacing:-.06em;margin:12px 0 4px}
+.hero-card small{font-size:11px;color:#415238}
+.toolbar{display:flex;align-items:center;gap:12px;margin:28px 0 26px;flex-wrap:wrap}
+.search{flex:1;min-width:220px;position:relative}
+.search input{width:100%;height:44px;border:1px solid var(--line);border-radius:12px;background:var(--white);padding:0 15px 0 42px;outline:none;color:var(--ink)}
+.search input:focus{border-color:#879d6c;box-shadow:0 0 0 3px rgba(184,237,104,.24)}
+.search:before{content:"⌕";position:absolute;left:15px;top:6px;font-size:23px;color:#708077}
+.filters{display:flex;gap:6px;flex-wrap:wrap}
+.filters button{border:1px solid var(--line);background:transparent;color:#56625b;border-radius:999px;padding:9px 13px;font-size:11px;font-weight:700;cursor:pointer}
+.filters button[aria-pressed="true"]{background:var(--dark);color:white;border-color:var(--dark)}
+.section{margin-top:34px;scroll-margin-top:20px}
+.section-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 0 14px}
+.section h2{font-size:17px;letter-spacing:-.035em;margin:0}
+.section-head span{font-size:11px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}
+.card{background:var(--white);border:1px solid var(--line);border-radius:16px;padding:19px;min-width:0;box-shadow:0 3px 10px rgba(28,41,31,.02);transition:transform .16s ease,box-shadow .16s ease}
+.card:hover{transform:translateY(-2px);box-shadow:var(--shadow)}
+.card-top{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.icon{width:38px;height:38px;border-radius:12px;background:#e8eddf;display:grid;place-items:center;font-size:11px;font-weight:850;color:#314234;letter-spacing:-.04em}
+.pill{border:1px solid var(--line);border-radius:999px;padding:5px 9px;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:800}
+.card h3{font-size:18px;letter-spacing:-.045em;margin:16px 0 5px}
+.card p{font-size:12px;line-height:1.55;color:var(--muted);margin:0;min-height:38px}
+.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:17px}
+.actions a{background:#edf0e8;border-radius:8px;text-decoration:none;padding:8px 10px;font-size:10px;font-weight:750}
+.actions a.primary{background:var(--dark);color:#fff}
+.actions a:hover{filter:brightness(.94)}
+.note{display:flex;gap:12px;align-items:flex-start;background:#e8ece3;border-radius:14px;padding:15px 17px;margin-top:30px;color:#536057;font-size:11px;line-height:1.55}
+.note i{font-style:normal;color:#314234;font-size:15px}
+.empty{display:none;padding:28px;border:1px dashed var(--line);border-radius:14px;color:var(--muted);font-size:13px;text-align:center}
+footer{border-top:1px solid var(--line);margin-top:46px;padding-top:17px;color:var(--muted);font-size:10px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+[hidden]{display:none!important}
+@media(max-width:850px){.shell{grid-template-columns:1fr}.rail{padding:14px 18px;gap:14px}.brand{padding:0}.nav-title,.rail-note{display:none}.nav{display:flex;overflow:auto;gap:4px}.nav a{white-space:nowrap;padding:8px 10px}.nav a.active:before{display:none}main{padding-top:27px}.hero{grid-template-columns:1fr 190px}}
+@media(max-width:620px){.hero{grid-template-columns:1fr}.hero-card{max-width:none}.hero-card strong{font-size:23px}.grid{grid-template-columns:1fr}.topline{margin-bottom:25px}.filters{width:100%}.filters button{flex:1}main{padding-left:18px;padding-right:18px}.card p{min-height:0}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="shell">
+<aside class="rail">
+  <div class="brand"><div class="brand-mark">J</div><div><strong>Johnson's Hub</strong><small>Projects &amp; progress</small></div></div>
+  <div>
+    <p class="nav-title">Workspace</p>
+    <nav class="nav" aria-label="Project groups">
+      <a class="active" href="#overview">Overview</a>
+      <a href="#ffa">FFA</a>
+      <a href="#oev">OEV</a>
+      <a href="#personal">Personal</a>
+    </nav>
+  </div>
+  <div class="rail-note"><b>One front door</b>Open the current board, roadmap or project page. Some project records require your GitHub or Google sign-in.</div>
+</aside>
+<main id="overview">
+  <div class="topline"><span class="eyebrow">Project directory</span><span class="updated">Directory checked 22 October 2026</span></div>
+  <section class="hero">
+    <div><div class="eyebrow">Your work, in one place</div><h1>Project<br>Hub<span style="color:#86b846">.</span></h1><p>A single menu for the projects you work on across AI accounts. Open each project's actual board, roadmap and handover from here.</p></div>
+    <div class="hero-card"><span>Portfolio</span><strong>05 projects</strong><small>Grouped by FFA, OEV and personal work</small></div>
+  </section>
+  <div class="toolbar">
+    <label class="search"><input id="search" type="search" placeholder="Find a project…" aria-label="Find a project"></label>
+    <div class="filters" role="group" aria-label="Filter projects">
+      <button type="button" data-filter="all" aria-pressed="true">All</button>
+      <button type="button" data-filter="FFA" aria-pressed="false">FFA</button>
+      <button type="button" data-filter="OEV" aria-pressed="false">OEV</button>
+      <button type="button" data-filter="Personal" aria-pressed="false">Personal</button>
+    </div>
+  </div>
+  <section class="section" id="ffa" data-group="FFA">
+    <div class="section-head"><h2>FFA</h2><span>3 projects</span></div>
+    <div class="grid">
+      <article class="card" data-project="ffa website site shop memberships bookings">
+        <div class="card-top"><div class="icon">FF</div><span class="pill">FFA</span></div>
+        <h3>FFA Website</h3><p>Website, shop, bookings and memberships. The master handover is the current record.</p>
+        <div class="actions"><a class="primary" href="https://docs.google.com/document/d/1Ai973jkiOD_3WvG1ra2sFiIzPO3F3R1AlGIvKzZWWXA/edit" target="_blank" rel="noopener">Board &amp; roadmap</a><a href="https://www.officialffa.co.uk/" target="_blank" rel="noopener">Live site</a></div>
+      </article>
+      <article class="card" data-project="ffa media clips footage delivery beta">
+        <div class="card-top"><div class="icon">FM</div><span class="pill">Private tracker</span></div>
+        <h3>FFA Media</h3><p>Footage, clip review and media delivery. Project board and current-state handover.</p>
+        <div class="actions"><a class="primary" href="https://github.com/users/JhnsonO/projects/5/views/1" target="_blank" rel="noopener">Board</a><a href="https://github.com/JhnsonO/ffa-media/blob/main/docs/current-state.md#roadmap" target="_blank" rel="noopener">Roadmap</a><a href="https://github.com/JhnsonO/ffa-media/blob/main/docs/current-state.md" target="_blank" rel="noopener">Handover</a></div>
+      </article>
+      <article class="card" data-project="ffa automations uploader relay workflow">
+        <div class="card-top"><div class="icon">FA</div><span class="pill">FFA</span></div>
+        <h3>FFA Automations</h3><p>Uploader and relay workflows, with OEV experiment infrastructure tracked separately.</p>
+        <div class="actions"><a class="primary" href="https://github.com/JhnsonO/ffa-automations/blob/main/docs/current-state.md#ffa-board" target="_blank" rel="noopener">Board</a><a href="https://github.com/JhnsonO/ffa-automations/blob/main/docs/current-state.md#roadmap" target="_blank" rel="noopener">Roadmap</a><a href="https://github.com/JhnsonO/ffa-automations" target="_blank" rel="noopener">Repository</a></div>
+      </article>
+    </div>
+  </section>
+  <section class="section" id="oev" data-group="OEV">
+    <div class="section-head"><h2>OEV</h2><span>1 project</span></div>
+    <div class="grid">
+      <article class="card" data-project="oev broadcast prototype vision">
+        <div class="card-top"><div class="icon">OV</div><span class="pill">OEV</span></div>
+        <h3>OEV Broadcast</h3><p>Prototype overview and current project roadmap, with the delivery board kept in GitHub.</p>
+        <div class="actions"><a class="primary" href="oev-roadmap.html">OEV project page</a><a href="https://github.com/users/JhnsonO/projects/3/views/2" target="_blank" rel="noopener">Board</a><a href="https://github.com/JhnsonO/oev/blob/main/docs/roadmap.md" target="_blank" rel="noopener">Roadmap</a></div>
+      </article>
+    </div>
+  </section>
+  <section class="section" id="personal" data-group="Personal">
+    <div class="section-head"><h2>Personal</h2><span>1 project</span></div>
+    <div class="grid">
+      <article class="card" data-project="ai workflow shared context memory claude chatgpt">
+        <div class="card-top"><div class="icon">AI</div><span class="pill">Private tracker</span></div>
+        <h3>AI Workflow &amp; Shared Context</h3><p>Shared working rules and project handovers across the AI accounts.</p>
+        <div class="actions"><a class="primary" href="https://github.com/users/JhnsonO/projects/4/views/2" target="_blank" rel="noopener">Portfolio board</a><a href="https://docs.google.com/document/d/1KDqx8qFqywIdekRA-09djS1aPNGYF6sf1ncLhsm-Ft0/edit" target="_blank" rel="noopener">Shared rules</a><a href="https://drive.google.com/drive/folders/1jJtZ_FXd9NAASczvRYOTmbCKJZo5IYKd" target="_blank" rel="noopener">Memory folder</a></div>
+      </article>
+    </div>
+  </section>
+  <div id="empty" class="empty">No matching projects. Try another search or group.</div>
+  <div class="note"><i>↗</i><div><strong>Where progress lives</strong><br>This page is the directory. Each linked board, roadmap or handover is the project source of truth, so its latest progress is available as soon as it is updated. Private links ask you to sign in.</div></div>
+  <footer><span>Johnson's Project Hub · Hosted on GitHub Pages</span><span><a href="https://github.com/JhnsonO/ffa-automations">View source repository</a></span></footer>
+</main>
+</div>
+<script>
+const input=document.querySelector("#search");
+const buttons=[...document.querySelectorAll("[data-filter]")];
+const cards=[...document.querySelectorAll("[data-project]")];
+const sections=[...document.querySelectorAll(".section[data-group]")];
+let active="all";
+function render(){
+ const query=input.value.trim().toLowerCase();
+ let shown=0;
+ for(const card of cards){
+  const section=card.closest(".section");
+  const group=section.dataset.group;
+  const match=(active==="all"||active===group)&&(!query||card.dataset.project.includes(query)||card.innerText.toLowerCase().includes(query));
+  card.hidden=!match;
+  if(match)shown++;
+ }
+ for(const section of sections)section.hidden=!section.querySelector(".card:not([hidden])");
+ document.querySelector("#empty").style.display=shown?"none":"block";
+}
+buttons.forEach(button=>button.addEventListener("click",()=>{
+ active=button.dataset.filter;
+ buttons.forEach(item=>item.setAttribute("aria-pressed",String(item===button)));
+ render();
+}));
+input.addEventListener("input",render);
+</script>
+</body>
+</html>
