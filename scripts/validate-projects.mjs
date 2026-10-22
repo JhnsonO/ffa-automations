@@ -1,7 +1,15 @@
 import { readFile } from 'node:fs/promises';
 
-const file = new URL('../data/projects.json', import.meta.url);
-const data = JSON.parse(await readFile(file, 'utf8'));
+const candidates = [
+  new URL('../docs/data/projects.json', import.meta.url),
+  new URL('../data/projects.json', import.meta.url)
+];
+let source;
+for (const candidate of candidates) {
+  try { source = await readFile(candidate, 'utf8'); break; } catch (_) { /* Try the next known project-data location. */ }
+}
+if (source === undefined) throw new Error('Could not find docs/data/projects.json');
+const data = JSON.parse(source);
 const allowedGroups = new Set(['FFA', 'OEV', 'Personal']);
 const allowedHosts = new Set(['docs.google.com', 'github.com']);
 const forbiddenKeys = new Set(['tasks', 'status', 'badge', 'next_step', 'owner', 'note', 'start', 'end', 'depends_on', 'inbox']);
