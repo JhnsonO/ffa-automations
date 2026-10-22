@@ -1,6 +1,6 @@
 # FFA Automations — Current state
 
-Reviewed: 21 October 2026. Use this compact entry point first. [ai-project-state.md](ai-project-state.md) retains the detailed dated engineering log and superseded approaches; read only the task-relevant sections.
+Project status reviewed: 21 October 2026. Hub link corrected: 22 October 2026. Use this compact entry point first. [ai-project-state.md](ai-project-state.md) retains the detailed dated engineering log and superseded approaches; read only the task-relevant sections.
 
 ## Scope and source of truth
 This repo contains FFA uploader/relay automation plus OEV experiment infrastructure. Keep their states separate. The public OEV prototype page is an overview, not authoritative product acceptance. The all-project hub is https://jhnsono.github.io/ffa-automations/; it is a public directory that links to canonical project boards, roadmaps and handovers. Private records still require GitHub or Google sign-in.
