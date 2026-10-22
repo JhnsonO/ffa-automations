@@ -3,6 +3,7 @@ name: Johnson OS Check-in Bridge
 on:
   schedule:
     # These paired UTC times keep the export at 06:50 Europe/London through DST.
+    # Gate by scheduled cron, not runner time, because GitHub may queue scheduled runs.
     - cron: '50 5 * * *'
     - cron: '50 6 * * *'
   push:
