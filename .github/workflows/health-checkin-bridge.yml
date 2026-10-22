@@ -1,11 +1,6 @@
 name: Johnson OS Check-in Bridge
 
 on:
-  schedule:
-    # These paired UTC times keep the export at 06:50 Europe/London through DST.
-    # Gate by scheduled cron, not runner time, because GitHub may queue scheduled runs.
-    - cron: '50 5 * * *'
-    - cron: '50 6 * * *'
   push:
     branches:
       - feature/johnson-os-github-bridge
@@ -48,20 +43,6 @@ jobs:
               print(f'scheduled_cron={scheduled}')
               print(f'expected_cron={expected}')
           PY
-
-      - name: Explain skipped DST duplicate
-        if: github.event_name == 'schedule' && steps.gate.outputs.run != 'true'
-        env:
-          LONDON_TIME: ${{ steps.gate.outputs.london_time }}
-          SCHEDULED_CRON: ${{ steps.gate.outputs.scheduled_cron }}
-          EXPECTED_CRON: ${{ steps.gate.outputs.expected_cron }}
-        run: |
-          {
-            echo "## No check-in export in this run"
-            echo
-            echo "The paired DST schedule selected $EXPECTED_CRON for the 06:50 London run. This run came from $SCHEDULED_CRON at $LONDON_TIME, so it was skipped as the duplicate."
-            echo "No health data was fetched and no artifact was created."
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fetch check-in
         if: steps.gate.outputs.run == 'true'
