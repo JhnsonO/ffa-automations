@@ -18,31 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select one 06:50 London schedule
+      - name: Allow manual or branch-test export
         id: gate
-        shell: bash
-        env:
-          SCHEDULE: ${{ github.event.schedule }}
-        run: |
-          python - <<'PY' >> "$GITHUB_OUTPUT"
-          import os
-          from datetime import datetime, timedelta
-          from zoneinfo import ZoneInfo
-
-          event = os.environ.get('GITHUB_EVENT_NAME', '')
-          if event != 'schedule':
-              print('run=true')
-          else:
-              now = datetime.now(ZoneInfo('Europe/London'))
-              is_bst = now.utcoffset() == timedelta(hours=1)
-              expected = '50 5 * * *' if is_bst else '50 6 * * *'
-              scheduled = os.environ.get('SCHEDULE', '')
-              run = scheduled == expected
-              print('run=' + str(run).lower())
-              print(f'london_time={now.isoformat()}')
-              print(f'scheduled_cron={scheduled}')
-              print(f'expected_cron={expected}')
-          PY
+        run: echo "run=true" >> "$GITHUB_OUTPUT"
 
       - name: Fetch check-in
         if: steps.gate.outputs.run == 'true'
