@@ -2,8 +2,6 @@ name: Johnson OS Check-in Bridge
 
 on:
   schedule:
-    # Temporary schedule trigger for live test; remove after it runs.
-    - cron: '25 16 * * *'
     # These paired UTC times keep the export at 06:50 Europe/London through DST.
     # Gate by scheduled cron, not runner time, because GitHub may queue scheduled runs.
     - cron: '50 5 * * *'
@@ -44,7 +42,7 @@ jobs:
               is_bst = now.utcoffset() == timedelta(hours=1)
               expected = '50 5 * * *' if is_bst else '50 6 * * *'
               scheduled = os.environ.get('SCHEDULE', '')
-              run = scheduled == expected or scheduled == '25 16 * * *'
+              run = scheduled == expected
               print('run=' + str(run).lower())
               print(f'london_time={now.isoformat()}')
               print(f'scheduled_cron={scheduled}')
