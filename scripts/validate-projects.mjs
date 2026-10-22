@@ -11,8 +11,9 @@ for (const candidate of candidates) {
 if (source === undefined) throw new Error('Could not find docs/data/projects.json');
 const data = JSON.parse(source);
 const allowedGroups = new Set(['FFA', 'OEV', 'Personal']);
-const allowedHosts = new Set(['docs.google.com', 'github.com']);
-const forbiddenKeys = new Set(['tasks', 'status', 'badge', 'next_step', 'owner', 'note', 'start', 'end', 'depends_on', 'inbox']);
+const allowedHosts = new Map([['Google', 'docs.google.com'], ['GitHub', 'github.com']]);
+const projectKeys = new Set(['id', 'name', 'mono', 'group', 'workspace', 'roadmap']);
+const linkKeys = new Set(['provider', 'url']);
 const fail = (message) => { console.error(`Project directory validation failed: ${message}`); process.exit(1); };
 
 if (data.schema_version !== 1) fail('unsupported schema_version');
@@ -23,14 +24,15 @@ if (data.projects.length === 0) fail('no projects found');
 
 const ids = new Set();
 function validateLink(link, where) {
-  if (!link || typeof link.url !== 'string' || !['Google', 'GitHub'].includes(link.provider)) fail(`${where}: invalid link record`);
+  if (!link || typeof link.url !== 'string' || !allowedHosts.has(link.provider)) fail(`${where}: invalid link record`);
+  if (Object.keys(link).some((key) => !linkKeys.has(key))) fail(`${where}: unexpected link field`);
   let url;
   try { url = new URL(link.url); } catch { fail(`${where}: invalid URL`); }
-  if (url.protocol !== 'https:' || !allowedHosts.has(url.hostname)) fail(`${where}: URL must use an approved HTTPS host`);
+  if (url.protocol !== 'https:' || allowedHosts.get(link.provider) !== url.hostname) fail(`${where}: provider and HTTPS host do not match`);
 }
 
 for (const project of data.projects) {
-  for (const key of Object.keys(project)) if (forbiddenKeys.has(key)) fail(`${project.id || 'project'} exposes prohibited field: ${key}`);
+  if (Object.keys(project).some((key) => !projectKeys.has(key))) fail(`${project.id || 'project'} contains an unexpected field`);
   if (!project.id || !project.name || !project.mono || !allowedGroups.has(project.group)) fail('project is missing a required public directory field');
   if (ids.has(project.id)) fail(`duplicate project id: ${project.id}`);
   ids.add(project.id);
