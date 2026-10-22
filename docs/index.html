@@ -1,174 +1,316 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#f3f2ec">
-<meta name="description" content="Johnson's project directory: one place to open the current boards, roadmaps and project pages.">
+<meta name="theme-color" content="#0D1317">
+<meta name="description" content="A public, high-level view of Johnson's project boards and roadmaps.">
 <title>Project Hub — Johnson</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-:root{--paper:#f3f2ec;--white:#fffef9;--ink:#1e2823;--muted:#65716a;--line:#d8ddd3;--green:#b8ed68;--dark:#17211c;--orange:#e9a266;--blue:#9fc8e6;--shadow:0 18px 48px rgba(24,37,28,.07);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+:root{
+ --bg:#0D1317;--panel:#141D23;--panel2:#1A252C;--line:#25333C;
+ --ink:#E6EDF0;--muted:#8296A1;--dim:#5D6F7A;--hw:#E8A33D;
+ --sw:#6BA8D8;--gate:#E8DE3D;--ok:#7FC08A;--danger:#D8756B;
+ --display:'Space Grotesk',system-ui,sans-serif;
+ --body:'IBM Plex Sans',system-ui,sans-serif;
+ --mono:'IBM Plex Mono',ui-monospace,monospace
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--paper);color:var(--ink);min-height:100vh}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased}
 a{color:inherit}
 button,input{font:inherit}
-.shell{max-width:1440px;margin:auto;min-height:100vh;display:grid;grid-template-columns:248px 1fr}
-.rail{background:var(--dark);color:#edf2ea;padding:30px 20px;display:flex;flex-direction:column;gap:36px}
-.brand{display:flex;align-items:center;gap:12px;padding:4px 8px}
-.brand-mark{width:38px;height:38px;border-radius:12px;background:var(--green);color:#17211c;display:grid;place-items:center;font-weight:900;letter-spacing:-.06em}
-.brand strong{font-size:15px;letter-spacing:-.02em}.brand small{display:block;color:#9daaa0;font-size:11px;margin-top:3px}
-.nav-title{font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:#87948a;margin:0 10px 10px}
-.nav{display:grid;gap:5px}
-.nav a{padding:10px 12px;border-radius:10px;text-decoration:none;font-size:13px;color:#c4cec5;display:flex;align-items:center;gap:10px}
-.nav a:hover,.nav a.active{background:#28352d;color:#fff}
-.nav a.active:before{content:"";width:6px;height:6px;background:var(--green);border-radius:50%}
-.rail-note{margin-top:auto;border:1px solid #354339;padding:14px;border-radius:13px;color:#b8c3b9;font-size:11px;line-height:1.55}
-.rail-note b{color:#f2f5ef;display:block;margin-bottom:5px;font-size:12px}
-main{padding:38px clamp(24px,5vw,72px) 64px;min-width:0}
-.topline{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:36px}
-.eyebrow{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700}
-.updated{font-size:11px;color:var(--muted)}
-.hero{display:grid;grid-template-columns:minmax(0,1fr) 235px;gap:30px;align-items:end;margin-bottom:30px}
-h1{font-size:clamp(38px,5.7vw,72px);letter-spacing:-.075em;line-height:.95;margin:12px 0 16px;font-weight:760}
-.hero p{max-width:610px;color:var(--muted);font-size:15px;line-height:1.65;margin:0}
-.hero-card{background:var(--green);border-radius:18px;padding:20px 20px 18px;box-shadow:var(--shadow)}
-.hero-card span{font-size:10px;text-transform:uppercase;letter-spacing:.12em;font-weight:800}
-.hero-card strong{display:block;font-size:29px;letter-spacing:-.06em;margin:12px 0 4px}
-.hero-card small{font-size:11px;color:#415238}
-.toolbar{display:flex;align-items:center;gap:12px;margin:28px 0 26px;flex-wrap:wrap}
-.search{flex:1;min-width:220px;position:relative}
-.search input{width:100%;height:44px;border:1px solid var(--line);border-radius:12px;background:var(--white);padding:0 15px 0 42px;outline:none;color:var(--ink)}
-.search input:focus{border-color:#879d6c;box-shadow:0 0 0 3px rgba(184,237,104,.24)}
-.search:before{content:"⌕";position:absolute;left:15px;top:6px;font-size:23px;color:#708077}
-.filters{display:flex;gap:6px;flex-wrap:wrap}
-.filters button{border:1px solid var(--line);background:transparent;color:#56625b;border-radius:999px;padding:9px 13px;font-size:11px;font-weight:700;cursor:pointer}
-.filters button[aria-pressed="true"]{background:var(--dark);color:white;border-color:var(--dark)}
-.section{margin-top:34px;scroll-margin-top:20px}
-.section-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 0 14px}
-.section h2{font-size:17px;letter-spacing:-.035em;margin:0}
-.section-head span{font-size:11px;color:var(--muted)}
-.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}
-.card{background:var(--white);border:1px solid var(--line);border-radius:16px;padding:19px;min-width:0;box-shadow:0 3px 10px rgba(28,41,31,.02);transition:transform .16s ease,box-shadow .16s ease}
-.card:hover{transform:translateY(-2px);box-shadow:var(--shadow)}
-.card-top{display:flex;justify-content:space-between;align-items:center;gap:12px}
-.icon{width:38px;height:38px;border-radius:12px;background:#e8eddf;display:grid;place-items:center;font-size:11px;font-weight:850;color:#314234;letter-spacing:-.04em}
-.pill{border:1px solid var(--line);border-radius:999px;padding:5px 9px;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:800}
-.card h3{font-size:18px;letter-spacing:-.045em;margin:16px 0 5px}
-.card p{font-size:12px;line-height:1.55;color:var(--muted);margin:0;min-height:38px}
-.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:17px}
-.actions a{background:#edf0e8;border-radius:8px;text-decoration:none;padding:8px 10px;font-size:10px;font-weight:750}
-.actions a.primary{background:var(--dark);color:#fff}
-.actions a:hover{filter:brightness(.94)}
-.note{display:flex;gap:12px;align-items:flex-start;background:#e8ece3;border-radius:14px;padding:15px 17px;margin-top:30px;color:#536057;font-size:11px;line-height:1.55}
-.note i{font-style:normal;color:#314234;font-size:15px}
-.empty{display:none;padding:28px;border:1px dashed var(--line);border-radius:14px;color:var(--muted);font-size:13px;text-align:center}
-footer{border-top:1px solid var(--line);margin-top:46px;padding-top:17px;color:var(--muted);font-size:10px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.wrap{max-width:1120px;margin:0 auto;padding:0 22px}
+.mast{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 0 0;flex-wrap:wrap}
+.mark{font-family:var(--display);font-weight:700;font-size:20px;letter-spacing:.14em;text-transform:uppercase}
+.mark span{color:var(--hw)}
+.stamp{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.075em}
+.stamp a{color:var(--sw);text-decoration:none}.stamp a:hover{text-decoration:underline}
+.hero{padding:47px 0 28px}
+.kicker,.eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--hw)}
+h1{font-family:var(--display);font-weight:700;font-size:clamp(34px,6.3vw,60px);line-height:1.03;letter-spacing:-.035em;margin:14px 0 18px;max-width:17ch}
+h1 em{font-style:normal;color:var(--muted)}
+.sub{font-size:clamp(15px,2.1vw,18px);color:var(--muted);max-width:62ch;margin:0}
+.hero-meta{display:flex;gap:9px;flex-wrap:wrap;margin-top:24px}
+.meta-chip{font-family:var(--mono);font-size:10px;letter-spacing:.04em;border:1px solid var(--line);border-radius:3px;padding:6px 9px;color:var(--muted)}
+.meta-chip strong{color:var(--ink);font-weight:500}
+.notice{border-left:2px solid var(--gate);background:linear-gradient(90deg,rgba(232,222,61,.07),transparent 75%);padding:12px 15px;margin:26px 0 32px;color:var(--muted);font-size:12px}
+.notice strong{color:var(--ink);font-weight:600}
+.toolbar{display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:14px 0;margin-bottom:32px}
+.filter-label{font-family:var(--mono);font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.12em}
+.filters{display:flex;gap:7px;flex-wrap:wrap}
+.filters button{appearance:none;border:1px solid var(--line);border-radius:3px;background:transparent;color:var(--muted);padding:7px 11px;font-family:var(--mono);font-size:10px;letter-spacing:.06em;cursor:pointer}
+.filters button:hover,.filters button[aria-pressed="true"]{border-color:var(--sw);color:var(--ink);background:rgba(107,168,216,.08)}
+.search{position:relative;min-width:min(100%,240px);flex:1;max-width:330px}
+.search input{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:3px;color:var(--ink);padding:9px 11px 9px 34px;font-family:var(--mono);font-size:11px;outline:none}
+.search input:focus{border-color:var(--sw);box-shadow:0 0 0 2px rgba(107,168,216,.12)}
+.search:before{content:"⌕";position:absolute;left:11px;top:4px;color:var(--dim);font-size:18px}
+.group{margin:34px 0 46px;scroll-margin-top:18px}
+.group-head{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:9px;margin-bottom:13px}
+.group-head h2{font:500 11px var(--mono);letter-spacing:.18em;color:var(--sw);text-transform:uppercase;margin:0}
+.group-head span{font:10px var(--mono);color:var(--dim)}
+.project{background:var(--panel);border:1px solid var(--line);border-radius:4px;margin:13px 0 16px;overflow:hidden}
+.project-header{padding:19px 20px 15px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:start}
+.project-kicker{font:10px var(--mono);text-transform:uppercase;letter-spacing:.14em;color:var(--dim);margin-bottom:4px}
+.project-kicker b{color:var(--hw);font-weight:500}
+.project h3{font:700 clamp(20px,3vw,25px)/1.15 var(--display);letter-spacing:-.025em;margin:0 0 7px}
+.project-summary{max-width:72ch;color:var(--muted);font-size:13px;margin:0}
+.status{font:10px var(--mono);letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--line);padding:7px 9px;border-radius:3px;color:var(--gate);white-space:nowrap}
+.status.live{color:var(--ok)}.status.active{color:var(--sw)}.status.private{color:var(--hw)}
+.status small{display:block;color:var(--dim);font-size:9px;margin-top:4px;letter-spacing:0;text-transform:none}
+.project-nav{display:flex;align-items:center;gap:6px;padding:0 20px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.project-nav button,.project-nav a{appearance:none;background:transparent;border:1px solid transparent;border-radius:3px;padding:7px 9px;color:var(--dim);font:10px var(--mono);text-decoration:none;cursor:pointer}
+.project-nav button:hover,.project-nav button[aria-selected="true"]{color:var(--ink);border-color:var(--line);background:var(--panel2)}
+.project-nav a{margin-left:auto;color:var(--sw)}.project-nav a:hover{text-decoration:underline}
+.panel{padding:15px 20px 19px}.panel[hidden]{display:none}
+.board{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.lane{border:1px solid var(--line);background:rgba(13,19,23,.3);min-width:0}
+.lane-head{font:10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding:9px 10px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+.lane-head .dot{width:6px;height:6px;border-radius:50%;background:var(--ok);align-self:center}
+.lane.now .dot{background:var(--hw)}.lane.next .dot{background:var(--sw)}.lane.open .dot{background:var(--gate)}
+.task{padding:10px;border-bottom:1px solid rgba(37,51,60,.7);font-size:12px;line-height:1.45;color:var(--ink)}
+.task:last-child{border-bottom:0}
+.task small{display:block;color:var(--dim);font:9px var(--mono);letter-spacing:.04em;margin-top:5px}
+.roadmap{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.milestone{border-left:2px solid var(--line);background:rgba(13,19,23,.26);padding:12px 13px;min-width:0}
+.milestone.now{border-color:var(--hw)}.milestone.next{border-color:var(--sw)}.milestone.later{border-color:var(--dim)}
+.milestone .when{font:10px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.1em}
+.milestone h4{font:600 14px var(--display);margin:7px 0 5px}
+.milestone p{font-size:11px;color:var(--muted);line-height:1.5;margin:0}
+.source-note{padding:0 20px 16px;color:var(--dim);font:9px var(--mono);letter-spacing:.02em}
+.source-note a{color:var(--sw);text-decoration:none}.source-note a:hover{text-decoration:underline}
+.legend{display:flex;gap:16px;align-items:center;flex-wrap:wrap;color:var(--dim);font:9px var(--mono);margin:20px 0 34px}
+.legend span{display:flex;align-items:center;gap:6px}.legend i{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--ok)}.legend .a{background:var(--hw)}.legend .b{background:var(--sw)}.legend .c{background:var(--gate)}
+.empty{display:none;text-align:center;color:var(--muted);padding:28px;border:1px dashed var(--line);font:11px var(--mono)}
+.footer{border-top:1px solid var(--line);padding:15px 0 25px;color:var(--dim);font:9px var(--mono);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.footer a{color:var(--sw);text-decoration:none}
 [hidden]{display:none!important}
-@media(max-width:850px){.shell{grid-template-columns:1fr}.rail{padding:14px 18px;gap:14px}.brand{padding:0}.nav-title,.rail-note{display:none}.nav{display:flex;overflow:auto;gap:4px}.nav a{white-space:nowrap;padding:8px 10px}.nav a.active:before{display:none}main{padding-top:27px}.hero{grid-template-columns:1fr 190px}}
-@media(max-width:620px){.hero{grid-template-columns:1fr}.hero-card{max-width:none}.hero-card strong{font-size:23px}.grid{grid-template-columns:1fr}.topline{margin-bottom:25px}.filters{width:100%}.filters button{flex:1}main{padding-left:18px;padding-right:18px}.card p{min-height:0}}
-@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition:none!important}}
+@media(max-width:720px){
+ .wrap{padding:0 16px}.hero{padding-top:36px}
+ .project-header{grid-template-columns:1fr;gap:12px;padding:16px}
+ .status{justify-self:start}
+ .project-nav{padding:0 16px 10px}.project-nav a{margin-left:0}
+ .panel{padding:12px 16px 16px}
+ .board,.roadmap{grid-template-columns:1fr}
+ .toolbar{align-items:stretch}.search{max-width:none;order:3;flex-basis:100%}
+ .group{margin:28px 0 38px}
+}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 </style>
 </head>
 <body>
-<div class="shell">
-<aside class="rail">
-  <div class="brand"><div class="brand-mark">J</div><div><strong>Johnson's Hub</strong><small>Projects &amp; progress</small></div></div>
-  <div>
-    <p class="nav-title">Workspace</p>
-    <nav class="nav" aria-label="Project groups">
-      <a class="active" href="#overview">Overview</a>
-      <a href="#ffa">FFA</a>
-      <a href="#oev">OEV</a>
-      <a href="#personal">Personal</a>
-    </nav>
+<div class="wrap">
+<header class="mast">
+ <div class="mark">PROJECTS<span>.</span></div>
+ <div class="stamp"><a href="oev-roadmap.html">OEV project page</a> · public progress view · private source links require sign-in</div>
+</header>
+<main>
+<section class="hero" id="overview">
+ <p class="kicker">Johnson · Project portfolio</p>
+ <h1>One view. <em>Every project.</em></h1>
+ <p class="sub">Boards and roadmaps for FFA, OEV and personal projects, gathered into one public page. Check progress here; open a protected source record only when you need the code, evidence or full handover.</p>
+ <div class="hero-meta">
+  <span class="meta-chip"><strong>05</strong> projects</span>
+  <span class="meta-chip"><strong>03</strong> groups</span>
+  <span class="meta-chip">Project evidence reviewed <strong>21 Oct 2026</strong></span>
+  <span class="meta-chip">Hub refreshed <strong>22 Oct 2026</strong></span>
+ </div>
+</section>
+<div class="notice"><strong>Public summary, private detail.</strong> The boards and roadmaps below are viewable without signing in. Source code, detailed evidence and full handovers stay in their existing protected project systems. This page shows a dated summary; it does not automatically sync private records.</div>
+<div class="toolbar">
+ <span class="filter-label">Filter group</span>
+ <div class="filters" role="group" aria-label="Filter projects by group">
+  <button type="button" data-group-filter="all" aria-pressed="true">All</button>
+  <button type="button" data-group-filter="FFA" aria-pressed="false">FFA</button>
+  <button type="button" data-group-filter="OEV" aria-pressed="false">OEV</button>
+  <button type="button" data-group-filter="Personal" aria-pressed="false">Personal</button>
+ </div>
+ <label class="search"><input id="search" type="search" placeholder="Search projects…" aria-label="Search projects"></label>
+</div>
+<div class="legend" aria-label="Board state legend">
+ <span><i></i> verified / complete</span><span><i class="a"></i> now</span><span><i class="b"></i> next</span><span><i class="c"></i> open / needs evidence</span>
+</div>
+
+<section class="group" id="ffa" data-group="FFA">
+ <div class="group-head"><h2>FFA</h2><span>03 projects · Football for All</span></div>
+ <article class="project" data-project="ffa website live bookings shop qa">
+  <div class="project-header">
+   <div><div class="project-kicker"><b>FFA / 01</b> · website</div><h3>FFA Website</h3><p class="project-summary">The public website, bookings and shop are live. The latest review checked core navigation and a product-to-cart journey.</p></div>
+   <div class="status live">Live · targeted QA<small>Reviewed 21 Oct 2026</small></div>
   </div>
-  <div class="rail-note"><b>One front door</b>Open the current board, roadmap or project page. Some project records require your GitHub or Google sign-in.</div>
-</aside>
-<main id="overview">
-  <div class="topline"><span class="eyebrow">Project directory</span><span class="updated">Directory checked 22 October 2026</span></div>
-  <section class="hero">
-    <div><div class="eyebrow">Your work, in one place</div><h1>Project<br>Hub<span style="color:#86b846">.</span></h1><p>A single menu for the projects you work on across AI accounts. Open each project's actual board, roadmap and handover from here.</p></div>
-    <div class="hero-card"><span>Portfolio</span><strong>05 projects</strong><small>Grouped by FFA, OEV and personal work</small></div>
-  </section>
-  <div class="toolbar">
-    <label class="search"><input id="search" type="search" placeholder="Find a project…" aria-label="Find a project"></label>
-    <div class="filters" role="group" aria-label="Filter projects">
-      <button type="button" data-filter="all" aria-pressed="true">All</button>
-      <button type="button" data-filter="FFA" aria-pressed="false">FFA</button>
-      <button type="button" data-filter="OEV" aria-pressed="false">OEV</button>
-      <button type="button" data-filter="Personal" aria-pressed="false">Personal</button>
-    </div>
+  <div class="project-nav" role="tablist" aria-label="FFA Website views">
+   <button type="button" role="tab" aria-selected="true" aria-controls="board-website" data-view="board-website">Board</button>
+   <button type="button" role="tab" aria-selected="false" aria-controls="roadmap-website" data-view="roadmap-website">Roadmap</button>
+   <a href="https://docs.google.com/document/d/1Ai973jkiOD_3WvG1ra2sFiIzPO3F3R1AlGIvKzZWWXA/edit" target="_blank" rel="noopener">Full handover ↗</a>
   </div>
-  <section class="section" id="ffa" data-group="FFA">
-    <div class="section-head"><h2>FFA</h2><span>3 projects</span></div>
-    <div class="grid">
-      <article class="card" data-project="ffa website site shop memberships bookings">
-        <div class="card-top"><div class="icon">FF</div><span class="pill">FFA</span></div>
-        <h3>FFA Website</h3><p>Website, shop, bookings and memberships. The master handover is the current record.</p>
-        <div class="actions"><a class="primary" href="https://docs.google.com/document/d/1Ai973jkiOD_3WvG1ra2sFiIzPO3F3R1AlGIvKzZWWXA/edit" target="_blank" rel="noopener">Board &amp; roadmap</a><a href="https://www.officialffa.co.uk/" target="_blank" rel="noopener">Live site</a></div>
-      </article>
-      <article class="card" data-project="ffa media clips footage delivery beta">
-        <div class="card-top"><div class="icon">FM</div><span class="pill">Private tracker</span></div>
-        <h3>FFA Media</h3><p>Footage, clip review and media delivery. Project board and current-state handover.</p>
-        <div class="actions"><a class="primary" href="https://github.com/users/JhnsonO/projects/5/views/1" target="_blank" rel="noopener">Board</a><a href="https://github.com/JhnsonO/ffa-media/blob/main/docs/current-state.md#roadmap" target="_blank" rel="noopener">Roadmap</a><a href="https://github.com/JhnsonO/ffa-media/blob/main/docs/current-state.md" target="_blank" rel="noopener">Handover</a></div>
-      </article>
-      <article class="card" data-project="ffa automations uploader relay workflow">
-        <div class="card-top"><div class="icon">FA</div><span class="pill">FFA</span></div>
-        <h3>FFA Automations</h3><p>Uploader and relay workflows, with OEV experiment infrastructure tracked separately.</p>
-        <div class="actions"><a class="primary" href="https://github.com/JhnsonO/ffa-automations/blob/main/docs/current-state.md#ffa-board" target="_blank" rel="noopener">Board</a><a href="https://github.com/JhnsonO/ffa-automations/blob/main/docs/current-state.md#roadmap" target="_blank" rel="noopener">Roadmap</a><a href="https://github.com/JhnsonO/ffa-automations" target="_blank" rel="noopener">Repository</a></div>
-      </article>
-    </div>
-  </section>
-  <section class="section" id="oev" data-group="OEV">
-    <div class="section-head"><h2>OEV</h2><span>1 project</span></div>
-    <div class="grid">
-      <article class="card" data-project="oev broadcast prototype vision">
-        <div class="card-top"><div class="icon">OV</div><span class="pill">OEV</span></div>
-        <h3>OEV Broadcast</h3><p>Prototype overview and current project roadmap, with the delivery board kept in GitHub.</p>
-        <div class="actions"><a class="primary" href="oev-roadmap.html">OEV project page</a><a href="https://github.com/users/JhnsonO/projects/3/views/2" target="_blank" rel="noopener">Board</a><a href="https://github.com/JhnsonO/oev/blob/main/docs/roadmap.md" target="_blank" rel="noopener">Roadmap</a></div>
-      </article>
-    </div>
-  </section>
-  <section class="section" id="personal" data-group="Personal">
-    <div class="section-head"><h2>Personal</h2><span>1 project</span></div>
-    <div class="grid">
-      <article class="card" data-project="ai workflow shared context memory claude chatgpt">
-        <div class="card-top"><div class="icon">AI</div><span class="pill">Private tracker</span></div>
-        <h3>AI Workflow &amp; Shared Context</h3><p>Shared working rules and project handovers across the AI accounts.</p>
-        <div class="actions"><a class="primary" href="https://github.com/users/JhnsonO/projects/4/views/2" target="_blank" rel="noopener">Portfolio board</a><a href="https://docs.google.com/document/d/1KDqx8qFqywIdekRA-09djS1aPNGYF6sf1ncLhsm-Ft0/edit" target="_blank" rel="noopener">Shared rules</a><a href="https://drive.google.com/drive/folders/1jJtZ_FXd9NAASczvRYOTmbCKJZo5IYKd" target="_blank" rel="noopener">Memory folder</a></div>
-      </article>
-    </div>
-  </section>
-  <div id="empty" class="empty">No matching projects. Try another search or group.</div>
-  <div class="note"><i>↗</i><div><strong>Where progress lives</strong><br>This page is the directory. Each linked board, roadmap or handover is the project source of truth, so its latest progress is available as soon as it is updated. Private links ask you to sign in.</div></div>
-  <footer><span>Johnson's Project Hub · Hosted on GitHub Pages</span><span><a href="https://github.com/JhnsonO/ffa-automations">View source repository</a></span></footer>
+  <div class="panel" id="board-website" role="tabpanel">
+   <div class="board">
+    <div class="lane"><div class="lane-head">Verified <i class="dot"></i></div><div class="task">Core public routes and shop navigation work.</div><div class="task">Product options and cart flow checked; test item removed.</div></div>
+    <div class="lane now"><div class="lane-head">Now <i class="dot"></i></div><div class="task">Correct the product customisation form heading.</div></div>
+    <div class="lane next"><div class="lane-head">Next <i class="dot"></i></div><div class="task">Check booking, checkout and real-device behaviour.</div></div>
+   </div>
+  </div>
+  <div class="panel" id="roadmap-website" role="tabpanel" hidden>
+   <div class="roadmap">
+    <div class="milestone now"><span class="when">Now</span><h4>Close the watch items</h4><p>Fix the form heading and run targeted booking, checkout and device checks.</p></div>
+    <div class="milestone next"><span class="when">Next</span><h4>Repair confirmed defects</h4><p>Make bounded changes against current live evidence and retest them.</p></div>
+    <div class="milestone later"><span class="when">Later</span><h4>Keep improving</h4><p>Work from the current priorities while preserving approved copy and design.</p></div>
+   </div>
+  </div>
+  <div class="source-note">Source: <a href="https://www.officialffa.co.uk/" target="_blank" rel="noopener">officialffa.co.uk</a> · Detailed handover requires Google sign-in</div>
+ </article>
+
+ <article class="project" data-project="ffa media clips beta verification volunteer">
+  <div class="project-header">
+   <div><div class="project-kicker"><b>FFA / 02</b> · media workflow</div><h3>FFA Media</h3><p class="project-summary">The volunteer media workflow is in beta verification. The sign-in page loads; signed-in use and live-device checks are still to be confirmed.</p></div>
+   <div class="status private">Beta · verification<small>Reviewed 21 Oct 2026</small></div>
+  </div>
+  <div class="project-nav" role="tablist" aria-label="FFA Media views">
+   <button type="button" role="tab" aria-selected="true" aria-controls="board-media" data-view="board-media">Board</button>
+   <button type="button" role="tab" aria-selected="false" aria-controls="roadmap-media" data-view="roadmap-media">Roadmap</button>
+   <a href="https://github.com/users/JhnsonO/projects/5/views/1" target="_blank" rel="noopener">Protected source ↗</a>
+  </div>
+  <div class="panel" id="board-media" role="tabpanel">
+   <div class="board">
+    <div class="lane"><div class="lane-head">Recorded <i class="dot"></i></div><div class="task">Local workflow and browser checks have been recorded.</div></div>
+    <div class="lane now"><div class="lane-head">Now <i class="dot"></i></div><div class="task">Run the current database-backed API verification.</div></div>
+    <div class="lane open"><div class="lane-head">Needs evidence <i class="dot"></i></div><div class="task">Confirm signed-in beta use, storage feedback and real-device behaviour.</div></div>
+   </div>
+  </div>
+  <div class="panel" id="roadmap-media" role="tabpanel" hidden>
+   <div class="roadmap">
+    <div class="milestone now"><span class="when">Now</span><h4>Verify the beta foundation</h4><p>Test the current application against its database-backed environment.</p></div>
+    <div class="milestone next"><span class="when">Next</span><h4>Complete real-use checks</h4><p>Confirm an end-to-end volunteer workflow and device feedback when access is available.</p></div>
+    <div class="milestone later"><span class="when">Later</span><h4>Review release readiness</h4><p>Resolve confirmed issues before making a release decision.</p></div>
+   </div>
+  </div>
+  <div class="source-note">Source: <a href="https://github.com/JhnsonO/ffa-media/blob/main/docs/current-state.md" target="_blank" rel="noopener">current project summary</a> · Full board requires GitHub sign-in</div>
+ </article>
+
+ <article class="project" data-project="ffa automations upload relay camera verify">
+  <div class="project-header">
+   <div><div class="project-kicker"><b>FFA / 03</b> · operations</div><h3>FFA Automations</h3><p class="project-summary">Uploader and relay work is in verification. Recent implementation has local test evidence; live confirmation is the next gate.</p></div>
+   <div class="status active">Active · verify<small>Reviewed 21 Oct 2026</small></div>
+  </div>
+  <div class="project-nav" role="tablist" aria-label="FFA Automations views">
+   <button type="button" role="tab" aria-selected="true" aria-controls="board-auto" data-view="board-auto">Board</button>
+   <button type="button" role="tab" aria-selected="false" aria-controls="roadmap-auto" data-view="roadmap-auto">Roadmap</button>
+   <a href="https://github.com/JhnsonO/ffa-automations/blob/main/docs/current-state.md" target="_blank" rel="noopener">Source record ↗</a>
+  </div>
+  <div class="panel" id="board-auto" role="tabpanel">
+   <div class="board">
+    <div class="lane"><div class="lane-head">Implemented <i class="dot"></i></div><div class="task">Camera-neutral upload metadata has recorded unit-test coverage.</div></div>
+    <div class="lane now"><div class="lane-head">Now <i class="dot"></i></div><div class="task">Observe the revised output on a new live upload.</div></div>
+    <div class="lane next"><div class="lane-head">Next <i class="dot"></i></div><div class="task">Recheck camera-resume and relay behaviour from current evidence.</div></div>
+   </div>
+  </div>
+  <div class="panel" id="roadmap-auto" role="tabpanel" hidden>
+   <div class="roadmap">
+    <div class="milestone now"><span class="when">Now</span><h4>Confirm live behaviour</h4><p>Compare a new upload with the intended output and inspect current runtime evidence.</p></div>
+    <div class="milestone next"><span class="when">Next</span><h4>Make bounded fixes</h4><p>Address only confirmed resume or relay failures, then retest.</p></div>
+    <div class="milestone later"><span class="when">Later</span><h4>Simplify operations</h4><p>Review old workflows and runner scope after current evidence is collected.</p></div>
+   </div>
+  </div>
+  <div class="source-note">Source: <a href="https://github.com/JhnsonO/ffa-automations/blob/main/docs/current-state.md" target="_blank" rel="noopener">current project summary</a> · Detailed engineering history in GitHub</div>
+ </article>
+</section>
+
+<section class="group" id="oev" data-group="OEV">
+ <div class="group-head"><h2>OEV</h2><span>01 project · broadcast prototype</span></div>
+ <article class="project" data-project="oev broadcast follow camera prototype">
+  <div class="project-header">
+   <div><div class="project-kicker"><b>OEV / 01</b> · automated broadcast</div><h3>OEV Broadcast</h3><p class="project-summary">The current phase validates follow-camera decisions using a corrections-first workflow. The chosen baseline is a working hypothesis, not a reliability claim.</p></div>
+   <div class="status active">Experimental · validation<small>Reviewed 21 Oct 2026</small></div>
+  </div>
+  <div class="project-nav" role="tablist" aria-label="OEV Broadcast views">
+   <button type="button" role="tab" aria-selected="true" aria-controls="board-oev" data-view="board-oev">Board</button>
+   <button type="button" role="tab" aria-selected="false" aria-controls="roadmap-oev" data-view="roadmap-oev">Roadmap</button>
+   <a href="oev-roadmap.html">OEV page ↗</a>
+   <a href="https://github.com/users/JhnsonO/projects/3/views/2" target="_blank" rel="noopener">Protected source ↗</a>
+  </div>
+  <div class="panel" id="board-oev" role="tabpanel">
+   <div class="board">
+    <div class="lane"><div class="lane-head">Current evidence <i class="dot"></i></div><div class="task">A working camera-follow baseline has been selected from a small human review.</div></div>
+    <div class="lane now"><div class="lane-head">Now <i class="dot"></i></div><div class="task">Scope and run the corrections-first review workflow.</div></div>
+    <div class="lane open"><div class="lane-head">Needs evidence <i class="dot"></i></div><div class="task">Confirm the customer-ready clip gate and current hardware state.</div></div>
+   </div>
+  </div>
+  <div class="panel" id="roadmap-oev" role="tabpanel" hidden>
+   <div class="roadmap">
+    <div class="milestone now"><span class="when">Now</span><h4>Improve the review loop</h4><p>Use corrections to target the next repeatable follow-camera evaluation.</p></div>
+    <div class="milestone next"><span class="when">Next</span><h4>Test on fresh annotated footage</h4><p>Measure performance on an unseen set before making reliability claims.</p></div>
+    <div class="milestone later"><span class="when">Gate</span><h4>Reconcile delivery readiness</h4><p>Set dates only after the clip acceptance and hardware status are evidenced.</p></div>
+   </div>
+  </div>
+  <div class="source-note">Source: <a href="https://github.com/JhnsonO/oev/blob/main/docs/roadmap.md" target="_blank" rel="noopener">private roadmap</a> · See the <a href="oev-roadmap.html">public OEV project page</a></div>
+ </article>
+</section>
+
+<section class="group" id="personal" data-group="Personal">
+ <div class="group-head"><h2>Personal</h2><span>01 project · AI setup</span></div>
+ <article class="project" data-project="ai workflow shared context memory chatgpt claude">
+  <div class="project-header">
+   <div><div class="project-kicker"><b>PERSONAL / 01</b> · AI workflow</div><h3>AI Workflow &amp; Shared Context</h3><p class="project-summary">Shared project records and operating rules are in place. Account-level verification remains in progress.</p></div>
+   <div class="status private">In progress · shared setup<small>Reviewed 21 Oct 2026</small></div>
+  </div>
+  <div class="project-nav" role="tablist" aria-label="AI Workflow and Shared Context views">
+   <button type="button" role="tab" aria-selected="true" aria-controls="board-ai" data-view="board-ai">Board</button>
+   <button type="button" role="tab" aria-selected="false" aria-controls="roadmap-ai" data-view="roadmap-ai">Roadmap</button>
+   <a href="https://github.com/users/JhnsonO/projects/4/views/2" target="_blank" rel="noopener">Protected source ↗</a>
+  </div>
+  <div class="panel" id="board-ai" role="tabpanel">
+   <div class="board">
+    <div class="lane"><div class="lane-head">In place <i class="dot"></i></div><div class="task">Shared Drive context and canonical project records are organised.</div></div>
+    <div class="lane now"><div class="lane-head">Now <i class="dot"></i></div><div class="task">Verify the project handover from each active AI account.</div></div>
+    <div class="lane open"><div class="lane-head">Open <i class="dot"></i></div><div class="task">Confirm Claude can read and update the shared handover.</div></div>
+   </div>
+  </div>
+  <div class="panel" id="roadmap-ai" role="tabpanel" hidden>
+   <div class="roadmap">
+    <div class="milestone now"><span class="when">Now</span><h4>Complete account checks</h4><p>Test shared-folder reads and a harmless handover update in the authenticated session.</p></div>
+    <div class="milestone next"><span class="when">Next</span><h4>Keep sources aligned</h4><p>Update each canonical tracker first, then refresh the public high-level summary.</p></div>
+    <div class="milestone later"><span class="when">Later</span><h4>Automate safe refreshes</h4><p>Only add an authenticated path that preserves access controls for private records.</p></div>
+   </div>
+  </div>
+  <div class="source-note">Source: <a href="https://docs.google.com/document/d/1I_jypC-RByq36z_5wGR6bo_qKbg3X_vq4KX2tv9RsnM/edit" target="_blank" rel="noopener">shared project index</a> · Full notes require Google sign-in</div>
+ </article>
+</section>
+<div class="empty" id="empty">No projects match that search. Clear the search or choose another group.</div>
 </main>
+<footer class="footer"><span>PROJECT HUB · UPDATED 22 OCT 2026 · PUBLIC HIGH-LEVEL VIEW</span><span>Full source records remain in their canonical systems · <a href="oev-roadmap.html">OEV page</a></span></footer>
 </div>
 <script>
-const input=document.querySelector("#search");
-const buttons=[...document.querySelectorAll("[data-filter]")];
-const cards=[...document.querySelectorAll("[data-project]")];
-const sections=[...document.querySelectorAll(".section[data-group]")];
-let active="all";
-function render(){
- const query=input.value.trim().toLowerCase();
- let shown=0;
- for(const card of cards){
-  const section=card.closest(".section");
-  const group=section.dataset.group;
-  const match=(active==="all"||active===group)&&(!query||card.dataset.project.includes(query)||card.innerText.toLowerCase().includes(query));
-  card.hidden=!match;
-  if(match)shown++;
+const filters=[...document.querySelectorAll("[data-group-filter]")];
+const search=document.querySelector("#search");
+const projects=[...document.querySelectorAll(".project[data-project]")];
+const groups=[...document.querySelectorAll(".group[data-group]")];
+let activeGroup="all";
+function applyFilters(){
+ const q=search.value.trim().toLowerCase();let count=0;
+ for(const project of projects){
+  const group=project.closest(".group").dataset.group;
+  const matchesGroup=activeGroup==="all"||activeGroup===group;
+  const matchesSearch=!q||project.dataset.project.toLowerCase().includes(q)||project.innerText.toLowerCase().includes(q);
+  project.hidden=!(matchesGroup&&matchesSearch);if(!project.hidden)count++;
  }
- for(const section of sections)section.hidden=!section.querySelector(".card:not([hidden])");
- document.querySelector("#empty").style.display=shown?"none":"block";
+ for(const group of groups)group.hidden=!group.querySelector(".project:not([hidden])");
+ document.querySelector("#empty").style.display=count?"none":"block";
 }
-buttons.forEach(button=>button.addEventListener("click",()=>{
- active=button.dataset.filter;
- buttons.forEach(item=>item.setAttribute("aria-pressed",String(item===button)));
- render();
+filters.forEach(button=>button.addEventListener("click",()=>{
+ activeGroup=button.dataset.groupFilter;
+ filters.forEach(item=>item.setAttribute("aria-pressed",String(item===button)));
+ applyFilters();
 }));
-input.addEventListener("input",render);
+search.addEventListener("input",applyFilters);
+document.querySelectorAll("[data-view]").forEach(button=>button.addEventListener("click",()=>{
+ const project=button.closest(".project");
+ const target=button.dataset.view;
+ project.querySelectorAll("[data-view]").forEach(tab=>tab.setAttribute("aria-selected",String(tab===button)));
+ project.querySelectorAll(".panel[role=tabpanel]").forEach(panel=>panel.hidden=panel.id!==target);
+}));
 </script>
 </body>
 </html>
