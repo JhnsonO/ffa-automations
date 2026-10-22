@@ -8,6 +8,29 @@ const groupNames = ['All projects', 'FFA', 'OEV', 'Personal'];
 let projects = [];
 let selectedGroup = 'All';
 let searchTerm = '';
+const allowedHosts = { Google: 'docs.google.com', GitHub: 'github.com' };
+
+function validLink(link) {
+  if (!link || Object.keys(link).some((key) => !['provider', 'url'].includes(key))) return false;
+  if (!Object.hasOwn(allowedHosts, link.provider) || typeof link.url !== 'string') return false;
+  try {
+    const url = new URL(link.url);
+    return url.protocol === 'https:' && url.hostname === allowedHosts[link.provider];
+  } catch (_) { return false; }
+}
+
+function validDirectory(data) {
+  if (!Array.isArray(data.projects) || !Array.isArray(data.groups)) return false;
+  const ids = new Set();
+  return data.projects.every((project) => {
+    const keys = Object.keys(project);
+    if (keys.some((key) => !['id', 'name', 'mono', 'group', 'workspace', 'roadmap'].includes(key))) return false;
+    if (!project.id || !project.name || !project.mono || !groupNames.slice(1).includes(project.group) || ids.has(project.id)) return false;
+    if (!validLink(project.workspace) || (project.roadmap && !validLink(project.roadmap))) return false;
+    ids.add(project.id);
+    return true;
+  });
+}
 
 function setTheme(theme) {
   if (!['light', 'dark', 'char'].includes(theme)) theme = 'dark';
@@ -164,7 +187,7 @@ document.querySelector('#access-toggle').addEventListener('click', (event) => {
 fetch('./data/projects.json', { cache: 'no-store' })
   .then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); })
   .then((data) => {
-    if (!Array.isArray(data.projects) || data.projects.some((project) => !project.name || !project.group || !project.workspace?.url)) throw new Error('Invalid project directory');
+    if (!validDirectory(data)) throw new Error('Invalid project directory');
     projects = data.projects;
     renderGroups();
   })
