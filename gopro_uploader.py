@@ -93,6 +93,19 @@ def parse_gopro_datetime(value):
         return None
 
 
+def parse_gopro_captured_at(value):
+    """GoPro captured_at is the camera's LOCAL wall-clock time mislabelled
+    with a 'Z'. Reinterpret it as Europe/London and convert to real UTC
+    (otherwise every BST recording reads one hour ahead)."""
+    if not value:
+        return None
+    try:
+        naive = datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+        return naive.replace(tzinfo=ZoneInfo("Europe/London")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
 def datetime_to_gopro_z(dt):
     if not dt:
         return ""
@@ -104,13 +117,13 @@ def media_discovery_datetime(item):
     return (
         parse_gopro_datetime(item.get("created_at"))
         or parse_gopro_datetime(item.get("updated_at"))
-        or parse_gopro_datetime(item.get("captured_at"))
+        or parse_gopro_captured_at(item.get("captured_at"))
     )
 
 
 def effective_media_datetime(item):
     """Date used for titles/descriptions/DB when camera captured_at looks wrong."""
-    captured = parse_gopro_datetime(item.get("captured_at"))
+    captured = parse_gopro_captured_at(item.get("captured_at"))
     created = parse_gopro_datetime(item.get("created_at"))
     updated = parse_gopro_datetime(item.get("updated_at"))
     now = datetime.now(timezone.utc)
