@@ -237,7 +237,8 @@ jobs:
           PY
 
       - name: Handle upload failure — update fail count or alert
-        if: steps.validate_cookies.outputs.cookies_valid == 'true' && steps.run_upload.outcome == 'failure'
+        id: failure_handler
+        if: always() && steps.validate_cookies.outputs.cookies_valid == 'true' && steps.run_upload.outcome == 'failure'
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
@@ -298,7 +299,7 @@ jobs:
           PY
 
       - name: Send failure alert email
-        if: steps.validate_cookies.outputs.cookies_valid == 'true' && steps.run_upload.outcome == 'failure'
+        if: always() && steps.failure_handler.outputs.send_alert == 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
