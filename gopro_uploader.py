@@ -373,8 +373,20 @@ def make_session(cookies):
     return session
 
 
-def gopro_get(session, path, params=None):
-    r = session.get(f"{GOPRO_API}{path}", headers=GOPRO_HEADERS, params=params, timeout=30)
+def gopro_get(session, path, params=None, attempts=4):
+    # api.gopro.com occasionally stalls on /media/search (seen 2026-11-03: read timeout
+    # on the first call). Retry network-level failures with backoff; HTTP errors
+    # (e.g. 401 for cookie refresh) are raised immediately and handled by callers.
+    for attempt in range(1, attempts + 1):
+        try:
+            r = session.get(f"{GOPRO_API}{path}", headers=GOPRO_HEADERS, params=params, timeout=(10, 60))
+            break
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as e:
+            if attempt == attempts:
+                raise
+            wait = 5 * 2 ** (attempt - 1)
+            log.warning(f"GoPro API {path} network error ({type(e).__name__}); retry {attempt}/{attempts - 1} in {wait}s")
+            time.sleep(wait)
     r.raise_for_status()
     return r.json()
 
