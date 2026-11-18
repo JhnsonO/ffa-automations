@@ -1,0 +1,58 @@
+name: GoPro Ready Watch (shadow, read-only)
+
+# Observes GoPro Cloud `ready_to_view` every ~10 min and logs transitions to the
+# `ready-watch-data` branch. It NEVER downloads/uploads video, never dispatches
+# other workflows and never touches uploaded.db / upload_queue.json / size_check.json.
+# Purpose: decide whether "ready" can replace the scanner's 1h size-stability wait.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gopro-ready-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Observe ready_to_view
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Write GoPro cookies from secret
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          cookies = os.environ.get("GOPRO_COOKIES", "{}").strip() or "{}"
+          Path("gopro_cookies.json").write_text(cookies)
+          print("GoPro cookies written from secret")
+          PY
+
+      - name: Observe and record
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/ready_watch.py
