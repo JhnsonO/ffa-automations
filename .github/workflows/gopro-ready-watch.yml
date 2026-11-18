@@ -15,6 +15,7 @@ env:
 
 permissions:
   contents: write
+  actions: write   # only to dispatch the existing cookie-refresh workflow on a 401
 
 concurrency:
   group: gopro-ready-watch
