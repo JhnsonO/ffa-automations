@@ -1,0 +1,61 @@
+{
+ "item_keys": [
+  "captured_at",
+  "created_at",
+  "file_size",
+  "filename",
+  "gopro_user_id",
+  "id",
+  "ready_to_edit",
+  "ready_to_view",
+  "source_gumi",
+  "source_mgumi",
+  "type",
+  "updated_at"
+ ],
+ "media": {
+  "6afb789c2c781eb1e442b783": {
+   "created_at": "2026-11-16T21:41:48Z",
+   "filename": "GX010536.MP4",
+   "first_ready_at": "2026-11-19T01:02:10Z",
+   "first_ready_size": 23146239470,
+   "first_seen": "2026-11-19T01:02:10Z",
+   "history": [
+    {
+     "ready_to_view": "ready",
+     "size": 23146239470,
+     "t": "2026-11-19T01:02:10Z"
+    }
+   ]
+  },
+  "6afb78ebeead038eb1963e57": {
+   "created_at": "2026-11-16T21:43:07Z",
+   "filename": "GX010275.MP4",
+   "first_ready_at": "2026-11-19T01:02:10Z",
+   "first_ready_size": 24606583892,
+   "first_seen": "2026-11-19T01:02:10Z",
+   "history": [
+    {
+     "ready_to_view": "ready",
+     "size": 24606583892,
+     "t": "2026-11-19T01:02:10Z"
+    }
+   ]
+  },
+  "6afe1973546ceb2bd7e6f3c3": {
+   "created_at": "2026-11-18T21:32:35Z",
+   "filename": "GX010537.MP4",
+   "first_ready_at": "2026-11-19T01:02:10Z",
+   "first_ready_size": 22313481798,
+   "first_seen": "2026-11-19T01:02:10Z",
+   "history": [
+    {
+     "ready_to_view": "ready",
+     "size": 22313481798,
+     "t": "2026-11-19T01:02:10Z"
+    }
+   ]
+  }
+ },
+ "updated": "2026-11-19T01:02:10Z"
+}
