@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "updated": "2026-10-22",
+  "groups": ["FFA", "OEV", "Personal"],
+  "projects": [
+    {
+      "id": "web",
+      "name": "FFA Website",
+      "mono": "FW",
+      "group": "FFA",
+      "workspace": {
+        "provider": "Google",
+        "url": "https://docs.google.com/document/d/1Ai973jkiOD_3WvG1ra2sFiIzPO3F3R1AlGIvKzZWWXA/edit"
+      }
+    },
+    {
+      "id": "media",
+      "name": "FFA Media",
+      "mono": "FM",
+      "group": "FFA",
+      "workspace": {
+        "provider": "GitHub",
+        "url": "https://github.com/users/JhnsonO/projects/5/views/1"
+      }
+    },
+    {
+      "id": "auto",
+      "name": "FFA Automations",
+      "mono": "FA",
+      "group": "FFA",
+      "workspace": {
+        "provider": "Google",
+        "url": "https://docs.google.com/document/d/1UJB8kzBW1kOBgKizUuaw8we2bPYUqhF6vmeVv6oLPco/edit"
+      }
+    },
+    {
+      "id": "oev",
+      "name": "OEV Broadcast",
+      "mono": "OE",
+      "group": "OEV",
+      "workspace": {
+        "provider": "GitHub",
+        "url": "https://github.com/users/JhnsonO/projects/3/views/2"
+      },
+      "roadmap": {
+        "provider": "GitHub",
+        "url": "https://github.com/JhnsonO/oev/blob/main/docs/roadmap.md"
+      }
+    },
+    {
+      "id": "ai",
+      "name": "AI Workflow & Shared Context",
+      "mono": "AI",
+      "group": "Personal",
+      "workspace": {
+        "provider": "GitHub",
+        "url": "https://github.com/users/JhnsonO/projects/4/views/2"
+      }
+    }
+  ]
+}
