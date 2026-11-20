@@ -237,15 +237,15 @@ jobs:
           PY
 
       - name: Handle upload failure — update fail count or alert
-        if: steps.validate_cookies.outputs.cookies_valid == 'true' && steps.run_upload.outcome == 'failure'
+        id: failure_handler
+        if: always() && steps.validate_cookies.outputs.cookies_valid == 'true' && steps.run_upload.outcome == 'failure'
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
           MEDIA_ID: ${{ github.event.inputs.media_id || '' }}
         run: |
           python3 - <<'PY'
-          import os, json, base64, urllib.request
-          from pathlib import Path
+          import os, json, base64, time, urllib.request, urllib.error
 
           media_id = os.environ.get("MEDIA_ID", "").strip()
           if not media_id:
@@ -254,43 +254,52 @@ jobs:
 
           token = os.environ["GH_PAT"]
           repo = os.environ["REPO"]
-
-          queue_path = Path("upload_queue.json")
-          queue = json.loads(queue_path.read_text()) if queue_path.exists() else []
+          api = f"https://api.github.com/repos/{repo}/contents/upload_queue.json"
+          hdrs = {"Authorization": f"token {token}"}
 
           alert_needed = False
-          for item in queue:
-              if item["media_id"] == media_id:
-                  item["fail_count"] = item.get("fail_count", 0) + 1
-                  print(f"Fail count for {item['filename']}: {item['fail_count']}")
-                  if item["fail_count"] >= 3:
-                      alert_needed = True
-                      print(f"ALERT: {item['filename']} has failed {item['fail_count']} times")
+          for attempt in range(1, 6):
+              # Always modify the LATEST queue on main, never the startup copy,
+              # so concurrent scanner/upload updates are not overwritten.
+              req = urllib.request.Request(api + "?ref=main", headers=hdrs)
+              with urllib.request.urlopen(req) as r:
+                  meta = json.load(r)
+              queue = json.loads(base64.b64decode(meta["content"]).decode() or "[]")
+
+              alert_needed = False
+              found = False
+              for item in queue:
+                  if item["media_id"] == media_id:
+                      found = True
+                      item["fail_count"] = item.get("fail_count", 0) + 1
+                      print(f"Fail count for {item['filename']}: {item['fail_count']}")
+                      if item["fail_count"] >= 3:
+                          alert_needed = True
+                          print(f"ALERT: {item['filename']} has failed {item['fail_count']} times")
+                      break
+              if not found:
+                  print(f"{media_id} not in latest queue — nothing to update")
                   break
 
-          queue_path.write_text(json.dumps(queue, indent=2))
-          encoded = base64.b64encode(queue_path.read_bytes()).decode()
-
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/contents/upload_queue.json?ref=main",
-              headers={"Authorization": f"token {token}"}
-          )
-          with urllib.request.urlopen(req) as r:
-              current_sha = json.load(r)["sha"]
-
-          payload = json.dumps({
-              "message": f"chore: update fail count for {media_id} [skip ci]",
-              "content": encoded,
-              "sha": current_sha,
-              "branch": "main"
-          }).encode()
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/contents/upload_queue.json",
-              data=payload, method="PUT",
-              headers={"Authorization": f"token {token}", "Content-Type": "application/json"}
-          )
-          with urllib.request.urlopen(req) as r:
-              print(f"Queue updated: {json.load(r)['commit']['sha']}")
+              payload = json.dumps({
+                  "message": f"chore: update fail count for {media_id} [skip ci]",
+                  "content": base64.b64encode(json.dumps(queue, indent=2).encode()).decode(),
+                  "sha": meta["sha"],
+                  "branch": "main"
+              }).encode()
+              req = urllib.request.Request(api, data=payload, method="PUT",
+                  headers={**hdrs, "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req) as r:
+                      print(f"Queue updated: {json.load(r)['commit']['sha']}")
+                  break
+              except urllib.error.HTTPError as e:
+                  if e.code in (409, 422) and attempt < 5:
+                      wait = 2 ** attempt
+                      print(f"Conflict — queue changed under us. Retry {attempt}/5 in {wait}s")
+                      time.sleep(wait)
+                      continue
+                  raise
 
           if alert_needed:
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
@@ -298,7 +307,7 @@ jobs:
           PY
 
       - name: Send failure alert email
-        if: steps.validate_cookies.outputs.cookies_valid == 'true' && steps.run_upload.outcome == 'failure'
+        if: always() && steps.failure_handler.outputs.send_alert == 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
