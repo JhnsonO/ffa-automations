@@ -168,6 +168,35 @@ def save_state(state, sha):
         LOCAL_STATE.write_text(json.dumps(state, indent=1, sort_keys=True))
 
 
+def should_dispatch_refresh(runs, now, cooldown_min=25):
+    """True only if no cookie-refresh run is active or was created within the cooldown."""
+    now_dt = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    for r in runs:
+        if r.get("status") in ("queued", "in_progress", "waiting", "pending"):
+            return False
+        created = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00"))
+        if now_dt - created < timedelta(minutes=cooldown_min):
+            return False
+    return True
+
+
+def request_cookie_refresh():
+    """Dispatch the existing cookie-refresh workflow (same call the scanner makes). Best-effort."""
+    if not (os.environ.get("GITHUB_TOKEN") and os.environ.get("GITHUB_REPOSITORY")):
+        return
+    try:
+        r = _gh("GET", "actions/workflows/cookie-refresh.yml/runs", params={"per_page": 5})
+        r.raise_for_status()
+        if not should_dispatch_refresh(r.json().get("workflow_runs", []), now_iso()):
+            print("Cookie refresh already running/recent; not dispatching")
+            return
+        d = _gh("POST", "actions/workflows/cookie-refresh.yml/dispatches",
+                json={"ref": "main", "inputs": {"run_cookie_refresh": "true"}})
+        print(f"Cookie refresh dispatched (HTTP {d.status_code})")
+    except Exception as e:  # never fail the shadow run over this
+        print(f"WARN: could not dispatch cookie refresh: {e}")
+
+
 def main():
     if not COOKIE_PATH.exists():
         print("No GoPro cookies file; nothing to do")
@@ -178,8 +207,9 @@ def main():
         items = fetch_recent(session)
     except requests.exceptions.HTTPError as e:
         code = e.response.status_code if e.response is not None else "?"
-        # Cookie refresh is owned by the existing scanner; the shadow watcher must not interfere.
-        print(f"WARN: GoPro HTTP {code}; skipping this poll (scanner handles cookie refresh)")
+        print(f"WARN: GoPro HTTP {code}; skipping this poll")
+        if code == 401:
+            request_cookie_refresh()
         return 0
     except requests.exceptions.RequestException as e:
         print(f"WARN: network error {type(e).__name__}; skipping this poll")

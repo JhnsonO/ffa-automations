@@ -67,3 +67,11 @@ def test_report_lag_math():
     assert rows[0]["seen_to_ready_min"] == 30
     assert rows[0]["ready_to_uploaded_min"] == 120
     assert bad == []
+
+
+def test_refresh_cooldown():
+    now = "2026-11-18T10:30:00Z"
+    assert rw.should_dispatch_refresh([], now)
+    assert not rw.should_dispatch_refresh([{"status": "in_progress", "created_at": "2026-11-18T08:00:00Z"}], now)
+    assert not rw.should_dispatch_refresh([{"status": "completed", "created_at": "2026-11-18T10:15:00Z"}], now)
+    assert rw.should_dispatch_refresh([{"status": "completed", "created_at": "2026-11-18T09:00:00Z"}], now)
