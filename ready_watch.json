@@ -85,27 +85,69 @@
   "6b00c58c286a919ca412919f": {
    "created_at": "2026-11-20T22:11:24Z",
    "filename": "GX010540.MP4",
+   "first_ready_at": "2026-11-21T03:24:16Z",
+   "first_ready_size": 20964348757,
    "first_seen": "2026-11-20T22:23:52Z",
    "history": [
     {
      "ready_to_view": "uploading",
      "size": 0,
      "t": "2026-11-20T22:23:52Z"
+    },
+    {
+     "ready_to_view": "ready",
+     "size": 20964348757,
+     "t": "2026-11-21T03:24:16Z"
     }
    ]
   },
   "6b00c5b4edfa14752a772531": {
    "created_at": "2026-11-20T22:12:04Z",
    "filename": "GX010276.MP4",
+   "first_ready_at": "2026-11-21T03:24:16Z",
+   "first_ready_size": 5658956727,
    "first_seen": "2026-11-20T22:23:52Z",
    "history": [
     {
      "ready_to_view": "uploading",
      "size": 0,
      "t": "2026-11-20T22:23:52Z"
+    },
+    {
+     "ready_to_view": "ready",
+     "size": 5658956727,
+     "t": "2026-11-21T03:24:16Z"
+    }
+   ]
+  },
+  "6b00c9da116b2a451977240c": {
+   "created_at": "2026-11-20T22:29:46Z",
+   "filename": "GX010277.MP4",
+   "first_ready_at": "2026-11-21T03:24:16Z",
+   "first_ready_size": 26198668978,
+   "first_seen": "2026-11-21T03:24:16Z",
+   "history": [
+    {
+     "ready_to_view": "ready",
+     "size": 26198668978,
+     "t": "2026-11-21T03:24:16Z"
+    }
+   ]
+  },
+  "6b00d238dcf49a7ecbb32596": {
+   "created_at": "2026-11-20T23:05:28Z",
+   "filename": "GX010541.MP4",
+   "first_ready_at": "2026-11-21T03:24:16Z",
+   "first_ready_size": 24816893466,
+   "first_seen": "2026-11-21T03:24:16Z",
+   "history": [
+    {
+     "ready_to_view": "ready",
+     "size": 24816893466,
+     "t": "2026-11-21T03:24:16Z"
     }
    ]
   }
  },
- "updated": "2026-11-20T22:23:52Z"
+ "updated": "2026-11-21T03:24:16Z"
 }
