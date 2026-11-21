@@ -1,4 +1,4 @@
-name: GoPro Ready Watch (shadow, read-only)
+name: GoPro Ready Watch (manual one-off snapshot)
 
 # Observes GoPro Cloud `ready_to_view` every ~10 min and logs transitions to the
 # `ready-watch-data` branch. It NEVER downloads/uploads video, never dispatches
@@ -6,8 +6,6 @@ name: GoPro Ready Watch (shadow, read-only)
 # Purpose: decide whether "ready" can replace the scanner's 1h size-stability wait.
 
 on:
-  schedule:
-    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 env:

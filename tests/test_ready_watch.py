@@ -75,3 +75,58 @@ def test_refresh_cooldown():
     assert not rw.should_dispatch_refresh([{"status": "in_progress", "created_at": "2026-11-18T08:00:00Z"}], now)
     assert not rw.should_dispatch_refresh([{"status": "completed", "created_at": "2026-11-18T10:15:00Z"}], now)
     assert rw.should_dispatch_refresh([{"status": "completed", "created_at": "2026-11-18T09:00:00Z"}], now)
+
+# ---- ready trigger -------------------------------------------------
+import ready_trigger as rt  # noqa: E402
+
+NOW = "2026-11-21T10:00:00Z"
+
+
+def ready_item(**kw):
+    base = {"id": "m1", "filename": "GX01.MP4", "file_size": 5 * GB, "ready_to_view": "ready"}
+    base.update(kw)
+    return base
+
+
+def test_trigger_dispatches_ready_mp4():
+    assert rt.decide(ready_item(), set(), {}, NOW) == (True, "ready")
+
+
+def test_trigger_skips_not_ready_small_360_uploaded_and_recent():
+    assert not rt.decide(ready_item(ready_to_view="uploading"), set(), {}, NOW)[0]
+    assert not rt.decide(ready_item(ready_to_view=None), set(), {}, NOW)[0]
+    assert not rt.decide(ready_item(file_size=100_000_000), set(), {}, NOW)[0]
+    assert not rt.decide(ready_item(filename="GS01.360"), set(), {}, NOW)[0]
+    assert not rt.decide(ready_item(), {"m1"}, {}, NOW)[0]
+    assert not rt.decide(ready_item(), set(), {"m1": "2026-11-21T08:00:00Z"}, NOW)[0]
+    assert rt.decide(ready_item(), set(), {"m1": "2026-11-21T02:00:00Z"}, NOW)[0]  # >6h ago: retry allowed
+
+
+# ---- uploader: ready bypasses the 30-minute processing guess -------
+import sqlite3  # noqa: E402
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+import gopro_uploader as u  # noqa: E402
+
+
+def _mem_db():
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE uploads (media_id TEXT PRIMARY KEY, filename TEXT, captured_at TEXT, youtube_id TEXT, uploaded_at TEXT)")
+    con.execute("CREATE TABLE failed_uploads (media_id TEXT PRIMARY KEY, failed_at TEXT, reason TEXT, fail_count INTEGER DEFAULT 1)")
+    return con
+
+
+def _fresh_item(status):
+    t = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"id": "m9", "filename": "GX09.MP4", "file_size": 5 * GB, "captured_at": t,
+            "created_at": t, "updated_at": t, "ready_to_view": status}
+
+
+def test_uploader_still_waits_30min_when_not_ready():
+    reasons, _ = u.describe_media_filter(_mem_db(), _fresh_item("transcoding"))
+    assert any("still processing" in r for r in reasons)
+
+
+def test_uploader_skips_30min_wait_when_ready():
+    reasons, _ = u.describe_media_filter(_mem_db(), _fresh_item("ready"))
+    assert reasons == []

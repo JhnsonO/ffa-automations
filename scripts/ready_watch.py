@@ -116,13 +116,14 @@ def fetch_recent(session):
     return items
 
 
-def _gh(method, path, **kw):
+def _gh(method, path, headers_extra=None, **kw):
     token = os.environ["GITHUB_TOKEN"]
     repo = os.environ["GITHUB_REPOSITORY"]
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    headers.update(headers_extra or {})
     return requests.request(
         method, f"https://api.github.com/repos/{repo}/{path}",
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
-        timeout=30, **kw,
+        headers=headers, timeout=30, **kw,
     )
 
 
