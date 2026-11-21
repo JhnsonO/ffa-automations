@@ -1,0 +1,65 @@
+name: GoPro Ready Trigger (upload on ready)
+
+# Polls GoPro Cloud for ~5.7h per run (every 10 min when idle, every 1 min once a video is
+# uploading/processing) and dispatches the EXISTING
+# gopro-upload.yml as soon as a video is ready_to_view == "ready".
+# Runs alongside the old scanner; duplicates are prevented by gopro-upload.yml's
+# per-media_id concurrency group + uploaded.db check.
+# Kill switch: set repo variable READY_TRIGGER_DISABLED=true (log-only).
+
+on:
+  schedule:
+    - cron: '7 * * * *'   # hourly; a pending run is always queued so a dropped schedule leaves no gap
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: gopro-ready-trigger
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    name: Poll and dispatch on ready
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Write GoPro cookies from secret
+        env:
+          GOPRO_COOKIES: ${{ secrets.GOPRO_COOKIES }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          cookies = os.environ.get("GOPRO_COOKIES", "{}").strip() or "{}"
+          Path("gopro_cookies.json").write_text(cookies)
+          print("GoPro cookies written from secret")
+          PY
+
+      - name: Poll and dispatch uploads
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          LOOP_MINUTES: '340'
+          ACTIVE_SECONDS: '60'
+          IDLE_SECONDS: '600'
+          TRIGGER_DISABLED: ${{ vars.READY_TRIGGER_DISABLED }}
+        run: python3 scripts/ready_trigger.py
