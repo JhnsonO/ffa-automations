@@ -422,7 +422,7 @@ def scan_cutoff_string(con=None):
 
 
 def fetch_recent_media_with_order(session, cutoff, order_by):
-    fields = "id,captured_at,created_at,updated_at,filename,file_size,type"
+    fields = "id,captured_at,created_at,updated_at,filename,file_size,type,ready_to_view"
     all_media = []
     page = 1
     max_pages = None if order_by == "created_at" else GOPRO_FALLBACK_SCAN_PAGES
@@ -555,7 +555,8 @@ def describe_media_filter(con, item):
         reasons.append(f"file below 100MB filter ({file_size / 1e6:.1f} MB)")
     # Skip if GoPro updated the file within the last 30 minutes — still processing
     updated_at = item.get("updated_at", "")
-    if updated_at:
+    # GoPro's own ready_to_view=="ready" supersedes the 30-minute guess.
+    if updated_at and item.get("ready_to_view") != "ready":
         try:
             from datetime import datetime, timezone, timedelta
             updated_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))

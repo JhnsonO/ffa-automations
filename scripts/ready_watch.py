@@ -116,13 +116,14 @@ def fetch_recent(session):
     return items
 
 
-def _gh(method, path, **kw):
+def _gh(method, path, headers_extra=None, **kw):
     token = os.environ["GITHUB_TOKEN"]
     repo = os.environ["GITHUB_REPOSITORY"]
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    headers.update(headers_extra or {})
     return requests.request(
         method, f"https://api.github.com/repos/{repo}/{path}",
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
-        timeout=30, **kw,
+        headers=headers, timeout=30, **kw,
     )
 
 
@@ -163,9 +164,40 @@ def save_state(state, sha):
         }
         if sha:
             payload["sha"] = sha
-        _gh("PUT", f"contents/{STATE_FILE}", json=payload).raise_for_status()
-    else:
-        LOCAL_STATE.write_text(json.dumps(state, indent=1, sort_keys=True))
+        r = _gh("PUT", f"contents/{STATE_FILE}", json=payload)
+        r.raise_for_status()
+        return r.json()["content"]["sha"]
+    LOCAL_STATE.write_text(json.dumps(state, indent=1, sort_keys=True))
+    return None
+
+
+def should_dispatch_refresh(runs, now, cooldown_min=25):
+    """True only if no cookie-refresh run is active or was created within the cooldown."""
+    now_dt = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    for r in runs:
+        if r.get("status") in ("queued", "in_progress", "waiting", "pending"):
+            return False
+        created = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00"))
+        if now_dt - created < timedelta(minutes=cooldown_min):
+            return False
+    return True
+
+
+def request_cookie_refresh():
+    """Dispatch the existing cookie-refresh workflow (same call the scanner makes). Best-effort."""
+    if not (os.environ.get("GITHUB_TOKEN") and os.environ.get("GITHUB_REPOSITORY")):
+        return
+    try:
+        r = _gh("GET", "actions/workflows/cookie-refresh.yml/runs", params={"per_page": 5})
+        r.raise_for_status()
+        if not should_dispatch_refresh(r.json().get("workflow_runs", []), now_iso()):
+            print("Cookie refresh already running/recent; not dispatching")
+            return
+        d = _gh("POST", "actions/workflows/cookie-refresh.yml/dispatches",
+                json={"ref": "main", "inputs": {"run_cookie_refresh": "true"}})
+        print(f"Cookie refresh dispatched (HTTP {d.status_code})")
+    except Exception as e:  # never fail the shadow run over this
+        print(f"WARN: could not dispatch cookie refresh: {e}")
 
 
 def main():
@@ -178,8 +210,9 @@ def main():
         items = fetch_recent(session)
     except requests.exceptions.HTTPError as e:
         code = e.response.status_code if e.response is not None else "?"
-        # Cookie refresh is owned by the existing scanner; the shadow watcher must not interfere.
-        print(f"WARN: GoPro HTTP {code}; skipping this poll (scanner handles cookie refresh)")
+        print(f"WARN: GoPro HTTP {code}; skipping this poll")
+        if code == 401:
+            request_cookie_refresh()
         return 0
     except requests.exceptions.RequestException as e:
         print(f"WARN: network error {type(e).__name__}; skipping this poll")
