@@ -164,9 +164,11 @@ def save_state(state, sha):
         }
         if sha:
             payload["sha"] = sha
-        _gh("PUT", f"contents/{STATE_FILE}", json=payload).raise_for_status()
-    else:
-        LOCAL_STATE.write_text(json.dumps(state, indent=1, sort_keys=True))
+        r = _gh("PUT", f"contents/{STATE_FILE}", json=payload)
+        r.raise_for_status()
+        return r.json()["content"]["sha"]
+    LOCAL_STATE.write_text(json.dumps(state, indent=1, sort_keys=True))
+    return None
 
 
 def should_dispatch_refresh(runs, now, cooldown_min=25):

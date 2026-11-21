@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Upload-on-ready trigger.
 
-Polls GoPro Cloud every INTERVAL seconds for LOOP_MINUTES and, the moment a video is
+Polls GoPro Cloud for LOOP_MINUTES (slowly when idle, every ACTIVE_SECONDS once a video is uploading/processing) and, the moment a video is
 `ready_to_view == "ready"`, dispatches the EXISTING gopro-upload.yml for that media_id.
 No upload logic lives here. Safety nets (all pre-existing):
   * gopro-upload.yml serialises per media_id (concurrency group) and re-checks uploaded.db,
@@ -22,7 +22,8 @@ import requests
 
 import ready_watch as rw
 
-INTERVAL = int(os.environ.get("POLL_SECONDS") or 120)
+ACTIVE_SECONDS = int(os.environ.get("ACTIVE_SECONDS") or 60)    # something is uploading/processing
+IDLE_SECONDS = int(os.environ.get("IDLE_SECONDS") or 600)       # nothing in flight
 LOOP_MINUTES = int(os.environ.get("LOOP_MINUTES") or 340)
 REDISPATCH_HOURS = 6
 DISABLED = (os.environ.get("TRIGGER_DISABLED") or "").strip().lower() == "true"
@@ -49,6 +50,18 @@ def decide(item, uploaded_ids, dispatched, now):
         if age < timedelta(hours=REDISPATCH_HOURS):
             return False, "dispatched recently"
     return True, "ready"
+
+
+IN_FLIGHT = {"uploading", "loading", "registered", "transcoding", "processing"}
+
+
+def is_active(items):
+    """True if any video is mid-upload/processing => poll fast; otherwise poll slowly."""
+    return any(i.get("ready_to_view") in IN_FLIGHT for i in items)
+
+
+def next_interval(active):
+    return ACTIVE_SECONDS if active else IDLE_SECONDS
 
 
 def load_uploaded_ids():
@@ -81,40 +94,49 @@ def restart_self():
     print(f"Self-restart dispatched (HTTP {d.status_code})")
 
 
-def poll_once(session):
-    """Returns 'ok' | 'auth'."""
+def poll_once(session, ctx):
+    """One poll. ctx holds in-memory {'state','sha'} so idle polls make NO GitHub calls.
+    Returns (status, active) with status 'ok' | 'auth'."""
     try:
         items = rw.fetch_recent(session)
     except requests.exceptions.HTTPError as e:
         code = e.response.status_code if e.response is not None else "?"
         print(f"WARN: GoPro HTTP {code}")
-        return "auth" if code == 401 else "ok"
+        return ("auth" if code == 401 else "ok"), False
     except requests.exceptions.RequestException as e:
         print(f"WARN: network error {type(e).__name__}")
-        return "ok"
-    state, sha = rw.load_state()
+        return "ok", False
+    if ctx.get("state") is None:
+        ctx["state"], ctx["sha"] = rw.load_state()
+    state = ctx["state"]
     now = rw.now_iso()
     changed = rw.observe(state, items, now)
     dispatched = state.setdefault("dispatched", {})
-    uploaded = load_uploaded_ids()
-    if uploaded is not None:
-        for item in items:
-            go, why = decide(item, uploaded, dispatched, now)
-            if not go:
-                continue
-            name = item.get("filename")
-            if DISABLED:
-                print(f"[disabled] would dispatch upload: {name} ({item['id']})")
-                continue
-            code = dispatch_upload(item["id"])
-            print(f"DISPATCHED upload for {name} ({item['id']}) HTTP {code}")
-            if code in (200, 201, 204):
-                dispatched[item["id"]] = now
-                changed = True
+    # Cheap local pre-check first; only hit GitHub for uploaded.db if something might be dispatched.
+    if any(decide(i, set(), dispatched, now)[0] for i in items):
+        uploaded = load_uploaded_ids()
+        if uploaded is not None:
+            for item in items:
+                go, _ = decide(item, uploaded, dispatched, now)
+                if not go:
+                    continue
+                name = item.get("filename")
+                if DISABLED:
+                    print(f"[disabled] would dispatch upload: {name} ({item['id']})")
+                    continue
+                code = dispatch_upload(item["id"])
+                print(f"DISPATCHED upload for {name} ({item['id']}) HTTP {code}")
+                if code in (200, 201, 204):
+                    dispatched[item["id"]] = now
+                    changed = True
     if changed:
         state["updated"] = now
-        rw.save_state(state, sha)
-    return "ok"
+        try:
+            ctx["sha"] = rw.save_state(state, ctx["sha"])
+        except requests.exceptions.RequestException as e:
+            print(f"WARN: state save failed ({e}); will reload state next poll")
+            ctx["state"] = None
+    return "ok", is_active(items)
 
 
 def main():
@@ -124,9 +146,12 @@ def main():
     session = requests.Session()
     session.cookies.update(__import__("json").loads(rw.COOKIE_PATH.read_text() or "{}"))
     deadline = time.time() + LOOP_MINUTES * 60
-    print(f"Ready trigger started: every {INTERVAL}s for {LOOP_MINUTES} min; disabled={DISABLED}")
+    print(f"Ready trigger started: {LOOP_MINUTES} min; idle every {IDLE_SECONDS}s, active every {ACTIVE_SECONDS}s; disabled={DISABLED}")
+    ctx = {"state": None, "sha": None}
+    active = False
     while time.time() < deadline:
-        if poll_once(session) == "auth":
+        status, active = poll_once(session, ctx)
+        if status == "auth":
             r = rw._gh("GET", "actions/workflows/cookie-refresh.yml/runs", params={"per_page": 5})
             runs = r.json().get("workflow_runs", []) if r.ok else []
             if rw.should_dispatch_refresh(runs, rw.now_iso()):
@@ -136,7 +161,7 @@ def main():
             else:
                 print("Refresh already running/recent; exiting, hourly schedule will restart")
             return 0
-        time.sleep(INTERVAL)
+        time.sleep(next_interval(active))
     print("Loop window finished; next scheduled/pending run continues")
     return 0
 

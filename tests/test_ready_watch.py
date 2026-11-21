@@ -130,3 +130,39 @@ def test_uploader_still_waits_30min_when_not_ready():
 def test_uploader_skips_30min_wait_when_ready():
     reasons, _ = u.describe_media_filter(_mem_db(), _fresh_item("ready"))
     assert reasons == []
+
+
+def test_polls_fast_only_when_something_in_flight():
+    assert rt.is_active([{"ready_to_view": "uploading"}])
+    assert rt.is_active([{"ready_to_view": "ready"}, {"ready_to_view": "transcoding"}])
+    assert not rt.is_active([{"ready_to_view": "ready"}, {"ready_to_view": None}])
+    assert not rt.is_active([])
+    assert rt.next_interval(True) < rt.next_interval(False)
+
+
+def test_poll_once_idle_makes_no_github_calls_and_ready_dispatches_once(monkeypatch):
+    calls = {"uploaded": 0, "dispatch": [], "save": 0}
+    monkeypatch.setattr(rw, "load_state", lambda: ({"media": {}}, "sha0"))
+    monkeypatch.setattr(rw, "save_state", lambda s, sha: calls.__setitem__("save", calls["save"] + 1) or "sha1")
+    monkeypatch.setattr(rt, "load_uploaded_ids", lambda: calls.__setitem__("uploaded", calls["uploaded"] + 1) or set())
+    monkeypatch.setattr(rt, "dispatch_upload", lambda mid: calls["dispatch"].append(mid) or 204)
+    ctx = {"state": None, "sha": None}
+
+    # 1) a video uploading -> fast mode, nothing dispatched, no uploaded.db read
+    monkeypatch.setattr(rw, "fetch_recent", lambda s: [item("uploading", 2 * GB)])
+    assert rt.poll_once(None, ctx) == ("ok", True)
+    assert calls["uploaded"] == 0 and calls["dispatch"] == []
+
+    # 2) same state again -> identical, still no GitHub calls beyond the first save
+    saves = calls["save"]
+    assert rt.poll_once(None, ctx) == ("ok", True)
+    assert calls["save"] == saves and calls["uploaded"] == 0
+
+    # 3) becomes ready -> exactly one dispatch, back to slow mode
+    monkeypatch.setattr(rw, "fetch_recent", lambda s: [item("ready", 5 * GB)])
+    assert rt.poll_once(None, ctx) == ("ok", False)
+    assert calls["dispatch"] == ["m1"]
+
+    # 4) still ready next poll -> NOT dispatched again
+    assert rt.poll_once(None, ctx) == ("ok", False)
+    assert calls["dispatch"] == ["m1"]

@@ -1,6 +1,7 @@
 name: GoPro Ready Trigger (upload on ready)
 
-# Polls GoPro Cloud every 2 min for ~5.7h per run and dispatches the EXISTING
+# Polls GoPro Cloud for ~5.7h per run (every 10 min when idle, every 1 min once a video is
+# uploading/processing) and dispatches the EXISTING
 # gopro-upload.yml as soon as a video is ready_to_view == "ready".
 # Runs alongside the old scanner; duplicates are prevented by gopro-upload.yml's
 # per-media_id concurrency group + uploaded.db check.
@@ -58,6 +59,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           LOOP_MINUTES: '340'
-          POLL_SECONDS: '120'
+          ACTIVE_SECONDS: '60'
+          IDLE_SECONDS: '600'
           TRIGGER_DISABLED: ${{ vars.READY_TRIGGER_DISABLED }}
         run: python3 scripts/ready_trigger.py
